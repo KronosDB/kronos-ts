@@ -1,0 +1,375 @@
+import {
+  qualifiedNameToString,
+  qualifiedNameFromString,
+  type Tag,
+  type Serializer,
+} from "@kronos-ts/common"
+import type {
+  EventCriteria,
+  EventMessage,
+  MessageStream,
+  SequencedEvent,
+  StreamingCondition,
+} from "@kronos-ts/messaging"
+import { createMessageStream } from "@kronos-ts/messaging"
+import type {
+  EventStore,
+  SourcingResult,
+  SourcingCondition,
+  AppendCondition,
+  ConsistencyMarker,
+  AppendTransaction,
+} from "@kronos-ts/eventsourcing"
+import type { TrackingToken } from "@kronos-ts/messaging"
+import { globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/messaging"
+import { markerAt, noMarker } from "@kronos-ts/eventsourcing"
+import type { KronosDbConnection } from "./connection.js"
+import { createKronosMetadata } from "./connection.js"
+import { metadataFromStringMap, metadataToStringMap } from "./metadata-conversion.js"
+
+// ---------------------------------------------------------------------------
+// Tag conversion — framework Tag (string k/v) ↔ proto Tag (binary k/v)
+// ---------------------------------------------------------------------------
+
+const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
+
+function tagToProto(tag: Tag): { key: Uint8Array; value: Uint8Array } {
+  return {
+    key: textEncoder.encode(tag.key),
+    value: textEncoder.encode(tag.value),
+  }
+}
+
+function tagFromProto(tag: { key: Uint8Array; value: Uint8Array }): Tag {
+  return {
+    key: textDecoder.decode(tag.key),
+    value: textDecoder.decode(tag.value),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Criteria conversion — framework EventCriteria → proto Criterion[]
+//
+// KronosDB Criterion has: names (string[]) + tags (Tag[])
+// Semantics: event matches if (names empty OR name in names) AND all tags present
+// Multiple criteria are OR'd together.
+// ---------------------------------------------------------------------------
+
+function criteriaToCriterions(criteria: EventCriteria): any[] {
+  switch (criteria.kind) {
+    case "tags":
+      return [{
+        names: [],
+        tags: criteria.tags.map(tagToProto),
+      }]
+
+    case "type-restricted": {
+      const innerTags = criteria.inner.kind === "tags"
+        ? criteria.inner.tags.map(tagToProto)
+        : []
+      return [{
+        names: [...criteria.types],
+        tags: innerTags,
+      }]
+    }
+
+    case "either":
+      return criteria.criteria.flatMap(criteriaToCriterions)
+
+    case "any-tag":
+      return [{ names: [], tags: [] }]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Event conversion — framework EventMessage ↔ proto Event/TaggedEvent
+// ---------------------------------------------------------------------------
+
+function createEventConverters(serializer: Serializer) {
+  return {
+    eventToProto(event: EventMessage): any {
+      const name = qualifiedNameToString(event.name)
+      const serialized = serializer.serialize(event.payload, name, event.version)
+      return {
+        event: {
+          identifier: event.identifier,
+          timestamp: BigInt(event.timestamp),
+          name,
+          version: event.version,
+          payload: serialized.data,
+          metadata: metadataToStringMap(event.metadata),
+        },
+        tags: event.tags.map(tagToProto),
+      }
+    },
+
+    eventFromProto(protoEvent: any, tags?: any[]): EventMessage {
+      const payload = protoEvent.payload && protoEvent.payload.length > 0
+        ? serializer.deserialize({ data: protoEvent.payload, type: protoEvent.name, revision: protoEvent.version })
+        : {}
+
+      return {
+        identifier: protoEvent.identifier,
+        name: qualifiedNameFromString(protoEvent.name),
+        version: protoEvent.version,
+        payload,
+        metadata: metadataFromStringMap(protoEvent.metadata ?? {}),
+        timestamp: Number(protoEvent.timestamp),
+        tags: (tags ?? []).map(tagFromProto),
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// KronosDB Event Store — implements EventStore interface via gRPC
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates an EventStore implementation backed by KronosDB's gRPC event store.
+ *
+ * Maps the framework's EventStore interface to KronosDB's EventStore service,
+ * handling conversion between framework types and proto messages.
+ *
+ * Key differences from Axon Server:
+ * - Event metadata is `map<string, string>` (not MetadataValue)
+ * - Source returns `SequencedEvent` (no tags on read — only on append)
+ * - Stream returns `SequencedEvent` directly
+ * - Criterion uses flat `names` + `tags` (not TagsAndNamesCriterion wrapper)
+ */
+export function createKronosDbEventStore(connection: KronosDbConnection, serializer: Serializer): EventStore {
+  const { eventToProto, eventFromProto } = createEventConverters(serializer)
+
+  function getMetadata() {
+    return createKronosMetadata(connection.config)
+  }
+
+  return {
+    async source(condition: SourcingCondition): Promise<SourcingResult> {
+      const criterions = criteriaToCriterions(condition.criteria)
+
+      // KronosDB requires at least one criterion for tag-index matching.
+      // An empty criterion (no names, no tags) matches all events.
+      const effectiveCriterions = criterions.length === 0
+        ? [{ names: [], tags: [] }]
+        : criterions
+
+      const request = {
+        fromSequence: condition.start ?? 0n,
+        criteria: effectiveCriterions,
+      }
+
+      const events: EventMessage[] = []
+      let marker: ConsistencyMarker = noMarker()
+
+      const stream = connection.eventStore.source(request, { metadata: getMetadata() })
+      for await (const response of stream) {
+        // SourceResponse uses oneof: event (SequencedEvent) or consistency_marker (int64)
+        if (response.event) {
+          const seqEvent = response.event
+          if (seqEvent.event) {
+            // KronosDB doesn't return tags on source — we need to fetch them
+            // For now, pass empty tags; tags are only relevant for append conditions
+            events.push(eventFromProto(seqEvent.event))
+          }
+        }
+        if (response.consistencyMarker !== undefined && response.consistencyMarker !== 0n) {
+          marker = markerAt(response.consistencyMarker)
+        }
+      }
+
+      return { events, marker }
+    },
+
+    async appendEvents(
+      newEvents: ReadonlyArray<EventMessage>,
+      condition?: AppendCondition,
+    ): Promise<AppendTransaction> {
+      const taggedEvents = newEvents.map(eventToProto)
+      const request = {
+        condition: condition ? {
+          consistencyMarker: condition.marker.position,
+          criteria: criteriaToCriterions(condition.criteria),
+        } : undefined,
+        events: taggedEvents,
+      }
+
+      let responseMarker: bigint | undefined
+
+      return {
+        async commit() {
+          async function* requestStream() {
+            yield request
+          }
+          const response = await connection.eventStore.append(requestStream(), { metadata: getMetadata() })
+          responseMarker = response.consistencyMarker
+        },
+        async afterCommit() {
+          return markerAt(responseMarker ?? 0n)
+        },
+        rollback() {
+          // If commit() was never called, nothing was sent
+        },
+      }
+    },
+
+    async append(
+      newEvents: ReadonlyArray<EventMessage>,
+      condition?: AppendCondition,
+    ): Promise<ConsistencyMarker> {
+      const tx = await this.appendEvents(newEvents, condition)
+      await tx.commit()
+      return tx.afterCommit()
+    },
+
+    open(condition: StreamingCondition): MessageStream<SequencedEvent> {
+      const criterions = condition.criteria ? criteriaToCriterions(condition.criteria) : []
+
+      // KronosDB requires at least one criterion for tag-index matching.
+      // An empty criterion (no names, no tags) matches all events.
+      const effectiveCriterions = criterions.length === 0
+        ? [{ names: [], tags: [] }]
+        : criterions
+
+      const PERMIT_BATCH = 500
+      const REFILL_THRESHOLD = 0.25
+
+      // Controllable async iterable for sending StreamControl messages.
+      let sendControl: ((msg: any) => void) | null = null
+      let controlDone = false
+      const controlQueue: any[] = []
+      let controlResolve: (() => void) | null = null
+
+      async function* controlStream() {
+        // First message: subscribe with initial permits.
+        yield {
+          request: {
+            $case: "subscribe" as const,
+            subscribe: {
+              fromSequence: condition.position,
+              criteria: effectiveCriterions,
+              initialPermits: PERMIT_BATCH,
+              blacklistedNames: [],
+            },
+          },
+        }
+
+        // Subsequent messages: permit grants.
+        while (!controlDone) {
+          while (controlQueue.length > 0) {
+            yield controlQueue.shift()!
+          }
+          // Wait for more messages to send.
+          await new Promise<void>((resolve) => {
+            controlResolve = resolve
+          })
+        }
+      }
+
+      function grantPermits(count: number) {
+        controlQueue.push({
+          request: {
+            $case: "permits" as const,
+            permits: { permits: count },
+          },
+        })
+        controlResolve?.()
+      }
+
+      const grpcStream = connection.eventStore.stream(controlStream(), { metadata: getMetadata() })
+
+      const buffer: SequencedEvent[] = []
+      let availableCallback: (() => void) | null = null
+      let completed = false
+      let streamError: Error | undefined
+      let reading = false
+      let remainingPermits = PERMIT_BATCH
+
+      async function startReading() {
+        if (reading) return
+        reading = true
+        try {
+          for await (const response of grpcStream) {
+            if (completed) break
+            const seqEvent = response.event
+            if (seqEvent?.event) {
+              buffer.push({
+                sequence: seqEvent.sequence,
+                event: eventFromProto(seqEvent.event),
+              })
+              availableCallback?.()
+            }
+          }
+          completed = true
+          availableCallback?.()
+        } catch (err) {
+          streamError = err instanceof Error ? err : new Error(String(err))
+          completed = true
+          availableCallback?.()
+        }
+      }
+
+      startReading()
+
+      function onConsumed() {
+        remainingPermits--
+        const threshold = Math.floor(PERMIT_BATCH * REFILL_THRESHOLD)
+        if (remainingPermits <= threshold && !completed) {
+          const grant = PERMIT_BATCH - remainingPermits
+          remainingPermits += grant
+          grantPermits(grant)
+        }
+      }
+
+      return createMessageStream<SequencedEvent>({
+        next() {
+          const item = buffer.shift()
+          if (item) onConsumed()
+          return item
+        },
+
+        peek() {
+          return buffer[0]
+        },
+
+        hasNextAvailable() {
+          return buffer.length > 0
+        },
+
+        isCompleted() {
+          return completed && buffer.length === 0
+        },
+
+        error() {
+          return streamError
+        },
+
+        setCallback(callback: () => void) {
+          availableCallback = callback
+        },
+
+        close() {
+          completed = true
+          controlDone = true
+          controlResolve?.()
+          availableCallback = null
+        },
+      })
+    },
+
+    async getHeadPosition(): Promise<bigint> {
+      const response = await connection.eventStore.getHead({}, { metadata: getMetadata() })
+      return response.sequence
+    },
+
+    async firstToken(): Promise<TrackingToken> {
+      return FIRST_TOKEN
+    },
+
+    async latestToken(): Promise<TrackingToken> {
+      const response = await connection.eventStore.getHead({}, { metadata: getMetadata() })
+      return globalSequenceToken(response.sequence)
+    },
+  }
+}

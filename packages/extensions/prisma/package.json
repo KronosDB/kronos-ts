@@ -1,0 +1,14 @@
+{
+  "name": "@kronos-ts/extensions/prisma",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@kronos-ts/common": "workspace:*",
+    "@kronos-ts/messaging": "workspace:*"
+  },
+  "peerDependencies": {
+    "@prisma/client": ">=5.0.0"
+  }
+}

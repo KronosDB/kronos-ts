@@ -1,0 +1,29 @@
+import type { EventMessage, EventBus } from "@kronos-ts/messaging"
+import type { EventStorageEngine } from "./event-storage-engine.js"
+import type { ConsistencyMarker } from "./consistency-marker.js"
+
+/**
+ * Result of sourcing events — the events plus a consistency marker
+ * representing the position up to which events were read.
+ */
+export interface SourcingResult {
+  readonly events: ReadonlyArray<EventMessage>
+  readonly marker: ConsistencyMarker
+}
+
+/**
+ * The event store — dual-role component that combines event storage
+ * with event distribution.
+ *
+ * Extends:
+ * - `EventStorageEngine` — raw storage (source, append, stream)
+ * - `EventBus` — event publication + push-based subscription
+ *
+ * In an event sourcing context, the EventStore persists events durably while
+ * simultaneously distributing them to subscribed event handlers, eliminating
+ * the need for a separate EventBus component.
+ *
+ * Aligned with AF5's `EventStore` which extends `StreamableEventSource`,
+ * `EventBus`, and `DescribableComponent`.
+ */
+export interface EventStore extends EventStorageEngine, EventBus {}

@@ -1,0 +1,336 @@
+import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
+import type { EventHandlerRegistration, EventHandlerContext } from "./handler.js"
+import type { EventHandlersDefinition } from "./event-handler.js"
+import type { StreamableEventSource, MessageStream, SequencedEvent } from "./event-source.js"
+import type { ProcessingContext } from "./processing-context.js"
+import type { UnitOfWorkFactory } from "./unit-of-work.js"
+import type { TokenStore } from "./token-store.js"
+import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
+import { loggingErrorHandler } from "./tracking-event-processor.js"
+import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
+import type { TrackingToken } from "./tracking-token.js"
+import {
+  globalSequenceToken,
+  replayToken,
+  isReplayToken,
+  isReplaying,
+  advanceToken,
+} from "./tracking-token.js"
+import { REPLAY_STATE_KEY } from "./replay-token.js"
+import { defaultUnitOfWorkFactory } from "./unit-of-work.js"
+
+/**
+ * A streaming event processor that uses push-based event delivery
+ * via {@link MessageStream}.
+ *
+ * Architecture:
+ * - Opens a MessageStream from the event source via {@link StreamableEventSource.open}
+ * - When events become available (via setCallback), pulls them
+ * - Processes batches within a UnitOfWork
+ * - Stores token at PREPARE_COMMIT (same transaction as handler work)
+ *
+ * Aligned with AF5's {@code StreamingEventProcessor}.
+ */
+export interface EventProcessorStatus {
+  readonly segmentId: number
+  readonly position: bigint
+  readonly replaying: boolean
+  readonly caughtUp: boolean
+  readonly error?: Error
+}
+
+export interface StreamingEventProcessor {
+  readonly name: string
+  readonly running: boolean
+  readonly position: bigint
+  readonly replaying: boolean
+  /** Status per segment. */
+  processingStatus(): Map<number, EventProcessorStatus>
+  /** Whether this processor supports reset (always true if not running). */
+  supportsReset(): boolean
+  start(): Promise<void>
+  stop(): void
+  resetTokens(startPosition?: bigint, resetContext?: unknown): Promise<void>
+  splitSegment(segmentId: number): Promise<boolean>
+  mergeSegment(segmentId: number): Promise<boolean>
+  releaseSegment(segmentId: number): Promise<void>
+}
+
+export interface StreamingEventProcessorOptions {
+  name: string
+  eventSource: StreamableEventSource
+  handlerGroups: ReadonlyArray<EventHandlersDefinition>
+  contextFactory: (ctx: ProcessingContext) => EventHandlerContext
+  unitOfWorkFactory?: UnitOfWorkFactory
+  tokenStore?: TokenStore
+  batchSize?: number
+  errorHandler?: EventProcessingErrorHandler
+  /** Optional handler enhancer applied to all event handlers at setup time. */
+  handlerEnhancer?: HandlerEnhancerDefinition
+}
+
+export function createStreamingEventProcessor(
+  options: StreamingEventProcessorOptions,
+): StreamingEventProcessor {
+  const {
+    name,
+    eventSource,
+    handlerGroups,
+    contextFactory,
+    unitOfWorkFactory = defaultUnitOfWorkFactory(),
+    tokenStore,
+    batchSize = 100,
+    errorHandler = loggingErrorHandler(name),
+    handlerEnhancer,
+  } = options
+
+  const segment = 0
+
+  const handlerMap = new Map<string, Array<EventHandlerRegistration<any>>>()
+  for (const group of handlerGroups) {
+    for (const reg of group.handlers) {
+      const eventName = qualifiedNameToString(reg.descriptor.name)
+      if (!handlerMap.has(eventName)) {
+        handlerMap.set(eventName, [])
+      }
+      const enhanced = handlerEnhancer
+        ? {
+            ...reg,
+            handler: handlerEnhancer.wrapHandler(reg.handler, {
+              messageType: "event" as const,
+              messageName: eventName,
+              handlerGroup: group.name,
+            }),
+          }
+        : reg
+      handlerMap.get(eventName)!.push(enhanced)
+    }
+  }
+
+  let token: TrackingToken = globalSequenceToken(0n)
+  let isRunning = false
+  let stream: MessageStream<SequencedEvent> | null = null
+  let processTimer: ReturnType<typeof setTimeout> | null = null
+  let processing = false
+  let caughtUp = false
+  let lastError: Error | undefined
+
+  async function initialize() {
+    if (tokenStore) {
+      await tokenStore.initializeSegments(name, 1)
+      const stored = await tokenStore.get(name, segment)
+      if (stored !== undefined) {
+        token = stored
+      }
+    }
+  }
+
+  function openStream() {
+    stream = eventSource.open({ position: token.position() })
+    stream.setCallback(() => {
+      if (isRunning && !processing) {
+        scheduleImmediate()
+      }
+    })
+  }
+
+  async function processAvailable() {
+    if (!isRunning || processing) return
+    processing = true
+
+    try {
+      await processFromStream()
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+      console.error(`Event processor "${name}" error:`, err)
+    } finally {
+      processing = false
+    }
+
+    if (isRunning && stream) {
+      if (stream.hasNextAvailable()) {
+        scheduleImmediate()
+      }
+    }
+  }
+
+  async function processFromStream() {
+    if (!stream) return
+
+    // Check for stream errors — reopen if needed
+    const streamError = stream.error()
+    if (streamError) {
+      console.error(`Event processor "${name}": stream error, reopening:`, streamError)
+      stream.close()
+      stream = null
+      openStream()
+      return
+    }
+
+    const batch: SequencedEvent[] = []
+    let event = stream.next()
+    while (event && batch.length < batchSize) {
+      batch.push(event)
+      if (batch.length < batchSize && stream.hasNextAvailable()) {
+        event = stream.next()
+      } else {
+        break
+      }
+    }
+
+    if (batch.length > 0) {
+      caughtUp = false
+      await processBatch(batch)
+      if (stream.hasNextAvailable()) {
+        scheduleImmediate()
+      }
+    } else {
+      caughtUp = true
+      if (isReplayToken(token)) {
+        token = globalSequenceToken(token.position())
+        if (tokenStore) {
+          await tokenStore.store(name, segment, token)
+        }
+      }
+    }
+  }
+
+  async function processBatch(batch: SequencedEvent[]) {
+    const uow = unitOfWorkFactory(emptyMetadata())
+    let batchEndToken: TrackingToken = token
+
+    await uow.executeWithResult(async (ctx) => {
+      for (const sequencedEvent of batch) {
+        ctx.set(REPLAY_STATE_KEY, { replaying: isReplaying(batchEndToken) })
+
+        await deliverEvent(sequencedEvent, ctx)
+
+        batchEndToken = advanceToken(batchEndToken, sequencedEvent.sequence + 1n)
+      }
+
+      if (tokenStore) {
+        ctx.onPrepareCommit(async () => {
+          await tokenStore.store(name, segment, batchEndToken)
+          // Extend claim to prevent expiry during long batches
+          await tokenStore.extendClaim(name, segment, name)
+        })
+      }
+    })
+
+    token = batchEndToken
+  }
+
+  async function deliverEvent(sequencedEvent: SequencedEvent, ctx: ProcessingContext) {
+    const event = sequencedEvent.event
+    const eventName = qualifiedNameToString(event.name)
+    const handlers = handlerMap.get(eventName)
+    if (!handlers || handlers.length === 0) return
+
+    const handlerContext = {
+      ...contextFactory(ctx),
+      metadata: event.metadata,
+    }
+    for (const reg of handlers) {
+      try {
+        await reg.handler(event.payload, handlerContext)
+      } catch (err) {
+        await errorHandler.handleError(err, eventName, sequencedEvent.sequence)
+      }
+    }
+  }
+
+  function scheduleImmediate() {
+    if (processTimer !== null) {
+      clearTimeout(processTimer)
+    }
+    processTimer = setTimeout(processAvailable, 0)
+  }
+
+  return {
+    get name() { return name },
+    get running() { return isRunning },
+    get position() { return token.position() },
+    get replaying() { return isReplaying(token) },
+
+    processingStatus() {
+      const status = new Map<number, EventProcessorStatus>()
+      status.set(segment, {
+        segmentId: segment,
+        position: token.position(),
+        replaying: isReplaying(token),
+        caughtUp,
+        error: lastError,
+      })
+      return status
+    },
+
+    async start() {
+      if (isRunning) return
+      await initialize()
+      isRunning = true
+      openStream()
+      scheduleImmediate()
+    },
+
+    stop() {
+      isRunning = false
+      if (processTimer !== null) {
+        clearTimeout(processTimer)
+        processTimer = null
+      }
+      if (stream) {
+        stream.close()
+        stream = null
+      }
+    },
+
+    async resetTokens(startPosition: bigint = 0n, resetContext?: unknown) {
+      if (isRunning) {
+        throw new Error(`Processor "${name}" must be stopped before resetting tokens`)
+      }
+
+      const headPosition = await eventSource.getHeadPosition()
+
+      if (headPosition <= startPosition) {
+        token = globalSequenceToken(startPosition)
+      } else {
+        token = replayToken(
+          globalSequenceToken(headPosition),
+          globalSequenceToken(startPosition),
+          resetContext,
+        )
+      }
+
+      if (tokenStore) {
+        await tokenStore.store(name, segment, token)
+      }
+
+      for (const group of handlerGroups) {
+        if (group.onReset) {
+          await group.onReset()
+        }
+      }
+    },
+
+    async splitSegment(_segmentId: number): Promise<boolean> {
+      if (!tokenStore) return false
+      console.warn(`Processor "${name}": segment splitting requires multi-segment support (not yet implemented)`)
+      return false
+    },
+
+    async mergeSegment(_segmentId: number): Promise<boolean> {
+      if (!tokenStore) return false
+      console.warn(`Processor "${name}": segment merging requires multi-segment support (not yet implemented)`)
+      return false
+    },
+
+    async releaseSegment(_segmentId: number): Promise<void> {
+      if (!tokenStore) return
+      await tokenStore.releaseClaim(name, segment, name)
+    },
+
+    supportsReset() {
+      return !isRunning
+    },
+  }
+}

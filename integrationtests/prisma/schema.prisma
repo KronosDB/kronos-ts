@@ -1,0 +1,21 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model KronosTokenEntry {
+  processorName String  @map("processor_name")
+  segment       Int
+  mask          Int     @default(0)
+  tokenType     String? @map("token_type")
+  token         String?
+  timestamp     String?
+  owner         String?
+
+  @@id([processorName, segment])
+  @@map("kronos_token_entries")
+}

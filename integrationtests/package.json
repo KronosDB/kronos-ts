@@ -1,0 +1,34 @@
+{
+  "name": "@kronos-ts/integrationtests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@kronos-ts/common": "workspace:*",
+    "@kronos-ts/messaging": "workspace:*",
+    "@kronos-ts/modelling": "workspace:*",
+    "@kronos-ts/eventsourcing": "workspace:*",
+    "@kronos-ts/test": "workspace:*",
+    "@kronos-ts/axon-server": "workspace:*",
+    "@kronos-ts/kronosdb": "workspace:*",
+    "@kronos-ts/extensions/prisma": "workspace:*",
+    "@kronos-ts/extensions/drizzle": "workspace:*",
+    "@kronos-ts/extensions/knex": "workspace:*",
+    "@kronos-ts/extensions/kysely": "workspace:*",
+    "@kronos-ts/extensions/express": "workspace:*",
+    "@kronos-ts/extensions/opentelemetry": "workspace:*",
+    "zod": "^3.24"
+  },
+  "devDependencies": {
+    "testcontainers": "^11.13.0",
+    "@testcontainers/postgresql": "^11.13.0",
+    "drizzle-orm": "^0.44.0",
+    "postgres": "^3.4.0",
+    "knex": "^3.1.0",
+    "kysely": "^0.27.0",
+    "pg": "^8.13.0",
+    "express": "^4.21.0",
+    "@types/express": "^5.0.0",
+    "@types/pg": "^8.11.0"
+  }
+}

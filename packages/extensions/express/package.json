@@ -1,0 +1,15 @@
+{
+  "name": "@kronos-ts/extensions/express",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@kronos-ts/common": "workspace:*",
+    "@kronos-ts/messaging": "workspace:*",
+    "@kronos-ts/eventsourcing": "workspace:*"
+  },
+  "peerDependencies": {
+    "express": ">=4.0.0"
+  }
+}

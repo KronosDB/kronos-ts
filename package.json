@@ -1,0 +1,9 @@
+{
+  "name": "axon-framework",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "packages/extensions/*",
+    "integrationtests"
+  ]
+}

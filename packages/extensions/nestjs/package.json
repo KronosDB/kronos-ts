@@ -1,0 +1,15 @@
+{
+  "name": "@kronos-ts/extensions/nestjs",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@kronos-ts/common": "workspace:*",
+    "@kronos-ts/messaging": "workspace:*",
+    "@kronos-ts/eventsourcing": "workspace:*"
+  },
+  "peerDependencies": {
+    "@nestjs/common": ">=10.0.0"
+  }
+}

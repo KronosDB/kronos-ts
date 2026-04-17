@@ -1,0 +1,276 @@
+syntax = "proto3";
+package io.axoniq.axonserver.grpc.control;
+import "common.proto";
+option java_multiple_files = true;
+
+/* Service describing operations for connecting to the AxonServer platform.
+
+ Clients are expected to use this service on any of the Platform's Admin nodes to obtain connection information of the
+ node that it should set up the actual connection with. On that second node, the clients should open an instruction
+ stream (see OpenStream), so that AxonServer and the client application can exchange information and instructions.
+*/
+service PlatformService {
+
+    /* Obtains connection information for the Server that a Client should use for its connections. */
+    rpc GetPlatformServer (ClientIdentification) returns (PlatformInfo) {
+    }
+
+    /* Opens an instruction stream to the Platform, allowing AxonServer to provide management instructions to the application */
+    rpc OpenStream (stream PlatformInboundInstruction) returns (stream PlatformOutboundInstruction) {
+    }
+}
+
+/* An instruction from Application Node to the AxonServer platform */
+message PlatformInboundInstruction {
+    /* The actual instruction to send */
+    oneof request {
+
+        /* Information about the client being connected.
+           This information is used by AxonServer to monitor the topology of connected applications.
+         */
+        ClientIdentification register = 1;
+
+        /* Information about Processors defined in the application.
+           This information is used by Axon Server to monitor the progress of Event Processors across instances.
+         */
+        EventProcessorInfo event_processor_info = 2;
+
+        /* This heartbeat is used by AxonServer in order to check if the connection is still alive*/
+        Heartbeat heartbeat = 3;
+
+        /* Acknowledgement of previously sent instruction via outbound stream */
+        InstructionAck ack = 4;
+
+        /* The result of the execution of an instruction */
+        InstructionResult result = 6;
+
+        /* Subscribe to topology changes in the AxonServer cluster.
+           This allows the client to receive updates about changes in the cluster, such as handler additions or removals.
+         */
+        SubscribeTopologyChanges subscribe_topology_changes = 7;
+
+        /* Unsubscribe from topology changes in the AxonServer cluster. */
+        UnsubscribeTopologyChanges unsubscribe_topology_changes = 8;
+    }
+
+    /* Instruction identifier. If this identifier is set, this instruction will be acknowledged via outbound stream */
+    string instruction_id = 5;
+}
+
+/* Message to subscribe to topology changes within the control channel's context */
+message SubscribeTopologyChanges {
+}
+
+/* Message to unsubscribe from topology changes within the control channel's context */
+message UnsubscribeTopologyChanges {
+}
+
+/* An instruction or information from the AxonServer Platform to the Application Node */
+message PlatformOutboundInstruction {
+
+    /* The actual instruction or information */
+    oneof request {
+
+        /* Information provided by AxonServer which provides information about the AxonServer node the application is connected with */
+        NodeInfo node_notification = 1;
+
+        /* A request from AxonServer to the Application to migrate its connection to another node.
+           Clients SHOULD honor this request by closing their current connection, and using the GetPlatformServer RPC
+           to request a new destination.
+         */
+        RequestReconnect request_reconnect = 3;
+
+        /* Instruction from AxonServer to Pause a Streaming Event Processor. */
+        EventProcessorReference pause_event_processor = 4;
+
+        /* Instruction from AxonServer to Start a Streaming Event Processor. */
+        EventProcessorReference start_event_processor = 5;
+
+        /* Instruction from AxonServer to Release a specific segment in a Streaming Event Processor */
+        EventProcessorSegmentReference release_segment = 6;
+
+        /* A request from AxonServer for status information of a specific Streaming Event Processor */
+        EventProcessorReference request_event_processor_info = 7;
+
+        /* Instruction to split a Segment in a Streaming Event Processor */
+        EventProcessorSegmentReference split_event_processor_segment = 8;
+
+        /* Instruction to merge two Segments in a Streaming Event Processor */
+        EventProcessorSegmentReference merge_event_processor_segment = 9;
+
+        /* This heartbeat is used by AxonFramework in order to check if the connection is still alive*/
+        Heartbeat heartbeat = 10;
+
+        /* Acknowledgement of previously sent instruction via inbound stream */
+        InstructionAck ack = 11;
+
+        /* Notification of a change in the topology of the AxonServer cluster.
+           This is used to inform clients about changes in the cluster, such as handler additions or removals.
+         */
+        TopologyChange topology_change = 13;
+    }
+
+    /* Instruction identifier. If this identifier is set, this instruction will be acknowledged via inbound stream */
+    string instruction_id = 12;
+}
+
+/* Message send when AxonServer requests the client to re-establish its connection with the Platform */
+message RequestReconnect {
+}
+
+/* Message containing connection information of the node to Connect with */
+message PlatformInfo {
+
+    /* The connection details of the node the client should connect with */
+    NodeInfo primary = 1;
+
+    /* Flag indicating that the connection may be reused to connect. When true, the client _may_ reuse the connection
+       established for the GetPlatformServer request for subsequent requests.
+     */
+    bool same_connection = 2;
+}
+
+/* Message containing connection information for an AxonServer Node */
+message NodeInfo {
+
+    /* The host name to use when connecting to this node */
+    string host_name = 1;
+
+    /* The port number for gRPC connections */
+    int32 grpc_port = 2;
+
+    /* The port number for HTTP connections */
+    int32 http_port = 3;
+
+    /* The version identifier of the API */
+    int32 version = 4;
+
+    /* The unique name of the node to connect with, for purpose of debugging */
+    string node_name = 5;
+}
+
+/* Message containing details about the Client Application */
+message ClientIdentification {
+
+    /* A unique identifier for this client instance. Is used to distinguish different instances of the same component */
+    string client_id = 1;
+
+    /* The name of the component. Several instances of the same component should share this name */
+    string component_name = 2;
+
+    /* Any tags associated with the client, which may provide hints and preferences for setting up connections */
+    map<string, string> tags = 3;
+
+    /* Axon framework version used by the client application instance*/
+    string version = 4;
+}
+
+/* Message containing information about the status of an Event Processor */
+message EventProcessorInfo {
+
+    /* Message containing information about the status of a Segment of a Streaming Event Processor */
+    message SegmentStatus {
+        /* The ID of the Segment for which the status is reported */
+        int32 segment_id = 1;
+
+        /* Indicates whether the Segment has "Caught Up" with the Head of the Event Stream */
+        bool caught_up = 2;
+
+        /* Indicates whether the Segment is "Replaying" historic events after a Reset. */
+        bool replaying = 3;
+
+        /* The fraction this segment processes. A fraction of 2 means 1/2, 4 means 1/4, etc.*/
+        int32 one_part_of = 4;
+
+        /* The approximate position of the token in the stream. */
+        int64 token_position = 5;
+
+        /* Information about the error state of the Segment, if applicable. */
+        string error_state = 6;
+    }
+
+    /* The logical name of this processor. */
+    string processor_name = 1;
+
+    /* The mode in which this processor is reading Events, for example: 'Tracking' or 'Subscribing' */
+    string mode = 2;
+
+    /* The number of threads currently actively processing Events */
+    int32 active_threads = 3;
+
+    /* Flag indicating whether the processor is running */
+    bool running = 4;
+
+    /* Flag indicating whether the processor, when stopped, did so because of an irrecoverable Error */
+    bool error = 5;
+
+    /* Status details of each of the Segments for which Events are being processed. This is only provided by Streaming
+       Event Processors.
+     */
+    repeated SegmentStatus segment_status = 6;
+
+    /* The number of threads the processor has available to assign to Segments.
+       Will report 0 if all threads are assigned a Segment.
+     */
+    int32 available_threads = 7;
+
+    /* The Token Store Identifier if available. This is only provided by Streaming Event Processors.*/
+    string token_store_identifier = 8;
+
+    /* Flag indicating whether the processor is a Streaming Event Processor.
+       This dictates whether streaming operations, like split and merge, are supported by this processor.
+     */
+    bool is_streaming_processor = 9;
+
+    /* current load balancing strategy name for the event processor */
+    string load_balancing_strategy_name = 10;
+}
+
+/* Message providing reference to an Event Processor */
+message EventProcessorReference {
+
+    /* The name of the Event Processor */
+    string processor_name = 1;
+}
+
+/* Message providing reference to a Segment of an Event Processor */
+message EventProcessorSegmentReference {
+
+    /* The name of the Event Processor */
+    string processor_name = 1;
+
+    /* The identifier of the Segment */
+    int32 segment_identifier = 2;
+}
+
+message Heartbeat {
+}
+
+message TopologyChange {
+    UpdateType update_type  = 1;
+    string context = 2;
+    string client_id = 3; // The client ID of the component requesting the update
+    string client_stream_id = 4; // The client ID of the component requesting the update
+    string component_name = 5; // The name of the component requesting the update
+    oneof subscription {
+        CommandSubscription command = 6; // The subscription ID to add or remove
+        QuerySubscription query = 7; // The processor name to add or remove
+    }
+}
+
+message CommandSubscription {
+    string name = 1; // The subscription ID to add or remove
+    int32 load_factor = 2; // The load factor for the subscription
+}
+
+message QuerySubscription {
+    string name = 1; // The subscription ID to add or remove
+}
+
+enum UpdateType {
+    ADD_COMMAND_HANDLER = 0; // a new command handler has been added
+    REMOVE_COMMAND_HANDLER = 1; // a command handler has been removed
+    ADD_QUERY_HANDLER = 2; // a new query handler has been added
+    REMOVE_QUERY_HANDLER = 3; // a query handler has been removed
+    RESET_ALL = 4; // reset all information in the client, new information will be sent
+}
