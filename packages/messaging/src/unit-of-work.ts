@@ -2,6 +2,7 @@ import { emptyMetadata, type Metadata } from "@kronos-ts/common"
 import type { ProcessingContext, PhaseValue } from "./processing-context.js"
 import { Phase } from "./processing-context.js"
 import { createProcessingContext } from "./default-processing-context.js"
+import { processingStateStorage, createInitialProcessingState } from "./processing-state.js"
 
 type PhaseAction = (ctx: ProcessingContext) => Promise<void> | void
 type ErrorHandler = (ctx: ProcessingContext, error: unknown) => Promise<void> | void
@@ -81,7 +82,8 @@ export function createUnitOfWork(metadata?: Metadata): UnitOfWork {
       if (executed) throw new Error("UnitOfWork can only be executed once")
       executed = true
 
-      const ctx = createProcessingContext(metadata ?? emptyMetadata())
+      const resolvedMetadata = metadata ?? emptyMetadata()
+      const ctx = createProcessingContext(resolvedMetadata)
 
       // Apply pre-registered hooks
       for (const { phase, action: a } of prePhaseActions) {
@@ -100,18 +102,25 @@ export function createUnitOfWork(metadata?: Metadata): UnitOfWork {
         result = await action(c)
       })
 
-      // Drive the lifecycle
-      ctx.markStarted()
-      try {
-        await ctx.executePhases()
-        ctx.markCompleted()
-        ctx.runCompleteHandlers()
-        return result
-      } catch (error) {
-        ctx.markError()
-        await ctx.runErrorHandlers(error, ctx.failedPhase ?? undefined)
-        throw error
-      }
+      // D-01: enter processingStateStorage.run on UoW entry. The ALS state
+      // is populated with the SAME metadata as the ProcessingContext. Dual-write
+      // (D-02): ctx remains source of truth; ALS state exists in parallel but
+      // no framework code reads from it yet — Phase 2 flips readers file-by-file.
+      const alsState = createInitialProcessingState(resolvedMetadata)
+
+      return processingStateStorage.run(alsState, async () => {
+        ctx.markStarted()
+        try {
+          await ctx.executePhases()
+          ctx.markCompleted()
+          ctx.runCompleteHandlers()
+          return result
+        } catch (error) {
+          ctx.markError()
+          await ctx.runErrorHandlers(error, ctx.failedPhase ?? undefined)
+          throw error
+        }
+      })
     },
   }
 }

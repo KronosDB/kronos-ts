@@ -118,3 +118,27 @@ export function withOverride<T, R>(
 
   return processingStateStorage.run(forkedState, fn)
 }
+
+/**
+ * INTERNAL — used by UnitOfWork to construct the initial state passed to
+ * processingStateStorage.run(). The InternalProcessingState type is intentionally
+ * non-exported (D-13); this factory is the sanctioned construction point.
+ * Deep-path import only; NOT re-exported from the package barrel (D-05).
+ *
+ * Return type is intentionally INFERRED (no `: InternalProcessingState` annotation).
+ * Annotating the return type with a non-exported name produces TS4023 under
+ * `declaration: true` / `isolatedDeclarations`, breaking the package build.
+ * Inference preserves D-13 (the type remains non-exported) while allowing `.d.ts`
+ * emission.
+ */
+export function createInitialProcessingState(metadata: Metadata) {
+  return {
+    resources: new Map<symbol, unknown>(),
+    phaseActions: new Map<PhaseValue, PhaseAction[]>(),
+    errorHandlers: [] as ErrorHandler[],
+    completeHandlers: [] as CompleteHandler[],
+    currentPhase: null as PhaseValue | null,
+    status: "not_started" as Status,
+    metadata,
+  }
+}
