@@ -1,5 +1,13 @@
 import type { Metadata, ResourceKey, Configuration } from "@kronos-ts/common"
 import { type ProcessingContext, type PhaseValue } from "./processing-context.js"
+import {
+  getResource,
+  setResource,
+  computeIfAbsent as alsComputeIfAbsent,
+  removeResource,
+  hasResource,
+  updateResource,
+} from "./processing-state.js"
 
 type PhaseAction = (ctx: ProcessingContext) => Promise<void> | void
 type ErrorHandler = (ctx: ProcessingContext, error: unknown, phase?: PhaseValue) => Promise<void> | void
@@ -38,7 +46,10 @@ export interface ManagedProcessingContext extends ProcessingContext {
  * @param configuration Optional application Configuration for component resolution
  */
 export function createProcessingContext(metadata: Metadata, configuration?: Configuration): ManagedProcessingContext {
-  const resources = new Map<symbol, unknown>()
+  // Phase 2 Plan 01 (D-19/D-20): the local `resources` Map is gone. All six
+  // resource methods below delegate to the ALS-backed accessors in
+  // processing-state.ts so ctx and module-level reads/writes share a single
+  // source of truth (the resources Map inside processingStateStorage.getStore()).
   const phaseActions = new Map<PhaseValue, PhaseAction[]>()
   const errorHandlers: ErrorHandler[] = []
   const completeHandlers: CompleteHandler[] = []
@@ -72,38 +83,27 @@ export function createProcessingContext(metadata: Metadata, configuration?: Conf
     metadata,
 
     get<T>(key: ResourceKey<T>): T | undefined {
-      return resources.get(key.symbol) as T | undefined
+      return getResource(key)
     },
 
     set<T>(key: ResourceKey<T>, value: T): T | undefined {
-      const previous = resources.get(key.symbol) as T | undefined
-      resources.set(key.symbol, value)
-      return previous
+      return setResource(key, value)
     },
 
     computeIfAbsent<T>(key: ResourceKey<T>, supplier: () => T): T {
-      const existing = resources.get(key.symbol)
-      if (existing !== undefined) return existing as T
-      const value = supplier()
-      resources.set(key.symbol, value)
-      return value
+      return alsComputeIfAbsent(key, supplier)
     },
 
     remove<T>(key: ResourceKey<T>): T | undefined {
-      const previous = resources.get(key.symbol) as T | undefined
-      resources.delete(key.symbol)
-      return previous
+      return removeResource(key)
     },
 
     contains<T>(key: ResourceKey<T>): boolean {
-      return resources.has(key.symbol)
+      return hasResource(key)
     },
 
     update<T>(key: ResourceKey<T>, updater: (current: T | undefined) => T): T {
-      const current = resources.get(key.symbol) as T | undefined
-      const updated = updater(current)
-      resources.set(key.symbol, updated)
-      return updated
+      return updateResource(key, updater)
     },
 
     withResource<T>(key: ResourceKey<T>, value: T): ProcessingContext {
