@@ -118,8 +118,8 @@ describe("UnitOfWork regression — existing semantics intact", () => {
     })
 })
 
-describe("UnitOfWork + transactionalUnitOfWorkFactory — nested ALS contexts", () => {
-    it("both transactionStorage and processingStateStorage are active inside the handler", async () => {
+describe("UnitOfWork + transactionalUnitOfWorkFactory — single ALS boundary", () => {
+    it("getActiveTransaction and processingStateStorage both resolve inside the handler", async () => {
       const tx = { id: "tx-1" }
       const txManager = {
         begin: async () => tx,

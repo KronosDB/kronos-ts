@@ -1,51 +1,50 @@
 import { describe, expect, it } from "bun:test"
-import { getActiveTransaction, runInTransaction, type TransactionManager } from "../transaction.js"
+import {
+  getActiveTransaction,
+  transactionalUnitOfWorkFactory,
+  type TransactionManager,
+} from "../transaction.js"
+import { defaultUnitOfWorkFactory } from "../unit-of-work.js"
 
-describe("TransactionManager + AsyncLocalStorage", () => {
+describe("TransactionManager + transactionalUnitOfWorkFactory", () => {
   it("getActiveTransaction returns undefined when no transaction is active", () => {
     expect(getActiveTransaction()).toBeUndefined()
   })
 
-  it("runInTransaction makes the transaction available via getActiveTransaction", async () => {
+  it("transactionalUnitOfWorkFactory makes the transaction available via getActiveTransaction inside the UoW, and invisible outside", async () => {
     const txManager: TransactionManager<{ id: string }> = {
       begin: async () => ({ id: "tx-1" }),
       commit: async () => {},
       rollback: async () => {},
     }
+    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
 
-    let capturedTx: unknown = undefined
-
-    await runInTransaction(txManager, async (tx) => {
-      capturedTx = getActiveTransaction()
-      expect(tx.id).toBe("tx-1")
+    let inside: unknown = undefined
+    await factory().executeWithResult(async () => {
+      inside = getActiveTransaction()
     })
 
-    expect(capturedTx).toEqual({ id: "tx-1" })
-  })
-
-  it("transaction is not visible after runInTransaction completes", async () => {
-    const txManager: TransactionManager<string> = {
-      begin: async () => "tx-2",
-      commit: async () => {},
-      rollback: async () => {},
-    }
-
-    await runInTransaction(txManager, async () => {
-      expect(getActiveTransaction()).toBe("tx-2")
-    })
-
+    expect(inside).toEqual({ id: "tx-1" })
     expect(getActiveTransaction()).toBeUndefined()
   })
 
   it("commits on success", async () => {
     const log: string[] = []
     const txManager: TransactionManager<string> = {
-      begin: async () => { log.push("begin"); return "tx" },
-      commit: async () => { log.push("commit") },
-      rollback: async () => { log.push("rollback") },
+      begin: async () => {
+        log.push("begin")
+        return "tx"
+      },
+      commit: async () => {
+        log.push("commit")
+      },
+      rollback: async () => {
+        log.push("rollback")
+      },
     }
+    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
 
-    await runInTransaction(txManager, async () => {
+    await factory().executeWithResult(async () => {
       log.push("work")
     })
 
@@ -55,28 +54,36 @@ describe("TransactionManager + AsyncLocalStorage", () => {
   it("rolls back on error and rethrows", async () => {
     const log: string[] = []
     const txManager: TransactionManager<string> = {
-      begin: async () => { log.push("begin"); return "tx" },
-      commit: async () => { log.push("commit") },
-      rollback: async () => { log.push("rollback") },
+      begin: async () => {
+        log.push("begin")
+        return "tx"
+      },
+      commit: async () => {
+        log.push("commit")
+      },
+      rollback: async () => {
+        log.push("rollback")
+      },
     }
+    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
 
-    expect(
-      runInTransaction(txManager, async () => {
+    await expect(
+      factory().executeWithResult(async () => {
         log.push("work")
         throw new Error("boom")
       }),
     ).rejects.toThrow("boom")
 
-    await new Promise((r) => setTimeout(r, 10))
     expect(log).toEqual(["begin", "work", "rollback"])
   })
 
-  it("transaction propagates across async boundaries", async () => {
+  it("transaction propagates across async boundaries inside the UoW", async () => {
     const txManager: TransactionManager<string> = {
       begin: async () => "tx-deep",
       commit: async () => {},
       rollback: async () => {},
     }
+    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
 
     async function deepFunction(): Promise<string | undefined> {
       // Simulate an async call several layers deep
@@ -86,7 +93,7 @@ describe("TransactionManager + AsyncLocalStorage", () => {
 
     let result: string | undefined
 
-    await runInTransaction(txManager, async () => {
+    await factory().executeWithResult(async () => {
       result = await deepFunction()
     })
 
