@@ -2,44 +2,75 @@ import { describe, expect, it } from "bun:test"
 import { emptyMetadata, resourceKey } from "@kronos-ts/common"
 import { createProcessingContext } from "../default-processing-context.js"
 import { Phase } from "../processing-context.js"
+import {
+  processingStateStorage,
+  NoActiveUnitOfWork,
+  createInitialProcessingState,
+  getResource,
+  setResource,
+  hasResource,
+  removeResource,
+  computeIfAbsent as moduleComputeIfAbsent,
+} from "../processing-state.js"
+
+/**
+ * Phase 2 Plan 01: ctx resource methods are now a shim over the ALS-backed
+ * processing-state accessors. Tests that exercise ctx.set/get/computeIfAbsent/
+ * remove/contains/update must run inside processingStateStorage.run() — the
+ * shim throws NoActiveUnitOfWork otherwise. Wrap in this helper.
+ */
+function inUoW<R>(fn: () => R | Promise<R>): Promise<R> {
+  return processingStateStorage.run(
+    createInitialProcessingState(emptyMetadata()),
+    async () => fn(),
+  )
+}
 
 describe("ProcessingContext", () => {
-  it("stores and retrieves typed resources", () => {
-    const ctx = createProcessingContext(emptyMetadata())
-    const key = resourceKey<string>("test-key")
+  it("stores and retrieves typed resources", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key = resourceKey<string>("test-key")
 
-    ctx.set(key, "hello")
-    expect(ctx.get(key)).toBe("hello")
+      ctx.set(key, "hello")
+      expect(ctx.get(key)).toBe("hello")
+    })
   })
 
-  it("returns undefined for unset resources", () => {
-    const ctx = createProcessingContext(emptyMetadata())
-    const key = resourceKey<string>("missing")
+  it("returns undefined for unset resources", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key = resourceKey<string>("missing")
 
-    expect(ctx.get(key)).toBeUndefined()
+      expect(ctx.get(key)).toBeUndefined()
+    })
   })
 
-  it("two keys with the same label are distinct", () => {
-    const ctx = createProcessingContext(emptyMetadata())
-    const key1 = resourceKey<string>("same-label")
-    const key2 = resourceKey<string>("same-label")
+  it("two keys with the same label are distinct", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key1 = resourceKey<string>("same-label")
+      const key2 = resourceKey<string>("same-label")
 
-    ctx.set(key1, "first")
-    ctx.set(key2, "second")
+      ctx.set(key1, "first")
+      ctx.set(key2, "second")
 
-    expect(ctx.get(key1)).toBe("first")
-    expect(ctx.get(key2)).toBe("second")
+      expect(ctx.get(key1)).toBe("first")
+      expect(ctx.get(key2)).toBe("second")
+    })
   })
 
-  it("computeIfAbsent creates value on first access", () => {
-    const ctx = createProcessingContext(emptyMetadata())
-    const key = resourceKey<string[]>("list")
+  it("computeIfAbsent creates value on first access", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key = resourceKey<string[]>("list")
 
-    const list = ctx.computeIfAbsent(key, () => [])
-    list.push("a")
+      const list = ctx.computeIfAbsent(key, () => [])
+      list.push("a")
 
-    const same = ctx.computeIfAbsent(key, () => [])
-    expect(same).toEqual(["a"])
+      const same = ctx.computeIfAbsent(key, () => [])
+      expect(same).toEqual(["a"])
+    })
   })
 
   it("executes phase actions in order", async () => {
@@ -178,5 +209,107 @@ describe("ProcessingContext", () => {
     await ctx.executePhases()
 
     expect(log).toEqual(["invoke", "commit-from-handler"])
+  })
+})
+
+describe("ALS shim (Phase 2 Plan 01)", () => {
+  it("ctx.set is visible to module-level getResource (same Map)", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key = resourceKey<string>("shim-write-via-ctx")
+      ctx.set(key, "v")
+      expect(getResource(key)).toBe("v")
+    })
+  })
+
+  it("module-level setResource is visible to ctx.get (same Map)", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key = resourceKey<string>("shim-write-via-module")
+      setResource(key, "v")
+      expect(ctx.get(key)).toBe("v")
+    })
+  })
+
+  it("ctx.remove is visible to module-level hasResource", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key = resourceKey<string>("shim-remove")
+      ctx.set(key, "v")
+      expect(hasResource(key)).toBe(true)
+      ctx.remove(key)
+      expect(hasResource(key)).toBe(false)
+    })
+  })
+
+  it("ctx.contains mirrors module-level hasResource for a populated key", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const populated = resourceKey<string>("shim-contains-populated")
+      const absent = resourceKey<string>("shim-contains-absent")
+      ctx.set(populated, "v")
+      expect(ctx.contains(populated)).toBe(hasResource(populated))
+      expect(ctx.contains(populated)).toBe(true)
+      expect(ctx.contains(absent)).toBe(hasResource(absent))
+      expect(ctx.contains(absent)).toBe(false)
+    })
+  })
+
+  it("ctx.update is visible to module-level getResource", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key = resourceKey<string>("shim-update")
+      const result = ctx.update(key, (current) => `${current ?? "nil"}-updated`)
+      expect(result).toBe("nil-updated")
+      expect(getResource(key)).toBe("nil-updated")
+    })
+  })
+
+  it("module-level removeResource is visible to ctx.contains", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key = resourceKey<string>("shim-remove-via-module")
+      ctx.set(key, "v")
+      removeResource(key)
+      expect(ctx.contains(key)).toBe(false)
+    })
+  })
+
+  it("ctx.computeIfAbsent supplier runs once per UoW even across surfaces", async () => {
+    await inUoW(() => {
+      const ctx = createProcessingContext(emptyMetadata())
+      const key = resourceKey<string>("shim-cia")
+      let calls = 0
+      const supplier = () => {
+        calls++
+        return "x"
+      }
+      // First via ctx
+      expect(ctx.computeIfAbsent(key, supplier)).toBe("x")
+      // Then via module — must NOT call supplier again
+      expect(moduleComputeIfAbsent(key, supplier)).toBe("x")
+      expect(calls).toBe(1)
+    })
+  })
+
+  it("ctx.get throws NoActiveUnitOfWork when called outside processingStateStorage.run", () => {
+    const ctx = createProcessingContext(emptyMetadata())
+    const key = resourceKey<string>("shim-fail-fast")
+    expect(() => ctx.get(key)).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("ctx.set throws NoActiveUnitOfWork when called outside processingStateStorage.run", () => {
+    const ctx = createProcessingContext(emptyMetadata())
+    const key = resourceKey<string>("shim-fail-fast-set")
+    expect(() => ctx.set(key, "v")).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("ctx captured inside the UoW also fails fast after the run exits", async () => {
+    let captured: ReturnType<typeof createProcessingContext> | undefined
+    await inUoW(() => {
+      captured = createProcessingContext(emptyMetadata())
+    })
+    const key = resourceKey<string>("shim-fail-fast-captured")
+    expect(() => captured!.get(key)).toThrow(NoActiveUnitOfWork)
   })
 })
