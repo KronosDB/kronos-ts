@@ -59,6 +59,29 @@ export function computeIfAbsent<T>(key: ResourceKey<T>, supplier: () => T): T {
   return value
 }
 
+export function removeResource<T>(key: ResourceKey<T>): T | undefined {
+  const state = requireState()
+  const previous = state.resources.get(key.symbol) as T | undefined
+  state.resources.delete(key.symbol)
+  return previous
+}
+
+export function hasResource<T>(key: ResourceKey<T>): boolean {
+  const state = requireState()
+  return state.resources.has(key.symbol)
+}
+
+export function updateResource<T>(
+  key: ResourceKey<T>,
+  updater: (current: T | undefined) => T,
+): T {
+  const state = requireState()
+  const current = state.resources.get(key.symbol) as T | undefined
+  const updated = updater(current)
+  state.resources.set(key.symbol, updated)
+  return updated
+}
+
 // ── Lifecycle registration ──────────────────────────────────────────────
 
 export function registerPhaseAction(phase: PhaseValue, action: PhaseAction): void {
