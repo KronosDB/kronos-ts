@@ -7,6 +7,9 @@ import {
   getResource,
   setResource,
   computeIfAbsent,
+  removeResource,
+  hasResource,
+  updateResource,
   registerPhaseAction,
   registerErrorHandler,
   registerCompleteHandler,
@@ -53,6 +56,21 @@ describe("NoActiveUnitOfWork", () => {
 
   it("registerCompleteHandler throws NoActiveUnitOfWork when no UoW is active", () => {
     expect(() => registerCompleteHandler(() => {})).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("removeResource throws NoActiveUnitOfWork when no UoW is active", () => {
+    const key = resourceKey<string>("k")
+    expect(() => removeResource(key)).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("hasResource throws NoActiveUnitOfWork when no UoW is active", () => {
+    const key = resourceKey<string>("k")
+    expect(() => hasResource(key)).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("updateResource throws NoActiveUnitOfWork when no UoW is active", () => {
+    const key = resourceKey<string>("k")
+    expect(() => updateResource(key, (current) => current ?? "x")).toThrow(NoActiveUnitOfWork)
   })
 
   it("withOverride throws NoActiveUnitOfWork when no UoW is active", () => {
@@ -261,5 +279,125 @@ describe("withOverride", () => {
       return withOverride(k, 1, async () => 42)
     })
     expect(result).toBe(42)
+  })
+})
+
+describe("removeResource", () => {
+  it("returns undefined when key absent and leaves Map size unchanged", () => {
+    const state = buildState() as unknown as {
+      resources: Map<symbol, unknown>
+    } & Parameters<typeof processingStateStorage.run>[0]
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string>("absent")
+      const sizeBefore = state.resources.size
+      expect(removeResource(key)).toBeUndefined()
+      expect(state.resources.size).toBe(sizeBefore)
+    })
+  })
+
+  it("returns previous value and removes the entry when key present", () => {
+    const state = buildState()
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string>("k")
+      setResource(key, "v")
+      expect(removeResource(key)).toBe("v")
+      expect(getResource(key)).toBeUndefined()
+    })
+  })
+
+  it("subsequent removeResource for the same key returns undefined", () => {
+    const state = buildState()
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string>("k")
+      setResource(key, "v")
+      expect(removeResource(key)).toBe("v")
+      expect(removeResource(key)).toBeUndefined()
+    })
+  })
+})
+
+describe("hasResource", () => {
+  it("returns false when key absent", () => {
+    const state = buildState()
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string>("absent")
+      expect(hasResource(key)).toBe(false)
+    })
+  })
+
+  it("returns true when key present", () => {
+    const state = buildState()
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string>("k")
+      setResource(key, "v")
+      expect(hasResource(key)).toBe(true)
+    })
+  })
+
+  it("returns true even when stored value is undefined (key membership semantics)", () => {
+    const state = buildState() as unknown as {
+      resources: Map<symbol, unknown>
+    } & Parameters<typeof processingStateStorage.run>[0]
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string>("k")
+      // Bypass setResource (which can't write undefined cleanly via its return-prev contract)
+      // and set the symbol directly to undefined to assert Map-membership semantics.
+      state.resources.set(key.symbol, undefined)
+      expect(hasResource(key)).toBe(true)
+    })
+  })
+
+  it("returns false after removeResource removes the key", () => {
+    const state = buildState()
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string>("k")
+      setResource(key, "v")
+      expect(hasResource(key)).toBe(true)
+      removeResource(key)
+      expect(hasResource(key)).toBe(false)
+    })
+  })
+})
+
+describe("updateResource", () => {
+  it("calls updater with undefined when key absent and stores returned value", () => {
+    const state = buildState()
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string>("k")
+      let received: string | undefined = "sentinel"
+      const result = updateResource(key, (current) => {
+        received = current
+        return "new"
+      })
+      expect(received).toBeUndefined()
+      expect(result).toBe("new")
+      expect(getResource(key)).toBe("new")
+    })
+  })
+
+  it("calls updater with current value when key present and stores returned value", () => {
+    const state = buildState()
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string>("k")
+      setResource(key, "before")
+      let received: string | undefined
+      const result = updateResource(key, (current) => {
+        received = current
+        return `${current}-after`
+      })
+      expect(received).toBe("before")
+      expect(result).toBe("before-after")
+      expect(getResource(key)).toBe("before-after")
+    })
+  })
+
+  it("supports list-style accumulation across multiple calls", () => {
+    const state = buildState()
+    processingStateStorage.run(state, () => {
+      const key = resourceKey<string[]>("list")
+      updateResource(key, (current) => [...(current ?? []), "a"])
+      updateResource(key, (current) => [...(current ?? []), "b"])
+      expect(getResource(key)).toEqual(["a", "b"])
+    })
   })
 })
