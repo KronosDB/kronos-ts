@@ -13,6 +13,21 @@ import type { CommandBus } from "../command-bus.js"
 import type { CommandMessage } from "../message.js"
 import type { ProcessingContext } from "../processing-context.js"
 import type { EventCriteria } from "../event-criteria.js"
+import {
+  processingStateStorage,
+  createInitialProcessingState,
+} from "../processing-state.js"
+
+/**
+ * Test helper — wraps `fn` in an active processingStateStorage.run so module-level
+ * resource accessors (getResource/computeIfAbsent) work outside a real UnitOfWork.
+ * Production callers always run inside UnitOfWork.executeWithResult, which sets up
+ * the storage; tests that hand-build a ProcessingContext need this scaffolding.
+ * Mirrors the inUoW helper introduced in Plan 02-01 (replay-token, subscription-query).
+ */
+function inUoW<T>(fn: () => Promise<T>): Promise<T> {
+  return processingStateStorage.run(createInitialProcessingState(emptyMetadata()), fn)
+}
 
 // ---------------------------------------------------------------------------
 // Test descriptors
@@ -201,308 +216,324 @@ describe("commandHandlingModule", () => {
 
   describe("handler receives state from state manager", () => {
     it("loads state via load()", async () => {
-      // given
-      const bus = createRecordingCommandBus()
-      const stateManager = {
-        async load(_entity: any, id: any) {
-          return {
-            state: { courseId: id, name: "Math 101", capacity: 30 },
-            sourcingInfo: {
-              criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
-              markerPosition: 5n,
-            },
-          }
-        },
-      }
-      const config = createStubConfiguration({ commandBus: bus, stateManager })
+      await inUoW(async () => {
+        // given
+        const bus = createRecordingCommandBus()
+        const stateManager = {
+          async load(_entity: any, id: any) {
+            return {
+              state: { courseId: id, name: "Math 101", capacity: 30 },
+              sourcingInfo: {
+                criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
+                markerPosition: 5n,
+              },
+            }
+          },
+        }
+        const config = createStubConfiguration({ commandBus: bus, stateManager })
 
-      let loadedState: any = null
-      const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load }) => {
-        loadedState = await load({ name: "Course" }, cmd.courseId)
+        let loadedState: any = null
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load }) => {
+          loadedState = await load({ name: "Course" }, cmd.courseId)
+        })
+
+        const mod = commandHandlingModule("course-commands", [changeCapacity])
+        mod.initialize!(config)
+
+        // when
+        const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
+        const ctx = createTestProcessingContext()
+        const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
+        await handler(message, ctx)
+
+        // then
+        expect(loadedState).toEqual({ courseId: "cs-101", name: "Math 101", capacity: 30 })
       })
-
-      const mod = commandHandlingModule("course-commands", [changeCapacity])
-      mod.initialize!(config)
-
-      // when
-      const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-      const ctx = createTestProcessingContext()
-      const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-      await handler(message, ctx)
-
-      // then
-      expect(loadedState).toEqual({ courseId: "cs-101", name: "Math 101", capacity: 30 })
     })
   })
 
   describe("event buffering", () => {
     it("handler can append events which are buffered", async () => {
-      // given
-      const bus = createRecordingCommandBus()
-      const config = createStubConfiguration({ commandBus: bus })
+      await inUoW(async () => {
+        // given
+        const bus = createRecordingCommandBus()
+        const config = createStubConfiguration({ commandBus: bus })
 
-      const createCourse = commandHandler(CreateCourse, async (cmd, { append }) => {
-        append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
+        const createCourse = commandHandler(CreateCourse, async (cmd, { append }) => {
+          append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
+        })
+
+        const mod = commandHandlingModule("course-commands", [createCourse])
+        mod.initialize!(config)
+
+        // when
+        const handler = bus.subscriptions.get("university.CreateCourse")!
+        const ctx = createTestProcessingContext()
+        const message = makeCommandMessage(CreateCourse, { courseId: "cs-101", name: "Intro to CS" })
+        await handler(message, ctx)
+
+        // then -- events are buffered in the processing context, not yet flushed
+        // We can inspect the buffered events key from the context
+        // The key is internal, but we verify it doesn't throw and events are there
+        // by checking that prepare-commit would have something to flush
       })
-
-      const mod = commandHandlingModule("course-commands", [createCourse])
-      mod.initialize!(config)
-
-      // when
-      const handler = bus.subscriptions.get("university.CreateCourse")!
-      const ctx = createTestProcessingContext()
-      const message = makeCommandMessage(CreateCourse, { courseId: "cs-101", name: "Intro to CS" })
-      await handler(message, ctx)
-
-      // then -- events are buffered in the processing context, not yet flushed
-      // We can inspect the buffered events key from the context
-      // The key is internal, but we verify it doesn't throw and events are there
-      // by checking that prepare-commit would have something to flush
     })
 
     it("buffered events are flushed at PREPARE_COMMIT", async () => {
-      // given
-      const appendedEvents: any[] = []
-      const bus = createRecordingCommandBus()
-      const eventStore = {
-        async append(events: ReadonlyArray<any>, _condition?: any) {
-          appendedEvents.push(...events)
-        },
-      }
-      const config = createStubConfiguration({ commandBus: bus, eventStore })
+      await inUoW(async () => {
+        // given
+        const appendedEvents: any[] = []
+        const bus = createRecordingCommandBus()
+        const eventStore = {
+          async append(events: ReadonlyArray<any>, _condition?: any) {
+            appendedEvents.push(...events)
+          },
+        }
+        const config = createStubConfiguration({ commandBus: bus, eventStore })
 
-      const createCourse = commandHandler(CreateCourse, async (cmd, { append }) => {
-        append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
+        const createCourse = commandHandler(CreateCourse, async (cmd, { append }) => {
+          append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
+        })
+
+        const mod = commandHandlingModule("course-commands", [createCourse])
+        mod.initialize!(config)
+
+        // when
+        const handler = bus.subscriptions.get("university.CreateCourse")!
+        const ctx = createTestProcessingContext()
+        const message = makeCommandMessage(CreateCourse, { courseId: "cs-101", name: "Intro to CS" })
+        await handler(message, ctx)
+
+        // Simulate PREPARE_COMMIT phase
+        await (ctx as any).__runPrepareCommit()
+
+        // then
+        expect(appendedEvents).toHaveLength(1)
+        expect(appendedEvents[0].payload).toEqual({ courseId: "cs-101", name: "Intro to CS" })
+        expect(appendedEvents[0].name).toEqual(qn("university", "CourseCreated"))
       })
-
-      const mod = commandHandlingModule("course-commands", [createCourse])
-      mod.initialize!(config)
-
-      // when
-      const handler = bus.subscriptions.get("university.CreateCourse")!
-      const ctx = createTestProcessingContext()
-      const message = makeCommandMessage(CreateCourse, { courseId: "cs-101", name: "Intro to CS" })
-      await handler(message, ctx)
-
-      // Simulate PREPARE_COMMIT phase
-      await (ctx as any).__runPrepareCommit()
-
-      // then
-      expect(appendedEvents).toHaveLength(1)
-      expect(appendedEvents[0].payload).toEqual({ courseId: "cs-101", name: "Intro to CS" })
-      expect(appendedEvents[0].name).toEqual(qn("university", "CourseCreated"))
     })
   })
 
   describe("append condition", () => {
     it("builds append condition from sourcing info", async () => {
-      // given
-      let capturedCondition: any = null
-      const bus = createRecordingCommandBus()
-      const stateManager = {
-        async load(_entity: any, id: any) {
-          return {
-            state: { courseId: id },
-            sourcingInfo: {
-              criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
-              markerPosition: 7n,
-            },
-          }
-        },
-      }
-      const eventStore = {
-        async append(events: ReadonlyArray<any>, condition?: any) {
-          capturedCondition = condition
-        },
-      }
-      const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
+      await inUoW(async () => {
+        // given
+        let capturedCondition: any = null
+        const bus = createRecordingCommandBus()
+        const stateManager = {
+          async load(_entity: any, id: any) {
+            return {
+              state: { courseId: id },
+              sourcingInfo: {
+                criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
+                markerPosition: 7n,
+              },
+            }
+          },
+        }
+        const eventStore = {
+          async append(events: ReadonlyArray<any>, condition?: any) {
+            capturedCondition = condition
+          },
+        }
+        const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
 
-      const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
-        await load({ name: "Course" }, cmd.courseId)
-        append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
+          await load({ name: "Course" }, cmd.courseId)
+          append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+        })
+
+        const mod = commandHandlingModule("course-commands", [changeCapacity])
+        mod.initialize!(config)
+
+        // when
+        const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
+        const ctx = createTestProcessingContext()
+        const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
+        await handler(message, ctx)
+        await (ctx as any).__runPrepareCommit()
+
+        // then
+        expect(capturedCondition).toBeDefined()
+        expect(capturedCondition.criteria.kind).toBe("tags")
+        expect(capturedCondition.criteria.tags).toEqual([{ key: "courseId", value: "cs-101" }])
+        expect(capturedCondition.marker.position).toBe(7n)
       })
-
-      const mod = commandHandlingModule("course-commands", [changeCapacity])
-      mod.initialize!(config)
-
-      // when
-      const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-      const ctx = createTestProcessingContext()
-      const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-      await handler(message, ctx)
-      await (ctx as any).__runPrepareCommit()
-
-      // then
-      expect(capturedCondition).toBeDefined()
-      expect(capturedCondition.criteria.kind).toBe("tags")
-      expect(capturedCondition.criteria.tags).toEqual([{ key: "courseId", value: "cs-101" }])
-      expect(capturedCondition.marker.position).toBe(7n)
     })
 
     it("custom appendCondition override works", async () => {
-      // given
-      let capturedCondition: any = null
-      const bus = createRecordingCommandBus()
-      const stateManager = {
-        async load(_entity: any, id: any) {
-          return {
-            state: { courseId: id },
-            sourcingInfo: {
-              criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
-              markerPosition: 5n,
-            },
-          }
-        },
-      }
-      const eventStore = {
-        async append(events: ReadonlyArray<any>, condition?: any) {
-          capturedCondition = condition
-        },
-      }
-      const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
+      await inUoW(async () => {
+        // given
+        let capturedCondition: any = null
+        const bus = createRecordingCommandBus()
+        const stateManager = {
+          async load(_entity: any, id: any) {
+            return {
+              state: { courseId: id },
+              sourcingInfo: {
+                criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
+                markerPosition: 5n,
+              },
+            }
+          },
+        }
+        const eventStore = {
+          async append(events: ReadonlyArray<any>, condition?: any) {
+            capturedCondition = condition
+          },
+        }
+        const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
 
-      const customCriteria: EventCriteria = { kind: "any-tag" }
-      const changeCapacity = commandHandler(ChangeCourseCapacity, {
-        handler: async (cmd, { load, append }) => {
-          await load({ name: "Course" }, cmd.courseId)
-          append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
-        },
-        appendCondition: (_cmd, _sourcedCriteria) => customCriteria,
+        const customCriteria: EventCriteria = { kind: "any-tag" }
+        const changeCapacity = commandHandler(ChangeCourseCapacity, {
+          handler: async (cmd, { load, append }) => {
+            await load({ name: "Course" }, cmd.courseId)
+            append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+          },
+          appendCondition: (_cmd, _sourcedCriteria) => customCriteria,
+        })
+
+        const mod = commandHandlingModule("course-commands", [changeCapacity])
+        mod.initialize!(config)
+
+        // when
+        const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
+        const ctx = createTestProcessingContext()
+        const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
+        await handler(message, ctx)
+        await (ctx as any).__runPrepareCommit()
+
+        // then
+        expect(capturedCondition).toBeDefined()
+        expect(capturedCondition.criteria.kind).toBe("any-tag")
       })
-
-      const mod = commandHandlingModule("course-commands", [changeCapacity])
-      mod.initialize!(config)
-
-      // when
-      const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-      const ctx = createTestProcessingContext()
-      const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-      await handler(message, ctx)
-      await (ctx as any).__runPrepareCommit()
-
-      // then
-      expect(capturedCondition).toBeDefined()
-      expect(capturedCondition.criteria.kind).toBe("any-tag")
     })
   })
 
   describe("entity cache", () => {
     it("prevents duplicate load() in same invocation", async () => {
-      // given
-      let loadCount = 0
-      const bus = createRecordingCommandBus()
-      const stateManager = {
-        async load(_entity: any, id: any) {
-          loadCount++
-          return {
-            state: { courseId: id, name: "Math" },
-            sourcingInfo: {
-              criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
-              markerPosition: 3n,
-            },
-          }
-        },
-      }
-      const config = createStubConfiguration({ commandBus: bus, stateManager })
+      await inUoW(async () => {
+        // given
+        let loadCount = 0
+        const bus = createRecordingCommandBus()
+        const stateManager = {
+          async load(_entity: any, id: any) {
+            loadCount++
+            return {
+              state: { courseId: id, name: "Math" },
+              sourcingInfo: {
+                criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
+                markerPosition: 3n,
+              },
+            }
+          },
+        }
+        const config = createStubConfiguration({ commandBus: bus, stateManager })
 
-      const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load }) => {
-        // Load same entity twice
-        await load({ name: "Course" }, cmd.courseId)
-        await load({ name: "Course" }, cmd.courseId)
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load }) => {
+          // Load same entity twice
+          await load({ name: "Course" }, cmd.courseId)
+          await load({ name: "Course" }, cmd.courseId)
+        })
+
+        const mod = commandHandlingModule("course-commands", [changeCapacity])
+        mod.initialize!(config)
+
+        // when
+        const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
+        const ctx = createTestProcessingContext()
+        const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
+        await handler(message, ctx)
+
+        // then -- state manager load should only be called once
+        expect(loadCount).toBe(1)
       })
-
-      const mod = commandHandlingModule("course-commands", [changeCapacity])
-      mod.initialize!(config)
-
-      // when
-      const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-      const ctx = createTestProcessingContext()
-      const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-      await handler(message, ctx)
-
-      // then -- state manager load should only be called once
-      expect(loadCount).toBe(1)
     })
 
     it("loads different entities independently", async () => {
-      // given
-      const loadedIds: string[] = []
-      const bus = createRecordingCommandBus()
-      const stateManager = {
-        async load(_entity: any, id: any) {
-          loadedIds.push(String(id))
-          return {
-            state: { courseId: id },
-            sourcingInfo: {
-              criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
-              markerPosition: 3n,
-            },
-          }
-        },
-      }
-      const config = createStubConfiguration({ commandBus: bus, stateManager })
+      await inUoW(async () => {
+        // given
+        const loadedIds: string[] = []
+        const bus = createRecordingCommandBus()
+        const stateManager = {
+          async load(_entity: any, id: any) {
+            loadedIds.push(String(id))
+            return {
+              state: { courseId: id },
+              sourcingInfo: {
+                criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
+                markerPosition: 3n,
+              },
+            }
+          },
+        }
+        const config = createStubConfiguration({ commandBus: bus, stateManager })
 
-      const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load }) => {
-        await load({ name: "Course" }, "cs-101")
-        await load({ name: "Course" }, "cs-202")
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load }) => {
+          await load({ name: "Course" }, "cs-101")
+          await load({ name: "Course" }, "cs-202")
+        })
+
+        const mod = commandHandlingModule("course-commands", [changeCapacity])
+        mod.initialize!(config)
+
+        // when
+        const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
+        const ctx = createTestProcessingContext()
+        const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
+        await handler(message, ctx)
+
+        // then
+        expect(loadedIds).toEqual(["cs-101", "cs-202"])
       })
-
-      const mod = commandHandlingModule("course-commands", [changeCapacity])
-      mod.initialize!(config)
-
-      // when
-      const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-      const ctx = createTestProcessingContext()
-      const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-      await handler(message, ctx)
-
-      // then
-      expect(loadedIds).toEqual(["cs-101", "cs-202"])
     })
 
     it("combines sourcing info from multiple loads into either criteria", async () => {
-      // given
-      let capturedCondition: any = null
-      const bus = createRecordingCommandBus()
-      const stateManager = {
-        async load(_entity: any, id: any) {
-          return {
-            state: { courseId: id },
-            sourcingInfo: {
-              criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
-              markerPosition: id === "cs-101" ? 5n : 8n,
-            },
-          }
-        },
-      }
-      const eventStore = {
-        async append(_events: ReadonlyArray<any>, condition?: any) {
-          capturedCondition = condition
-        },
-      }
-      const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
+      await inUoW(async () => {
+        // given
+        let capturedCondition: any = null
+        const bus = createRecordingCommandBus()
+        const stateManager = {
+          async load(_entity: any, id: any) {
+            return {
+              state: { courseId: id },
+              sourcingInfo: {
+                criteria: { kind: "tags" as const, tags: [{ key: "courseId", value: String(id) }] },
+                markerPosition: id === "cs-101" ? 5n : 8n,
+              },
+            }
+          },
+        }
+        const eventStore = {
+          async append(_events: ReadonlyArray<any>, condition?: any) {
+            capturedCondition = condition
+          },
+        }
+        const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
 
-      const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
-        await load({ name: "Course" }, "cs-101")
-        await load({ name: "Course" }, "cs-202")
-        append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
+          await load({ name: "Course" }, "cs-101")
+          await load({ name: "Course" }, "cs-202")
+          append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+        })
+
+        const mod = commandHandlingModule("course-commands", [changeCapacity])
+        mod.initialize!(config)
+
+        // when
+        const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
+        const ctx = createTestProcessingContext()
+        const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
+        await handler(message, ctx)
+        await (ctx as any).__runPrepareCommit()
+
+        // then -- should combine into "either" criteria with max marker
+        expect(capturedCondition).toBeDefined()
+        expect(capturedCondition.criteria.kind).toBe("either")
+        expect(capturedCondition.criteria.criteria).toHaveLength(2)
+        expect(capturedCondition.marker.position).toBe(8n) // max of 5n and 8n
       })
-
-      const mod = commandHandlingModule("course-commands", [changeCapacity])
-      mod.initialize!(config)
-
-      // when
-      const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-      const ctx = createTestProcessingContext()
-      const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-      await handler(message, ctx)
-      await (ctx as any).__runPrepareCommit()
-
-      // then -- should combine into "either" criteria with max marker
-      expect(capturedCondition).toBeDefined()
-      expect(capturedCondition.criteria.kind).toBe("either")
-      expect(capturedCondition.criteria.criteria).toHaveLength(2)
-      expect(capturedCondition.marker.position).toBe(8n) // max of 5n and 8n
     })
   })
 

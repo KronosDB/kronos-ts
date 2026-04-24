@@ -12,6 +12,7 @@ import type { CommandHandlerDefinition } from "./command-handler.js"
 import type { CommandBus } from "./command-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import { CORRELATION_DATA_KEY } from "./correlation-data.js"
+import { getResource, computeIfAbsent } from "./processing-state.js"
 import type { CommandMessage, EventMessage } from "./message.js"
 import type { EventDescriptor } from "./descriptor.js"
 import type { EventCriteria } from "./event-criteria.js"
@@ -56,13 +57,13 @@ function createCommandInvocation(
     const trackingLoad: LoadFunction = async <S>(entity: { name: string }, id: unknown): Promise<S> => {
       if (!rawStateManager) throw new Error("No state manager configured")
 
-      const cache = ctx.computeIfAbsent(ENTITY_CACHE_KEY, () => new Map())
+      const cache = computeIfAbsent(ENTITY_CACHE_KEY, () => new Map())
       const cacheKey = `${entity.name}:${String(id)}`
 
       if (!cache.has(cacheKey)) {
         cache.set(cacheKey, rawStateManager.load(entity, id))
         // Store entity module reference for evolver lookups during append
-        const modules = ctx.computeIfAbsent(ENTITY_MODULES_KEY, () => new Map())
+        const modules = computeIfAbsent(ENTITY_MODULES_KEY, () => new Map())
         modules.set(cacheKey, { entity, id })
       }
 
@@ -70,7 +71,7 @@ function createCommandInvocation(
       const loadResult = result as { state: any; sourcingInfo: { criteria: EventCriteria; markerPosition: bigint } }
 
       // Track sourcing info for append condition
-      const infos = ctx.computeIfAbsent(SOURCING_INFOS_KEY, () => [])
+      const infos = computeIfAbsent(SOURCING_INFOS_KEY, () => [])
       infos.push(loadResult.sourcingInfo)
 
       return loadResult.state as S
@@ -85,7 +86,7 @@ function createCommandInvocation(
       eventPayload: unknown,
       eventMetadata?: Metadata,
     ) => {
-      const events = ctx.computeIfAbsent(BUFFERED_EVENTS_KEY, () => [])
+      const events = computeIfAbsent(BUFFERED_EVENTS_KEY, () => [])
       const tags = eventDescriptor.tags ? eventDescriptor.tags(eventPayload) : []
       const eventMessage: EventMessage = {
         identifier: generateIdentifier(),
@@ -99,8 +100,8 @@ function createCommandInvocation(
       events.push(eventMessage)
 
       // Update cached entity state by applying matching evolvers
-      const cache = ctx.get(ENTITY_CACHE_KEY)
-      const modules = ctx.get(ENTITY_MODULES_KEY)
+      const cache = getResource(ENTITY_CACHE_KEY)
+      const modules = getResource(ENTITY_MODULES_KEY)
       if (cache && modules) {
         const eventType = qualifiedNameToString(eventDescriptor.name)
         for (const [cacheKey, { entity, id }] of modules) {
@@ -125,7 +126,7 @@ function createCommandInvocation(
 
     // Register event flush in PREPARE_COMMIT phase
     ctx.onPrepareCommit(async () => {
-      const buffered = ctx.get(BUFFERED_EVENTS_KEY)
+      const buffered = getResource(BUFFERED_EVENTS_KEY)
       if (!buffered || buffered.length === 0) return
       if (!config.hasComponent(ComponentKeys.EVENT_STORE)) return
 
@@ -149,7 +150,7 @@ function createCommandInvocation(
             tags: [...event.tags, ...tagResolver.resolve(event)],
           }))
         : enrichedEvents
-      const sourcingInfos = ctx.get(SOURCING_INFOS_KEY) ?? []
+      const sourcingInfos = getResource(SOURCING_INFOS_KEY) ?? []
 
       let appendCondition: any = undefined
       if (sourcingInfos.length > 0) {
