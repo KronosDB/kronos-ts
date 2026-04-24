@@ -2,6 +2,7 @@ import { type Metadata, type ResourceKey, resourceKey, mergeMetadata } from "@kr
 import type { Message } from "./message.js"
 import type { ProcessingContext } from "./processing-context.js"
 import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
+import { processingStateStorage, setResource } from "./processing-state.js"
 
 /**
  * Resource key for storing correlation data in a ProcessingContext.
@@ -123,8 +124,10 @@ export function correlationDataHandlerInterceptor(
       }
     }
 
-    // Store in ProcessingContext (aligned with Java's context.withResource)
-    context.set(CORRELATION_DATA_KEY, correlationData)
+    // Store in ALS-backed processing state (aligned with Java's context.withResource).
+    // The `context` param remains in the HandlerInterceptor signature — its removal
+    // is CTX-01 / Phase 3.
+    setResource(CORRELATION_DATA_KEY, correlationData)
 
     return next()
   }
@@ -145,19 +148,17 @@ export function correlationDataHandlerInterceptor(
  * through message metadata inheritance.
  */
 export function correlationDataDispatchInterceptor<M extends Message>(): DispatchInterceptor<M> {
-  return (message: M, context?: ProcessingContext): M => {
-    if (!context) {
-      // Primary dispatch path — no active ProcessingContext yet.
-      // Correlation data flows through message metadata inheritance.
-      return message
-    }
-
-    // Nested dispatch: read correlation data from the active context
-    const correlationData = context.get(CORRELATION_DATA_KEY)
-    if (!correlationData || Object.keys(correlationData).length === 0) {
-      return message
-    }
-
+  return (message: M, _context?: ProcessingContext): M => {
+    // D-24: single code path. Read directly from the ALS state — `getResource`
+    // throws on no-UoW, but the dispatch interceptor MUST tolerate the no-UoW
+    // primary-dispatch path and return the message unchanged.
+    // The `_context` param remains in the signature; its removal is CTX-01 / Phase 3.
+    const state = processingStateStorage.getStore()
+    if (!state) return message
+    const correlationData = state.resources.get(CORRELATION_DATA_KEY.symbol) as
+      | Record<string, string>
+      | undefined
+    if (!correlationData || Object.keys(correlationData).length === 0) return message
     return {
       ...message,
       metadata: mergeMetadata(message.metadata, correlationData),

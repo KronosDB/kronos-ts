@@ -134,7 +134,7 @@ function createCommandInvocation(
 
       // Enrich events with correlation data from ProcessingContext
       // (set by the CorrelationDataHandlerInterceptor during handler execution)
-      const correlationData = ctx.get(CORRELATION_DATA_KEY)
+      const correlationData = getResource(CORRELATION_DATA_KEY)
       const enrichedEvents = correlationData
         ? buffered.map(event => ({
             ...event,
