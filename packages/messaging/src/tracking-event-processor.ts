@@ -14,6 +14,7 @@ import {
   advanceToken,
 } from "./tracking-token.js"
 import { REPLAY_STATE_KEY } from "./replay-token.js"
+import { setResource } from "./processing-state.js"
 import { defaultUnitOfWorkFactory } from "./unit-of-work.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 
@@ -220,7 +221,7 @@ export function createTrackingEventProcessor(
 
     await uow.executeWithResult(async (ctx) => {
       for (const sequencedEvent of batch) {
-        ctx.set(REPLAY_STATE_KEY, { replaying: isReplaying(batchEndToken) })
+        setResource(REPLAY_STATE_KEY, { replaying: isReplaying(batchEndToken) })
 
         await deliverEvent(sequencedEvent, ctx)
 
