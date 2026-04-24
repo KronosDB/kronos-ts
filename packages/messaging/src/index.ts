@@ -231,7 +231,6 @@ export {
   type TransactionManager,
   noTransactionManager,
   getActiveTransaction,
-  runInTransaction,
   transactionalUnitOfWorkFactory,
   TRANSACTION_KEY,
 } from "./transaction.js"

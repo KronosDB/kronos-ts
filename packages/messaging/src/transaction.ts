@@ -1,5 +1,5 @@
-import { AsyncLocalStorage } from "node:async_hooks"
 import { resourceKey, type ResourceKey } from "@kronos-ts/common"
+import { processingStateStorage, setResource } from "./processing-state.js"
 import { Phase, type ProcessingContext } from "./processing-context.js"
 import type { UnitOfWork, UnitOfWorkFactory } from "./unit-of-work.js"
 
@@ -26,15 +26,12 @@ export function noTransactionManager(): TransactionManager<void> {
   }
 }
 
-// AsyncLocalStorage for transparent transaction propagation
-const transactionStorage = new AsyncLocalStorage<unknown>()
-
-/** Resource key for storing the active transaction in a ProcessingContext. */
+/** Resource key for storing the active transaction in the active UnitOfWork's ALS-backed resources. */
 export const TRANSACTION_KEY: ResourceKey<unknown> = resourceKey("transaction")
 
 /**
- * Get the active transaction from AsyncLocalStorage.
- * Returns undefined if no transaction is active.
+ * Get the active transaction from the active UnitOfWork's ALS-backed resources.
+ * Returns undefined if no UnitOfWork is active or no transaction has been stored.
  *
  * ORM integrations use this to participate in the framework's transaction:
  * ```
@@ -42,29 +39,15 @@ export const TRANSACTION_KEY: ResourceKey<unknown> = resourceKey("transaction")
  *   transaction: () => getActiveTransaction(),
  * })
  * ```
+ *
+ * Permissive undefined-return preserved (D-12 / D-23): callers outside a UoW
+ * get `undefined`, NOT a NoActiveUnitOfWork throw — this is an ORM escape hatch,
+ * not a framework-internal accessor.
  */
 export function getActiveTransaction<T = unknown>(): T | undefined {
-  return transactionStorage.getStore() as T | undefined
-}
-
-/**
- * Run a function within a transaction context.
- * The transaction is available via getActiveTransaction() and
- * on the ProcessingContext for explicit access.
- */
-export async function runInTransaction<T, R>(
-  txManager: TransactionManager<T>,
-  fn: (tx: T) => Promise<R>,
-): Promise<R> {
-  const tx = await txManager.begin()
-  try {
-    const result = await transactionStorage.run(tx, () => fn(tx))
-    await txManager.commit(tx)
-    return result
-  } catch (err) {
-    await txManager.rollback(tx)
-    throw err
-  }
+  const state = processingStateStorage.getStore()
+  if (!state) return undefined
+  return state.resources.get(TRANSACTION_KEY.symbol) as T | undefined
 }
 
 /**
@@ -75,8 +58,9 @@ export async function runInTransaction<T, R>(
  * - Committed in the COMMIT phase
  * - Rolled back on error
  *
- * All phases (PRE_INVOCATION through AFTER_COMMIT) execute within the
- * transaction's AsyncLocalStorage context, so ORMs pick it up transparently.
+ * The transaction is stored as a resource on the active UoW's ALS state,
+ * so all phases (PRE_INVOCATION through AFTER_COMMIT) and any code calling
+ * `getActiveTransaction()` inside the UoW see it.
  *
  * ```
  * const txUowFactory = transactionalUnitOfWorkFactory(
@@ -92,7 +76,6 @@ export function transactionalUnitOfWorkFactory<T>(
   return (metadata) => {
     const inner = delegate(metadata)
 
-    // Proxy that wraps executeWithResult in a transaction context
     const wrapper: UnitOfWork = {
       on: (phase, action) => inner.on(phase, action),
       onError: (handler) => inner.onError(handler),
@@ -109,14 +92,13 @@ export function transactionalUnitOfWorkFactory<T>(
           await txManager.rollback(tx)
         })
 
-        // Execute within AsyncLocalStorage context so getActiveTransaction() works
-        return transactionStorage.run(tx, () =>
-          inner.executeWithResult(async (ctx) => {
-            // Store transaction in ProcessingContext for explicit access
-            ctx.set(TRANSACTION_KEY as ResourceKey<T>, tx)
-            return action(ctx)
-          }),
-        )
+        // Inner UoW's executeWithResult enters processingStateStorage.run (Phase 1 wiring),
+        // so setResource inside the action callback writes to the active ALS state.
+        // D-22: no outer ALS wrap around the inner UoW — a single ALS boundary.
+        return inner.executeWithResult(async (ctx) => {
+          setResource(TRANSACTION_KEY, tx)
+          return action(ctx)
+        })
       },
     }
 
