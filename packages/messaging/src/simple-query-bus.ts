@@ -27,17 +27,17 @@ export function createSimpleQueryBus(
   const subscriptions = new Map<string, UpdateHandler>()
 
   const bus: QueryBus = {
-    async query(message: QueryMessage, context?: ProcessingContext): Promise<unknown> {
+    async query(message: QueryMessage): Promise<unknown> {
       const key = qualifiedNameToString(message.name)
       const handler = handlers.get(key)
       if (!handler) {
         throw new Error(`No handler registered for query "${key}"`)
       }
 
-      // Plan 03-01 (D-32): mirrors simple-command-bus.dispatch. Default
-      // codepath routes through runInUoW for ALS-aware nesting; explicit
-      // factory branch preserved for transactional / extension wiring until
-      // Plan 04 (D-34).
+      // Plan 03-01 (D-32) / Plan 03-03 (CTX-01): mirrors
+      // simple-command-bus.dispatch. Default codepath routes through runInUoW
+      // for ALS-aware nesting; explicit factory branch preserved for
+      // transactional / extension wiring until Plan 04 (D-34).
       if (unitOfWorkFactory !== undefined) {
         const uow = unitOfWorkFactory(message.metadata)
         return uow.executeWithResult(async (ctx) => handler(message, ctx))
@@ -104,9 +104,8 @@ export function createSimpleQueryBus(
       queryName: string,
       filter: (queryPayload: unknown) => boolean,
       update: unknown,
-      context?: ProcessingContext,
     ): Promise<void> {
-      runAfterCommitOrImmediately(context, () => {
+      runAfterCommitOrImmediately(undefined, () => {
         for (const [id, handler] of subscriptions) {
           if (!handler.active) {
             subscriptions.delete(id)
@@ -131,9 +130,8 @@ export function createSimpleQueryBus(
     async completeSubscription(
       queryName: string,
       filter?: (queryPayload: unknown) => boolean,
-      context?: ProcessingContext,
     ): Promise<void> {
-      runAfterCommitOrImmediately(context, () => {
+      runAfterCommitOrImmediately(undefined, () => {
         for (const [id, handler] of subscriptions) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue
@@ -149,9 +147,8 @@ export function createSimpleQueryBus(
       queryName: string,
       error: Error,
       filter?: (queryPayload: unknown) => boolean,
-      context?: ProcessingContext,
     ): Promise<void> {
-      runAfterCommitOrImmediately(context, () => {
+      runAfterCommitOrImmediately(undefined, () => {
         for (const [id, handler] of subscriptions) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue

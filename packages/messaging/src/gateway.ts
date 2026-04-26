@@ -93,7 +93,7 @@ export function createCommandGateway(bus: CommandBus): CommandGateway {
           payload,
           metadata: resolvedMetadata,
           timestamp: Date.now(),
-        }, context) as Promise<any>,
+        }) as Promise<any>,
       ) as any
     },
   }
@@ -116,7 +116,7 @@ export function createQueryGateway(bus: QueryBus): QueryGateway {
           payload,
           metadata: resolvedMetadata,
           timestamp: Date.now(),
-        }, context) as Promise<any>,
+        }) as Promise<any>,
       ) as any
     },
 

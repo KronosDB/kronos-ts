@@ -109,7 +109,7 @@ export function simpleCorrelationDataProvider(...metadataKeys: string[]): Correl
 export function correlationDataHandlerInterceptor(
   providers: ReadonlyArray<CorrelationDataProvider>,
 ): HandlerInterceptor {
-  return (message, context, next) => {
+  return (message, next) => {
     const correlationData: Record<string, string> = {}
 
     for (const provider of providers) {
@@ -125,8 +125,8 @@ export function correlationDataHandlerInterceptor(
     }
 
     // Store in ALS-backed processing state (aligned with Java's context.withResource).
-    // The `context` param remains in the HandlerInterceptor signature — its removal
-    // is CTX-01 / Phase 3.
+    // CTX-01 / Plan 03-03: HandlerInterceptor no longer threads ProcessingContext;
+    // resource writes go directly through the module-level ALS accessor.
     setResource(CORRELATION_DATA_KEY, correlationData)
 
     return next()

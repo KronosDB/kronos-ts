@@ -22,18 +22,18 @@ export function createSimpleCommandBus(
   const handlers = new Map<string, (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>>()
 
   return {
-    async dispatch(message: CommandMessage, context?: ProcessingContext): Promise<unknown> {
+    async dispatch(message: CommandMessage): Promise<unknown> {
       const key = qualifiedNameToString(message.name)
       const handler = handlers.get(key)
       if (!handler) {
         throw new Error(`No handler registered for command "${key}"`)
       }
 
-      // Plan 03-01 (D-32): default codepath routes through runInUoW so that
-      // nested dispatch (handler-internal bus calls) detects the active UoW
-      // via ALS and reuses it. Primary dispatch (no active UoW) creates a new
-      // one. The `context` parameter remains in the signature until Plan 03;
-      // body no longer reads it.
+      // Plan 03-01 (D-32) / Plan 03-03 (CTX-01): default codepath routes
+      // through runInUoW so that nested dispatch (handler-internal bus calls)
+      // detects the active UoW via ALS and reuses it. Primary dispatch (no
+      // active UoW) creates a new one. The `context` parameter is gone — UoW
+      // detection is purely ALS-based.
       if (unitOfWorkFactory !== undefined) {
         // Caller provided a custom factory (e.g., transactionalUnitOfWorkFactory) —
         // preserve the explicit-factory codepath so transactional wiring keeps

@@ -57,11 +57,11 @@ export function createRetryingCommandBus(
   policy: RetryPolicy,
 ): CommandBus {
   return {
-    async dispatch(message: CommandMessage, context?: ProcessingContext): Promise<unknown> {
+    async dispatch(message: CommandMessage): Promise<unknown> {
       let attempt = 0
       while (true) {
         try {
-          return await delegate.dispatch(message, context)
+          return await delegate.dispatch(message)
         } catch (error) {
           const delay = policy.shouldRetry(error, attempt)
           if (delay === undefined) throw error

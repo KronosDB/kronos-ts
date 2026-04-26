@@ -847,7 +847,7 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
       const cmdMonitor = monitorRegistry.commandMonitor()
       const cmdBus = config.getComponent<any>(ComponentKeys.COMMAND_BUS)
       if (cmdBus.registerHandlerInterceptor) {
-        cmdBus.registerHandlerInterceptor((message: any, metadata: any, next: () => Promise<any>) => {
+        cmdBus.registerHandlerInterceptor((message: any, next: () => Promise<any>) => {
           const callback = cmdMonitor.onMessageIngested(message)
           return next().then(
             (result: any) => { callback.reportSuccess(); return result },
@@ -860,7 +860,7 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
       const qryMonitor = monitorRegistry.queryMonitor()
       const qryBus = config.getComponent<any>(ComponentKeys.QUERY_BUS)
       if (qryBus.registerHandlerInterceptor) {
-        qryBus.registerHandlerInterceptor((message: any, metadata: any, next: () => Promise<any>) => {
+        qryBus.registerHandlerInterceptor((message: any, next: () => Promise<any>) => {
           const callback = qryMonitor.onMessageIngested(message)
           return next().then(
             (result: any) => { callback.reportSuccess(); return result },

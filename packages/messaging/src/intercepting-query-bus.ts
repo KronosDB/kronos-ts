@@ -26,13 +26,13 @@ export function createInterceptingQueryBus(
   const handlerInterceptors: Array<HandlerInterceptor> = []
 
   return {
-    async query(message: QueryMessage, context?: ProcessingContext): Promise<unknown> {
+    async query(message: QueryMessage): Promise<unknown> {
       let interceptedMessage = message
       for (const interceptor of dispatchInterceptors) {
-        interceptedMessage = await interceptor(interceptedMessage, context)
+        interceptedMessage = await interceptor(interceptedMessage)
       }
 
-      return delegate.query(interceptedMessage, context)
+      return delegate.query(interceptedMessage)
     },
 
     subscribe(
@@ -49,7 +49,7 @@ export function createInterceptingQueryBus(
         for (let i = handlerInterceptors.length - 1; i >= 0; i--) {
           const interceptor = handlerInterceptors[i]!
           const next = chain
-          chain = () => interceptor(message, ctx, next)
+          chain = () => interceptor(message, next)
         }
 
         return chain()
@@ -70,26 +70,23 @@ export function createInterceptingQueryBus(
       queryName: string,
       filter: (queryPayload: unknown) => boolean,
       update: unknown,
-      context?: ProcessingContext,
     ): Promise<void> {
-      return delegate.emitUpdate(queryName, filter, update, context)
+      return delegate.emitUpdate(queryName, filter, update)
     },
 
     completeSubscription(
       queryName: string,
       filter?: (queryPayload: unknown) => boolean,
-      context?: ProcessingContext,
     ): Promise<void> {
-      return delegate.completeSubscription(queryName, filter, context)
+      return delegate.completeSubscription(queryName, filter)
     },
 
     completeSubscriptionExceptionally(
       queryName: string,
       error: Error,
       filter?: (queryPayload: unknown) => boolean,
-      context?: ProcessingContext,
     ): Promise<void> {
-      return delegate.completeSubscriptionExceptionally(queryName, error, filter, context)
+      return delegate.completeSubscriptionExceptionally(queryName, error, filter)
     },
 
     registerDispatchInterceptor(interceptor) {

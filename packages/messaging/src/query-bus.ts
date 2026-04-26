@@ -10,11 +10,12 @@ import type { SubscriptionQueryResult } from "./subscription-query.js"
 export interface QueryBus {
   /**
    * Dispatch a query message to its handler(s).
-   * Creates a UnitOfWork internally and drives the full lifecycle.
    *
-   * Aligned with AF5's {@code QueryBus.query()}.
+   * The bus auto-nests via ALS (CTX-02): when called outside a UnitOfWork,
+   * `runInUoW` creates one; when called inside an active UoW (handler-internal
+   * re-dispatch), the active UoW is reused.
    */
-  query(message: QueryMessage, context?: ProcessingContext): Promise<unknown>
+  query(message: QueryMessage): Promise<unknown>
 
   /**
    * Subscribe a handler for the given query name.
@@ -40,13 +41,13 @@ export interface QueryBus {
 
   /**
    * Emit an update to all active subscription queries matching the filter.
-   * When called within a ProcessingContext, the update is deferred to AFTER_COMMIT.
+   * When called within an active UnitOfWork (detected via ALS), the update is
+   * deferred to AFTER_COMMIT.
    */
   emitUpdate(
     queryName: string,
     filter: (queryPayload: unknown) => boolean,
     update: unknown,
-    context?: ProcessingContext,
   ): Promise<void>
 
   /**
@@ -55,7 +56,6 @@ export interface QueryBus {
   completeSubscription(
     queryName: string,
     filter?: (queryPayload: unknown) => boolean,
-    context?: ProcessingContext,
   ): Promise<void>
 
   /**
@@ -65,6 +65,5 @@ export interface QueryBus {
     queryName: string,
     error: Error,
     filter?: (queryPayload: unknown) => boolean,
-    context?: ProcessingContext,
   ): Promise<void>
 }

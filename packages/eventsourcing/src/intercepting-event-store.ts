@@ -1,4 +1,4 @@
-import type { EventMessage, DispatchInterceptor, ProcessingContext, StreamingCondition, MessageStream, SequencedEvent } from "@kronos-ts/messaging"
+import type { EventMessage, DispatchInterceptor, StreamingCondition, MessageStream, SequencedEvent } from "@kronos-ts/messaging"
 import type { EventStore } from "./event-store.js"
 import type { AppendTransaction } from "./event-storage-engine.js"
 import type { AppendCondition } from "./append-condition.js"
@@ -19,13 +19,12 @@ export function createInterceptingEventStore(
 ): EventStore {
   async function interceptEvents(
     events: ReadonlyArray<EventMessage>,
-    context?: ProcessingContext,
   ): Promise<EventMessage[]> {
     const intercepted: EventMessage[] = []
     for (const event of events) {
       let msg = event
       for (const interceptor of dispatchInterceptors) {
-        msg = await interceptor(msg, context) as EventMessage
+        msg = await interceptor(msg) as EventMessage
       }
       intercepted.push(msg)
     }

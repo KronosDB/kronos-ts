@@ -25,11 +25,11 @@ export function createInterceptingCommandBus(
   const handlerInterceptors: Array<HandlerInterceptor> = []
 
   return {
-    async dispatch(message: CommandMessage, context?: ProcessingContext): Promise<unknown> {
+    async dispatch(message: CommandMessage): Promise<unknown> {
       // Run dispatch interceptors (can transform or reject)
       let interceptedMessage = message
       for (const interceptor of dispatchInterceptors) {
-        interceptedMessage = await interceptor(interceptedMessage, context)
+        interceptedMessage = await interceptor(interceptedMessage)
       }
 
       // If we have handler interceptors, wrap the delegate in a handler chain.
@@ -48,7 +48,7 @@ export function createInterceptingCommandBus(
         // interceptors should have been registered there.
       }
 
-      return delegate.dispatch(interceptedMessage, context)
+      return delegate.dispatch(interceptedMessage)
     },
 
     subscribe(
@@ -65,7 +65,7 @@ export function createInterceptingCommandBus(
         for (let i = handlerInterceptors.length - 1; i >= 0; i--) {
           const interceptor = handlerInterceptors[i]!
           const next = chain
-          chain = () => interceptor(message, ctx, next)
+          chain = () => interceptor(message, next)
         }
 
         return chain()

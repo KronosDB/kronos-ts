@@ -111,7 +111,7 @@ describe("correlationDataHandlerInterceptor", () => {
       const ctx = createProcessingContext(emptyMetadata())
 
       // when
-      await handlerInterceptor(msg, ctx, async () => undefined)
+      await handlerInterceptor(msg, async () => undefined)
 
       // then — correlation data stored in ALS-backed state, visible via ctx.get shim
       const data = getActiveCorrelationData(ctx)
@@ -134,7 +134,7 @@ describe("correlationDataHandlerInterceptor", () => {
       let handlerCalled = false
 
       // when
-      await handlerInterceptor(msg, ctx, async () => {
+      await handlerInterceptor(msg, async () => {
         handlerCalled = true
         return undefined
       })
@@ -160,7 +160,7 @@ describe("correlationDataHandlerInterceptor", () => {
       const ctx = createProcessingContext(emptyMetadata())
 
       // when
-      await handlerInterceptor(msg, ctx, async () => undefined)
+      await handlerInterceptor(msg, async () => undefined)
 
       // then
       const data = getActiveCorrelationData(ctx)

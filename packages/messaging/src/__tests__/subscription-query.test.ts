@@ -229,7 +229,7 @@ describe("SimpleQueryBus subscription queries", () => {
 
       // Emit during "invocation" — should be deferred
       ctx.on(Phase.INVOCATION, () => {
-        bus.emitUpdate("test.GetCourse", () => true, { deferred: true }, ctx)
+        bus.emitUpdate("test.GetCourse", () => true, { deferred: true })
         log.push("emitted")
       })
 

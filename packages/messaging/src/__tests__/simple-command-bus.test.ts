@@ -312,7 +312,7 @@ describe("InterceptingCommandBus", () => {
         return "result"
       })
 
-      bus.registerHandlerInterceptor(async (_msg, _ctx, next) => {
+      bus.registerHandlerInterceptor(async (_msg, next) => {
         order.push("before")
         const result = await next()
         order.push("after")
@@ -355,14 +355,14 @@ describe("InterceptingCommandBus", () => {
         return "done"
       })
 
-      bus.registerHandlerInterceptor(async (_msg, _ctx, next) => {
+      bus.registerHandlerInterceptor(async (_msg, next) => {
         order.push("first-before")
         const r = await next()
         order.push("first-after")
         return r
       })
 
-      bus.registerHandlerInterceptor(async (_msg, _ctx, next) => {
+      bus.registerHandlerInterceptor(async (_msg, next) => {
         order.push("second-before")
         const r = await next()
         order.push("second-after")
@@ -388,7 +388,7 @@ describe("InterceptingCommandBus", () => {
 
       bus.subscribe("test.Cmd", async () => undefined)
 
-      const unsub = bus.registerHandlerInterceptor(async (_msg, _ctx, next) => {
+      const unsub = bus.registerHandlerInterceptor(async (_msg, next) => {
         calls.push("intercepted")
         return next()
       })
@@ -431,7 +431,7 @@ describe("InterceptingCommandBus", () => {
         return msg
       })
 
-      bus.registerHandlerInterceptor(async (_msg, _ctx, next) => {
+      bus.registerHandlerInterceptor(async (_msg, next) => {
         order.push("handler-interceptor")
         return next()
       })
@@ -453,7 +453,7 @@ describe("InterceptingCommandBus", () => {
         payload: { transformed: true },
       }))
 
-      bus.registerHandlerInterceptor(async (msg, _ctx, next) => {
+      bus.registerHandlerInterceptor(async (msg, next) => {
         payloadSeenByHandlerInterceptor = msg.payload
         return next()
       })

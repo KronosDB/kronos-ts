@@ -1,6 +1,5 @@
 import type { Metadata } from "@kronos-ts/common"
 import type { Message } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 
 /**
  * Intercepts a message before it reaches any handler.
@@ -13,6 +12,10 @@ import type { ProcessingContext } from "./processing-context.js"
  * To transform, return a new message.
  * To pass through, return the message unchanged.
  *
+ * UoW-scoped state (correlation data, tracing context, etc.) is read directly
+ * from ALS via module-level accessors (`getResource` / `setResource`) — no
+ * `ProcessingContext` parameter is threaded.
+ *
  * **Known limitation:** Unlike Java's dispatch interceptor which receives a
  * `proceed()` function and can choose not to call it (returning an alternative
  * result), this TypeScript model uses a simpler transform-or-throw approach.
@@ -24,19 +27,17 @@ import type { ProcessingContext } from "./processing-context.js"
  * and handle it at the call site.
  */
 export interface DispatchInterceptor<M extends Message = Message> {
-  (message: M, context?: ProcessingContext): M | Promise<M>
+  (message: M): M | Promise<M>
 }
 
 /**
  * Intercepts a handler invocation. Wraps the actual handler call,
  * enabling before/after logic (transactions, tracing, metrics, etc.)
  *
- * Receives the full ProcessingContext, allowing interceptors to store
- * and retrieve resources (correlation data, tracing context, etc.)
- * that flow through the message processing lifecycle.
- *
  * Aligned with AF5's `MessageHandlerInterceptor` which receives
- * `(message, context, chain)`.
+ * `(message, chain)`. UoW-scoped state is read/written via module-level ALS
+ * accessors (`getResource` / `setResource`) — no `ProcessingContext`
+ * parameter is threaded.
  *
  * The `next` function calls the next interceptor in the chain, or the
  * actual handler if this is the last interceptor.
@@ -44,5 +45,5 @@ export interface DispatchInterceptor<M extends Message = Message> {
  * To skip handling entirely, don't call `next()` and return a result directly.
  */
 export interface HandlerInterceptor<R = unknown> {
-  (message: Message, context: ProcessingContext, next: () => Promise<R>): Promise<R>
+  (message: Message, next: () => Promise<R>): Promise<R>
 }

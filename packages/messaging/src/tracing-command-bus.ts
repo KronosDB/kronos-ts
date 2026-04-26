@@ -21,11 +21,11 @@ export function createTracingCommandBus(
   spanFactory: SpanFactory,
 ): CommandBus {
   return {
-    async dispatch(message: CommandMessage, context?: ProcessingContext): Promise<unknown> {
+    async dispatch(message: CommandMessage): Promise<unknown> {
       const span = spanFactory.createDispatchSpan(`dispatch(${String(message.name)})`, message).start()
       try {
         const propagated = spanFactory.propagateContext(message)
-        const result = await delegate.dispatch(propagated, context)
+        const result = await delegate.dispatch(propagated)
         span.end()
         return result
       } catch (err) {
