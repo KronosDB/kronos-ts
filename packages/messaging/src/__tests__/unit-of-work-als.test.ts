@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { emptyMetadata, resourceKey } from "@kronos-ts/common"
-import { createUnitOfWork } from "../unit-of-work.js"
+import { createUnitOfWork, runInUoW, runInNewUoW } from "../unit-of-work.js"
 import { Phase } from "../processing-context.js"
+import type { ProcessingContext } from "../processing-context.js"
 import {
   processingStateStorage,
   getResource,
@@ -115,6 +116,105 @@ describe("UnitOfWork regression — existing semantics intact", () => {
       await expect(uow.executeWithResult(async () => 2)).rejects.toThrow(
         "UnitOfWork can only be executed once",
       )
+    })
+})
+
+describe("runInUoW / runInNewUoW — ALS-aware UoW runners (D-32, D-33, CTX-02)", () => {
+    it("runInNewUoW creates a fresh UoW and runs action inside processingStateStorage.run", async () => {
+      expect(processingStateStorage.getStore()).toBeUndefined()
+      let observedStore: unknown
+      let observedCtx: ProcessingContext | undefined
+      await runInNewUoW(emptyMetadata(), async (ctx) => {
+        observedStore = processingStateStorage.getStore()
+        observedCtx = ctx
+      })
+      expect(observedStore).toBeDefined()
+      expect(observedCtx).toBeDefined()
+      expect(processingStateStorage.getStore()).toBeUndefined()
+    })
+
+    it("runInUoW creates a new UoW when none is active", async () => {
+      expect(processingStateStorage.getStore()).toBeUndefined()
+      let observedStore: unknown
+      await runInUoW(emptyMetadata(), async () => {
+        observedStore = processingStateStorage.getStore()
+      })
+      expect(observedStore).toBeDefined()
+    })
+
+    it("runInUoW reuses the active UoW when one is already on the stack", async () => {
+      let outerCtx: ProcessingContext | undefined
+      let innerCtx: ProcessingContext | undefined
+      let outerStore: unknown
+      let innerStore: unknown
+      await runInUoW(emptyMetadata(), async (ctxOuter) => {
+        outerCtx = ctxOuter
+        outerStore = processingStateStorage.getStore()
+        await runInUoW(emptyMetadata(), async (ctxInner) => {
+          innerCtx = ctxInner
+          innerStore = processingStateStorage.getStore()
+        })
+      })
+      expect(outerCtx).toBeDefined()
+      expect(innerCtx).toBeDefined()
+      // Reuse — same ProcessingContext + same ALS state
+      expect(innerCtx).toBe(outerCtx)
+      expect(innerStore).toBe(outerStore)
+    })
+
+    it("runInNewUoW always creates a new UoW even if one is active", async () => {
+      let outerCtx: ProcessingContext | undefined
+      let innerCtx: ProcessingContext | undefined
+      let outerStore: unknown
+      let innerStore: unknown
+      await runInUoW(emptyMetadata(), async (ctxOuter) => {
+        outerCtx = ctxOuter
+        outerStore = processingStateStorage.getStore()
+        await runInNewUoW(emptyMetadata(), async (ctxInner) => {
+          innerCtx = ctxInner
+          innerStore = processingStateStorage.getStore()
+        })
+      })
+      expect(outerCtx).toBeDefined()
+      expect(innerCtx).toBeDefined()
+      // New UoW — different ProcessingContext + different ALS state
+      expect(innerCtx).not.toBe(outerCtx)
+      expect(innerStore).not.toBe(outerStore)
+    })
+
+    it("runInUoW returns the action's result", async () => {
+      const r = await runInUoW(emptyMetadata(), async () => 7)
+      expect(r).toBe(7)
+    })
+
+    it("runInNewUoW returns the action's result", async () => {
+      const r = await runInNewUoW(emptyMetadata(), async () => "hello")
+      expect(r).toBe("hello")
+    })
+
+    it("runInUoW propagates errors from the action", async () => {
+      await expect(
+        runInUoW(emptyMetadata(), async () => {
+          throw new Error("boom-runInUoW")
+        }),
+      ).rejects.toThrow("boom-runInUoW")
+    })
+
+    it("runInNewUoW propagates errors from the action", async () => {
+      await expect(
+        runInNewUoW(emptyMetadata(), async () => {
+          throw new Error("boom-runInNewUoW")
+        }),
+      ).rejects.toThrow("boom-runInNewUoW")
+    })
+
+    it("nested runInUoW resources are visible to inner action (single state)", async () => {
+      await runInUoW(emptyMetadata(), async () => {
+        setResource(K, "outer-value")
+        await runInUoW(emptyMetadata(), async () => {
+          expect(getResource(K)).toBe("outer-value")
+        })
+      })
     })
 })
 
