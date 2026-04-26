@@ -7,8 +7,8 @@ import {
   type ConfigurationEnhancer,
   type Serializer,
 } from "@kronos-ts/common"
-import type { CommandBus, QueryBus, CommandMessage, QueryMessage, ProcessingContext, SubscriptionQueryResult, UpdateHandler } from "@kronos-ts/messaging"
-import { type UnitOfWorkFactory, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import type { CommandBus, QueryBus, CommandMessage, QueryMessage, SubscriptionQueryResult, UpdateHandler } from "@kronos-ts/messaging"
+import { type UoWRunner, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
 import type { KronosDbConnectionConfig } from "./connection.js"
 import { connectToKronosDb, type KronosDbConnection } from "./connection.js"
 import { createKronosMetadata } from "./connection.js"
@@ -118,19 +118,19 @@ export function kronosDbConfigurationEnhancer(
       })
 
       registry.register(ComponentKeys.COMMAND_BUS, (config) => {
-        const uowFactory = config.getComponent<UnitOfWorkFactory>(ComponentKeys.UNIT_OF_WORK_FACTORY)
+        const uowRunner = config.getComponent<UoWRunner>(ComponentKeys.UNIT_OF_WORK_FACTORY)
         const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
         const latch = createShutdownLatch()
         busLatches.push(latch)
-        return createDistributedCommandBus(getConnection(), uowFactory, latch, serializer, serverConfig.commandFlowControl, serverConfig.commandLoadFactor)
+        return createDistributedCommandBus(getConnection(), uowRunner, latch, serializer, serverConfig.commandFlowControl, serverConfig.commandLoadFactor)
       })
 
       registry.register(ComponentKeys.QUERY_BUS, (config) => {
-        const uowFactory = config.getComponent<UnitOfWorkFactory>(ComponentKeys.UNIT_OF_WORK_FACTORY)
+        const uowRunner = config.getComponent<UoWRunner>(ComponentKeys.UNIT_OF_WORK_FACTORY)
         const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
         const latch = createShutdownLatch()
         busLatches.push(latch)
-        return createDistributedQueryBus(getConnection(), uowFactory, latch, serializer, serverConfig.queryFlowControl, serverConfig.shortcutQueriesToLocalHandlers, serverConfig.queryTimeoutMs)
+        return createDistributedQueryBus(getConnection(), uowRunner, latch, serializer, serverConfig.queryFlowControl, serverConfig.shortcutQueriesToLocalHandlers, serverConfig.queryTimeoutMs)
       })
     },
 
@@ -254,7 +254,7 @@ function createPayloadHelpers(serializer: Serializer) {
  */
 function createDistributedCommandBus(
   connection: KronosDbConnection,
-  unitOfWorkFactory: UnitOfWorkFactory,
+  unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
   serializer: Serializer,
   flowControl?: FlowControlConfig,
@@ -265,7 +265,7 @@ function createDistributedCommandBus(
   const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
   const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
 
-  const localSegment = new Map<string, (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>>()
+  const localSegment = new Map<string, (message: CommandMessage) => Promise<unknown>>()
 
   let outbound = createOutboundStream<any>()
   let streamStarted = false
@@ -343,9 +343,8 @@ function createDistributedCommandBus(
               timestamp: Number(proto.timestamp),
             }
 
-            const uow = unitOfWorkFactory(commandMessage.metadata)
-            resultPayload = await uow.executeWithResult(async (ctx) => {
-              return handler(commandMessage, ctx)
+            resultPayload = await unitOfWorkRunner(commandMessage.metadata, async () => {
+              return handler(commandMessage)
             })
           } catch (err) {
             errorCode = KronosDbErrorCode.COMMAND_EXECUTION_ERROR
@@ -431,7 +430,7 @@ function createDistributedCommandBus(
       }
     },
 
-    subscribe(commandName: string, handler: (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>) {
+    subscribe(commandName: string, handler: (message: CommandMessage) => Promise<unknown>) {
       localSegment.set(commandName, handler)
 
       ensureStreamStarted()
@@ -466,7 +465,7 @@ function createDistributedCommandBus(
  */
 function createDistributedQueryBus(
   connection: KronosDbConnection,
-  unitOfWorkFactory: UnitOfWorkFactory,
+  unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
   serializer: Serializer,
   flowControl?: FlowControlConfig,
@@ -478,7 +477,7 @@ function createDistributedQueryBus(
   const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
 
-  const localSegment = new Map<string, (message: QueryMessage, ctx: ProcessingContext) => Promise<unknown>>()
+  const localSegment = new Map<string, (message: QueryMessage) => Promise<unknown>>()
   const subscriptions = new Map<string, UpdateHandler>()
 
   let outbound = createOutboundStream<any>()
@@ -554,9 +553,8 @@ function createDistributedQueryBus(
               timestamp: Number(proto.timestamp),
             }
 
-            const uow = unitOfWorkFactory(queryMessage.metadata)
-            resultPayload = await uow.executeWithResult(async (ctx) => {
-              return handler(queryMessage, ctx)
+            resultPayload = await unitOfWorkRunner(queryMessage.metadata, async () => {
+              return handler(queryMessage)
             })
           } catch (err) {
             errorCode = KronosDbErrorCode.QUERY_EXECUTION_ERROR
@@ -628,9 +626,8 @@ function createDistributedQueryBus(
         if (shortcutQueriesToLocalHandlers) {
           const localHandler = localSegment.get(queryName)
           if (localHandler) {
-            const uow = unitOfWorkFactory(message.metadata)
-            return uow.executeWithResult(async (ctx) => {
-              return localHandler(message, ctx)
+            return unitOfWorkRunner(message.metadata, async () => {
+              return localHandler(message)
             })
           }
         }
@@ -664,7 +661,7 @@ function createDistributedQueryBus(
       }
     },
 
-    subscribe(queryName: string, handler: (message: QueryMessage, ctx: ProcessingContext) => Promise<unknown>) {
+    subscribe(queryName: string, handler: (message: QueryMessage) => Promise<unknown>) {
       localSegment.set(queryName, handler)
 
       ensureStreamStarted()
