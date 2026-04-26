@@ -2,7 +2,7 @@ import type { CommandBus } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
 import type { ProcessingContext } from "./processing-context.js"
 import type { UnitOfWorkFactory } from "./unit-of-work.js"
-import { defaultUnitOfWorkFactory } from "./unit-of-work.js"
+import { runInUoW } from "./unit-of-work.js"
 import { qualifiedNameToString } from "@kronos-ts/common"
 
 /**
@@ -19,7 +19,6 @@ import { qualifiedNameToString } from "@kronos-ts/common"
 export function createSimpleCommandBus(
   unitOfWorkFactory?: UnitOfWorkFactory,
 ): CommandBus {
-  const factory = unitOfWorkFactory ?? defaultUnitOfWorkFactory()
   const handlers = new Map<string, (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>>()
 
   return {
@@ -30,10 +29,20 @@ export function createSimpleCommandBus(
         throw new Error(`No handler registered for command "${key}"`)
       }
 
-      const uow = factory(message.metadata)
-      return uow.executeWithResult(async (ctx) => {
-        return handler(message, ctx)
-      })
+      // Plan 03-01 (D-32): default codepath routes through runInUoW so that
+      // nested dispatch (handler-internal bus calls) detects the active UoW
+      // via ALS and reuses it. Primary dispatch (no active UoW) creates a new
+      // one. The `context` parameter remains in the signature until Plan 03;
+      // body no longer reads it.
+      if (unitOfWorkFactory !== undefined) {
+        // Caller provided a custom factory (e.g., transactionalUnitOfWorkFactory) —
+        // preserve the explicit-factory codepath so transactional wiring keeps
+        // working. Plan 04 (D-34) rewrites transactionalUnitOfWorkFactory as a
+        // composable runner wrapper and this branch disappears.
+        const uow = unitOfWorkFactory(message.metadata)
+        return uow.executeWithResult(async (ctx) => handler(message, ctx))
+      }
+      return runInUoW(message.metadata, (ctx) => handler(message, ctx))
     },
 
     subscribe(

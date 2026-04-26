@@ -4,7 +4,7 @@ import type { ProcessingContext } from "./processing-context.js"
 import type { SubscriptionQueryResult, UpdateHandler } from "./subscription-query.js"
 import type { UnitOfWorkFactory } from "./unit-of-work.js"
 import { createUpdateHandler, runAfterCommitOrImmediately } from "./subscription-query.js"
-import { defaultUnitOfWorkFactory } from "./unit-of-work.js"
+import { runInUoW } from "./unit-of-work.js"
 import { qualifiedNameToString } from "@kronos-ts/common"
 
 /**
@@ -21,7 +21,6 @@ import { qualifiedNameToString } from "@kronos-ts/common"
 export function createSimpleQueryBus(
   unitOfWorkFactory?: UnitOfWorkFactory,
 ): QueryBus {
-  const factory = unitOfWorkFactory ?? defaultUnitOfWorkFactory()
   const handlers = new Map<string, (message: QueryMessage, ctx: ProcessingContext) => Promise<unknown>>()
 
   // Active subscription query handlers, keyed by query identifier
@@ -35,10 +34,15 @@ export function createSimpleQueryBus(
         throw new Error(`No handler registered for query "${key}"`)
       }
 
-      const uow = factory(message.metadata)
-      return uow.executeWithResult(async (ctx) => {
-        return handler(message, ctx)
-      })
+      // Plan 03-01 (D-32): mirrors simple-command-bus.dispatch. Default
+      // codepath routes through runInUoW for ALS-aware nesting; explicit
+      // factory branch preserved for transactional / extension wiring until
+      // Plan 04 (D-34).
+      if (unitOfWorkFactory !== undefined) {
+        const uow = unitOfWorkFactory(message.metadata)
+        return uow.executeWithResult(async (ctx) => handler(message, ctx))
+      }
+      return runInUoW(message.metadata, (ctx) => handler(message, ctx))
     },
 
     subscribe(
