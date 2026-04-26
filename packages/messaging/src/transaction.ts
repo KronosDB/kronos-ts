@@ -1,5 +1,5 @@
 import { resourceKey, type ResourceKey } from "@kronos-ts/common"
-import { processingStateStorage, setResource } from "./processing-state.js"
+import { processingStateStorage, setResource, on, onError } from "./processing-state.js"
 import { Phase, type ProcessingContext } from "./processing-context.js"
 import type { UnitOfWork, UnitOfWorkFactory } from "./unit-of-work.js"
 
@@ -77,6 +77,10 @@ export function transactionalUnitOfWorkFactory<T>(
     const inner = delegate(metadata)
 
     const wrapper: UnitOfWork = {
+      // Forwarders preserve the UnitOfWork interface — buffered pre-registration
+      // is no longer used by transactionalUnitOfWorkFactory itself, but external
+      // callers may still pre-register hooks before executeWithResult.
+      // Plan 04 deletes the UnitOfWork interface and these forwarders disappear.
       on: (phase, action) => inner.on(phase, action),
       onError: (handler) => inner.onError(handler),
       whenComplete: (handler) => inner.whenComplete(handler),
@@ -84,19 +88,24 @@ export function transactionalUnitOfWorkFactory<T>(
       async executeWithResult<R>(action: (ctx: ProcessingContext) => Promise<R>): Promise<R> {
         const tx = await txManager.begin()
 
-        // Register commit/rollback on the inner UnitOfWork
-        inner.on(Phase.COMMIT, async () => {
-          await txManager.commit(tx)
-        })
-        inner.onError(async () => {
-          await txManager.rollback(tx)
-        })
-
         // Inner UoW's executeWithResult enters processingStateStorage.run (Phase 1 wiring),
-        // so setResource inside the action callback writes to the active ALS state.
-        // D-22: no outer ALS wrap around the inner UoW — a single ALS boundary.
+        // so setResource AND module-level lifecycle registrations inside the action
+        // callback write to the active ALS state. D-22: a single ALS boundary.
+        //
+        // Phase 3 / Plan 02 (CTX-03): commit / rollback are registered via the
+        // module-level on(Phase.COMMIT, ...) and onError(...) accessors INSIDE the
+        // action body — no more inner.on / inner.onError buffered pre-registration.
+        // INVOCATION runs first; on entry we register commit (which fires later
+        // when the COMMIT phase runs) and onError (a late-bound error handler the
+        // ctx fires from runErrorHandlers if any phase throws).
         return inner.executeWithResult(async (ctx) => {
           setResource(TRANSACTION_KEY, tx)
+          on(Phase.COMMIT, async () => {
+            await txManager.commit(tx)
+          })
+          onError(async () => {
+            await txManager.rollback(tx)
+          })
           return action(ctx)
         })
       },
