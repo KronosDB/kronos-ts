@@ -148,11 +148,11 @@ export function correlationDataHandlerInterceptor(
  * through message metadata inheritance.
  */
 export function correlationDataDispatchInterceptor<M extends Message>(): DispatchInterceptor<M> {
-  return (message: M, _context?: ProcessingContext): M => {
+  return (message: M): M => {
     // D-24: single code path. Read directly from the ALS state — `getResource`
     // throws on no-UoW, but the dispatch interceptor MUST tolerate the no-UoW
     // primary-dispatch path and return the message unchanged.
-    // The `_context` param remains in the signature; its removal is CTX-01 / Phase 3.
+    // CTX-01 / Plan 03-03: vestigial _context parameter removed.
     const state = processingStateStorage.getStore()
     if (!state) return message
     const correlationData = state.resources.get(CORRELATION_DATA_KEY.symbol) as

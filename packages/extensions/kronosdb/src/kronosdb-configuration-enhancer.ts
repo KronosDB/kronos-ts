@@ -799,9 +799,8 @@ function createDistributedQueryBus(
       queryName: string,
       filter: (queryPayload: unknown) => boolean,
       update: unknown,
-      context?: ProcessingContext,
     ): Promise<void> {
-      runAfterCommitOrImmediately(context, () => {
+      runAfterCommitOrImmediately(() => {
         for (const [id, handler] of subscriptions) {
           if (!handler.active) {
             subscriptions.delete(id)
@@ -823,9 +822,8 @@ function createDistributedQueryBus(
     async completeSubscription(
       queryName: string,
       filter?: (queryPayload: unknown) => boolean,
-      context?: ProcessingContext,
     ): Promise<void> {
-      runAfterCommitOrImmediately(context, () => {
+      runAfterCommitOrImmediately(() => {
         for (const [id, handler] of subscriptions) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue
@@ -840,9 +838,8 @@ function createDistributedQueryBus(
       queryName: string,
       error: Error,
       filter?: (queryPayload: unknown) => boolean,
-      context?: ProcessingContext,
     ): Promise<void> {
-      runAfterCommitOrImmediately(context, () => {
+      runAfterCommitOrImmediately(() => {
         for (const [id, handler] of subscriptions) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue

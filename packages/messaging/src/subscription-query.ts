@@ -1,5 +1,4 @@
 import { resourceKey, type ResourceKey } from "@kronos-ts/common"
-import type { ProcessingContext } from "./processing-context.js"
 import type { QueryMessage } from "./message.js"
 import {
   processingStateStorage,
@@ -58,16 +57,12 @@ const UPDATE_TASKS_KEY: ResourceKey<Array<() => void>> = resourceKey("subscripti
  * Ensures subscription query updates are only emitted after the
  * transaction commits successfully.
  *
- * Phase 3 / Plan 02 (CTX-03, D-32): UoW presence is now decided by ALS state
- * (`processingStateStorage.getStore() !== undefined`), NOT by the explicit
- * `_context` parameter — same precedent as `correlationDataDispatchInterceptor`
- * (Plan 02-03) and `getActiveTransaction` (Plan 02-04). The `_context`
- * parameter is retained until Plan 03 (signature strip) deletes it.
+ * UoW presence is decided by ALS state
+ * (`processingStateStorage.getStore() !== undefined`) — same precedent as
+ * `correlationDataDispatchInterceptor` (Plan 02-03) and `getActiveTransaction`
+ * (Plan 02-04). CTX-01 / Plan 03-03: vestigial `_context` parameter removed.
  */
-export function runAfterCommitOrImmediately(
-  _context: ProcessingContext | undefined,
-  task: () => void,
-): void {
+export function runAfterCommitOrImmediately(task: () => void): void {
   if (processingStateStorage.getStore() !== undefined) {
     const tasks = computeIfAbsent(UPDATE_TASKS_KEY, () => {
       const list: Array<() => void> = []

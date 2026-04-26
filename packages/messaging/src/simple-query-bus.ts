@@ -105,7 +105,7 @@ export function createSimpleQueryBus(
       filter: (queryPayload: unknown) => boolean,
       update: unknown,
     ): Promise<void> {
-      runAfterCommitOrImmediately(undefined, () => {
+      runAfterCommitOrImmediately(() => {
         for (const [id, handler] of subscriptions) {
           if (!handler.active) {
             subscriptions.delete(id)
@@ -131,7 +131,7 @@ export function createSimpleQueryBus(
       queryName: string,
       filter?: (queryPayload: unknown) => boolean,
     ): Promise<void> {
-      runAfterCommitOrImmediately(undefined, () => {
+      runAfterCommitOrImmediately(() => {
         for (const [id, handler] of subscriptions) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue
@@ -148,7 +148,7 @@ export function createSimpleQueryBus(
       error: Error,
       filter?: (queryPayload: unknown) => boolean,
     ): Promise<void> {
-      runAfterCommitOrImmediately(undefined, () => {
+      runAfterCommitOrImmediately(() => {
         for (const [id, handler] of subscriptions) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue
