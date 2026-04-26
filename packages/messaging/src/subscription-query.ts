@@ -1,6 +1,11 @@
 import { resourceKey, type ResourceKey } from "@kronos-ts/common"
 import type { ProcessingContext } from "./processing-context.js"
 import type { QueryMessage } from "./message.js"
+import {
+  processingStateStorage,
+  computeIfAbsent,
+  onAfterCommit,
+} from "./processing-state.js"
 
 /**
  * The result of a subscription query — initial result plus a stream
@@ -46,21 +51,27 @@ export interface UpdateHandler {
 const UPDATE_TASKS_KEY: ResourceKey<Array<() => void>> = resourceKey("subscriptionQueryUpdateTasks")
 
 /**
- * Defers a task to AFTER_COMMIT if a ProcessingContext is available,
- * otherwise runs it immediately.
+ * Defers a task to AFTER_COMMIT if a UnitOfWork is active, otherwise runs
+ * it immediately.
  *
  * This is the core pattern from AF5's `runAfterCommitOrImmediately`.
  * Ensures subscription query updates are only emitted after the
  * transaction commits successfully.
+ *
+ * Phase 3 / Plan 02 (CTX-03, D-32): UoW presence is now decided by ALS state
+ * (`processingStateStorage.getStore() !== undefined`), NOT by the explicit
+ * `_context` parameter — same precedent as `correlationDataDispatchInterceptor`
+ * (Plan 02-03) and `getActiveTransaction` (Plan 02-04). The `_context`
+ * parameter is retained until Plan 03 (signature strip) deletes it.
  */
 export function runAfterCommitOrImmediately(
-  context: ProcessingContext | undefined,
+  _context: ProcessingContext | undefined,
   task: () => void,
 ): void {
-  if (context) {
-    const tasks = context.computeIfAbsent(UPDATE_TASKS_KEY, () => {
+  if (processingStateStorage.getStore() !== undefined) {
+    const tasks = computeIfAbsent(UPDATE_TASKS_KEY, () => {
       const list: Array<() => void> = []
-      context.onAfterCommit(() => {
+      onAfterCommit(() => {
         for (const t of list) t()
       })
       return list

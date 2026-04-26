@@ -12,7 +12,7 @@ import type { CommandHandlerDefinition } from "./command-handler.js"
 import type { CommandBus } from "./command-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import { CORRELATION_DATA_KEY } from "./correlation-data.js"
-import { getResource, computeIfAbsent } from "./processing-state.js"
+import { getResource, computeIfAbsent, onPrepareCommit } from "./processing-state.js"
 import type { CommandMessage, EventMessage } from "./message.js"
 import type { EventDescriptor } from "./descriptor.js"
 import type { EventCriteria } from "./event-criteria.js"
@@ -125,7 +125,7 @@ function createCommandInvocation(
     }) as AppendFunction
 
     // Register event flush in PREPARE_COMMIT phase
-    ctx.onPrepareCommit(async () => {
+    onPrepareCommit(async () => {
       const buffered = getResource(BUFFERED_EVENTS_KEY)
       if (!buffered || buffered.length === 0) return
       if (!config.hasComponent(ComponentKeys.EVENT_STORE)) return

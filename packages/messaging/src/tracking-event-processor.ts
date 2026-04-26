@@ -14,7 +14,7 @@ import {
   advanceToken,
 } from "./tracking-token.js"
 import { REPLAY_STATE_KEY } from "./replay-token.js"
-import { setResource } from "./processing-state.js"
+import { setResource, onPrepareCommit } from "./processing-state.js"
 import { defaultUnitOfWorkFactory } from "./unit-of-work.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 
@@ -229,7 +229,7 @@ export function createTrackingEventProcessor(
       }
 
       if (tokenStore) {
-        ctx.onPrepareCommit(async () => {
+        onPrepareCommit(async () => {
           await tokenStore.store(name, segment, batchEndToken)
           await tokenStore.extendClaim(name, segment, name)
         })

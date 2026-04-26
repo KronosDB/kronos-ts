@@ -17,6 +17,7 @@ import {
   processingStateStorage,
   createInitialProcessingState,
 } from "../processing-state.js"
+import { createProcessingContext } from "../default-processing-context.js"
 
 /**
  * Test helper — wraps `fn` in an active processingStateStorage.run so module-level
@@ -122,64 +123,30 @@ function makeCommandMessage(descriptor: typeof CreateCourse | typeof ChangeCours
   }
 }
 
-/** Creates a minimal ProcessingContext for invoking command handlers. */
+/**
+ * Creates a minimal ProcessingContext for invoking command handlers.
+ *
+ * Phase 3 / Plan 02 (CTX-03): the resource methods (`get`/`set`/etc.) and the
+ * lifecycle registrations (`onPrepareCommit`/etc.) all delegate to the ALS
+ * state, so this stub no longer holds local state for those — it now just
+ * provides the `ProcessingContext` shape with no-op extras (`metadata`,
+ * status flags, `withResource`). Tests must wrap calls in `inUoW(...)` so the
+ * ALS state is live.
+ *
+ * `__runPrepareCommit` drains PREPARE_COMMIT actions from the active ALS
+ * state, mirroring what `executePhases` does in production.
+ */
 function createTestProcessingContext(): ProcessingContext {
-  const resources = new Map<symbol, unknown>()
-  const prepareCommitActions: Array<(ctx: ProcessingContext) => Promise<void> | void> = []
+  const ctx: ProcessingContext = createProcessingContext(emptyMetadata())
 
-  const ctx: ProcessingContext = {
-    get<T>(key: { symbol: symbol }): T | undefined {
-      return resources.get(key.symbol) as T | undefined
-    },
-    set<T>(key: { symbol: symbol }, value: T): T | undefined {
-      const prev = resources.get(key.symbol) as T | undefined
-      resources.set(key.symbol, value)
-      return prev
-    },
-    computeIfAbsent<T>(key: { symbol: symbol }, supplier: () => T): T {
-      if (!resources.has(key.symbol)) {
-        resources.set(key.symbol, supplier())
-      }
-      return resources.get(key.symbol) as T
-    },
-    remove<T>(key: { symbol: symbol }): T | undefined {
-      const prev = resources.get(key.symbol) as T | undefined
-      resources.delete(key.symbol)
-      return prev
-    },
-    contains(key: { symbol: symbol }): boolean {
-      return resources.has(key.symbol)
-    },
-    update<T>(key: { symbol: symbol }, updater: (current: T | undefined) => T): T {
-      const current = resources.get(key.symbol) as T | undefined
-      const next = updater(current)
-      resources.set(key.symbol, next)
-      return next
-    },
-    withResource(key, value) {
-      // Simplified: just set and return self for testing
-      resources.set(key.symbol, value)
-      return ctx
-    },
-    component() { return undefined },
-    on() {},
-    onError() {},
-    whenComplete() {},
-    onPrepareCommit(action) {
-      prepareCommitActions.push(action)
-    },
-    onCommit() {},
-    onAfterCommit() {},
-    isStarted: true,
-    isError: false,
-    isCompleted: false,
-    metadata: emptyMetadata(),
-  }
-
-  // Expose a way to trigger prepare-commit for tests
   ;(ctx as any).__runPrepareCommit = async () => {
-    for (const action of prepareCommitActions) {
-      await action(ctx)
+    const state = processingStateStorage.getStore()
+    if (!state) return
+    const PREPARE_COMMIT_PHASE = 20000
+    const actions = state.phaseActions.get(PREPARE_COMMIT_PHASE as any) ?? []
+    state.phaseActions.delete(PREPARE_COMMIT_PHASE as any)
+    for (const action of actions) {
+      await action()
     }
   }
 

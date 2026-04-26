@@ -17,7 +17,7 @@ import {
   advanceToken,
 } from "./tracking-token.js"
 import { REPLAY_STATE_KEY } from "./replay-token.js"
-import { setResource } from "./processing-state.js"
+import { setResource, onPrepareCommit } from "./processing-state.js"
 import { defaultUnitOfWorkFactory } from "./unit-of-work.js"
 
 /**
@@ -210,7 +210,7 @@ export function createStreamingEventProcessor(
       }
 
       if (tokenStore) {
-        ctx.onPrepareCommit(async () => {
+        onPrepareCommit(async () => {
           await tokenStore.store(name, segment, batchEndToken)
           // Extend claim to prevent expiry during long batches
           await tokenStore.extendClaim(name, segment, name)
