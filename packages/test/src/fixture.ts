@@ -14,7 +14,7 @@ import type {
   CommandMessage,
   CommandBus,
 } from "@kronos-ts/messaging"
-import { createUnitOfWork } from "@kronos-ts/messaging"
+import { runInNewUoW } from "@kronos-ts/messaging"
 import { EventSourcingConfigurer } from "@kronos-ts/eventsourcing"
 import type { z } from "zod"
 import { createRecordingEnhancer, type Recordings } from "./recording-enhancer.js"
@@ -428,8 +428,7 @@ class ThenPhaseImpl implements ThenPhase {
 
     // 1. Given: publish events within a UnitOfWork
     if (this.givenEvents.length > 0) {
-      const uow = createUnitOfWork(emptyMetadata())
-      await uow.executeWithResult(async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
         const events: EventMessage[] = this.givenEvents.map(([desc, payload]) => {
           const tags = desc.tags ? desc.tags(payload) : []
           return { identifier: generateIdentifier(), name: desc.name, version: desc.version, payload, metadata: emptyMetadata(), timestamp: Date.now(), tags }

@@ -32,15 +32,25 @@ export {
   either,
 } from "./event-criteria.js"
 
-// Processing context
-export { type ProcessingContext, Phase, type PhaseValue } from "./processing-context.js"
-
-// Unit of Work
+// Lifecycle phases (Plan 03-04: relocated from processing-context.ts)
 export {
-  type UnitOfWork,
-  type UnitOfWorkFactory,
-  createUnitOfWork,
-  defaultUnitOfWorkFactory,
+  Phase,
+  type PhaseValue,
+  // Module-level lifecycle accessors (CTX-03 / D-30)
+  on as onPhase,
+  onPrepareCommit,
+  onCommit,
+  onAfterCommit,
+  onError,
+  whenComplete,
+  NoActiveUnitOfWork,
+} from "./processing-state.js"
+
+// Unit of Work runners (Plan 03-04: replaces UnitOfWorkFactory shape)
+export {
+  type UoWRunner,
+  runInUoW,
+  runInNewUoW,
 } from "./unit-of-work.js"
 
 // Handler registration
@@ -234,9 +244,6 @@ export {
   transactionalUnitOfWorkFactory,
   TRANSACTION_KEY,
 } from "./transaction.js"
-
-// Processing context implementation
-export { createProcessingContext } from "./default-processing-context.js"
 
 // Retrying command bus
 export {

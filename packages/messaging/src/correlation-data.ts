@@ -1,6 +1,5 @@
 import { type Metadata, type ResourceKey, resourceKey, mergeMetadata } from "@kronos-ts/common"
 import type { Message } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
 import { processingStateStorage, setResource } from "./processing-state.js"
 
@@ -29,11 +28,21 @@ export interface CorrelationDataProvider {
 }
 
 /**
- * Get the active correlation data from a ProcessingContext.
- * Returns undefined if no correlation data is stored in the context.
+ * Get the active correlation data from the active UnitOfWork (D-29 permissive read).
+ *
+ * Reads directly from the ALS state. Returns `undefined` when called outside
+ * an active UnitOfWork (e.g. primary dispatch path, no handler running) —
+ * callers MUST tolerate this no-UoW case.
+ *
+ * Plan 03-04 (CTX-04 / D-29): no-arg permissive ALS read; the explicit
+ * ProcessingContext parameter is gone.
  */
-export function getActiveCorrelationData(context: ProcessingContext): Record<string, string> | undefined {
-  return context.get(CORRELATION_DATA_KEY)
+export function getActiveCorrelationData(): Record<string, string> | undefined {
+  const state = processingStateStorage.getStore()
+  if (!state) return undefined
+  return state.resources.get(CORRELATION_DATA_KEY.symbol) as
+    | Record<string, string>
+    | undefined
 }
 
 // ---------------------------------------------------------------------------

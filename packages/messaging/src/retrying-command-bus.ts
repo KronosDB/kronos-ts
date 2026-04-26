@@ -1,6 +1,5 @@
 import type { CommandBus } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 
 /**
  * Determines whether a failed command dispatch should be retried.
@@ -74,7 +73,7 @@ export function createRetryingCommandBus(
       }
     },
 
-    subscribe(commandName: string, handler: (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>) {
+    subscribe(commandName: string, handler: (message: CommandMessage) => Promise<unknown>) {
       delegate.subscribe(commandName, handler)
     },
   }

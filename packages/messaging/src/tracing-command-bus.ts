@@ -1,6 +1,5 @@
 import type { CommandBus } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 import type { SpanFactory } from "./span-factory.js"
 
 /**
@@ -36,12 +35,12 @@ export function createTracingCommandBus(
 
     subscribe(
       commandName: string,
-      handler: (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>,
+      handler: (message: CommandMessage) => Promise<unknown>,
     ): void {
-      delegate.subscribe(commandName, async (msg: CommandMessage, ctx: ProcessingContext) => {
+      delegate.subscribe(commandName, async (msg: CommandMessage) => {
         const span = spanFactory.createHandlerSpan(`handle(${commandName})`, msg).start()
         try {
-          const result = await handler(msg, ctx)
+          const result = await handler(msg)
           span.end()
           return result
         } catch (err) {

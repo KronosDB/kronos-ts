@@ -26,7 +26,7 @@ import type {
   CommandMessage,
   EventMessage,
   QueryMessage,
-  UnitOfWorkFactory,
+  UoWRunner,
   TokenStore,
   TrackingEventProcessor,
   StreamableEventSource,
@@ -36,15 +36,15 @@ import type {
   LoadFunction,
   SendFunction,
   EmitUpdateFunction,
-  ProcessingContext,
   EventProcessorModule,
   CorrelationDataProvider,
   HandlerEnhancerDefinition,
   EventSink,
   EventBus,
   EventGateway,
-  type MessageMonitor,
-  type MessageMonitorRegistry,
+  MessageMonitor,
+  MessageMonitorRegistry,
+  TransactionManager,
 } from "@kronos-ts/messaging"
 import {
   createMessageMonitorRegistry,
@@ -61,8 +61,10 @@ import {
   exponentialBackoffRetryPolicy,
   createTrackingEventProcessor,
   createSubscribingEventProcessor,
-  defaultUnitOfWorkFactory,
+  runInNewUoW,
   transactionalUnitOfWorkFactory,
+  whenComplete,
+  onError,
   messageOriginProvider,
   correlationDataHandlerInterceptor,
   correlationDataDispatchInterceptor,
@@ -175,8 +177,8 @@ export class MessagingConfigurer implements ApplicationConfigurer {
     return this
   }
 
-  /** Override the UnitOfWork factory. */
-  registerUnitOfWorkFactory(builder: ComponentBuilder<UnitOfWorkFactory>): this {
+  /** Override the UnitOfWork runner. */
+  registerUnitOfWorkFactory(builder: ComponentBuilder<UoWRunner>): this {
     this._reg.register(ComponentKeys.UNIT_OF_WORK_FACTORY, builder)
     return this
   }
@@ -626,24 +628,24 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
     return {
       configuration: finalConfig,
 
-      get commandGateway() {
-        return finalConfig.getComponent(ComponentKeys.COMMAND_GATEWAY)
+      get commandGateway(): CommandGateway {
+        return finalConfig.getComponent<CommandGateway>(ComponentKeys.COMMAND_GATEWAY)
       },
 
-      get queryGateway() {
-        return finalConfig.getComponent(ComponentKeys.QUERY_GATEWAY)
+      get queryGateway(): QueryGateway {
+        return finalConfig.getComponent<QueryGateway>(ComponentKeys.QUERY_GATEWAY)
       },
 
-      get eventGateway() {
-        return finalConfig.getComponent(ComponentKeys.EVENT_GATEWAY)
+      get eventGateway(): EventGateway {
+        return finalConfig.getComponent<EventGateway>(ComponentKeys.EVENT_GATEWAY)
       },
 
-      get eventStore() {
-        return finalConfig.getComponent(ComponentKeys.EVENT_STORE)
+      get eventStore(): EventStore {
+        return finalConfig.getComponent<EventStore>(ComponentKeys.EVENT_STORE)
       },
 
-      get eventBus() {
-        return finalConfig.getComponent(ComponentKeys.EVENT_BUS)
+      get eventBus(): EventBus {
+        return finalConfig.getComponent<EventBus>(ComponentKeys.EVENT_BUS)
       },
 
       async start() {
@@ -762,26 +764,31 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
     // Default routing strategy — payload field "id" (Gap 15)
     this.reg.registerIfAbsent(ComponentKeys.ROUTING_STRATEGY, () => payloadFieldRoutingStrategy("id"))
 
-    // UnitOfWork factory
+    // UnitOfWork runner (Plan 03-04: UoWRunner replaces UnitOfWorkFactory).
+    // Entry-point semantics: gateways and event processors are top-of-stack —
+    // each call should establish a fresh UoW, not reuse a snapshotted ALS
+    // context that may have leaked through async boundaries (e.g., setTimeout
+    // inheriting the dispatching UoW's ALS state). runInNewUoW guarantees a
+    // new state per invocation, then bus.dispatch's runInUoW auto-nests.
     this.reg.registerIfAbsent(ComponentKeys.UNIT_OF_WORK_FACTORY, (config) => {
-      const base = defaultUnitOfWorkFactory()
+      const base: UoWRunner = runInNewUoW
       if (config.hasComponent(ComponentKeys.TRANSACTION_MANAGER)) {
-        return transactionalUnitOfWorkFactory(base, config.getComponent(ComponentKeys.TRANSACTION_MANAGER))
+        return transactionalUnitOfWorkFactory(
+          base,
+          config.getComponent<TransactionManager<unknown>>(ComponentKeys.TRANSACTION_MANAGER),
+        )
       }
       return base
     })
 
     // Buses — SimpleCommandBus/SimpleQueryBus wrapped with InterceptingCommandBus/InterceptingQueryBus
     // This follows Java's pattern: SimpleCommandBus (dispatch+subscribe) + InterceptingCommandBus (interceptor chains)
-    this.reg.registerIfAbsent(ComponentKeys.COMMAND_BUS, (config) =>
-      createInterceptingCommandBus(
-        createSimpleCommandBus(config.getComponent<UnitOfWorkFactory>(ComponentKeys.UNIT_OF_WORK_FACTORY)),
-      ),
+    // Plan 03-04: SimpleCommandBus/QueryBus use ALS-aware runInUoW internally; no factory arg.
+    this.reg.registerIfAbsent(ComponentKeys.COMMAND_BUS, (_config) =>
+      createInterceptingCommandBus(createSimpleCommandBus()),
     )
-    this.reg.registerIfAbsent(ComponentKeys.QUERY_BUS, (config) =>
-      createInterceptingQueryBus(
-        createSimpleQueryBus(config.getComponent<UnitOfWorkFactory>(ComponentKeys.UNIT_OF_WORK_FACTORY)),
-      ),
+    this.reg.registerIfAbsent(ComponentKeys.QUERY_BUS, (_config) =>
+      createInterceptingQueryBus(createSimpleQueryBus()),
     )
 
     // EventSink — in ES setups, the EventStore IS the EventSink
@@ -794,12 +801,21 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
       config.getComponent<EventBus>(ComponentKeys.EVENT_STORE),
     )
 
-    // Gateways
+    // Gateways — inject the configured UoWRunner so transactional wrappers
+    // (registered under UNIT_OF_WORK_FACTORY) span the dispatch boundary.
+    // Plan 03-04 (CTX-04 / D-34): without this, gateway calls would always
+    // use the raw `runInNewUoW`, bypassing the TX wrapper.
     this.reg.registerIfAbsent(ComponentKeys.COMMAND_GATEWAY, (config) =>
-      createCommandGateway(config.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS)),
+      createCommandGateway(
+        config.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS),
+        config.getComponent<UoWRunner>(ComponentKeys.UNIT_OF_WORK_FACTORY),
+      ),
     )
     this.reg.registerIfAbsent(ComponentKeys.QUERY_GATEWAY, (config) =>
-      createQueryGateway(config.getComponent<QueryBus>(ComponentKeys.QUERY_BUS)),
+      createQueryGateway(
+        config.getComponent<QueryBus>(ComponentKeys.QUERY_BUS),
+        config.getComponent<UoWRunner>(ComponentKeys.UNIT_OF_WORK_FACTORY),
+      ),
     )
     this.reg.registerIfAbsent(ComponentKeys.EVENT_GATEWAY, (config) =>
       createEventGateway(config.getComponent<EventSink>(ComponentKeys.EVENT_SINK)),
@@ -881,7 +897,7 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
         if (!config.hasComponent(ComponentKeys.EVENT_STORE)) return []
 
         const eventSource = config.getComponent<StreamableEventSource>(ComponentKeys.EVENT_STORE)
-        const uowFactory = config.getComponent<UnitOfWorkFactory>(ComponentKeys.UNIT_OF_WORK_FACTORY)
+        const uowRunner = config.getComponent<UoWRunner>(ComponentKeys.UNIT_OF_WORK_FACTORY)
         const globalTokenStore = config.getOptionalComponent<TokenStore>(ComponentKeys.TOKEN_STORE)
         const queryBus = config.getComponent<QueryBus>(ComponentKeys.QUERY_BUS)
 
@@ -893,7 +909,10 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
         const evtDispatchInterceptors = evtDispatchInterceptorBuilders.map(b => b(config))
         const evtHandlerInterceptors = evtHandlerInterceptorBuilders.map(b => b(config))
 
-        const contextFactory = (processingContext: ProcessingContext): EventHandlerContext => {
+        // Plan 03-04 (D-34): contextFactory takes per-event metadata.
+        // Lifecycle wiring (correlation, monitor success/failure) happens through
+        // module-level ALS accessors (whenComplete/onError) inside the runner.
+        const contextFactory = (metadata: import("@kronos-ts/common").Metadata): EventHandlerContext => {
           const load: LoadFunction = config.hasComponent(ComponentKeys.STATE_MANAGER)
             ? async <S>(entity: any, id: any) => {
                 const result = await config.getComponent<any>(ComponentKeys.STATE_MANAGER).load(entity, id)
@@ -907,36 +926,43 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
               identifier: generateIdentifier(),
               name: descriptor.name,
               payload,
-              metadata: processingContext.metadata,
+              metadata,
               timestamp: Date.now(),
-            }, processingContext)
+            })
           }
 
           const emitUpdate: EmitUpdateFunction = (queryDescriptor, filter, update) => {
             const queryName = qualifiedNameToString(queryDescriptor.name)
-            queryBus.emitUpdate(queryName, filter as (q: unknown) => boolean, update, processingContext)
+            queryBus.emitUpdate(queryName, filter as (q: unknown) => boolean, update)
           }
 
           return {
             load,
             send,
             emitUpdate,
-            metadata: processingContext.metadata,
-            processingContext,
+            metadata,
           }
         }
 
-        // Wrap contextFactory with event monitoring (Gap 7)
-        const monitoredContextFactory = (processingContext: ProcessingContext): EventHandlerContext => {
-          const ctx = contextFactory(processingContext)
-          // Trigger event monitor on message ingestion during processor delivery
-          const eventMessage = (processingContext as any).message
-          if (eventMessage) {
-            const callback = evtMonitor.onMessageIngested(eventMessage)
-            // Hook into processing lifecycle to report success/failure
-            processingContext.onComplete?.(() => callback.reportSuccess())
-            processingContext.onError?.((err: Error) => callback.reportFailure(err))
-          }
+        // Wrap contextFactory with event monitoring (Gap 7).
+        // Per-event monitor success/failure is wired via module-level whenComplete/onError
+        // accessors — these read the active ALS state inside the runner.
+        const monitoredContextFactory = (metadata: import("@kronos-ts/common").Metadata): EventHandlerContext => {
+          const ctx = contextFactory(metadata)
+          // Trigger event monitor on message ingestion during processor delivery.
+          // The processor calls contextFactory() per event, inside the runner — so
+          // the ALS-bound lifecycle accessors register against the active UoW.
+          const callback = evtMonitor.onMessageIngested({
+            identifier: generateIdentifier(),
+            name: { namespace: "", localName: "" } as any,
+            version: "0",
+            payload: undefined,
+            metadata,
+            timestamp: Date.now(),
+            tags: [],
+          } as unknown as EventMessage)
+          whenComplete(() => callback.reportSuccess())
+          onError(async (err: unknown) => callback.reportFailure(err instanceof Error ? err : new Error(String(err))))
           return ctx
         }
 
@@ -962,7 +988,7 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
               eventSource: subscribableSource,
               handlerGroups: proc.handlerGroups,
               contextFactory: monitoredContextFactory,
-              unitOfWorkFactory: proc.unitOfWorkFactory ?? uowFactory,
+              unitOfWorkRunner: proc.unitOfWorkRunner ?? uowRunner,
               errorHandler: proc.errorHandler,
             }))
           } else {
@@ -971,7 +997,7 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
               eventSource,
               handlerGroups: proc.handlerGroups,
               contextFactory: monitoredContextFactory,
-              unitOfWorkFactory: proc.unitOfWorkFactory ?? uowFactory,
+              unitOfWorkRunner: proc.unitOfWorkRunner ?? uowRunner,
               tokenStore: proc.tokenStore ?? globalTokenStore,
               batchSize: proc.batchSize,
               pollingIntervalMs: proc.pollingIntervalMs,

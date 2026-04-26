@@ -1,6 +1,5 @@
 import type { QueryBus } from "./query-bus.js"
 import type { QueryMessage } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 import type { SubscriptionQueryResult } from "./subscription-query.js"
 import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
 
@@ -37,15 +36,15 @@ export function createInterceptingQueryBus(
 
     subscribe(
       queryName: string,
-      handler: (message: QueryMessage, ctx: ProcessingContext) => Promise<unknown>,
+      handler: (message: QueryMessage) => Promise<unknown>,
     ) {
       // Wrap the handler with handler interceptors
-      const wrappedHandler = (message: QueryMessage, ctx: ProcessingContext) => {
+      const wrappedHandler = (message: QueryMessage) => {
         if (handlerInterceptors.length === 0) {
-          return handler(message, ctx)
+          return handler(message)
         }
 
-        let chain = () => handler(message, ctx)
+        let chain = () => handler(message)
         for (let i = handlerInterceptors.length - 1; i >= 0; i--) {
           const interceptor = handlerInterceptors[i]!
           const next = chain

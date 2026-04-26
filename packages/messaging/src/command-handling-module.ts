@@ -17,7 +17,6 @@ import type { CommandMessage, EventMessage } from "./message.js"
 import type { EventDescriptor } from "./descriptor.js"
 import type { EventCriteria } from "./event-criteria.js"
 import type { LoadFunction, AppendFunction } from "./handler.js"
-import type { ProcessingContext } from "./processing-context.js"
 
 // ---------------------------------------------------------------------------
 // Resource keys for ProcessingContext-scoped state
@@ -48,7 +47,7 @@ function createCommandInvocation(
   handler: CommandHandlerDefinition<any, any>,
   config: Configuration,
 ) {
-  return async (message: CommandMessage, ctx: ProcessingContext): Promise<unknown> => {
+  return async (message: CommandMessage): Promise<unknown> => {
     const rawStateManager = config.hasComponent(ComponentKeys.STATE_MANAGER)
       ? config.getComponent<{ load: (entity: any, id: any) => Promise<{ state: any; sourcingInfo: { criteria: EventCriteria; markerPosition: bigint } }> }>(ComponentKeys.STATE_MANAGER)
       : null
@@ -181,7 +180,6 @@ function createCommandInvocation(
       load: trackingLoad,
       append: appendFn,
       metadata: message.metadata,
-      processingContext: ctx,
     }
 
     return handler.handler(message.payload, context)

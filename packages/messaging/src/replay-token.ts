@@ -1,11 +1,12 @@
 /**
- * Re-exports from tracking-token.ts plus the isReplay() ProcessingContext helper.
+ * Re-exports from tracking-token.ts plus the isReplay() helper.
  *
- * This module exists for the `isReplay()` function which depends on
- * ProcessingContext (and thus ResourceKey), bridging the token layer
- * with the handler context layer.
+ * Plan 03-04 (CTX-04 / D-29): `isReplay()` is a no-arg permissive ALS read.
+ * It returns `false` when called outside an active UnitOfWork (replay-state
+ * has only ever been set by the tracking processor; absence == not replaying).
  */
 import { resourceKey, type ResourceKey } from "@kronos-ts/common"
+import { processingStateStorage } from "./processing-state.js"
 
 // Re-export token types and operations
 export {
@@ -22,7 +23,7 @@ export {
   wasProcessedBeforeReset,
 } from "./tracking-token.js"
 
-/** Resource key for storing replay state in ProcessingContext. */
+/** Resource key for storing replay state in the active UnitOfWork. */
 export const REPLAY_STATE_KEY: ResourceKey<{ replaying: boolean }> =
   resourceKey("replayState")
 
@@ -30,18 +31,23 @@ export const REPLAY_STATE_KEY: ResourceKey<{ replaying: boolean }> =
  * Check if the current processing is a replay.
  * Use this in event handlers to skip side effects during replay.
  *
+ * Plan 03-04 (D-29): no-arg permissive ALS read. Returns `false` when called
+ * outside an active UnitOfWork.
+ *
  * ```
- * on(OrderPlaced, async (event, ctx) => {
- *   // Always update projection
+ * on(OrderPlaced, async (event) => {
  *   await db.orders.insert(event)
- *   // Skip email during replay
- *   if (!isReplay(ctx.processingContext!)) {
+ *   if (!isReplay()) {
  *     await sendConfirmationEmail(event.email)
  *   }
  * })
  * ```
  */
-export function isReplay(ctx: { get<T>(key: ResourceKey<T>): T | undefined }): boolean {
-  const state = ctx.get(REPLAY_STATE_KEY)
-  return state?.replaying === true
+export function isReplay(): boolean {
+  const state = processingStateStorage.getStore()
+  if (!state) return false
+  const replayState = state.resources.get(REPLAY_STATE_KEY.symbol) as
+    | { replaying: boolean }
+    | undefined
+  return replayState?.replaying === true
 }

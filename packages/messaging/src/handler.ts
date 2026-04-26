@@ -5,7 +5,6 @@ import type {
   EventDescriptor,
   QueryDescriptor,
 } from "./descriptor.js"
-import type { ProcessingContext } from "./processing-context.js"
 
 // ---------------------------------------------------------------------------
 // Handler context shapes — what each handler type receives
@@ -54,6 +53,11 @@ export interface EmitUpdateFunction {
 
 /**
  * Context available to command handlers.
+ *
+ * Plan 03-04 (CTX-04 / D-34): the `processingContext` field is gone.
+ * Lifecycle / resource access uses module-level accessors from
+ * `processing-state.js` (e.g. `getResource`, `setResource`, `on`,
+ * `onError`, `whenComplete`).
  */
 export interface CommandHandlerContext {
   /** Load event-sourced entity state. */
@@ -62,12 +66,12 @@ export interface CommandHandlerContext {
   append: AppendFunction
   /** Message metadata (includes correlationId etc). */
   metadata: Metadata
-  /** The underlying ProcessingContext from the UnitOfWork. */
-  processingContext: ProcessingContext
 }
 
 /**
  * Context available to event handlers.
+ *
+ * Plan 03-04 (CTX-04 / D-34): the `processingContext` field is gone.
  */
 export interface EventHandlerContext {
   /** Load event-sourced entity state. */
@@ -78,18 +82,16 @@ export interface EventHandlerContext {
   emitUpdate: EmitUpdateFunction
   /** Message metadata. */
   metadata: Metadata
-  /** The underlying ProcessingContext from the UnitOfWork. */
-  processingContext?: import("./processing-context.js").ProcessingContext
 }
 
 /**
  * Context available to query handlers.
+ *
+ * Plan 03-04 (CTX-04 / D-34): the `processingContext` field is gone.
  */
 export interface QueryHandlerContext {
   /** Message metadata. */
   metadata: Metadata
-  /** The underlying ProcessingContext from the UnitOfWork. */
-  processingContext: ProcessingContext
 }
 
 // ---------------------------------------------------------------------------

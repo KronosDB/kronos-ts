@@ -1,5 +1,4 @@
 import type { EventMessage } from "@kronos-ts/messaging"
-import type { ProcessingContext } from "@kronos-ts/messaging"
 
 /**
  * A transaction scope for event store operations within a UnitOfWork.

@@ -7,7 +7,7 @@ import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
 import type { CommandDescriptor, QueryDescriptor } from "./descriptor.js"
 import type { SubscriptionQueryResult } from "./subscription-query.js"
-import { runInNewUoW } from "./unit-of-work.js"
+import { runInNewUoW, type UoWRunner } from "./unit-of-work.js"
 import type { z } from "zod"
 
 /**
@@ -73,8 +73,16 @@ export interface QueryGateway {
 
 /**
  * Creates a command gateway backed by a command bus.
+ *
+ * Plan 03-04 (CTX-04 / D-34): the optional `unitOfWorkRunner` lets the
+ * configurer inject a transactional wrapper (`transactionalUnitOfWorkFactory`)
+ * around the dispatch boundary. Defaults to `runInNewUoW` — preserves the
+ * Plan 03-01 contract that every gateway call starts a fresh UoW.
  */
-export function createCommandGateway(bus: CommandBus): CommandGateway {
+export function createCommandGateway(
+  bus: CommandBus,
+  unitOfWorkRunner: UoWRunner = runInNewUoW,
+): CommandGateway {
   return {
     async send(descriptor, payload, metadata) {
       const resolvedMetadata = metadata ?? emptyMetadata()
@@ -83,7 +91,7 @@ export function createCommandGateway(bus: CommandBus): CommandGateway {
       // established (via runInUoW in simple-command-bus) and reuse it — so
       // this is the single UoW boundary for the dispatch chain. No
       // ProcessingContext parameter is threaded.
-      return runInNewUoW(resolvedMetadata, () =>
+      return unitOfWorkRunner(resolvedMetadata, () =>
         bus.dispatch({
           identifier: generateIdentifier(),
           name: descriptor.name,
@@ -98,8 +106,13 @@ export function createCommandGateway(bus: CommandBus): CommandGateway {
 
 /**
  * Creates a query gateway backed by a query bus.
+ *
+ * See `createCommandGateway` for the `unitOfWorkRunner` injection contract.
  */
-export function createQueryGateway(bus: QueryBus): QueryGateway {
+export function createQueryGateway(
+  bus: QueryBus,
+  unitOfWorkRunner: UoWRunner = runInNewUoW,
+): QueryGateway {
   return {
     async query(descriptor, payload, metadata) {
       const resolvedMetadata = metadata ?? emptyMetadata()
@@ -107,7 +120,7 @@ export function createQueryGateway(bus: QueryBus): QueryGateway {
       // UoW; bus.query auto-nests via runInUoW in simple-query-bus.
       // subscriptionQuery below stays as-is — its initialResult goes through
       // bus.query, which handles its own UoW.
-      return runInNewUoW(resolvedMetadata, () =>
+      return unitOfWorkRunner(resolvedMetadata, () =>
         bus.query({
           identifier: generateIdentifier(),
           name: descriptor.name,

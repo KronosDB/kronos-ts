@@ -1,5 +1,4 @@
 import type { CommandMessage } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 
 /**
  * The command bus — low-level infrastructure for dispatching command messages
@@ -20,15 +19,16 @@ export interface CommandBus {
   dispatch(message: CommandMessage): Promise<unknown>
 
   /**
-   * Subscribe a handler for the given command name.
-   * The handler receives the command message and a ProcessingContext
-   * created by the bus's UnitOfWork.
+   * Subscribe a handler for the given command name. The handler is invoked
+   * inside the active UnitOfWork — module-level accessors
+   * (`getResource`, `setResource`, `on`, `onError`, …) read/write that UoW's
+   * ALS-backed state.
    *
-   * The handler signature retains the `ctx` parameter until Plan 04 deletes
-   * `ProcessingContext` itself.
+   * Plan 03-04 (CTX-04 / D-34): handler signature dropped its `ctx`
+   * parameter. The ProcessingContext type is gone.
    */
   subscribe(
     commandName: string,
-    handler: (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>,
+    handler: (message: CommandMessage) => Promise<unknown>,
   ): void
 }

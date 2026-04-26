@@ -1,5 +1,4 @@
 import type { QueryMessage } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 import type { SubscriptionQueryResult } from "./subscription-query.js"
 
 /**
@@ -19,10 +18,13 @@ export interface QueryBus {
 
   /**
    * Subscribe a handler for the given query name.
+   *
+   * Plan 03-04 (CTX-04 / D-34): handler signature dropped its `ctx`
+   * parameter. The ProcessingContext type is gone.
    */
   subscribe(
     queryName: string,
-    handler: (message: QueryMessage, ctx: ProcessingContext) => Promise<unknown>,
+    handler: (message: QueryMessage) => Promise<unknown>,
   ): void
 
   /**

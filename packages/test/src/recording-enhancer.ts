@@ -4,7 +4,6 @@ import {
   type ConfigurationEnhancer,
 } from "@kronos-ts/common"
 import type { EventMessage, CommandBus, CommandMessage } from "@kronos-ts/messaging"
-import type { ProcessingContext } from "@kronos-ts/messaging"
 
 /**
  * Recorded state from the test fixture.

@@ -1,6 +1,5 @@
 import type { CommandBus } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
 
 /**
@@ -32,36 +31,20 @@ export function createInterceptingCommandBus(
         interceptedMessage = await interceptor(interceptedMessage)
       }
 
-      // If we have handler interceptors, wrap the delegate in a handler chain.
-      // Handler interceptors are applied via a wrapping subscribe that the
-      // delegate already called. Since the delegate creates UoW internally,
-      // we wrap the dispatch to inject handler interceptors.
-      if (handlerInterceptors.length > 0) {
-        // We temporarily wrap the delegate's subscribe to inject interceptors.
-        // This is done by subscribing a wrapping handler on the fly.
-        // However, a cleaner approach: we store interceptors and the configurer
-        // wires them on the delegate when it supports them.
-        //
-        // For now, delegate dispatch with intercepted message and rely on
-        // the underlying bus to handle the handler interceptor chain if it
-        // supports it. If the delegate has registerHandlerInterceptor, the
-        // interceptors should have been registered there.
-      }
-
       return delegate.dispatch(interceptedMessage)
     },
 
     subscribe(
       commandName: string,
-      handler: (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>,
+      handler: (message: CommandMessage) => Promise<unknown>,
     ) {
       // Wrap the handler with handler interceptors
-      const wrappedHandler = (message: CommandMessage, ctx: ProcessingContext) => {
+      const wrappedHandler = (message: CommandMessage) => {
         if (handlerInterceptors.length === 0) {
-          return handler(message, ctx)
+          return handler(message)
         }
 
-        let chain = () => handler(message, ctx)
+        let chain = () => handler(message)
         for (let i = handlerInterceptors.length - 1; i >= 0; i--) {
           const interceptor = handlerInterceptors[i]!
           const next = chain
