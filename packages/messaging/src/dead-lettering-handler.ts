@@ -2,7 +2,6 @@ import { qualifiedNameToString } from "@kronos-ts/common"
 import type { EventMessage } from "./message.js"
 import type { EventHandlerRegistration, EventHandlerContext } from "./handler.js"
 import type { SequencedEvent } from "./event-source.js"
-import type { ProcessingContext } from "./processing-context.js"
 import {
   type SequencedDeadLetterQueue,
   type EnqueuePolicy,
@@ -48,13 +47,15 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
   return {
     /**
      * Deliver an event to handlers, with dead-letter support.
-     * The ProcessingContext is passed to the DLQ for transactional participation.
+     *
+     * The DLQ participates in any active transaction via ALS — both the
+     * caller and the DLQ implementation read transactional state from the
+     * UnitOfWork ALS store, no explicit ProcessingContext is threaded.
      */
     async deliver(
       sequencedEvent: SequencedEvent,
       handlers: Array<EventHandlerRegistration<any>>,
       handlerContext: EventHandlerContext,
-      processingContext?: ProcessingContext,
     ): Promise<void> {
       const event = sequencedEvent.event
       const seqId = sequenceIdentifier(event)
@@ -68,7 +69,6 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
           seqId,
           { blocked: true, position: Number(sequencedEvent.sequence) },
         ),
-        processingContext,
       )
       if (blocked) return
 
@@ -85,16 +85,13 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
 
           const decision = policy.decide(letter, error)
           if (decision.shouldEnqueue) {
-            await queue.enqueue(
-              {
-                ...letter,
-                cause: decision.cause ?? letter.cause,
-                diagnostics: decision.diagnostics
-                  ? { ...letter.diagnostics, ...decision.diagnostics }
-                  : letter.diagnostics,
-              },
-              processingContext,
-            )
+            await queue.enqueue({
+              ...letter,
+              cause: decision.cause ?? letter.cause,
+              diagnostics: decision.diagnostics
+                ? { ...letter.diagnostics, ...decision.diagnostics }
+                : letter.diagnostics,
+            })
           }
           // Error is consumed by DLQ — don't propagate
           return

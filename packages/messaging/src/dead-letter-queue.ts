@@ -1,5 +1,4 @@
 import type { EventMessage } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 
 /**
  * A dead letter — an event that failed processing and was parked
@@ -64,15 +63,16 @@ export function alwaysEnqueuePolicy(): EnqueuePolicy {
  *
  * Typical sequence identifier: aggregate ID or correlation ID.
  *
- * All mutation methods accept an optional ProcessingContext so the DLQ
- * can participate in the active transaction (e.g., a database-backed DLQ
- * stores dead letters in the same transaction as the projection update).
+ * Database-backed implementations participate in the active UnitOfWork via
+ * the ALS-managed transaction (read through `getActiveTransaction()` /
+ * `getResource(TRANSACTION_KEY)`); no `ProcessingContext` parameter is
+ * threaded through the public surface.
  */
 export interface SequencedDeadLetterQueue {
   /**
    * Enqueue a dead letter into the given sequence.
    */
-  enqueue(letter: DeadLetter, context?: ProcessingContext): Promise<void>
+  enqueue(letter: DeadLetter): Promise<void>
 
   /**
    * Enqueue a dead letter only if the sequence already has dead letters.
@@ -81,12 +81,12 @@ export interface SequencedDeadLetterQueue {
    * unnecessary objects).
    * Returns true if the letter was enqueued (sequence existed).
    */
-  enqueueIfPresent(sequenceIdentifier: string, letterSupplier: () => DeadLetter, context?: ProcessingContext): Promise<boolean>
+  enqueueIfPresent(sequenceIdentifier: string, letterSupplier: () => DeadLetter): Promise<boolean>
 
   /**
    * Remove a dead letter from the queue (successfully reprocessed).
    */
-  evict(sequenceIdentifier: string, letter: DeadLetter, context?: ProcessingContext): Promise<void>
+  evict(sequenceIdentifier: string, letter: DeadLetter): Promise<void>
 
   /**
    * Re-insert a dead letter at the front of its sequence with updated properties.
@@ -94,23 +94,22 @@ export interface SequencedDeadLetterQueue {
   requeue(
     letter: DeadLetter,
     update?: Partial<Pick<DeadLetter, "cause" | "diagnostics">>,
-    context?: ProcessingContext,
   ): Promise<void>
 
   /**
    * Check if a sequence has any dead letters.
    */
-  contains(sequenceIdentifier: string, context?: ProcessingContext): Promise<boolean>
+  contains(sequenceIdentifier: string): Promise<boolean>
 
   /**
    * Get all dead letters in a sequence, in insertion order.
    */
-  deadLetterSequence(sequenceIdentifier: string, context?: ProcessingContext): Promise<DeadLetter[]>
+  deadLetterSequence(sequenceIdentifier: string): Promise<DeadLetter[]>
 
   /**
    * Get all sequence identifiers that have dead letters.
    */
-  sequenceIdentifiers(context?: ProcessingContext): Promise<string[]>
+  sequenceIdentifiers(): Promise<string[]>
 
   /**
    * Process the oldest dead letter sequence matching the filter.
@@ -123,7 +122,6 @@ export interface SequencedDeadLetterQueue {
   process(
     sequenceFilter: (sequenceId: string) => boolean,
     processingTask: (letter: DeadLetter) => Promise<EnqueueDecision>,
-    context?: ProcessingContext,
   ): Promise<boolean>
 
   /** Total number of dead letters across all sequences. */
@@ -133,7 +131,7 @@ export interface SequencedDeadLetterQueue {
   amountOfSequences(): number
 
   /** Clear all dead letters. */
-  clear(context?: ProcessingContext): Promise<void>
+  clear(): Promise<void>
 
   /**
    * Check if the queue is full for the given sequence.
@@ -159,7 +157,7 @@ export function createInMemoryDeadLetterQueue(options?: {
   const processing = new Set<string>()
 
   return {
-    async enqueue(letter, _context?) {
+    async enqueue(letter) {
       const seq = sequences.get(letter.sequenceIdentifier)
       if (seq) {
         if (seq.length >= maxSequenceSize) {
@@ -178,7 +176,7 @@ export function createInMemoryDeadLetterQueue(options?: {
       }
     },
 
-    async enqueueIfPresent(sequenceIdentifier, letterSupplier, _context?) {
+    async enqueueIfPresent(sequenceIdentifier, letterSupplier) {
       const seq = sequences.get(sequenceIdentifier)
       if (!seq) return false
       if (seq.length >= maxSequenceSize) {
@@ -190,7 +188,7 @@ export function createInMemoryDeadLetterQueue(options?: {
       return true
     },
 
-    async evict(sequenceIdentifier, letter, _context?) {
+    async evict(sequenceIdentifier, letter) {
       const seq = sequences.get(sequenceIdentifier)
       if (!seq) return
       const idx = seq.indexOf(letter)
@@ -198,7 +196,7 @@ export function createInMemoryDeadLetterQueue(options?: {
       if (seq.length === 0) sequences.delete(sequenceIdentifier)
     },
 
-    async requeue(letter, update?, _context?) {
+    async requeue(letter, update?) {
       const seq = sequences.get(letter.sequenceIdentifier)
       if (!seq) return
 
@@ -216,20 +214,20 @@ export function createInMemoryDeadLetterQueue(options?: {
       seq.unshift(updated)
     },
 
-    async contains(sequenceIdentifier, _context?) {
+    async contains(sequenceIdentifier) {
       const seq = sequences.get(sequenceIdentifier)
       return seq !== undefined && seq.length > 0
     },
 
-    async deadLetterSequence(sequenceIdentifier, _context?) {
+    async deadLetterSequence(sequenceIdentifier) {
       return sequences.get(sequenceIdentifier) ?? []
     },
 
-    async sequenceIdentifiers(_context?) {
+    async sequenceIdentifiers() {
       return [...sequences.keys()]
     },
 
-    async process(sequenceFilter, processingTask, _context?) {
+    async process(sequenceFilter, processingTask) {
       // Find oldest untaken sequence matching filter
       let oldestId: string | undefined
       let oldestTime = Infinity
@@ -286,7 +284,7 @@ export function createInMemoryDeadLetterQueue(options?: {
       return sequences.size
     },
 
-    async clear(_context?) {
+    async clear() {
       sequences.clear()
       processing.clear()
     },
