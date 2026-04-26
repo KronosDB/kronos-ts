@@ -1,6 +1,7 @@
 import type { Metadata, ResourceKey, Configuration } from "@kronos-ts/common"
 import { type ProcessingContext, type PhaseValue } from "./processing-context.js"
 import {
+  processingStateStorage,
   getResource,
   setResource,
   computeIfAbsent as alsComputeIfAbsent,
@@ -169,7 +170,14 @@ export function createProcessingContext(metadata: Metadata, configuration?: Conf
       // Execute phases in ascending order.
       // After each phase, re-check for newly registered phases
       // (handlers can register hooks during execution).
+      //
+      // Phase 3 / Plan 02 (CTX-03, D-30): hooks registered via the module-level
+      // lifecycle accessors (`on`, `onPrepareCommit`, …) write into the ALS
+      // state's `phaseActions` Map, NOT this ctx's local map. Drain both at
+      // each iteration so the two registration paths are observably
+      // equivalent — same firing order rules, same fail-fast semantics.
       while (true) {
+        absorbAlsLifecycle()
         const sortedPhases = [...phaseActions.keys()].sort((a, b) => a - b)
         let executedAny = false
 
@@ -200,6 +208,7 @@ export function createProcessingContext(metadata: Metadata, configuration?: Conf
 
     async runErrorHandlers(error: unknown, phase?: PhaseValue): Promise<void> {
       lastError = error
+      absorbAlsLifecycle()
       for (const handler of errorHandlers) {
         try {
           await handler(ctx, error, phase)
@@ -210,6 +219,7 @@ export function createProcessingContext(metadata: Metadata, configuration?: Conf
     },
 
     runCompleteHandlers(): void {
+      absorbAlsLifecycle()
       for (const handler of completeHandlers) {
         try {
           handler(ctx)
@@ -218,6 +228,56 @@ export function createProcessingContext(metadata: Metadata, configuration?: Conf
         }
       }
     },
+  }
+
+  /**
+   * Phase 3 / Plan 02 (CTX-03, D-30): drain any lifecycle registrations made
+   * via the module-level accessors (`on`, `onPrepareCommit`, `onError`,
+   * `whenComplete`, …) into this ctx's local lifecycle structures.
+   *
+   * The module-level accessors are thin wrappers over `registerPhaseAction` /
+   * `registerErrorHandler` / `registerCompleteHandler` — those write into the
+   * ALS state's same-named fields, separate from this ctx's local maps. By
+   * absorbing them at every executePhases iteration (and before runError /
+   * runComplete), registrations made through either path fire identically.
+   *
+   * Only meaningful while inside `processingStateStorage.run` (i.e. during
+   * phase execution); a no-op outside.
+   */
+  function absorbAlsLifecycle(): void {
+    const state = processingStateStorage.getStore()
+    if (state === undefined) return
+
+    if (state.phaseActions.size > 0) {
+      for (const [phase, actions] of state.phaseActions) {
+        if (actions.length === 0) continue
+        let bucket = phaseActions.get(phase)
+        if (!bucket) {
+          bucket = []
+          phaseActions.set(phase, bucket)
+        }
+        for (const a of actions) {
+          // Adapt phase-state-shape `() => Promise<void> | void` to
+          // ctx-shape `(ctx) => Promise<void> | void` (ignored arg).
+          bucket.push(() => a())
+        }
+        actions.length = 0
+      }
+    }
+
+    if (state.errorHandlers.length > 0) {
+      for (const h of state.errorHandlers) {
+        errorHandlers.push((_ctx, err, phase) => h(err, phase))
+      }
+      state.errorHandlers.length = 0
+    }
+
+    if (state.completeHandlers.length > 0) {
+      for (const h of state.completeHandlers) {
+        completeHandlers.push(() => h())
+      }
+      state.completeHandlers.length = 0
+    }
   }
 
   return ctx

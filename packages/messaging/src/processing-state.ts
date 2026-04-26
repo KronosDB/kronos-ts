@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks"
 import type { Metadata, ResourceKey } from "@kronos-ts/common"
-import type { PhaseValue } from "./processing-context.js"
+import { Phase, type PhaseValue } from "./processing-context.js"
 
 // D-13: NOT exported.
 type PhaseAction = () => Promise<void> | void
@@ -102,6 +102,38 @@ export function registerErrorHandler(handler: ErrorHandler): void {
 export function registerCompleteHandler(handler: CompleteHandler): void {
   const state = requireState()
   state.completeHandlers.push(handler)
+}
+
+// ── Lifecycle accessors (CTX-03, D-30) ──────────────────────────────────
+//
+// Module-level equivalents of ctx.on / ctx.onError / ctx.whenComplete /
+// ctx.onPrepareCommit / ctx.onCommit / ctx.onAfterCommit. Thin wrappers
+// over the Phase 1 accessors (registerPhaseAction / registerErrorHandler /
+// registerCompleteHandler). Same fail-fast contract (D-31): throw
+// NoActiveUnitOfWork outside an active processingStateStorage.run.
+
+export function on(phase: PhaseValue, action: PhaseAction): void {
+  registerPhaseAction(phase, action)
+}
+
+export function onPrepareCommit(action: PhaseAction): void {
+  registerPhaseAction(Phase.PREPARE_COMMIT, action)
+}
+
+export function onCommit(action: PhaseAction): void {
+  registerPhaseAction(Phase.COMMIT, action)
+}
+
+export function onAfterCommit(action: PhaseAction): void {
+  registerPhaseAction(Phase.AFTER_COMMIT, action)
+}
+
+export function onError(handler: ErrorHandler): void {
+  registerErrorHandler(handler)
+}
+
+export function whenComplete(handler: CompleteHandler): void {
+  registerCompleteHandler(handler)
 }
 
 // ── withOverride (D-07..D-09) ──────────────────────────────────────────
