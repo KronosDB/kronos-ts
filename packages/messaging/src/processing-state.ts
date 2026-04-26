@@ -1,6 +1,34 @@
 import { AsyncLocalStorage } from "node:async_hooks"
 import type { Metadata, ResourceKey } from "@kronos-ts/common"
-import { Phase, type PhaseValue } from "./processing-context.js"
+
+/**
+ * Lifecycle phases for message processing, ordered by execution priority.
+ *
+ * Phases execute in ascending order. Actions within the same phase
+ * execute in registration order. Actions registered during execution
+ * (e.g., onPrepareCommit from a handler) are picked up when their
+ * phase comes.
+ *
+ * Plan 03-04 (CTX-04 / D-34): Phase enum relocated here from the
+ * deleted processing-context.ts. The numeric values are stable —
+ * external code (handler enhancers, processors) compares phase numbers.
+ */
+export const Phase = {
+  /** Setup before handler invocation (e.g., transaction start). */
+  PRE_INVOCATION: -10000,
+  /** Actual handler execution. */
+  INVOCATION: 0,
+  /** Cleanup after handler, before commit. */
+  POST_INVOCATION: 10000,
+  /** Prepare for commit (e.g., event store flush, token store). */
+  PREPARE_COMMIT: 20000,
+  /** Actual commit (e.g., database transaction commit). */
+  COMMIT: 30000,
+  /** Post-commit notifications (e.g., subscription query updates). */
+  AFTER_COMMIT: 40000,
+} as const
+
+export type PhaseValue = (typeof Phase)[keyof typeof Phase]
 
 // D-13: NOT exported.
 type PhaseAction = () => Promise<void> | void

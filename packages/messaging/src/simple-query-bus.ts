@@ -1,8 +1,6 @@
 import type { QueryBus } from "./query-bus.js"
 import type { QueryMessage } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
 import type { SubscriptionQueryResult, UpdateHandler } from "./subscription-query.js"
-import type { UnitOfWorkFactory } from "./unit-of-work.js"
 import { createUpdateHandler, runAfterCommitOrImmediately } from "./subscription-query.js"
 import { runInUoW } from "./unit-of-work.js"
 import { qualifiedNameToString } from "@kronos-ts/common"
@@ -10,18 +8,19 @@ import { qualifiedNameToString } from "@kronos-ts/common"
 /**
  * Simple in-process query bus with subscription query support.
  *
- * Direct queries are dispatched within a UnitOfWork.
+ * Direct queries are dispatched within a UnitOfWork via `runInUoW`.
  * Subscription queries receive an initial result plus a stream of
  * incremental updates emitted via `emitUpdate()`.
+ *
+ * Plan 03-04 (CTX-04 / D-34): the explicit `unitOfWorkFactory`
+ * parameter and branch are gone. `runInUoW` is the only codepath.
  *
  * Interceptor support is provided by wrapping with
  * {@link createInterceptingQueryBus}, following Java's pattern of
  * separating concerns (SimpleQueryBus vs InterceptingQueryBus).
  */
-export function createSimpleQueryBus(
-  unitOfWorkFactory?: UnitOfWorkFactory,
-): QueryBus {
-  const handlers = new Map<string, (message: QueryMessage, ctx: ProcessingContext) => Promise<unknown>>()
+export function createSimpleQueryBus(): QueryBus {
+  const handlers = new Map<string, (message: QueryMessage) => Promise<unknown>>()
 
   // Active subscription query handlers, keyed by query identifier
   const subscriptions = new Map<string, UpdateHandler>()
@@ -34,20 +33,15 @@ export function createSimpleQueryBus(
         throw new Error(`No handler registered for query "${key}"`)
       }
 
-      // Plan 03-01 (D-32) / Plan 03-03 (CTX-01): mirrors
-      // simple-command-bus.dispatch. Default codepath routes through runInUoW
-      // for ALS-aware nesting; explicit factory branch preserved for
-      // transactional / extension wiring until Plan 04 (D-34).
-      if (unitOfWorkFactory !== undefined) {
-        const uow = unitOfWorkFactory(message.metadata)
-        return uow.executeWithResult(async (ctx) => handler(message, ctx))
-      }
-      return runInUoW(message.metadata, (ctx) => handler(message, ctx))
+      // Plan 03-01 (D-32) / Plan 03-04 (CTX-04): mirrors
+      // simple-command-bus.dispatch. ALS-aware nesting; primary dispatch
+      // creates a new UoW.
+      return runInUoW(message.metadata, () => handler(message))
     },
 
     subscribe(
       queryName: string,
-      handler: (message: QueryMessage, ctx: ProcessingContext) => Promise<unknown>,
+      handler: (message: QueryMessage) => Promise<unknown>,
     ) {
       const existing = handlers.get(queryName)
       if (existing && existing !== handler) {

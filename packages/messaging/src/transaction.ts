@@ -1,7 +1,12 @@
 import { resourceKey, type ResourceKey } from "@kronos-ts/common"
-import { processingStateStorage, setResource, on, onError } from "./processing-state.js"
-import { Phase, type ProcessingContext } from "./processing-context.js"
-import type { UnitOfWork, UnitOfWorkFactory } from "./unit-of-work.js"
+import {
+  processingStateStorage,
+  setResource,
+  on,
+  onError,
+  Phase,
+} from "./processing-state.js"
+import type { UoWRunner } from "./unit-of-work.js"
 
 /**
  * Manages transaction lifecycle. Users provide an implementation
@@ -51,10 +56,9 @@ export function getActiveTransaction<T = unknown>(): T | undefined {
 }
 
 /**
- * Creates a UnitOfWorkFactory that wraps each UnitOfWork with transaction
- * management. The transaction is:
- * - Started before phase execution
- * - Available via `getActiveTransaction()` and `ctx.get(TRANSACTION_KEY)` throughout
+ * Wraps a delegate runner with transaction management. The transaction is:
+ * - Started before the delegate's action runs
+ * - Available via `getActiveTransaction()` throughout
  * - Committed in the COMMIT phase
  * - Rolled back on error
  *
@@ -63,54 +67,32 @@ export function getActiveTransaction<T = unknown>(): T | undefined {
  * `getActiveTransaction()` inside the UoW see it.
  *
  * ```
- * const txUowFactory = transactionalUnitOfWorkFactory(
- *   defaultUnitOfWorkFactory(),
- *   myTransactionManager,
- * )
+ * const txRunner = transactionalUnitOfWorkFactory(runInUoW, myTransactionManager)
+ * await txRunner(metadata, async () => { ... })
  * ```
+ *
+ * Plan 03-04 (CTX-04 / D-34): rewritten as a composable runner wrapper.
+ * Previously took/returned `UnitOfWorkFactory`; the UoW interface and
+ * factory are gone, so this now takes/returns `UoWRunner`. The name is
+ * preserved despite the shape change — public docs and extension code
+ * import `transactionalUnitOfWorkFactory` by name. Phase 9 (Extension
+ * Migration) can rename if the kronos() app API warrants.
  */
 export function transactionalUnitOfWorkFactory<T>(
-  delegate: UnitOfWorkFactory,
+  delegate: UoWRunner,
   txManager: TransactionManager<T>,
-): UnitOfWorkFactory {
-  return (metadata) => {
-    const inner = delegate(metadata)
-
-    const wrapper: UnitOfWork = {
-      // Forwarders preserve the UnitOfWork interface — buffered pre-registration
-      // is no longer used by transactionalUnitOfWorkFactory itself, but external
-      // callers may still pre-register hooks before executeWithResult.
-      // Plan 04 deletes the UnitOfWork interface and these forwarders disappear.
-      on: (phase, action) => inner.on(phase, action),
-      onError: (handler) => inner.onError(handler),
-      whenComplete: (handler) => inner.whenComplete(handler),
-
-      async executeWithResult<R>(action: (ctx: ProcessingContext) => Promise<R>): Promise<R> {
-        const tx = await txManager.begin()
-
-        // Inner UoW's executeWithResult enters processingStateStorage.run (Phase 1 wiring),
-        // so setResource AND module-level lifecycle registrations inside the action
-        // callback write to the active ALS state. D-22: a single ALS boundary.
-        //
-        // Phase 3 / Plan 02 (CTX-03): commit / rollback are registered via the
-        // module-level on(Phase.COMMIT, ...) and onError(...) accessors INSIDE the
-        // action body — no more inner.on / inner.onError buffered pre-registration.
-        // INVOCATION runs first; on entry we register commit (which fires later
-        // when the COMMIT phase runs) and onError (a late-bound error handler the
-        // ctx fires from runErrorHandlers if any phase throws).
-        return inner.executeWithResult(async (ctx) => {
-          setResource(TRANSACTION_KEY, tx)
-          on(Phase.COMMIT, async () => {
-            await txManager.commit(tx)
-          })
-          onError(async () => {
-            await txManager.rollback(tx)
-          })
-          return action(ctx)
-        })
-      },
-    }
-
-    return wrapper
+): UoWRunner {
+  return async (metadata, action) => {
+    const tx = await txManager.begin()
+    return delegate(metadata, async () => {
+      setResource(TRANSACTION_KEY, tx)
+      on(Phase.COMMIT, async () => {
+        await txManager.commit(tx)
+      })
+      onError(async () => {
+        await txManager.rollback(tx)
+      })
+      return action()
+    })
   }
 }

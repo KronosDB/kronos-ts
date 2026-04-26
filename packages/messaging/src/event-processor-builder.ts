@@ -1,6 +1,6 @@
 import type { EventHandlersDefinition } from "./event-handler.js"
 import type { TokenStore } from "./token-store.js"
-import type { UnitOfWorkFactory } from "./unit-of-work.js"
+import type { UoWRunner } from "./unit-of-work.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
 import type { SequencedDeadLetterQueue } from "./dead-letter-queue.js"
 
@@ -20,7 +20,7 @@ export interface TrackingProcessorModule extends EventProcessorBase {
   readonly batchSize?: number
   readonly pollingIntervalMs?: number
   readonly tokenStore?: TokenStore
-  readonly unitOfWorkFactory?: UnitOfWorkFactory
+  readonly unitOfWorkRunner?: UoWRunner
   readonly errorHandler?: EventProcessingErrorHandler
   readonly deadLetterQueue?: SequencedDeadLetterQueue
   readonly initialSegmentCount?: number
@@ -33,7 +33,7 @@ export interface TrackingProcessorModule extends EventProcessorBase {
  */
 export interface SubscribingProcessorModule extends EventProcessorBase {
   readonly kind: "subscribing"
-  readonly unitOfWorkFactory?: UnitOfWorkFactory
+  readonly unitOfWorkRunner?: UoWRunner
   readonly errorHandler?: EventProcessingErrorHandler
 }
 
@@ -67,7 +67,7 @@ export class TrackingProcessorBuilder {
   private _batchSize?: number
   private _pollingIntervalMs?: number
   private _tokenStore?: TokenStore
-  private _unitOfWorkFactory?: UnitOfWorkFactory
+  private _unitOfWorkRunner?: UoWRunner
   private _errorHandler?: EventProcessingErrorHandler
   private _deadLetterQueue?: SequencedDeadLetterQueue
   private _initialSegmentCount?: number
@@ -102,9 +102,13 @@ export class TrackingProcessorBuilder {
     return this
   }
 
-  /** Override the UnitOfWork factory for this processor. */
-  unitOfWorkFactory(factory: UnitOfWorkFactory): this {
-    this._unitOfWorkFactory = factory
+  /**
+   * Override the UnitOfWork runner for this processor. Compose with
+   * `transactionalUnitOfWorkFactory(runInUoW, txManager)` to attach
+   * transactional semantics.
+   */
+  unitOfWorkRunner(runner: UoWRunner): this {
+    this._unitOfWorkRunner = runner
     return this
   }
 
@@ -135,7 +139,7 @@ export class TrackingProcessorBuilder {
       batchSize: this._batchSize,
       pollingIntervalMs: this._pollingIntervalMs,
       tokenStore: this._tokenStore,
-      unitOfWorkFactory: this._unitOfWorkFactory,
+      unitOfWorkRunner: this._unitOfWorkRunner,
       errorHandler: this._errorHandler,
       deadLetterQueue: this._deadLetterQueue,
       initialSegmentCount: this._initialSegmentCount,
@@ -169,7 +173,7 @@ export function subscribingProcessor(name: string): SubscribingProcessorBuilder 
 export class SubscribingProcessorBuilder {
   private readonly _name: string
   private readonly _handlers: EventHandlersDefinition[] = []
-  private _unitOfWorkFactory?: UnitOfWorkFactory
+  private _unitOfWorkRunner?: UoWRunner
   private _errorHandler?: EventProcessingErrorHandler
 
   constructor(name: string) {
@@ -182,9 +186,13 @@ export class SubscribingProcessorBuilder {
     return this
   }
 
-  /** Override the UnitOfWork factory for this processor. */
-  unitOfWorkFactory(factory: UnitOfWorkFactory): this {
-    this._unitOfWorkFactory = factory
+  /**
+   * Override the UnitOfWork runner for this processor. Compose with
+   * `transactionalUnitOfWorkFactory(runInUoW, txManager)` to attach
+   * transactional semantics.
+   */
+  unitOfWorkRunner(runner: UoWRunner): this {
+    this._unitOfWorkRunner = runner
     return this
   }
 
@@ -200,7 +208,7 @@ export class SubscribingProcessorBuilder {
       kind: "subscribing",
       name: this._name,
       handlerGroups: this._handlers,
-      unitOfWorkFactory: this._unitOfWorkFactory,
+      unitOfWorkRunner: this._unitOfWorkRunner,
       errorHandler: this._errorHandler,
     }
   }

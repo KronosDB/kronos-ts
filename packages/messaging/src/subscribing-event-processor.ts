@@ -1,10 +1,9 @@
-import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
+import { emptyMetadata, qualifiedNameToString, type Metadata } from "@kronos-ts/common"
 import type { EventMessage } from "./message.js"
 import type { EventHandlerRegistration, EventHandlerContext } from "./handler.js"
 import type { EventHandlersDefinition } from "./event-handler.js"
-import type { ProcessingContext } from "./processing-context.js"
-import type { UnitOfWorkFactory } from "./unit-of-work.js"
-import { defaultUnitOfWorkFactory } from "./unit-of-work.js"
+import type { UoWRunner } from "./unit-of-work.js"
+import { runInNewUoW } from "./unit-of-work.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
 import { loggingErrorHandler } from "./tracking-event-processor.js"
 import type { SubscribableEventSource } from "./event-bus.js"
@@ -36,8 +35,8 @@ export interface SubscribingEventProcessorOptions {
   name: string
   eventSource: SubscribableEventSource
   handlerGroups: ReadonlyArray<EventHandlersDefinition>
-  contextFactory: (ctx: ProcessingContext) => EventHandlerContext
-  unitOfWorkFactory?: UnitOfWorkFactory
+  contextFactory: (metadata: Metadata) => EventHandlerContext
+  unitOfWorkRunner?: UoWRunner
   errorHandler?: EventProcessingErrorHandler
 }
 
@@ -56,7 +55,7 @@ export function createSubscribingEventProcessor(
     eventSource,
     handlerGroups,
     contextFactory,
-    unitOfWorkFactory = defaultUnitOfWorkFactory(),
+    unitOfWorkRunner = runInNewUoW,
     errorHandler = loggingErrorHandler(name),
   } = options
 
@@ -80,23 +79,19 @@ export function createSubscribingEventProcessor(
   async function handleEvents(events: ReadonlyArray<EventMessage>) {
     if (!isRunning || events.length === 0) return
 
-    const uow = unitOfWorkFactory(emptyMetadata())
-    await uow.executeWithResult(async (ctx) => {
+    await unitOfWorkRunner(emptyMetadata(), async () => {
       for (const event of events) {
-        await deliverEvent(event, ctx)
+        await deliverEvent(event)
       }
     })
   }
 
-  async function deliverEvent(event: EventMessage, ctx: ProcessingContext) {
+  async function deliverEvent(event: EventMessage) {
     const eventName = qualifiedNameToString(event.name)
     const handlers = handlerMap.get(eventName)
     if (!handlers || handlers.length === 0) return
 
-    const handlerContext = {
-      ...contextFactory(ctx),
-      metadata: event.metadata,  // Use per-event metadata, not batch-level empty metadata
-    }
+    const handlerContext = contextFactory(event.metadata)
     for (const reg of handlers) {
       try {
         await reg.handler(event.payload, handlerContext)

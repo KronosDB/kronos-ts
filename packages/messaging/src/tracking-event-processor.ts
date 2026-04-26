@@ -1,9 +1,9 @@
-import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
+import { emptyMetadata, qualifiedNameToString, type Metadata } from "@kronos-ts/common"
 import type { EventHandlerRegistration, EventHandlerContext } from "./handler.js"
 import type { EventHandlersDefinition } from "./event-handler.js"
 import type { StreamableEventSource, MessageStream, SequencedEvent } from "./event-source.js"
-import type { ProcessingContext } from "./processing-context.js"
-import type { UnitOfWorkFactory } from "./unit-of-work.js"
+import type { UoWRunner } from "./unit-of-work.js"
+import { runInNewUoW } from "./unit-of-work.js"
 import type { TokenStore } from "./token-store.js"
 import type { TrackingToken } from "./tracking-token.js"
 import {
@@ -15,7 +15,6 @@ import {
 } from "./tracking-token.js"
 import { REPLAY_STATE_KEY } from "./replay-token.js"
 import { setResource, onPrepareCommit } from "./processing-state.js"
-import { defaultUnitOfWorkFactory } from "./unit-of-work.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 
 /**
@@ -49,8 +48,8 @@ export interface TrackingEventProcessorOptions {
   name: string
   eventSource: StreamableEventSource
   handlerGroups: ReadonlyArray<EventHandlersDefinition>
-  contextFactory: (ctx: ProcessingContext) => EventHandlerContext
-  unitOfWorkFactory?: UnitOfWorkFactory
+  contextFactory: (metadata: Metadata) => EventHandlerContext
+  unitOfWorkRunner?: UoWRunner
   tokenStore?: TokenStore
   /** Polling interval when no events are available (ms). Default: 500. */
   pollingIntervalMs?: number
@@ -100,7 +99,7 @@ export function createTrackingEventProcessor(
     eventSource,
     handlerGroups,
     contextFactory,
-    unitOfWorkFactory = defaultUnitOfWorkFactory(),
+    unitOfWorkRunner = runInNewUoW,
     tokenStore,
     pollingIntervalMs = 500,
     batchSize = 100,
@@ -216,14 +215,13 @@ export function createTrackingEventProcessor(
   }
 
   async function processBatch(batch: SequencedEvent[]) {
-    const uow = unitOfWorkFactory(emptyMetadata())
     let batchEndToken: TrackingToken = token
 
-    await uow.executeWithResult(async (ctx) => {
+    await unitOfWorkRunner(emptyMetadata(), async () => {
       for (const sequencedEvent of batch) {
         setResource(REPLAY_STATE_KEY, { replaying: isReplaying(batchEndToken) })
 
-        await deliverEvent(sequencedEvent, ctx)
+        await deliverEvent(sequencedEvent)
 
         batchEndToken = advanceToken(batchEndToken, sequencedEvent.sequence + 1n)
       }
@@ -239,19 +237,13 @@ export function createTrackingEventProcessor(
     token = batchEndToken
   }
 
-  async function deliverEvent(
-    sequencedEvent: SequencedEvent,
-    ctx: ProcessingContext,
-  ) {
+  async function deliverEvent(sequencedEvent: SequencedEvent) {
     const event = sequencedEvent.event
     const eventName = qualifiedNameToString(event.name)
     const handlers = handlerMap.get(eventName)
     if (!handlers || handlers.length === 0) return
 
-    const handlerContext = {
-      ...contextFactory(ctx),
-      metadata: event.metadata,
-    }
+    const handlerContext = contextFactory(event.metadata)
     for (const reg of handlers) {
       try {
         await reg.handler(event.payload, handlerContext)

@@ -1,5 +1,5 @@
 import type { TokenStore } from "./token-store.js"
-import type { UnitOfWorkFactory } from "./unit-of-work.js"
+import type { UoWRunner } from "./unit-of-work.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
 import type { SequencedDeadLetterQueue } from "./dead-letter-queue.js"
 
@@ -42,8 +42,8 @@ export interface ProcessorConfiguration {
   /** Override the token store for this processor. */
   tokenStore?: TokenStore
 
-  /** Override the UnitOfWorkFactory for this processor. */
-  unitOfWorkFactory?: UnitOfWorkFactory
+  /** Override the UnitOfWork runner for this processor. */
+  unitOfWorkRunner?: UoWRunner
 
   /** Override the error handler for this processor. */
   errorHandler?: EventProcessingErrorHandler

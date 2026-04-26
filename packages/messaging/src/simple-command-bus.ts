@@ -1,7 +1,5 @@
 import type { CommandBus } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
-import type { ProcessingContext } from "./processing-context.js"
-import type { UnitOfWorkFactory } from "./unit-of-work.js"
 import { runInUoW } from "./unit-of-work.js"
 import { qualifiedNameToString } from "@kronos-ts/common"
 
@@ -9,17 +7,20 @@ import { qualifiedNameToString } from "@kronos-ts/common"
  * Simple in-process command bus.
  *
  * Maintains a local handler map and dispatches commands directly,
- * wrapping each dispatch in a UnitOfWork that drives the ProcessingContext
- * lifecycle.
+ * wrapping each dispatch in a UnitOfWork via `runInUoW`.
+ *
+ * Plan 03-04 (CTX-04 / D-34): the explicit `unitOfWorkFactory`
+ * parameter and branch are gone. `runInUoW` is the only codepath —
+ * transactional wiring composes at the runner level via
+ * `transactionalUnitOfWorkFactory(runInUoW, txManager)` and is consumed
+ * by extensions / processors directly, not by the bus.
  *
  * Interceptor support is provided by wrapping with
  * {@link createInterceptingCommandBus}, following Java's pattern of
  * separating concerns (SimpleCommandBus vs InterceptingCommandBus).
  */
-export function createSimpleCommandBus(
-  unitOfWorkFactory?: UnitOfWorkFactory,
-): CommandBus {
-  const handlers = new Map<string, (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>>()
+export function createSimpleCommandBus(): CommandBus {
+  const handlers = new Map<string, (message: CommandMessage) => Promise<unknown>>()
 
   return {
     async dispatch(message: CommandMessage): Promise<unknown> {
@@ -29,25 +30,15 @@ export function createSimpleCommandBus(
         throw new Error(`No handler registered for command "${key}"`)
       }
 
-      // Plan 03-01 (D-32) / Plan 03-03 (CTX-01): default codepath routes
-      // through runInUoW so that nested dispatch (handler-internal bus calls)
-      // detects the active UoW via ALS and reuses it. Primary dispatch (no
-      // active UoW) creates a new one. The `context` parameter is gone — UoW
-      // detection is purely ALS-based.
-      if (unitOfWorkFactory !== undefined) {
-        // Caller provided a custom factory (e.g., transactionalUnitOfWorkFactory) —
-        // preserve the explicit-factory codepath so transactional wiring keeps
-        // working. Plan 04 (D-34) rewrites transactionalUnitOfWorkFactory as a
-        // composable runner wrapper and this branch disappears.
-        const uow = unitOfWorkFactory(message.metadata)
-        return uow.executeWithResult(async (ctx) => handler(message, ctx))
-      }
-      return runInUoW(message.metadata, (ctx) => handler(message, ctx))
+      // Plan 03-01 (D-32) / Plan 03-04 (CTX-04): nested dispatch detects
+      // the active UoW via ALS and reuses it; primary dispatch creates a
+      // new one. UoW detection is purely ALS-based.
+      return runInUoW(message.metadata, () => handler(message))
     },
 
     subscribe(
       commandName: string,
-      handler: (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>,
+      handler: (message: CommandMessage) => Promise<unknown>,
     ) {
       const existing = handlers.get(commandName)
       if (existing && existing !== handler) {

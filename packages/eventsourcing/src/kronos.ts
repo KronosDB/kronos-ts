@@ -26,7 +26,7 @@ import type {
   HandlerInterceptor,
   HandlerEnhancerDefinition,
   CorrelationDataProvider,
-  UnitOfWorkFactory,
+  UoWRunner,
   TokenStore,
   EventProcessingErrorHandler,
   SequencedDeadLetterQueue,
@@ -84,7 +84,7 @@ export interface TrackingProcessorOptions {
   batchSize?: number
   pollingIntervalMs?: number
   tokenStore?: TokenStore
-  unitOfWorkFactory?: UnitOfWorkFactory
+  unitOfWorkRunner?: UoWRunner
   errorHandler?: EventProcessingErrorHandler
   deadLetterQueue?: SequencedDeadLetterQueue
   initialSegmentCount?: number
@@ -93,7 +93,7 @@ export interface TrackingProcessorOptions {
 }
 
 export interface SubscribingProcessorOptions {
-  unitOfWorkFactory?: UnitOfWorkFactory
+  unitOfWorkRunner?: UoWRunner
   errorHandler?: EventProcessingErrorHandler
   sequencedBy?: (event: unknown) => unknown
   onReset?: () => Promise<void> | void
@@ -341,7 +341,7 @@ export class Kronos {
     if (options?.batchSize) builder.batchSize(options.batchSize)
     if (options?.pollingIntervalMs) builder.pollingIntervalMs(options.pollingIntervalMs)
     if (options?.tokenStore) builder.tokenStore(options.tokenStore)
-    if (options?.unitOfWorkFactory) builder.unitOfWorkFactory(options.unitOfWorkFactory)
+    if (options?.unitOfWorkRunner) builder.unitOfWorkRunner(options.unitOfWorkRunner)
     if (options?.errorHandler) builder.errorHandler(options.errorHandler)
     if (options?.deadLetterQueue) builder.deadLetterQueue(options.deadLetterQueue)
     if (options?.initialSegmentCount) builder.initialSegmentCount(options.initialSegmentCount)
@@ -408,7 +408,7 @@ export class Kronos {
     for (const group of handlerGroups) {
       builder.registerEventHandler(group)
     }
-    if (options?.unitOfWorkFactory) builder.unitOfWorkFactory(options.unitOfWorkFactory)
+    if (options?.unitOfWorkRunner) builder.unitOfWorkRunner(options.unitOfWorkRunner)
     if (options?.errorHandler) builder.errorHandler(options.errorHandler)
 
     this._configurer.registerEventProcessor(() => builder.build())
@@ -519,8 +519,8 @@ export class Kronos {
     return this
   }
 
-  /** Override the UnitOfWork factory. */
-  unitOfWorkFactory(builder: ComponentBuilder<UnitOfWorkFactory>): this {
+  /** Override the UnitOfWork runner. */
+  unitOfWorkRunner(builder: ComponentBuilder<UoWRunner>): this {
     this._configurer.messaging((m) => m.registerUnitOfWorkFactory(builder))
     return this
   }
