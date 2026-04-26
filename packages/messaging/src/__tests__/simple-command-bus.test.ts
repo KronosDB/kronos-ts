@@ -1,10 +1,15 @@
 import { describe, expect, it } from "bun:test"
-import { qn, emptyMetadata, generateIdentifier, mergeMetadata, metadataAnd } from "@kronos-ts/common"
+import { qn, emptyMetadata, generateIdentifier, metadataAnd } from "@kronos-ts/common"
 import type { CommandMessage } from "../message.js"
-import type { ProcessingContext } from "../processing-context.js"
-import { Phase } from "../processing-context.js"
 import { createSimpleCommandBus } from "../simple-command-bus.js"
 import { createInterceptingCommandBus } from "../intercepting-command-bus.js"
+import {
+  onPrepareCommit,
+  onCommit,
+  onAfterCommit,
+  onError,
+  whenComplete,
+} from "../processing-state.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,16 +21,6 @@ function commandMsg(name: string, payload: unknown = {}): CommandMessage {
     name: qn("test", name),
     payload,
     metadata: emptyMetadata(),
-    timestamp: Date.now(),
-  }
-}
-
-function commandMsgWithMeta(name: string, meta: Record<string, string>): CommandMessage {
-  return {
-    identifier: generateIdentifier(),
-    name: qn("test", name),
-    payload: {},
-    metadata: meta,
     timestamp: Date.now(),
   }
 }
@@ -77,32 +72,16 @@ describe("SimpleCommandBus", () => {
   })
 
   describe("UnitOfWork lifecycle", () => {
-    it("provides a ProcessingContext to the handler", async () => {
-      const bus = createSimpleCommandBus()
-      let receivedCtx: ProcessingContext | undefined
-
-      bus.subscribe("test.Cmd", async (_msg, ctx) => {
-        receivedCtx = ctx
-        return undefined
-      })
-
-      await bus.dispatch(commandMsg("Cmd"))
-
-      expect(receivedCtx).toBeDefined()
-      expect(receivedCtx!.isCompleted).toBe(true)
-    })
-
     it("executes lifecycle phases around handler invocation", async () => {
       const bus = createSimpleCommandBus()
       const phases: string[] = []
 
-      // Use a custom UnitOfWork factory to observe phase execution
-      bus.subscribe("test.Cmd", async (_msg, ctx) => {
-        // Register hooks from inside the handler -- they should fire
-        // in later phases of the same UnitOfWork
-        ctx.onPrepareCommit(() => { phases.push("prepareCommit") })
-        ctx.onCommit(() => { phases.push("commit") })
-        ctx.onAfterCommit(() => { phases.push("afterCommit") })
+      // Plan 03-04: handlers receive only the message; lifecycle hooks are
+      // module-level accessors backed by the active ALS UnitOfWork.
+      bus.subscribe("test.Cmd", async (_msg) => {
+        onPrepareCommit(() => { phases.push("prepareCommit") })
+        onCommit(() => { phases.push("commit") })
+        onAfterCommit(() => { phases.push("afterCommit") })
         phases.push("handler")
         return undefined
       })
@@ -116,10 +95,8 @@ describe("SimpleCommandBus", () => {
       const bus = createSimpleCommandBus()
       const errorsCaught: unknown[] = []
 
-      // We need to hook into the UnitOfWork to register error handlers.
-      // Since the handler receives ProcessingContext, register from inside.
-      bus.subscribe("test.Cmd", async (_msg, ctx) => {
-        ctx.onError((_c, err) => { errorsCaught.push(err) })
+      bus.subscribe("test.Cmd", async (_msg) => {
+        onError(async (err) => { errorsCaught.push(err) })
         throw new Error("handler failed")
       })
 
@@ -132,8 +109,8 @@ describe("SimpleCommandBus", () => {
       const bus = createSimpleCommandBus()
       let completeCalled = false
 
-      bus.subscribe("test.Cmd", async (_msg, ctx) => {
-        ctx.whenComplete(() => { completeCalled = true })
+      bus.subscribe("test.Cmd", async (_msg) => {
+        whenComplete(() => { completeCalled = true })
         return "ok"
       })
 
@@ -146,8 +123,8 @@ describe("SimpleCommandBus", () => {
       const bus = createSimpleCommandBus()
       let completeCalled = false
 
-      bus.subscribe("test.Cmd", async (_msg, ctx) => {
-        ctx.whenComplete(() => { completeCalled = true })
+      bus.subscribe("test.Cmd", async (_msg) => {
+        whenComplete(() => { completeCalled = true })
         throw new Error("boom")
       })
 
@@ -294,10 +271,9 @@ describe("InterceptingCommandBus", () => {
       await bus.dispatch(commandMsg("Cmd"))
       expect(calls).toEqual(["intercepted"])
 
-      // Unsubscribe and dispatch again
       unsub()
       await bus.dispatch(commandMsg("Cmd"))
-      expect(calls).toEqual(["intercepted"]) // no second call
+      expect(calls).toEqual(["intercepted"])
     })
   })
 
@@ -371,7 +347,6 @@ describe("InterceptingCommandBus", () => {
 
       await bus.dispatch(commandMsg("Cmd"))
 
-      // First registered runs outermost
       expect(order).toEqual([
         "first-before",
         "second-before",
@@ -398,7 +373,7 @@ describe("InterceptingCommandBus", () => {
 
       unsub()
       await bus.dispatch(commandMsg("Cmd"))
-      expect(calls).toEqual(["intercepted"]) // not called again
+      expect(calls).toEqual(["intercepted"])
     })
 
     it("propagates errors thrown by an interceptor", async () => {

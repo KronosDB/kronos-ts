@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test"
-import { emptyMetadata } from "@kronos-ts/common"
 import {
   globalSequenceToken,
   replayToken,
@@ -13,23 +12,8 @@ import {
   type ReplayToken,
 } from "../tracking-token.js"
 import { isReplay, REPLAY_STATE_KEY } from "../replay-token.js"
-import { createProcessingContext } from "../default-processing-context.js"
-import {
-  processingStateStorage,
-  createInitialProcessingState,
-} from "../processing-state.js"
-
-/**
- * Phase 2 Plan 01 (D-19/D-20): ctx resource methods now require an active
- * processingStateStorage.run scope. Tests that construct a ctx and call
- * ctx.set/get must run inside one.
- */
-function inUoW<R>(fn: () => R | Promise<R>): Promise<R> {
-  return processingStateStorage.run(
-    createInitialProcessingState(emptyMetadata()),
-    async () => fn(),
-  )
-}
+import { setResource } from "../processing-state.js"
+import { inUoW } from "./_helpers/in-uow.js"
 
 describe("TrackingToken", () => {
   describe("GlobalSequenceToken", () => {
@@ -205,25 +189,26 @@ describe("TrackingToken", () => {
   describe("isReplay (ProcessingContext helper)", () => {
     it("returns false when no replay state in context", async () => {
       await inUoW(() => {
-        const ctx = createProcessingContext(emptyMetadata())
-        expect(isReplay(ctx)).toBe(false)
+        expect(isReplay()).toBe(false)
       })
     })
 
     it("returns true when replay state is set", async () => {
       await inUoW(() => {
-        const ctx = createProcessingContext(emptyMetadata())
-        ctx.set(REPLAY_STATE_KEY, { replaying: true })
-        expect(isReplay(ctx)).toBe(true)
+        setResource(REPLAY_STATE_KEY, { replaying: true })
+        expect(isReplay()).toBe(true)
       })
     })
 
     it("returns false when replay state indicates not replaying", async () => {
       await inUoW(() => {
-        const ctx = createProcessingContext(emptyMetadata())
-        ctx.set(REPLAY_STATE_KEY, { replaying: false })
-        expect(isReplay(ctx)).toBe(false)
+        setResource(REPLAY_STATE_KEY, { replaying: false })
+        expect(isReplay()).toBe(false)
       })
+    })
+
+    it("returns false when called outside any UoW (permissive ALS read)", () => {
+      expect(isReplay()).toBe(false)
     })
   })
 

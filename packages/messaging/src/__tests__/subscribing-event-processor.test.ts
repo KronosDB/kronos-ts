@@ -3,7 +3,7 @@ import { qn, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import type { EventMessage } from "../message.js"
 import type { EventHandlerContext, EventHandlerRegistration } from "../handler.js"
 import type { EventHandlersDefinition } from "../event-handler.js"
-import type { ProcessingContext } from "../processing-context.js"
+import type { Metadata } from "@kronos-ts/common"
 import type { SubscribableEventSource } from "../subscribing-event-processor.js"
 import { createSubscribingEventProcessor } from "../subscribing-event-processor.js"
 
@@ -41,13 +41,12 @@ function createInMemorySubscribableSource(): SubscribableEventSource & {
   }
 }
 
-function simpleContextFactory(ctx: ProcessingContext): EventHandlerContext {
+function simpleContextFactory(metadata: Metadata): EventHandlerContext {
   return {
     load: async () => { throw new Error("No state manager") },
     send: async () => undefined,
     emitUpdate: () => {},
-    metadata: ctx.metadata,
-    processingContext: ctx,
+    metadata,
   }
 }
 

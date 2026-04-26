@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
-import { resourceKey } from "@kronos-ts/common"
-import { createUnitOfWork, defaultUnitOfWorkFactory } from "../unit-of-work.js"
+import { emptyMetadata } from "@kronos-ts/common"
+import { runInUoW } from "../unit-of-work.js"
+import { onPrepareCommit, getResource } from "../processing-state.js"
 import {
   transactionalUnitOfWorkFactory,
   getActiveTransaction,
@@ -25,13 +26,19 @@ function createRecordingTxManager() {
   return { txManager, log }
 }
 
-describe("TransactionalUnitOfWorkFactory", () => {
+/**
+ * Plan 03-04 (CTX-04 / D-34): `transactionalUnitOfWorkFactory` is now a
+ * runner-wrapping function — it takes a `UoWRunner` (e.g. `runInUoW`) and
+ * returns a new `UoWRunner` that begins/commits/rolls-back a transaction
+ * around the wrapped action. The old `factory().executeWithResult(...)`
+ * shape is gone.
+ */
+describe("transactionalUnitOfWorkFactory", () => {
   it("begins transaction before handler and commits after", async () => {
     const { txManager, log } = createRecordingTxManager()
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
-    const uow = factory()
-    await uow.executeWithResult(async () => {
+    await txRunner(emptyMetadata(), async () => {
       log.push("handler")
     })
 
@@ -40,11 +47,10 @@ describe("TransactionalUnitOfWorkFactory", () => {
 
   it("rolls back on handler failure", async () => {
     const { txManager, log } = createRecordingTxManager()
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
-    const uow = factory()
     await expect(
-      uow.executeWithResult(async () => {
+      txRunner(emptyMetadata(), async () => {
         log.push("handler")
         throw new Error("boom")
       }),
@@ -55,27 +61,23 @@ describe("TransactionalUnitOfWorkFactory", () => {
 
   it("makes transaction available via getActiveTransaction", async () => {
     const { txManager } = createRecordingTxManager()
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
     let captured: unknown
-
-    const uow = factory()
-    await uow.executeWithResult(async () => {
+    await txRunner(emptyMetadata(), async () => {
       captured = getActiveTransaction()
     })
 
     expect(captured).toEqual({ id: "tx-1" })
   })
 
-  it("stores transaction in ProcessingContext resources", async () => {
+  it("stores transaction in the active processing-state resources", async () => {
     const { txManager } = createRecordingTxManager()
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
     let captured: unknown
-
-    const uow = factory()
-    await uow.executeWithResult(async (ctx) => {
-      captured = ctx.get(TRANSACTION_KEY)
+    await txRunner(emptyMetadata(), async () => {
+      captured = getResource(TRANSACTION_KEY)
     })
 
     expect(captured).toEqual({ id: "tx-1" })
@@ -83,24 +85,22 @@ describe("TransactionalUnitOfWorkFactory", () => {
 
   it("transaction spans handler and PREPARE_COMMIT hooks", async () => {
     const { txManager, log } = createRecordingTxManager()
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
-    const uow = factory()
-    await uow.executeWithResult(async (ctx) => {
+    await txRunner(emptyMetadata(), async () => {
       log.push("handler")
-      ctx.onPrepareCommit(() => { log.push("prepare-commit") })
+      onPrepareCommit(() => { log.push("prepare-commit") })
     })
 
-    // prepare-commit runs between handler and commit
     expect(log).toEqual(["begin:tx-1", "handler", "prepare-commit", "commit:tx-1"])
   })
 
-  it("each UnitOfWork gets its own transaction", async () => {
+  it("each runner invocation gets its own transaction", async () => {
     const { txManager, log } = createRecordingTxManager()
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
-    await factory().executeWithResult(async () => { log.push("first") })
-    await factory().executeWithResult(async () => { log.push("second") })
+    await txRunner(emptyMetadata(), async () => { log.push("first") })
+    await txRunner(emptyMetadata(), async () => { log.push("second") })
 
     expect(log).toEqual([
       "begin:tx-1", "first", "commit:tx-1",

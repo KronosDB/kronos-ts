@@ -11,24 +11,9 @@ import { commandHandler } from "../command-handler.js"
 import { command, event } from "../descriptor.js"
 import type { CommandBus } from "../command-bus.js"
 import type { CommandMessage } from "../message.js"
-import type { ProcessingContext } from "../processing-context.js"
 import type { EventCriteria } from "../event-criteria.js"
-import {
-  processingStateStorage,
-  createInitialProcessingState,
-} from "../processing-state.js"
-import { createProcessingContext } from "../default-processing-context.js"
-
-/**
- * Test helper — wraps `fn` in an active processingStateStorage.run so module-level
- * resource accessors (getResource/computeIfAbsent) work outside a real UnitOfWork.
- * Production callers always run inside UnitOfWork.executeWithResult, which sets up
- * the storage; tests that hand-build a ProcessingContext need this scaffolding.
- * Mirrors the inUoW helper introduced in Plan 02-01 (replay-token, subscription-query).
- */
-function inUoW<T>(fn: () => Promise<T>): Promise<T> {
-  return processingStateStorage.run(createInitialProcessingState(emptyMetadata()), fn)
-}
+import { processingStateStorage, Phase } from "../processing-state.js"
+import { inUoW } from "./_helpers/in-uow.js"
 
 // ---------------------------------------------------------------------------
 // Test descriptors
@@ -59,16 +44,13 @@ const CourseCapacityChanged = event({
 // Test helpers
 // ---------------------------------------------------------------------------
 
-type SubscribedHandler = (message: CommandMessage, ctx: ProcessingContext) => Promise<unknown>
+type SubscribedHandler = (message: CommandMessage) => Promise<unknown>
 
 function createRecordingCommandBus(): CommandBus & { subscriptions: Map<string, SubscribedHandler> } {
   const subscriptions = new Map<string, SubscribedHandler>()
   return {
     subscriptions,
-    async dispatch(message) {
-      const handler = subscriptions.get(`${message.name.namespace}.${message.name.name}`)
-      if (!handler) throw new Error(`No handler for ${message.name.namespace}.${message.name.name}`)
-      // We don't create a ProcessingContext here -- the module's handler does that via UoW
+    async dispatch(_message) {
       throw new Error("dispatch not used in these tests")
     },
     subscribe(commandName, handler) {
@@ -124,33 +106,21 @@ function makeCommandMessage(descriptor: typeof CreateCourse | typeof ChangeCours
 }
 
 /**
- * Creates a minimal ProcessingContext for invoking command handlers.
+ * Drains PREPARE_COMMIT actions from the active ALS state, mirroring what
+ * `runInUoW` does in production. Used to verify event flush / append-condition
+ * behavior without booting a full runner.
  *
- * Phase 3 / Plan 02 (CTX-03): the resource methods (`get`/`set`/etc.) and the
- * lifecycle registrations (`onPrepareCommit`/etc.) all delegate to the ALS
- * state, so this stub no longer holds local state for those — it now just
- * provides the `ProcessingContext` shape with no-op extras (`metadata`,
- * status flags, `withResource`). Tests must wrap calls in `inUoW(...)` so the
- * ALS state is live.
- *
- * `__runPrepareCommit` drains PREPARE_COMMIT actions from the active ALS
- * state, mirroring what `executePhases` does in production.
+ * Plan 03-04 (CTX-04): no `ProcessingContext` instance — drives the ALS state
+ * directly. Tests still wrap calls in `inUoW(...)` so the ALS state is live.
  */
-function createTestProcessingContext(): ProcessingContext {
-  const ctx: ProcessingContext = createProcessingContext(emptyMetadata())
-
-  ;(ctx as any).__runPrepareCommit = async () => {
-    const state = processingStateStorage.getStore()
-    if (!state) return
-    const PREPARE_COMMIT_PHASE = 20000
-    const actions = state.phaseActions.get(PREPARE_COMMIT_PHASE as any) ?? []
-    state.phaseActions.delete(PREPARE_COMMIT_PHASE as any)
-    for (const action of actions) {
-      await action()
-    }
+async function runPrepareCommit(): Promise<void> {
+  const state = processingStateStorage.getStore()
+  if (!state) return
+  const actions = state.phaseActions.get(Phase.PREPARE_COMMIT) ?? []
+  state.phaseActions.delete(Phase.PREPARE_COMMIT)
+  for (const action of actions) {
+    await action()
   }
-
-  return ctx
 }
 
 // ---------------------------------------------------------------------------
@@ -209,9 +179,8 @@ describe("commandHandlingModule", () => {
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-        const ctx = createTestProcessingContext()
         const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-        await handler(message, ctx)
+        await handler(message)
 
         // then
         expect(loadedState).toEqual({ courseId: "cs-101", name: "Math 101", capacity: 30 })
@@ -235,9 +204,8 @@ describe("commandHandlingModule", () => {
 
         // when
         const handler = bus.subscriptions.get("university.CreateCourse")!
-        const ctx = createTestProcessingContext()
         const message = makeCommandMessage(CreateCourse, { courseId: "cs-101", name: "Intro to CS" })
-        await handler(message, ctx)
+        await handler(message)
 
         // then -- events are buffered in the processing context, not yet flushed
         // We can inspect the buffered events key from the context
@@ -267,12 +235,11 @@ describe("commandHandlingModule", () => {
 
         // when
         const handler = bus.subscriptions.get("university.CreateCourse")!
-        const ctx = createTestProcessingContext()
         const message = makeCommandMessage(CreateCourse, { courseId: "cs-101", name: "Intro to CS" })
-        await handler(message, ctx)
+        await handler(message)
 
         // Simulate PREPARE_COMMIT phase
-        await (ctx as any).__runPrepareCommit()
+        await runPrepareCommit()
 
         // then
         expect(appendedEvents).toHaveLength(1)
@@ -316,10 +283,9 @@ describe("commandHandlingModule", () => {
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-        const ctx = createTestProcessingContext()
         const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-        await handler(message, ctx)
-        await (ctx as any).__runPrepareCommit()
+        await handler(message)
+        await runPrepareCommit()
 
         // then
         expect(capturedCondition).toBeDefined()
@@ -366,10 +332,9 @@ describe("commandHandlingModule", () => {
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-        const ctx = createTestProcessingContext()
         const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-        await handler(message, ctx)
-        await (ctx as any).__runPrepareCommit()
+        await handler(message)
+        await runPrepareCommit()
 
         // then
         expect(capturedCondition).toBeDefined()
@@ -409,9 +374,8 @@ describe("commandHandlingModule", () => {
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-        const ctx = createTestProcessingContext()
         const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-        await handler(message, ctx)
+        await handler(message)
 
         // then -- state manager load should only be called once
         expect(loadCount).toBe(1)
@@ -447,9 +411,8 @@ describe("commandHandlingModule", () => {
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-        const ctx = createTestProcessingContext()
         const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-        await handler(message, ctx)
+        await handler(message)
 
         // then
         expect(loadedIds).toEqual(["cs-101", "cs-202"])
@@ -490,10 +453,9 @@ describe("commandHandlingModule", () => {
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
-        const ctx = createTestProcessingContext()
         const message = makeCommandMessage(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 })
-        await handler(message, ctx)
-        await (ctx as any).__runPrepareCommit()
+        await handler(message)
+        await runPrepareCommit()
 
         // then -- should combine into "either" criteria with max marker
         expect(capturedCondition).toBeDefined()

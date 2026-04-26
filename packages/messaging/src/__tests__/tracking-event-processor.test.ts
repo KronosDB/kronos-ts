@@ -14,7 +14,7 @@ import type { TokenStore } from "../token-store.js"
 import type { TrackingToken } from "../tracking-token.js"
 import { globalSequenceToken } from "../tracking-token.js"
 import { isReplay, REPLAY_STATE_KEY } from "../replay-token.js"
-import type { ProcessingContext } from "../processing-context.js"
+import type { Metadata } from "@kronos-ts/common"
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -114,13 +114,12 @@ function makeHandlerGroup(
   }
 }
 
-function simpleContextFactory(ctx: ProcessingContext): EventHandlerContext {
+function simpleContextFactory(metadata: Metadata): EventHandlerContext {
   return {
     load: async () => { throw new Error("no state manager") },
     send: async () => { throw new Error("no command bus") },
     emitUpdate: () => {},
-    metadata: emptyMetadata(),
-    processingContext: ctx,
+    metadata,
   }
 }
 
@@ -548,8 +547,8 @@ describe("TrackingEventProcessor", () => {
       const handler: EventHandlerRegistration<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
-        handler: (_payload, ctx) => {
-          replayStates.push(isReplay(ctx.processingContext!))
+        handler: (_payload) => {
+          replayStates.push(isReplay())
         },
       }
 

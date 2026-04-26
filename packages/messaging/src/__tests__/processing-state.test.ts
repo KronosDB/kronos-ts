@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { emptyMetadata, resourceKey } from "@kronos-ts/common"
-import { Phase } from "../processing-context.js"
-import { createUnitOfWork } from "../unit-of-work.js"
+import { runInNewUoW } from "../unit-of-work.js"
 import {
   processingStateStorage,
   NoActiveUnitOfWork,
+  Phase,
   getResource,
   setResource,
   computeIfAbsent,
@@ -445,7 +445,7 @@ describe("Lifecycle accessors — fail-fast outside an active UoW (D-31)", () =>
 describe("Lifecycle accessors — registered hooks fire during their phase", () => {
   it("onPrepareCommit registers an action that runs during the PREPARE_COMMIT phase", async () => {
     const log: string[] = []
-    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+    await runInNewUoW(emptyMetadata(), async () => {
       onPrepareCommit(() => { log.push("prepare-commit") })
       log.push("invocation")
     })
@@ -454,7 +454,7 @@ describe("Lifecycle accessors — registered hooks fire during their phase", () 
 
   it("onCommit registers for COMMIT phase", async () => {
     const log: string[] = []
-    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+    await runInNewUoW(emptyMetadata(), async () => {
       onPrepareCommit(() => { log.push("prepare-commit") })
       onCommit(() => { log.push("commit") })
       log.push("invocation")
@@ -464,7 +464,7 @@ describe("Lifecycle accessors — registered hooks fire during their phase", () 
 
   it("onAfterCommit registers for AFTER_COMMIT phase", async () => {
     const log: string[] = []
-    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+    await runInNewUoW(emptyMetadata(), async () => {
       onCommit(() => { log.push("commit") })
       onAfterCommit(() => { log.push("after-commit") })
       log.push("invocation")
@@ -474,7 +474,7 @@ describe("Lifecycle accessors — registered hooks fire during their phase", () 
 
   it("on(Phase.COMMIT, ...) is equivalent to onCommit", async () => {
     const log: string[] = []
-    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+    await runInNewUoW(emptyMetadata(), async () => {
       on(Phase.COMMIT, () => { log.push("commit-via-on") })
       log.push("invocation")
     })
@@ -484,7 +484,7 @@ describe("Lifecycle accessors — registered hooks fire during their phase", () 
   it("onError fires on phase failure", async () => {
     const log: string[] = []
     await expect(
-      createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+      runInNewUoW(emptyMetadata(), async () => {
         onError(() => { log.push("error-fired") })
         throw new Error("boom")
       }),
@@ -494,7 +494,7 @@ describe("Lifecycle accessors — registered hooks fire during their phase", () 
 
   it("whenComplete fires on successful completion", async () => {
     const log: string[] = []
-    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+    await runInNewUoW(emptyMetadata(), async () => {
       whenComplete(() => { log.push("complete") })
       log.push("invocation")
     })
@@ -504,7 +504,7 @@ describe("Lifecycle accessors — registered hooks fire during their phase", () 
   it("whenComplete does NOT fire when the UoW errors", async () => {
     const log: string[] = []
     await expect(
-      createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+      runInNewUoW(emptyMetadata(), async () => {
         whenComplete(() => { log.push("complete") })
         onError(() => { log.push("error") })
         throw new Error("boom")

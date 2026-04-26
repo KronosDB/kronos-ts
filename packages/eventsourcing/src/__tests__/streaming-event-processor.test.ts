@@ -1,6 +1,6 @@
 import { describe, expect, it, afterEach } from "bun:test"
 import { z } from "zod"
-import { qn, tag } from "@kronos-ts/common"
+import { qn, tag, type Metadata } from "@kronos-ts/common"
 import {
   command,
   event,
@@ -13,7 +13,6 @@ import {
   createStreamingEventProcessor,
   type StreamableEventSource,
   type EventHandlerContext,
-  type ProcessingContext,
   isReplay,
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
@@ -77,11 +76,11 @@ describe("StreamingEventProcessor", () => {
         name: "course-projection",
         eventSource: eventStore as StreamableEventSource,
         handlerGroups: [projection],
-        contextFactory: (ctx: ProcessingContext) => ({
+        contextFactory: (metadata: Metadata) => ({
           load: async () => { throw new Error("not needed") },
           send: async () => {},
           emitUpdate: () => {},
-          metadata: ctx.metadata,
+          metadata,
         }),
       })
 
@@ -151,10 +150,10 @@ describe("StreamingEventProcessor", () => {
       const projection = eventHandlers({
         name: "course-projection",
         handlers: [
-          on(CourseCreated, async (e, ctx) => {
+          on(CourseCreated, async (e) => {
             processed.push({
               courseId: e.courseId,
-              replayed: isReplay(ctx.processingContext!),
+              replayed: isReplay(),
             })
           }),
         ],
@@ -164,12 +163,11 @@ describe("StreamingEventProcessor", () => {
         name: "course-projection",
         eventSource: eventStore as StreamableEventSource,
         handlerGroups: [projection],
-        contextFactory: (ctx: ProcessingContext) => ({
+        contextFactory: (metadata: Metadata) => ({
           load: async () => { throw new Error("not needed") },
           send: async () => {},
           emitUpdate: () => {},
-          metadata: ctx.metadata,
-          processingContext: ctx,
+          metadata,
         }),
         tokenStore,
       })
@@ -205,11 +203,11 @@ describe("StreamingEventProcessor", () => {
         name: "resettable",
         eventSource: eventStore as StreamableEventSource,
         handlerGroups: [projection],
-        contextFactory: (ctx: ProcessingContext) => ({
+        contextFactory: (metadata: Metadata) => ({
           load: async () => { throw new Error("not needed") },
           send: async () => {},
           emitUpdate: () => {},
-          metadata: ctx.metadata,
+          metadata,
         }),
       })
 
@@ -225,11 +223,11 @@ describe("StreamingEventProcessor", () => {
         name: "test",
         eventSource: eventStore as StreamableEventSource,
         handlerGroups: [],
-        contextFactory: (ctx) => ({
+        contextFactory: (metadata: Metadata) => ({
           load: async () => { throw new Error("not needed") },
           send: async () => {},
           emitUpdate: () => {},
-          metadata: ctx.metadata,
+          metadata,
         }),
       })
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { qn, emptyMetadata, generateIdentifier } from "@kronos-ts/common"
+import { qn, generateIdentifier } from "@kronos-ts/common"
 import type { CommandMessage } from "../message.js"
 import {
   type CorrelationDataProvider,
@@ -8,8 +8,7 @@ import {
   correlationDataHandlerInterceptor,
   getActiveCorrelationData,
 } from "../correlation-data.js"
-import { createProcessingContext } from "../default-processing-context.js"
-import { processingStateStorage, createInitialProcessingState } from "../processing-state.js"
+import { inUoW } from "./_helpers/in-uow.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -23,17 +22,6 @@ function commandMsg(name: string, metadata: Record<string, unknown> = {}): Comma
     metadata,
     timestamp: Date.now(),
   }
-}
-
-/**
- * Run `fn` inside an active processingStateStorage.run() — required after Plan 03
- * because the handler interceptor now writes via the module-level `setResource`
- * (D-20 fail-fast contract). Same pattern Plans 02-01 / 02-02 introduced for
- * processing-context / replay-token / subscription-query / command-handling-module
- * test files.
- */
-function inUoW<R>(fn: () => R | Promise<R>): Promise<R> {
-  return processingStateStorage.run(createInitialProcessingState(emptyMetadata()), async () => fn())
 }
 
 // ---------------------------------------------------------------------------
@@ -102,19 +90,18 @@ describe("simpleCorrelationDataProvider", () => {
 // ---------------------------------------------------------------------------
 
 describe("correlationDataHandlerInterceptor", () => {
-  it("stores correlation data in ProcessingContext", async () => {
+  it("stores correlation data in the active UnitOfWork", async () => {
     await inUoW(async () => {
       // given
       const providers: CorrelationDataProvider[] = [messageOriginProvider()]
       const handlerInterceptor = correlationDataHandlerInterceptor(providers)
       const msg = commandMsg("IncomingCommand")
-      const ctx = createProcessingContext(emptyMetadata())
 
       // when
       await handlerInterceptor(msg, async () => undefined)
 
-      // then — correlation data stored in ALS-backed state, visible via ctx.get shim
-      const data = getActiveCorrelationData(ctx)
+      // then — Plan 03-04 (D-29): no-arg permissive ALS read.
+      const data = getActiveCorrelationData()
       expect(data).toBeDefined()
       expect(data!.correlationId).toBe(msg.identifier)
       expect(data!.causationId).toBe(msg.identifier)
@@ -130,7 +117,6 @@ describe("correlationDataHandlerInterceptor", () => {
       const workingProvider = simpleCorrelationDataProvider("tenantId")
       const handlerInterceptor = correlationDataHandlerInterceptor([failingProvider, workingProvider])
       const msg = commandMsg("DoSomething", { tenantId: "t-1" })
-      const ctx = createProcessingContext(emptyMetadata())
       let handlerCalled = false
 
       // when
@@ -141,7 +127,7 @@ describe("correlationDataHandlerInterceptor", () => {
 
       // then — handler still called, working provider's data present
       expect(handlerCalled).toBe(true)
-      const data = getActiveCorrelationData(ctx)
+      const data = getActiveCorrelationData()
       expect(data?.tenantId).toBe("t-1")
     })
   })
@@ -157,13 +143,12 @@ describe("correlationDataHandlerInterceptor", () => {
       }
       const handlerInterceptor = correlationDataHandlerInterceptor([provider1, provider2])
       const msg = commandMsg("DoSomething")
-      const ctx = createProcessingContext(emptyMetadata())
 
       // when
       await handlerInterceptor(msg, async () => undefined)
 
       // then
-      const data = getActiveCorrelationData(ctx)
+      const data = getActiveCorrelationData()
       expect(data?.key).toBe("second")
       expect(data?.unique1).toBe("a")
       expect(data?.unique2).toBe("b")

@@ -1,26 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, generateIdentifier } from "@kronos-ts/common"
 import { createSimpleQueryBus } from "../simple-query-bus.js"
-import { createProcessingContext } from "../default-processing-context.js"
-import { Phase } from "../processing-context.js"
+import { onCommit } from "../processing-state.js"
+import { runInNewUoW } from "../unit-of-work.js"
 import type { QueryMessage } from "../message.js"
 import { createUpdateHandler } from "../subscription-query.js"
-import {
-  processingStateStorage,
-  createInitialProcessingState,
-} from "../processing-state.js"
-
-/**
- * Phase 2 Plan 01: ctx resource methods now require an active
- * processingStateStorage.run scope. Tests that drive ctx.executePhases
- * outside the UnitOfWork must wrap in this helper.
- */
-function inUoW<R>(fn: () => R | Promise<R>): Promise<R> {
-  return processingStateStorage.run(
-    createInitialProcessingState(emptyMetadata()),
-    async () => fn(),
-  )
-}
 
 function queryMsg(name: string, payload: unknown = {}): QueryMessage {
   return {
@@ -221,25 +205,17 @@ describe("SimpleQueryBus subscription queries", () => {
     const updates: unknown[] = []
     const consumer = (async () => { for await (const u of result.updates) updates.push(u) })()
 
-    // Create a ProcessingContext and emit within it.
-    // Phase 2 Plan 01: ctx.computeIfAbsent (used by runAfterCommitOrImmediately)
-    // is now an ALS shim — must run inside processingStateStorage.run.
-    await inUoW(async () => {
-      const ctx = createProcessingContext(emptyMetadata())
-
-      // Emit during "invocation" — should be deferred
-      ctx.on(Phase.INVOCATION, () => {
-        bus.emitUpdate("test.GetCourse", () => true, { deferred: true })
-        log.push("emitted")
-      })
-
-      ctx.on(Phase.COMMIT, () => {
+    // Plan 03-04: drive lifecycle via the runner + module-level accessors.
+    // `runAfterCommitOrImmediately` in subscription-query reads from the
+    // active ALS state, so emission must happen inside an active UoW. Emit
+    // directly in the action body (the runner's "invocation" phase) — late
+    // registration for INVOCATION is dropped by `drivePhases`.
+    await runInNewUoW(emptyMetadata(), async () => {
+      bus.emitUpdate("test.GetCourse", () => true, { deferred: true })
+      log.push("emitted")
+      onCommit(() => {
         log.push("committed")
       })
-
-      // At this point, update should NOT have been delivered yet
-      ctx.markStarted()
-      await ctx.executePhases()
     })
 
     // Wait for delivery

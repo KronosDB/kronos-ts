@@ -1,9 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, generateIdentifier } from "@kronos-ts/common"
 import type { CommandMessage } from "../message.js"
-import type { ProcessingContext } from "../processing-context.js"
 import { createRetryingCommandBus, exponentialBackoffRetryPolicy } from "../retrying-command-bus.js"
-import type { CommandBus } from "../bus.js"
+import type { CommandBus } from "../command-bus.js"
 
 class AppendConditionError extends Error {
   constructor(msg: string) {
@@ -98,7 +97,7 @@ describe("RetryingCommandBus", () => {
     }
 
     const bus = createRetryingCommandBus(delegate, exponentialBackoffRetryPolicy())
-    bus.subscribe("test.Command", async (_msg: CommandMessage, _ctx: ProcessingContext) => undefined)
+    bus.subscribe("test.Command", async (_msg: CommandMessage) => undefined)
 
     expect(subscribed).toEqual(["test.Command"])
   })

@@ -1,26 +1,33 @@
 import { describe, expect, it } from "bun:test"
+import { emptyMetadata } from "@kronos-ts/common"
 import {
   getActiveTransaction,
   transactionalUnitOfWorkFactory,
   type TransactionManager,
 } from "../transaction.js"
-import { defaultUnitOfWorkFactory } from "../unit-of-work.js"
+import { runInUoW } from "../unit-of-work.js"
 
+/**
+ * Plan 03-04 (CTX-04 / D-34): `transactionalUnitOfWorkFactory` now wraps
+ * a `UoWRunner` (`runInUoW`) and returns a new `UoWRunner`. The old
+ * `factory().executeWithResult(...)` call shape is gone — call the runner
+ * directly with `(metadata, action)`.
+ */
 describe("TransactionManager + transactionalUnitOfWorkFactory", () => {
-  it("getActiveTransaction returns undefined when no transaction is active", () => {
+  it("getActiveTransaction returns undefined when no transaction is active (permissive ALS read)", () => {
     expect(getActiveTransaction()).toBeUndefined()
   })
 
-  it("transactionalUnitOfWorkFactory makes the transaction available via getActiveTransaction inside the UoW, and invisible outside", async () => {
+  it("makes the transaction visible inside the UoW and invisible outside", async () => {
     const txManager: TransactionManager<{ id: string }> = {
       begin: async () => ({ id: "tx-1" }),
       commit: async () => {},
       rollback: async () => {},
     }
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
-    let inside: unknown = undefined
-    await factory().executeWithResult(async () => {
+    let inside: unknown
+    await txRunner(emptyMetadata(), async () => {
       inside = getActiveTransaction()
     })
 
@@ -42,9 +49,9 @@ describe("TransactionManager + transactionalUnitOfWorkFactory", () => {
         log.push("rollback")
       },
     }
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
-    await factory().executeWithResult(async () => {
+    await txRunner(emptyMetadata(), async () => {
       log.push("work")
     })
 
@@ -65,10 +72,10 @@ describe("TransactionManager + transactionalUnitOfWorkFactory", () => {
         log.push("rollback")
       },
     }
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
     await expect(
-      factory().executeWithResult(async () => {
+      txRunner(emptyMetadata(), async () => {
         log.push("work")
         throw new Error("boom")
       }),
@@ -83,7 +90,7 @@ describe("TransactionManager + transactionalUnitOfWorkFactory", () => {
       commit: async () => {},
       rollback: async () => {},
     }
-    const factory = transactionalUnitOfWorkFactory(defaultUnitOfWorkFactory(), txManager)
+    const txRunner = transactionalUnitOfWorkFactory(runInUoW, txManager)
 
     async function deepFunction(): Promise<string | undefined> {
       // Simulate an async call several layers deep
@@ -93,7 +100,7 @@ describe("TransactionManager + transactionalUnitOfWorkFactory", () => {
 
     let result: string | undefined
 
-    await factory().executeWithResult(async () => {
+    await txRunner(emptyMetadata(), async () => {
       result = await deepFunction()
     })
 
