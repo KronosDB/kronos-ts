@@ -8,6 +8,7 @@ import type { QueryBus } from "./query-bus.js"
 import type { CommandDescriptor, QueryDescriptor } from "./descriptor.js"
 import type { ProcessingContext } from "./processing-context.js"
 import type { SubscriptionQueryResult } from "./subscription-query.js"
+import { runInNewUoW } from "./unit-of-work.js"
 import type { z } from "zod"
 
 /**
@@ -79,13 +80,21 @@ export interface QueryGateway {
 export function createCommandGateway(bus: CommandBus): CommandGateway {
   return {
     async send(descriptor, payload, metadata, context) {
-      return bus.dispatch({
-        identifier: generateIdentifier(),
-        name: descriptor.name,
-        payload,
-        metadata: metadata ?? emptyMetadata(),
-        timestamp: Date.now(),
-      }, context) as any
+      const resolvedMetadata = metadata ?? emptyMetadata()
+      // Plan 03-01 (D-32): gateways always start a new UoW. The bus.dispatch
+      // call below will detect the ALS state we just established (via
+      // runInUoW in simple-command-bus) and reuse it — so this is the single
+      // UoW boundary for the dispatch chain. The `context` parameter remains
+      // in the signature until Plan 03 strips it; the body no longer threads it.
+      return runInNewUoW(resolvedMetadata, () =>
+        bus.dispatch({
+          identifier: generateIdentifier(),
+          name: descriptor.name,
+          payload,
+          metadata: resolvedMetadata,
+          timestamp: Date.now(),
+        }, context) as Promise<any>,
+      ) as any
     },
   }
 }
@@ -96,13 +105,19 @@ export function createCommandGateway(bus: CommandBus): CommandGateway {
 export function createQueryGateway(bus: QueryBus): QueryGateway {
   return {
     async query(descriptor, payload, metadata, context) {
-      return bus.query({
-        identifier: generateIdentifier(),
-        name: descriptor.name,
-        payload,
-        metadata: metadata ?? emptyMetadata(),
-        timestamp: Date.now(),
-      }, context) as any
+      const resolvedMetadata = metadata ?? emptyMetadata()
+      // Plan 03-01 (D-32): gateway always starts a new UoW; bus.query auto-nests
+      // via runInUoW in simple-query-bus. subscriptionQuery below stays as-is —
+      // its initialResult goes through bus.query, which handles its own UoW.
+      return runInNewUoW(resolvedMetadata, () =>
+        bus.query({
+          identifier: generateIdentifier(),
+          name: descriptor.name,
+          payload,
+          metadata: resolvedMetadata,
+          timestamp: Date.now(),
+        }, context) as Promise<any>,
+      ) as any
     },
 
     subscriptionQuery(descriptor, payload, metadata) {
