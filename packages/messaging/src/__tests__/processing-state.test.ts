@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { emptyMetadata, resourceKey } from "@kronos-ts/common"
 import { Phase } from "../processing-context.js"
+import { createUnitOfWork } from "../unit-of-work.js"
 import {
   processingStateStorage,
   NoActiveUnitOfWork,
@@ -14,6 +15,12 @@ import {
   registerErrorHandler,
   registerCompleteHandler,
   withOverride,
+  on,
+  onPrepareCommit,
+  onCommit,
+  onAfterCommit,
+  onError,
+  whenComplete,
 } from "../processing-state.js"
 
 function buildState() {
@@ -399,5 +406,110 @@ describe("updateResource", () => {
       updateResource(key, (current) => [...(current ?? []), "b"])
       expect(getResource(key)).toEqual(["a", "b"])
     })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// Lifecycle accessors (CTX-03, D-30) — module-level on / onError / whenComplete /
+// onPrepareCommit / onCommit / onAfterCommit. Thin wrappers over the Phase 1
+// accessors. Same fail-fast contract (D-31) — throw NoActiveUnitOfWork outside
+// an active processingStateStorage.run.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("Lifecycle accessors — fail-fast outside an active UoW (D-31)", () => {
+  it("on throws NoActiveUnitOfWork when no UoW is active", () => {
+    expect(() => on(Phase.COMMIT, () => {})).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("onPrepareCommit throws NoActiveUnitOfWork when no UoW is active", () => {
+    expect(() => onPrepareCommit(() => {})).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("onCommit throws NoActiveUnitOfWork when no UoW is active", () => {
+    expect(() => onCommit(() => {})).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("onAfterCommit throws NoActiveUnitOfWork when no UoW is active", () => {
+    expect(() => onAfterCommit(() => {})).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("onError throws NoActiveUnitOfWork when no UoW is active", () => {
+    expect(() => onError(() => {})).toThrow(NoActiveUnitOfWork)
+  })
+
+  it("whenComplete throws NoActiveUnitOfWork when no UoW is active", () => {
+    expect(() => whenComplete(() => {})).toThrow(NoActiveUnitOfWork)
+  })
+})
+
+describe("Lifecycle accessors — registered hooks fire during their phase", () => {
+  it("onPrepareCommit registers an action that runs during the PREPARE_COMMIT phase", async () => {
+    const log: string[] = []
+    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+      onPrepareCommit(() => { log.push("prepare-commit") })
+      log.push("invocation")
+    })
+    expect(log).toEqual(["invocation", "prepare-commit"])
+  })
+
+  it("onCommit registers for COMMIT phase", async () => {
+    const log: string[] = []
+    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+      onPrepareCommit(() => { log.push("prepare-commit") })
+      onCommit(() => { log.push("commit") })
+      log.push("invocation")
+    })
+    expect(log).toEqual(["invocation", "prepare-commit", "commit"])
+  })
+
+  it("onAfterCommit registers for AFTER_COMMIT phase", async () => {
+    const log: string[] = []
+    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+      onCommit(() => { log.push("commit") })
+      onAfterCommit(() => { log.push("after-commit") })
+      log.push("invocation")
+    })
+    expect(log).toEqual(["invocation", "commit", "after-commit"])
+  })
+
+  it("on(Phase.COMMIT, ...) is equivalent to onCommit", async () => {
+    const log: string[] = []
+    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+      on(Phase.COMMIT, () => { log.push("commit-via-on") })
+      log.push("invocation")
+    })
+    expect(log).toEqual(["invocation", "commit-via-on"])
+  })
+
+  it("onError fires on phase failure", async () => {
+    const log: string[] = []
+    await expect(
+      createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+        onError(() => { log.push("error-fired") })
+        throw new Error("boom")
+      }),
+    ).rejects.toThrow("boom")
+    expect(log).toEqual(["error-fired"])
+  })
+
+  it("whenComplete fires on successful completion", async () => {
+    const log: string[] = []
+    await createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+      whenComplete(() => { log.push("complete") })
+      log.push("invocation")
+    })
+    expect(log).toEqual(["invocation", "complete"])
+  })
+
+  it("whenComplete does NOT fire when the UoW errors", async () => {
+    const log: string[] = []
+    await expect(
+      createUnitOfWork(emptyMetadata()).executeWithResult(async () => {
+        whenComplete(() => { log.push("complete") })
+        onError(() => { log.push("error") })
+        throw new Error("boom")
+      }),
+    ).rejects.toThrow("boom")
+    expect(log).toEqual(["error"])
   })
 })
