@@ -19,3 +19,4 @@ export {
   type AppImplOptions,
 } from "./app.js"
 export { registerInMemoryDefaults } from "./defaults.js"
+export { kronos, type KronosPartialConfig } from "./kronos.js"

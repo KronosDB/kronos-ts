@@ -7,8 +7,12 @@ import type {
   CommandGateway,
   QueryGateway,
 } from "@kronos-ts/messaging"
-import type { KronosComponents, SlotName } from "./components.js"
+import { subscribingProcessor } from "@kronos-ts/messaging"
+import { EventSourcingConfigurer } from "@kronos-ts/eventsourcing"
+import { ComponentKeys } from "@kronos-ts/common"
+import { ALL_SLOTS, type KronosComponents, type SlotName } from "./components.js"
 import { SlotRegistry, type SlotFactory, type SlotMeta } from "./slot-registry.js"
+import { buildResolved } from "./resolved.js"
 import type { WarningChannel } from "./warnings.js"
 
 /** Thrown when the App's mutating methods are called after .start() (D-50 footgun closure). */
@@ -157,8 +161,91 @@ export class AppImpl implements App {
     return this
   }
 
-  /** Stub — Task 2 implements this. Throws by default so tests catch missing wiring. */
   async start(): Promise<RunningApp> {
-    throw new Error("AppImpl.start() not yet implemented — Task 2 wires the configurer bridge")
+    if (this._started) throw new AppAlreadyStartedError()
+
+    // 1. Run extensions FIRST so they can mutate the slot registry / accumulators (D-50).
+    for (const ext of this._state.extensions) {
+      const result = ext(this)
+      if (result instanceof Promise) await result
+    }
+
+    // 2. Mark started AFTER extensions ran (so extensions can mutate) but BEFORE slot resolution
+    //    (so resolved factories can't trigger fluent calls — defensive).
+    this._started = true
+
+    // 3. Build the lazy Resolved proxy and EAGERLY resolve all 8 slots up-front
+    //    (Pitfall 1 — interleaving slot resolution with configurer registration creates stale-cache hazards).
+    const resolved = buildResolved(this._state.slotRegistry)
+    const built: KronosComponents = {
+      eventStore: resolved.eventStore,
+      snapshotStore: resolved.snapshotStore,
+      commandBus: resolved.commandBus,
+      queryBus: resolved.queryBus,
+      eventBus: resolved.eventBus,
+      serializer: resolved.serializer,
+      unitOfWorkFactory: resolved.unitOfWorkFactory,
+      tagResolver: resolved.tagResolver,
+    }
+
+    // 4. Emit startup warnings for any slot still using a flagged in-memory default (SLT-04).
+    //    Iterate ALL_SLOTS for deterministic order. Warning emission goes through the channel
+    //    so quiet:true / logger options route correctly (D-51).
+    for (const slot of ALL_SLOTS) {
+      const entry = this._state.slotRegistry.getEntry(slot)
+      if (entry?.meta?.inMemory && entry.meta.warning) {
+        this._state.warningChannel.emit(entry.meta.warning)
+      }
+    }
+
+    // 5. Build the EventSourcingConfigurer chain (D-49). Order matters: register slot
+    //    overrides BEFORE configurer.start() runs build() internally (Pitfall 1).
+    const configurer = EventSourcingConfigurer.create()
+
+    // Slot → configurer registration mapping (uses public methods that call reg.register, NOT registerIfAbsent):
+    configurer.registerEventStore(() => built.eventStore)
+    configurer.registerTagResolver(() => built.tagResolver)
+    configurer.componentRegistry((reg) => {
+      reg.register(ComponentKeys.SNAPSHOT_STORE, () => built.snapshotStore)
+      reg.register(ComponentKeys.SERIALIZER, () => built.serializer)
+      reg.register(ComponentKeys.EVENT_BUS, () => built.eventBus)
+    })
+    configurer.messaging((m) => {
+      m.registerCommandBus(() => built.commandBus)
+      m.registerQueryBus(() => built.queryBus)
+      m.registerUnitOfWorkFactory(() => built.unitOfWorkFactory)
+    })
+
+    // 6. Translate domain registrations to configurer calls.
+    for (const entity of this._state.entities) {
+      configurer.registerEntity(entity)
+    }
+    for (const handler of this._state.commandHandlers) {
+      configurer.registerCommandHandler(() => handler)
+    }
+    for (const queryGroup of this._state.queryHandlerGroups) {
+      configurer.registerQueryHandlers(() => queryGroup)
+    }
+    for (const eventGroup of this._state.eventHandlerGroups) {
+      // Translate .events() registrations to subscribing processors (mirrors legacy pattern)
+      const builder = subscribingProcessor(eventGroup.name).registerEventHandler(eventGroup)
+      configurer.registerEventProcessor(() => builder.build())
+    }
+    for (const processor of this._state.processors) {
+      configurer.registerEventProcessor(() => processor)
+    }
+
+    // 7. Build & start.
+    const kronosApp = await configurer.start()
+
+    return {
+      get commandGateway(): CommandGateway {
+        return kronosApp.commandGateway
+      },
+      get queryGateway(): QueryGateway {
+        return kronosApp.queryGateway
+      },
+      stop: () => kronosApp.stop(),
+    }
   }
 }
