@@ -179,17 +179,3 @@ describe("app.start() — decoration pipeline", () => {
   })
 })
 
-// ─── Plan 02 placeholder — skip until framework intercepting defaults are wired ─
-
-describe.skip("decorator polymorphism — Plan 02 will enable", () => {
-  it("tracing(intercepting(distributedBus)) — replacing base does not affect decorators (success criterion #4)", async () => {
-    // Plan 02 fills this in:
-    // 1. Build a kronos() app with quiet:true and an in-memory entity + handler.
-    // 2. .set("commandBus", () => mockDistributedCommandBus) where mock is a structurally-typed CommandBus stub.
-    // 3. .decorate("commandBus", (inner) => createTracingCommandBus(inner, mockSpans)).
-    // 4. await app.start().
-    // 5. Dispatch a command via app.commandGateway.send(...).
-    // 6. Assert: (a) tracing span fired (inspect mockSpans), (b) mock distributed bus received the dispatch, (c) intercepting framework default is in chain.
-    expect(true).toBe(true)
-  })
-})
