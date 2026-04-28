@@ -14,6 +14,7 @@ import { ALL_SLOTS, type KronosComponents, type SlotName } from "./components.js
 import { SlotRegistry, type SlotFactory, type SlotMeta } from "./slot-registry.js"
 import { buildResolved } from "./resolved.js"
 import type { WarningChannel } from "./warnings.js"
+import type { DecoratorEntry } from "./decorator.js"
 
 /** Thrown when the App's mutating methods are called after .start() (D-50 footgun closure). */
 export class AppAlreadyStartedError extends Error {
@@ -61,6 +62,7 @@ export interface AppState {
   readonly processors: EventProcessorModule[]
   readonly extensions: Extension[]
   readonly warningChannel: WarningChannel
+  readonly decoratorRegistrations: DecoratorEntry[]   // NEW: per-app registration order; pipeline = left-to-right
 }
 
 export interface AppImplOptions {
@@ -81,6 +83,7 @@ export class AppImpl implements App {
       processors: [],
       extensions: [],
       warningChannel: options.warningChannel,
+      decoratorRegistrations: [],
     }
   }
 
