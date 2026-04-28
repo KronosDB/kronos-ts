@@ -70,11 +70,11 @@ export {
 } from "./eventsourcing-configurer.js"
 
 export {
-  type KronosPlugin,
+  type LegacyKronosPlugin,
   type TrackingProcessorOptions,
   type SubscribingProcessorOptions,
-  Kronos,
-  kronos,
+  LegacyKronos,
+  legacyKronos,
 } from "./kronos.js"
 
 // Module-level handler helpers (Plan 04-01 / HDL-02 / D-42)

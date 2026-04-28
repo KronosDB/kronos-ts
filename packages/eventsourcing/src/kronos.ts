@@ -61,12 +61,12 @@ import type { SnapshotPolicy } from "./snapshot-policy.js"
 import type { TagResolver } from "./tag-resolver.js"
 
 /**
- * A Kronos plugin — a function that receives a Kronos instance and registers
+ * A LegacyKronos plugin — a function that receives a LegacyKronos instance and registers
  * domain components with it.
  *
  * Domain slices are plugins:
  * ```typescript
- * function courses(k: Kronos) {
+ * function courses(k: LegacyKronos) {
  *   const CourseEntity = k.eventSourcedEntity({ ... })
  *   k.commandHandler(CreateCourse, async (cmd, _metadata) => { ... })
  *   k.trackingProcessor("course-projection", [ ... ])
@@ -74,7 +74,7 @@ import type { TagResolver } from "./tag-resolver.js"
  * }
  * ```
  */
-export type KronosPlugin = (k: Kronos) => void
+export type LegacyKronosPlugin = (k: LegacyKronos) => void
 
 // ---------------------------------------------------------------------------
 // Options for processors
@@ -104,19 +104,19 @@ export interface SubscribingProcessorOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Plugin-based configuration for Kronos applications.
+ * Plugin-based configuration for Kronos applications (legacy entry point).
  *
  * Provides a flat, TypeScript-native API where defining a component also
  * registers it — no separate configuration step needed.
  *
  * ```typescript
- * const app = await kronos()
+ * const app = await legacyKronos()
  *   .register(courses)
  *   .register(enrollment)
  *   .start()
  * ```
  */
-export class Kronos {
+export class LegacyKronos {
   /** @internal */
   private readonly _configurer: EventSourcingConfigurer
 
@@ -424,17 +424,17 @@ export class Kronos {
    *
    * Domain slices:
    * ```typescript
-   * kronos().register(courses).register(enrollment).start()
+   * legacyKronos().register(courses).register(enrollment).start()
    * ```
    *
    * Infrastructure enhancers (e.g., Axon Server connector):
    * ```typescript
-   * kronos().register(axonServerConfigurationEnhancer({ ... })).start()
+   * legacyKronos().register(axonServerConfigurationEnhancer({ ... })).start()
    * ```
    */
-  register(plugin: KronosPlugin): this
+  register(plugin: LegacyKronosPlugin): this
   register(enhancer: ConfigurationEnhancer): this
-  register(pluginOrEnhancer: KronosPlugin | ConfigurationEnhancer): this {
+  register(pluginOrEnhancer: LegacyKronosPlugin | ConfigurationEnhancer): this {
     if (typeof pluginOrEnhancer === "function") {
       pluginOrEnhancer(this)
     } else {
@@ -619,11 +619,11 @@ export class Kronos {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a Kronos application configuration.
+ * Create a legacy Kronos application configuration.
  *
  * ```typescript
  * // Domain slices as plugins
- * function courses(k: Kronos) {
+ * function courses(k: LegacyKronos) {
  *   const CourseEntity = k.eventSourcedEntity({ ... })
  *   k.commandHandler(CreateCourse, async (cmd, _metadata) => { ... })
  *   k.trackingProcessor("course-projection", [ ... ])
@@ -631,7 +631,7 @@ export class Kronos {
  * }
  *
  * // Bootstrap
- * const app = await kronos()
+ * const app = await legacyKronos()
  *   .register(courses)
  *   .register(enrollment)
  *   .start()
@@ -639,6 +639,6 @@ export class Kronos {
  * await app.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro" })
  * ```
  */
-export function kronos(options?: { eventStore?: EventStore }): Kronos {
-  return new Kronos(options)
+export function legacyKronos(options?: { eventStore?: EventStore }): LegacyKronos {
+  return new LegacyKronos(options)
 }
