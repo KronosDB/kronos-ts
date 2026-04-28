@@ -7,9 +7,7 @@ import {
 } from "@kronos-ts/eventsourcing"
 import {
   createSimpleCommandBus,
-  createInterceptingCommandBus,
   createSimpleQueryBus,
-  createInterceptingQueryBus,
   jsonSerializer,
   runInNewUoW,
 } from "@kronos-ts/messaging"
@@ -31,11 +29,11 @@ export function registerInMemoryDefaults(app: App): void {
     inMemory: true,
     warning: "[kronos] snapshotStore: in-memory — not durable, configure an extension for production",
   })
-  app.setDefault("commandBus", () => createInterceptingCommandBus(createSimpleCommandBus()), {
+  app.setDefault("commandBus", () => createSimpleCommandBus(), {
     inMemory: true,
     warning: "[kronos] commandBus: in-memory — single-process only, configure an extension for distribution",
   })
-  app.setDefault("queryBus", () => createInterceptingQueryBus(createSimpleQueryBus()), {
+  app.setDefault("queryBus", () => createSimpleQueryBus(), {
     inMemory: true,
     warning: "[kronos] queryBus: in-memory — single-process only, configure an extension for distribution",
   })
