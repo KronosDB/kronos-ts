@@ -74,7 +74,7 @@ describe("onEvent()", () => {
 
 describe("commandHandler()", () => {
   it("creates a command handler definition with simple form (no result)", () => {
-    const handler = commandHandler(CreateCourse, async (cmd, { load, append }) => {
+    const handler = commandHandler(CreateCourse, async (cmd, _metadata) => {
       // void handler
     })
 
@@ -90,7 +90,7 @@ describe("commandHandler()", () => {
       result: z.object({ courseId: z.string() }),
     })
 
-    const handler = commandHandler(CreateCourseWithResult, async (cmd, { load, append }) => {
+    const handler = commandHandler(CreateCourseWithResult, async (cmd, _metadata) => {
       return { courseId: cmd.courseId }
     })
 
@@ -101,7 +101,7 @@ describe("commandHandler()", () => {
   it("creates a command handler with appendCondition override", () => {
     const handler = commandHandler(CreateCourse, {
       appendCondition: (cmd, sourced) => sourced,
-      handler: async (cmd, { load, append }) => {},
+      handler: async (cmd, _metadata) => {},
     })
 
     expect(handler.appendCondition).toBeDefined()

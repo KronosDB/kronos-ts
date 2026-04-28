@@ -68,7 +68,7 @@ import type { TagResolver } from "./tag-resolver.js"
  * ```typescript
  * function courses(k: Kronos) {
  *   const CourseEntity = k.eventSourcedEntity({ ... })
- *   k.commandHandler(CreateCourse, async (cmd, { load, append }) => { ... })
+ *   k.commandHandler(CreateCourse, async (cmd, _metadata) => { ... })
  *   k.trackingProcessor("course-projection", [ ... ])
  *   k.queryHandlers("course-queries", [ ... ])
  * }
@@ -625,7 +625,7 @@ export class Kronos {
  * // Domain slices as plugins
  * function courses(k: Kronos) {
  *   const CourseEntity = k.eventSourcedEntity({ ... })
- *   k.commandHandler(CreateCourse, async (cmd, { load, append }) => { ... })
+ *   k.commandHandler(CreateCourse, async (cmd, _metadata) => { ... })
  *   k.trackingProcessor("course-projection", [ ... ])
  *   k.queryHandlers("course-queries", [ ... ])
  * }
