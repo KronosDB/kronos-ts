@@ -148,7 +148,7 @@ describe("app.start() — decoration pipeline", () => {
     expect(result).toBe("b:a:base")
   })
 
-  it("Test 8: polymorphism — decorator receives mock instance when base is replaced via .set()", async () => {
+  it("Test 8: polymorphism — decorator receives the mock instance set via .set() (start-time binding)", async () => {
     const { applyDecorators } = await import("../decorator.js")
     const { buildResolved } = await import("../resolved.js")
     const { SlotRegistry } = await import("../slot-registry.js")
@@ -176,5 +176,20 @@ describe("app.start() — decoration pipeline", () => {
 
     applyDecorators("commandBus", resolved.commandBus, regs, resolved)
     expect(capturedInner).toBe(mockDistributedBus)
+  })
+})
+
+// ─── Plan 02 placeholder — skip until framework intercepting defaults are wired ─
+
+describe.skip("decorator polymorphism — Plan 02 will enable", () => {
+  it("tracing(intercepting(distributedBus)) — replacing base does not affect decorators (success criterion #4)", async () => {
+    // Plan 02 fills this in:
+    // 1. Build a kronos() app with quiet:true and an in-memory entity + handler.
+    // 2. .set("commandBus", () => mockDistributedCommandBus) where mock is a structurally-typed CommandBus stub.
+    // 3. .decorate("commandBus", (inner) => createTracingCommandBus(inner, mockSpans)).
+    // 4. await app.start().
+    // 5. Dispatch a command via app.commandGateway.send(...).
+    // 6. Assert: (a) tracing span fired (inspect mockSpans), (b) mock distributed bus received the dispatch, (c) intercepting framework default is in chain.
+    expect(true).toBe(true)
   })
 })

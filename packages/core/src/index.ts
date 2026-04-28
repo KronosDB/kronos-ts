@@ -20,3 +20,11 @@ export {
 } from "./app.js"
 export { registerInMemoryDefaults } from "./defaults.js"
 export { kronos, type KronosPartialConfig } from "./kronos.js"
+export {
+  type DecoratorHandle,
+  type DecoratorFactory,
+  type DecoratorEntry,
+  applyDecorators,
+} from "./decorator.js"
+export { Defaults } from "./defaults-handles.js"
+export { UnknownDecoratorHandleError } from "./errors.js"
