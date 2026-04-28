@@ -1,4 +1,4 @@
-import { on, eventHandlers, queryHandlers } from "@kronos-ts/messaging"
+import { on, eventHandlers, queryHandlers, emitUpdate } from "@kronos-ts/messaging"
 import {
   CourseCreated, CourseCapacityChanged, StudentSubscribed, StudentUnsubscribed,
   GetCourseView, GetAllCourses,
@@ -28,7 +28,7 @@ export function clearCourseViews() { courseViews.clear() }
 export const courseProjection = eventHandlers({
   name: "course-projection",
   handlers: [
-    on(CourseCreated, async (e, ctx) => {
+    on(CourseCreated, async (e, _metadata) => {
       courseViews.set(e.courseId, {
         courseId: e.courseId,
         name: e.name,
@@ -36,29 +36,29 @@ export const courseProjection = eventHandlers({
         enrolledCount: 0,
         students: [],
       })
-      ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
+      emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
     }),
-    on(CourseCapacityChanged, async (e, ctx) => {
+    on(CourseCapacityChanged, async (e, _metadata) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.capacity = e.capacity
-        ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
       }
     }),
-    on(StudentSubscribed, async (e, ctx) => {
+    on(StudentSubscribed, async (e, _metadata) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.enrolledCount++
         view.students.push(e.studentId)
-        ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
       }
     }),
-    on(StudentUnsubscribed, async (e, ctx) => {
+    on(StudentUnsubscribed, async (e, _metadata) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.enrolledCount--
         view.students = view.students.filter((id) => id !== e.studentId)
-        ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
       }
     }),
   ],
