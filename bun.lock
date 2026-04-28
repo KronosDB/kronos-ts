@@ -44,6 +44,17 @@
         "zod": "^3.24",
       },
     },
+    "packages/core": {
+      "name": "@kronos-ts/core",
+      "version": "0.1.0",
+      "dependencies": {
+        "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/eventsourcing": "workspace:*",
+        "@kronos-ts/messaging": "workspace:*",
+        "@kronos-ts/modelling": "workspace:*",
+        "zod": "^3.24",
+      },
+    },
     "packages/eventsourcing": {
       "name": "@kronos-ts/eventsourcing",
       "version": "0.1.0",
@@ -273,6 +284,8 @@
     "@kronos-ts/axon-server": ["@kronos-ts/axon-server@workspace:packages/extensions/axon-server"],
 
     "@kronos-ts/common": ["@kronos-ts/common@workspace:packages/common"],
+
+    "@kronos-ts/core": ["@kronos-ts/core@workspace:packages/core"],
 
     "@kronos-ts/eventsourcing": ["@kronos-ts/eventsourcing@workspace:packages/eventsourcing"],
 
@@ -1021,6 +1034,8 @@
     "@isaacs/cliui/wrap-ansi": ["wrap-ansi@8.1.0", "", { "dependencies": { "ansi-styles": "^6.1.0", "string-width": "^5.0.1", "strip-ansi": "^7.0.1" } }, "sha512-si7QWI6zUMq56bESFvagtmzMdGOtoxfR+Sez11Mobfc7tm+VkUckk9bW2UeffTGVUbOksxmSw0AA2gs8g71NCQ=="],
 
     "@kronos-ts/common/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@kronos-ts/core/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@kronos-ts/eventsourcing/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
