@@ -14,7 +14,7 @@ import {
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
 import { kronos, type Kronos, type KronosApplication } from "../kronos.js"
-import { createInMemorySnapshotStore, afterEvents } from "../index.js"
+import { createInMemorySnapshotStore, afterEvents, load, append } from "../index.js"
 
 // ============================================================================
 // Domain: University courses
@@ -118,19 +118,19 @@ describe("Kronos API", () => {
           ],
         })
 
-        k.commandHandler(CreateCourse, async (cmd, { load, append }) => {
+        k.commandHandler(CreateCourse, async (cmd, _metadata) => {
           const course = await load(Course, { courseId: cmd.courseId })
           if (course.created) throw new Error("Course already exists")
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
         })
 
-        k.commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
+        k.commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
           const course = await load(Course, { courseId: cmd.courseId })
           if (!course.created) throw new Error("Course does not exist")
           append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
         })
 
-        k.commandHandler(SubscribeStudent, async (cmd, { load, append }) => {
+        k.commandHandler(SubscribeStudent, async (cmd, _metadata) => {
           const course = await load(Course, { courseId: cmd.courseId })
           if (!course.created) throw new Error("Course does not exist")
           if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
@@ -202,13 +202,13 @@ describe("Kronos API", () => {
           ],
         })
 
-        k.commandHandler(CreateCourse, async (cmd, { load, append }) => {
+        k.commandHandler(CreateCourse, async (cmd, _metadata) => {
           const course = await load(Course, { courseId: cmd.courseId })
           if (course.created) throw new Error("Course already exists")
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
         })
 
-        k.commandHandler(SubscribeStudent, async (cmd, { load, append }) => {
+        k.commandHandler(SubscribeStudent, async (cmd, _metadata) => {
           const course = await load(Course, { courseId: cmd.courseId })
           if (!course.created) throw new Error("Course does not exist")
           if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
@@ -264,7 +264,7 @@ describe("Kronos API", () => {
         ],
       })
 
-      const createCourse = commandHandler(CreateCourse, async (cmd, { load, append }) => {
+      const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
         const course = await load(CourseEntity, { courseId: cmd.courseId })
         if (course.created) throw new Error("Course already exists")
         append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
@@ -340,7 +340,7 @@ describe("Kronos API", () => {
           ],
         })
 
-        k.commandHandler(CreateCourse, async (cmd, { load, append }) => {
+        k.commandHandler(CreateCourse, async (cmd, _metadata) => {
           const course = await load(Course, { courseId: cmd.courseId })
           if (course.created) throw new Error("Course already exists")
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
@@ -406,7 +406,7 @@ describe("Kronos API", () => {
           ],
         })
 
-        k.commandHandler(CreateCourse, async (cmd, { load, append }) => {
+        k.commandHandler(CreateCourse, async (cmd, _metadata) => {
           await load(Course, { courseId: cmd.courseId })
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
         })
@@ -454,12 +454,12 @@ describe("Kronos API", () => {
           snapshotPolicy: afterEvents(3),
         })
 
-        k.commandHandler(CreateCourse, async (cmd, { load, append }) => {
+        k.commandHandler(CreateCourse, async (cmd, _metadata) => {
           await load(Course, { courseId: cmd.courseId })
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
         })
 
-        k.commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
+        k.commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
           await load(Course, { courseId: cmd.courseId })
           append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
         })

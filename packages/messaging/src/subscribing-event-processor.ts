@@ -1,12 +1,18 @@
-import { emptyMetadata, qualifiedNameToString, type Metadata } from "@kronos-ts/common"
+import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
 import type { EventMessage } from "./message.js"
-import type { EventHandlerRegistration, EventHandlerContext } from "./handler.js"
+import type { EventHandlerRegistration } from "./handler.js"
 import type { EventHandlersDefinition } from "./event-handler.js"
 import type { UoWRunner } from "./unit-of-work.js"
 import { runInNewUoW } from "./unit-of-work.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
 import { loggingErrorHandler } from "./tracking-event-processor.js"
 import type { SubscribableEventSource } from "./event-bus.js"
+import type { CommandBus } from "./command-bus.js"
+import type { QueryBus } from "./query-bus.js"
+import { setResource } from "./processing-state.js"
+import { STATE_MANAGER_KEY } from "@kronos-ts/eventsourcing"
+import { COMMAND_BUS_KEY } from "./send.js"
+import { QUERY_BUS_KEY } from "./emit-update.js"
 
 // Re-export for backward compatibility
 export type { SubscribableEventSource } from "./event-bus.js"
@@ -35,7 +41,14 @@ export interface SubscribingEventProcessorOptions {
   name: string
   eventSource: SubscribableEventSource
   handlerGroups: ReadonlyArray<EventHandlersDefinition>
-  contextFactory: (metadata: Metadata) => EventHandlerContext
+  /** State manager injected into ALS at handler-invocation entry (D-44). */
+  stateManager?: unknown
+  /** Command bus injected into ALS at handler-invocation entry (D-44). */
+  commandBus?: CommandBus
+  /** Query bus injected into ALS at handler-invocation entry (D-44). */
+  queryBus?: QueryBus
+  /** Optional per-event callback fired inside the UoW before handler invocation (e.g. monitoring). */
+  onEventDelivery?: () => void
   unitOfWorkRunner?: UoWRunner
   errorHandler?: EventProcessingErrorHandler
 }
@@ -54,7 +67,10 @@ export function createSubscribingEventProcessor(
     name,
     eventSource,
     handlerGroups,
-    contextFactory,
+    stateManager,
+    commandBus,
+    queryBus,
+    onEventDelivery,
     unitOfWorkRunner = runInNewUoW,
     errorHandler = loggingErrorHandler(name),
   } = options
@@ -91,10 +107,16 @@ export function createSubscribingEventProcessor(
     const handlers = handlerMap.get(eventName)
     if (!handlers || handlers.length === 0) return
 
-    const handlerContext = contextFactory(event.metadata)
+    // D-44 wiring: write framework components into ALS at per-event invocation entry.
+    if (stateManager !== undefined) setResource(STATE_MANAGER_KEY, stateManager as any)
+    if (commandBus !== undefined) setResource(COMMAND_BUS_KEY, commandBus)
+    if (queryBus !== undefined) setResource(QUERY_BUS_KEY, queryBus)
+    // Optional per-event callback (e.g. monitoring hooks registered inside the UoW).
+    if (onEventDelivery) onEventDelivery()
+
     for (const reg of handlers) {
       try {
-        await reg.handler(event.payload, handlerContext)
+        await reg.handler(event.payload, event.metadata)
       } catch (err) {
         // SubscribingEventProcessor doesn't have position tracking,
         // so pass -1n as position indicator

@@ -15,6 +15,7 @@ import {
 import { eventSourcedEntity } from "@kronos-ts/modelling"
 import { EventSourcingConfigurer } from "../eventsourcing-configurer.js"
 import { sourcingCondition } from "../sourcing-condition.js"
+import { load, append } from "../index.js"
 
 // ============================================================================
 // Domain — University courses (same domain, configured via composition)
@@ -78,20 +79,20 @@ const CourseEntity = eventSourcedEntity({
 
 // -- Command Handlers --
 
-const createCourse = commandHandler(CreateCourse, async (cmd, { load, append }) => {
+const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
+const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (cmd.capacity === course.capacity) return
   append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, { load, append }) => {
+const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")

@@ -15,6 +15,7 @@ import {
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
 import { EventSourcingConfigurer } from "../eventsourcing-configurer.js"
+import { load, append } from "../index.js"
 
 // -- Domain --
 
@@ -41,7 +42,7 @@ const CourseEntity = eventSourcedEntity({
   ],
 })
 
-const createCourse = commandHandler(CreateCourse, async (cmd, { load, append }) => {
+const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })

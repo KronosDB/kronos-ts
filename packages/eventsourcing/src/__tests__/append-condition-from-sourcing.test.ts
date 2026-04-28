@@ -9,6 +9,7 @@ import {
   EventCriteria,
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { load, append } from "../index.js"
 import { EventSourcingConfigurer } from "../eventsourcing-configurer.js"
 import { createInMemoryEventStore, AppendConditionError } from "../in-memory-event-store.js"
 
@@ -49,13 +50,13 @@ const AccountEntity = eventSourcedEntity({
   ],
 })
 
-const createAccount = commandHandler(CreateAccount, async (cmd, { load, append }) => {
+const createAccount = commandHandler(CreateAccount, async (cmd, _metadata) => {
   const account = await load(AccountEntity, { accountId: cmd.accountId })
   if (account.exists) throw new Error("Account already exists")
   append(AccountCreated, { accountId: cmd.accountId, balance: cmd.balance })
 })
 
-const deposit = commandHandler(Deposit, async (cmd, { load, append }) => {
+const deposit = commandHandler(Deposit, async (cmd, _metadata) => {
   const account = await load(AccountEntity, { accountId: cmd.accountId })
   if (!account.exists) throw new Error("Account does not exist")
   append(MoneyDeposited, { accountId: cmd.accountId, amount: cmd.amount })

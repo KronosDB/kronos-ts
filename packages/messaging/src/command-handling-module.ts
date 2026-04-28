@@ -11,8 +11,6 @@ import { CORRELATION_DATA_KEY } from "./correlation-data.js"
 import { getResource, setResource, onPrepareCommit } from "./processing-state.js"
 import type { CommandMessage, EventMessage } from "./message.js"
 import {
-  append as moduleLevelAppend,
-  load as moduleLevelLoad,
   BUFFERED_EVENTS_KEY,
   SOURCING_INFOS_KEY,
   STATE_MANAGER_KEY,
@@ -89,15 +87,7 @@ function createCommandInvocation(
       await eventStore.append(resolvedEvents, appendCondition)
     })
 
-    // Transitional wrapper — delegates to module-level helpers.
-    // Plan 02 deletes this object and calls handler.handler(message.payload, message.metadata) directly.
-    const context = {
-      load: moduleLevelLoad,
-      append: moduleLevelAppend,
-      metadata: message.metadata,
-    }
-
-    return handler.handler(message.payload, context)
+    return handler.handler(message.payload, message.metadata)
   }
 }
 

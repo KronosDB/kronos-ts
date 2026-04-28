@@ -14,7 +14,7 @@ import type { CommandMessage } from "../message.js"
 import type { EventCriteria } from "../event-criteria.js"
 import { processingStateStorage, Phase } from "../processing-state.js"
 import { runInNewUoW } from "../unit-of-work.js"
-import { inUoW } from "./_helpers/in-uow.js"
+import { load, append } from "@kronos-ts/eventsourcing"
 
 // ---------------------------------------------------------------------------
 // Test descriptors
@@ -112,7 +112,7 @@ function makeCommandMessage(descriptor: typeof CreateCourse | typeof ChangeCours
  * behavior without booting a full runner.
  *
  * Plan 03-04 (CTX-04): no `ProcessingContext` instance — drives the ALS state
- * directly. Tests still wrap calls in `inUoW(...)` so the ALS state is live.
+ * directly. Tests still wrap calls in `runInNewUoW(...)` so the ALS state is live.
  */
 async function runPrepareCommit(): Promise<void> {
   const state = processingStateStorage.getStore()
@@ -135,8 +135,8 @@ describe("commandHandlingModule", () => {
       const bus = createRecordingCommandBus()
       const config = createStubConfiguration({ commandBus: bus })
 
-      const createCourse = commandHandler(CreateCourse, async (_cmd, { append }) => {
-        append(CourseCreated, { courseId: _cmd.courseId, name: _cmd.name })
+      const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
+        append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
       })
 
       const changeCapacity = commandHandler(ChangeCourseCapacity, async () => {})
@@ -171,7 +171,7 @@ describe("commandHandlingModule", () => {
         const config = createStubConfiguration({ commandBus: bus, stateManager })
 
         let loadedState: any = null
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load }) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
           loadedState = await load({ name: "Course" }, cmd.courseId)
         })
 
@@ -196,7 +196,7 @@ describe("commandHandlingModule", () => {
         const bus = createRecordingCommandBus()
         const config = createStubConfiguration({ commandBus: bus })
 
-        const createCourse = commandHandler(CreateCourse, async (cmd, { append }) => {
+        const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
         })
 
@@ -227,7 +227,7 @@ describe("commandHandlingModule", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, eventStore })
 
-        const createCourse = commandHandler(CreateCourse, async (cmd, { append }) => {
+        const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
         })
 
@@ -274,7 +274,7 @@ describe("commandHandlingModule", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
           await load({ name: "Course" }, cmd.courseId)
           append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
         })
@@ -321,7 +321,7 @@ describe("commandHandlingModule", () => {
 
         const customCriteria: EventCriteria = { kind: "any-tag" }
         const changeCapacity = commandHandler(ChangeCourseCapacity, {
-          handler: async (cmd, { load, append }) => {
+          handler: async (cmd, _metadata) => {
             await load({ name: "Course" }, cmd.courseId)
             append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
           },
@@ -364,7 +364,7 @@ describe("commandHandlingModule", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load }) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
           // Load same entity twice
           await load({ name: "Course" }, cmd.courseId)
           await load({ name: "Course" }, cmd.courseId)
@@ -402,7 +402,7 @@ describe("commandHandlingModule", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load }) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (_cmd, _metadata) => {
           await load({ name: "Course" }, "cs-101")
           await load({ name: "Course" }, "cs-202")
         })
@@ -443,7 +443,7 @@ describe("commandHandlingModule", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
           await load({ name: "Course" }, "cs-101")
           await load({ name: "Course" }, "cs-202")
           append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })

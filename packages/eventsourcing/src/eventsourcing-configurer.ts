@@ -32,7 +32,6 @@ import type {
   StreamableEventSource,
   SubscribableEventSource,
   SubscribingEventProcessor,
-  EventHandlerContext,
   EventProcessorModule,
   CorrelationDataProvider,
   HandlerEnhancerDefinition,
@@ -69,13 +68,7 @@ import {
   TrackingProcessorBuilder,
   SubscribingProcessorBuilder,
   createEventGateway,
-  send as moduleLevelSend,
-  emitUpdate as moduleLevelEmitUpdate,
-  COMMAND_BUS_KEY,
-  QUERY_BUS_KEY,
 } from "@kronos-ts/messaging"
-import { setResource } from "@kronos-ts/messaging/processing-state"
-import { STATE_MANAGER_KEY, load as moduleLevelLoad } from "./load.js"
 import type { EventStore } from "./event-store.js"
 import { createInMemoryEventStore } from "./in-memory-event-store.js"
 import { createEventSourcedRepository } from "./event-sourced-repository.js"
@@ -912,46 +905,27 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
         const evtDispatchInterceptors = evtDispatchInterceptorBuilders.map(b => b(config))
         const evtHandlerInterceptors = evtHandlerInterceptorBuilders.map(b => b(config))
 
-        // Plan 04-01 (D-44): contextFactory writes framework components into ALS
-        // resources at per-event invocation entry, then returns a delegating wrapper
-        // carrying module-level helpers as field values.
-        // Plan 02 deletes the wrapper entirely and calls handler(payload, metadata) directly.
-        const contextFactory = (metadata: import("@kronos-ts/common").Metadata): EventHandlerContext => {
-          // D-44 wiring: write components to ALS at per-event seam (inside runner — ALS state is live).
-          setResource(COMMAND_BUS_KEY, config.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS))
-          setResource(QUERY_BUS_KEY, queryBus)
-          if (config.hasComponent(ComponentKeys.STATE_MANAGER)) {
-            setResource(STATE_MANAGER_KEY, config.getComponent<any>(ComponentKeys.STATE_MANAGER))
-          }
+        // D-44 wiring: resolve framework components once; processors inject them
+        // per-event into ALS at handler-invocation entry (Plan 04-02).
+        const rawCommandBus = config.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS)
+        const rawStateManager = config.hasComponent(ComponentKeys.STATE_MANAGER)
+          ? config.getComponent<any>(ComponentKeys.STATE_MANAGER)
+          : undefined
 
-          return {
-            load: moduleLevelLoad,
-            send: moduleLevelSend,
-            emitUpdate: moduleLevelEmitUpdate,
-            metadata,
-          }
-        }
-
-        // Wrap contextFactory with event monitoring (Gap 7).
-        // Per-event monitor success/failure is wired via module-level whenComplete/onError
-        // accessors — these read the active ALS state inside the runner.
-        const monitoredContextFactory = (metadata: import("@kronos-ts/common").Metadata): EventHandlerContext => {
-          const ctx = contextFactory(metadata)
-          // Trigger event monitor on message ingestion during processor delivery.
-          // The processor calls contextFactory() per event, inside the runner — so
-          // the ALS-bound lifecycle accessors register against the active UoW.
+        // Per-event monitoring callback (Gap 7): registered inside the UoW via module-level
+        // whenComplete/onError. The processor fires this per event delivery.
+        const makeEventMonitoringCallback = () => {
           const callback = evtMonitor.onMessageIngested({
             identifier: generateIdentifier(),
             name: { namespace: "", localName: "" } as any,
             version: "0",
             payload: undefined,
-            metadata,
+            metadata: {},
             timestamp: Date.now(),
             tags: [],
           } as unknown as EventMessage)
           whenComplete(() => callback.reportSuccess())
           onError(async (err: unknown) => callback.reportFailure(err instanceof Error ? err : new Error(String(err))))
-          return ctx
         }
 
         const enhancer = config.getOptionalComponent<HandlerEnhancerDefinition>(
@@ -975,7 +949,10 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
               name: proc.name,
               eventSource: subscribableSource,
               handlerGroups: proc.handlerGroups,
-              contextFactory: monitoredContextFactory,
+              stateManager: rawStateManager,
+              commandBus: rawCommandBus,
+              queryBus,
+              onEventDelivery: makeEventMonitoringCallback,
               unitOfWorkRunner: proc.unitOfWorkRunner ?? uowRunner,
               errorHandler: proc.errorHandler,
             }))
@@ -984,7 +961,10 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
               name: proc.name,
               eventSource,
               handlerGroups: proc.handlerGroups,
-              contextFactory: monitoredContextFactory,
+              stateManager: rawStateManager,
+              commandBus: rawCommandBus,
+              queryBus,
+              onEventDelivery: makeEventMonitoringCallback,
               unitOfWorkRunner: proc.unitOfWorkRunner ?? uowRunner,
               tokenStore: proc.tokenStore ?? globalTokenStore,
               batchSize: proc.batchSize,

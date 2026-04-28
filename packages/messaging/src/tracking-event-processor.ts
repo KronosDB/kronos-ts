@@ -1,5 +1,5 @@
-import { emptyMetadata, qualifiedNameToString, type Metadata } from "@kronos-ts/common"
-import type { EventHandlerRegistration, EventHandlerContext } from "./handler.js"
+import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
+import type { EventHandlerRegistration } from "./handler.js"
 import type { EventHandlersDefinition } from "./event-handler.js"
 import type { StreamableEventSource, MessageStream, SequencedEvent } from "./event-source.js"
 import type { UoWRunner } from "./unit-of-work.js"
@@ -16,6 +16,11 @@ import {
 import { REPLAY_STATE_KEY } from "./replay-token.js"
 import { setResource, onPrepareCommit } from "./processing-state.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
+import type { CommandBus } from "./command-bus.js"
+import type { QueryBus } from "./query-bus.js"
+import { STATE_MANAGER_KEY } from "@kronos-ts/eventsourcing"
+import { COMMAND_BUS_KEY } from "./send.js"
+import { QUERY_BUS_KEY } from "./emit-update.js"
 
 /**
  * A tracking event processor that reads events from a streamable event source
@@ -48,7 +53,14 @@ export interface TrackingEventProcessorOptions {
   name: string
   eventSource: StreamableEventSource
   handlerGroups: ReadonlyArray<EventHandlersDefinition>
-  contextFactory: (metadata: Metadata) => EventHandlerContext
+  /** State manager injected into ALS at handler-invocation entry (D-44). */
+  stateManager?: unknown
+  /** Command bus injected into ALS at handler-invocation entry (D-44). */
+  commandBus?: CommandBus
+  /** Query bus injected into ALS at handler-invocation entry (D-44). */
+  queryBus?: QueryBus
+  /** Optional per-event callback fired inside the UoW before handler invocation (e.g. monitoring). */
+  onEventDelivery?: () => void
   unitOfWorkRunner?: UoWRunner
   tokenStore?: TokenStore
   /** Polling interval when no events are available (ms). Default: 500. */
@@ -98,7 +110,10 @@ export function createTrackingEventProcessor(
     name,
     eventSource,
     handlerGroups,
-    contextFactory,
+    stateManager,
+    commandBus,
+    queryBus,
+    onEventDelivery,
     unitOfWorkRunner = runInNewUoW,
     tokenStore,
     pollingIntervalMs = 500,
@@ -243,10 +258,16 @@ export function createTrackingEventProcessor(
     const handlers = handlerMap.get(eventName)
     if (!handlers || handlers.length === 0) return
 
-    const handlerContext = contextFactory(event.metadata)
+    // D-44 wiring: write framework components into ALS at per-event invocation entry.
+    if (stateManager !== undefined) setResource(STATE_MANAGER_KEY, stateManager as any)
+    if (commandBus !== undefined) setResource(COMMAND_BUS_KEY, commandBus)
+    if (queryBus !== undefined) setResource(QUERY_BUS_KEY, queryBus)
+    // Optional per-event callback (e.g. monitoring hooks registered inside the UoW).
+    if (onEventDelivery) onEventDelivery()
+
     for (const reg of handlers) {
       try {
-        await reg.handler(event.payload, handlerContext)
+        await reg.handler(event.payload, event.metadata)
       } catch (err) {
         await errorHandler.handleError(err, eventName, sequencedEvent.sequence)
       }

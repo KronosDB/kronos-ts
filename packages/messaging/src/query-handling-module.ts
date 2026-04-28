@@ -28,7 +28,7 @@ export function queryHandlingModule(
         for (const reg of group.handlers) {
           const queryName = qualifiedNameToString(reg.descriptor.name)
           bus.subscribe(queryName, async (message: QueryMessage) => {
-            return reg.handler(message.payload, { metadata: message.metadata })
+            return reg.handler(message.payload, message.metadata)
           })
         }
       }

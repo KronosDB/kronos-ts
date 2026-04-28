@@ -14,6 +14,7 @@ import {
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
 import { EventSourcingConfigurer } from "../eventsourcing-configurer.js"
+import { load, append } from "../index.js"
 
 // ============================================================================
 // Domain
@@ -61,13 +62,13 @@ const CourseEntity = eventSourcedEntity({
 
 // -- Command handlers --
 
-const createCourse = commandHandler(CreateCourse, async (cmd, { load, append }) => {
+const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, { load, append }) => {
+const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")

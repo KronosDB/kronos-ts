@@ -1,6 +1,6 @@
 import { qualifiedNameToString } from "@kronos-ts/common"
 import type { EventMessage } from "./message.js"
-import type { EventHandlerRegistration, EventHandlerContext } from "./handler.js"
+import type { EventHandlerRegistration } from "./handler.js"
 import type { SequencedEvent } from "./event-source.js"
 import {
   type SequencedDeadLetterQueue,
@@ -55,7 +55,6 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
     async deliver(
       sequencedEvent: SequencedEvent,
       handlers: Array<EventHandlerRegistration<any>>,
-      handlerContext: EventHandlerContext,
     ): Promise<void> {
       const event = sequencedEvent.event
       const seqId = sequenceIdentifier(event)
@@ -75,7 +74,7 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
       // Try to deliver to all handlers
       for (const reg of handlers) {
         try {
-          await reg.handler(event.payload, handlerContext)
+          await reg.handler(event.payload, event.metadata)
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err))
           const letter = createDeadLetter(event, error, seqId, {
