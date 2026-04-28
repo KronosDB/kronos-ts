@@ -58,9 +58,40 @@ export class NoActiveUnitOfWork extends Error {
   }
 }
 
+/**
+ * Plan 04-01 (HDL-02 / D-43): thrown by mutating helpers (append, send, emitUpdate)
+ * when called outside the INVOCATION phase. Distinct class (not a NoActiveUnitOfWork
+ * subclass) — a UoW IS active, but it's in the wrong phase. Catches the real bug
+ * pattern of mutations from lifecycle hooks (onCommit, onPrepareCommit, etc.).
+ */
+export class WrongUoWPhase extends Error {
+  readonly currentPhase: PhaseValue | null
+  constructor(currentPhase: PhaseValue | null) {
+    super(
+      `Mutating helper called during phase ${currentPhase} — must be called during INVOCATION (${Phase.INVOCATION}) only. ` +
+      `Do not call append/send/emitUpdate from lifecycle hooks (onPrepareCommit, onCommit, onAfterCommit, onError, whenComplete).`
+    )
+    this.name = "WrongUoWPhase"
+    this.currentPhase = currentPhase
+  }
+}
+
 function requireState(): InternalProcessingState {
   const state = processingStateStorage.getStore()
   if (state === undefined) throw new NoActiveUnitOfWork()
+  return state
+}
+
+/**
+ * Plan 04-01 (HDL-02 / D-43): mutator guard. Throws NoActiveUnitOfWork outside a UoW;
+ * throws WrongUoWPhase when active phase != INVOCATION; otherwise returns the state.
+ * Used by append (eventsourcing), send + emitUpdate (messaging).
+ * Internal — NOT exported from index.ts barrel. Consumed via deep-path import.
+ */
+export function requireInvocationPhase(): InternalProcessingState {
+  const state = processingStateStorage.getStore()
+  if (state === undefined) throw new NoActiveUnitOfWork()
+  if (state.currentPhase !== Phase.INVOCATION) throw new WrongUoWPhase(state.currentPhase)
   return state
 }
 
