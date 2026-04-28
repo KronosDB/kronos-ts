@@ -9,12 +9,11 @@ import {
 import type { StreamableEventSource, SequencedEvent, MessageStream } from "../event-source.js"
 import type { EventMessage } from "../message.js"
 import type { EventHandlersDefinition } from "../event-handler.js"
-import type { EventHandlerRegistration, EventHandlerContext } from "../handler.js"
+import type { EventHandlerRegistration } from "../handler.js"
 import type { TokenStore } from "../token-store.js"
 import type { TrackingToken } from "../tracking-token.js"
 import { globalSequenceToken } from "../tracking-token.js"
 import { isReplay, REPLAY_STATE_KEY } from "../replay-token.js"
-import type { Metadata } from "@kronos-ts/common"
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -114,15 +113,6 @@ function makeHandlerGroup(
   }
 }
 
-function simpleContextFactory(metadata: Metadata): EventHandlerContext {
-  return {
-    load: async () => { throw new Error("no state manager") },
-    send: async () => { throw new Error("no command bus") },
-    emitUpdate: () => {},
-    metadata,
-  }
-}
-
 /** Wait for the processor to advance past a position, with a timeout. */
 async function waitForPosition(
   proc: { position: bigint; running: boolean },
@@ -164,7 +154,7 @@ describe("TrackingEventProcessor", () => {
         name: "test-processor",
         eventSource,
         handlerGroups: [makeHandlerGroup([handler])],
-        contextFactory: simpleContextFactory,
+
         pollingIntervalMs: 10,
       })
 
@@ -197,7 +187,7 @@ describe("TrackingEventProcessor", () => {
         name: "test-processor",
         eventSource,
         handlerGroups: [makeHandlerGroup([handler])],
-        contextFactory: simpleContextFactory,
+
         pollingIntervalMs: 10,
       })
 
@@ -229,7 +219,7 @@ describe("TrackingEventProcessor", () => {
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
           handler: () => {},
         }])],
-        contextFactory: simpleContextFactory,
+
         pollingIntervalMs: 10,
       })
 
@@ -262,7 +252,7 @@ describe("TrackingEventProcessor", () => {
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
           handler: () => {},
         }])],
-        contextFactory: simpleContextFactory,
+
         tokenStore,
         pollingIntervalMs: 10,
       })
@@ -300,11 +290,11 @@ describe("TrackingEventProcessor", () => {
         handlerGroups: [makeHandlerGroup([{
           kind: "event-handler",
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
-          handler: (_payload, ctx) => {
+          handler: (_payload, _metadata) => {
             delivered.push(BigInt(delivered.length))
           },
         }])],
-        contextFactory: simpleContextFactory,
+
         tokenStore,
         pollingIntervalMs: 10,
       })
@@ -346,7 +336,7 @@ describe("TrackingEventProcessor", () => {
         name: "test-processor",
         eventSource,
         handlerGroups: [makeHandlerGroup([handler])],
-        contextFactory: simpleContextFactory,
+
         errorHandler: loggingErrorHandler("test-processor"),
         pollingIntervalMs: 10,
       })
@@ -383,7 +373,7 @@ describe("TrackingEventProcessor", () => {
         name: "test-processor",
         eventSource,
         handlerGroups: [makeHandlerGroup([handler])],
-        contextFactory: simpleContextFactory,
+
         errorHandler: propagatingErrorHandler(),
         pollingIntervalMs: 10,
       })
@@ -446,7 +436,7 @@ describe("TrackingEventProcessor", () => {
         name: "test-processor",
         eventSource,
         handlerGroups: [makeHandlerGroup([handler])],
-        contextFactory: simpleContextFactory,
+
         pollingIntervalMs: 10,
       })
 
@@ -495,7 +485,7 @@ describe("TrackingEventProcessor", () => {
         name: "test-processor",
         eventSource,
         handlerGroups: [group],
-        contextFactory: simpleContextFactory,
+
         tokenStore,
         pollingIntervalMs: 10,
       })
@@ -522,7 +512,7 @@ describe("TrackingEventProcessor", () => {
         name: "test-processor",
         eventSource,
         handlerGroups: [],
-        contextFactory: simpleContextFactory,
+
         pollingIntervalMs: 10,
       })
 
@@ -556,7 +546,7 @@ describe("TrackingEventProcessor", () => {
         name: "test-processor",
         eventSource,
         handlerGroups: [makeHandlerGroup([handler])],
-        contextFactory: simpleContextFactory,
+
         pollingIntervalMs: 10,
       })
 
@@ -594,7 +584,7 @@ describe("TrackingEventProcessor", () => {
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
           handler: () => {},
         }])],
-        contextFactory: simpleContextFactory,
+
         pollingIntervalMs: 10,
       })
 
@@ -627,7 +617,7 @@ describe("TrackingEventProcessor", () => {
         name: "my-processor",
         eventSource,
         handlerGroups: [],
-        contextFactory: simpleContextFactory,
+
       })
 
       // then
@@ -648,7 +638,7 @@ describe("TrackingEventProcessor", () => {
         name: "test-processor",
         eventSource,
         handlerGroups: [],
-        contextFactory: simpleContextFactory,
+
       })
 
       // then

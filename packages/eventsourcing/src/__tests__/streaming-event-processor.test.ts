@@ -1,6 +1,6 @@
 import { describe, expect, it, afterEach } from "bun:test"
 import { z } from "zod"
-import { qn, tag, type Metadata } from "@kronos-ts/common"
+import { qn, tag } from "@kronos-ts/common"
 import {
   command,
   event,
@@ -76,12 +76,6 @@ describe("StreamingEventProcessor", () => {
         name: "course-projection",
         eventSource: eventStore as StreamableEventSource,
         handlerGroups: [projection],
-        contextFactory: (metadata: Metadata) => ({
-          load: async () => { throw new Error("not needed") },
-          send: async () => {},
-          emitUpdate: () => {},
-          metadata,
-        }),
       })
 
       await processor.start()
@@ -163,12 +157,6 @@ describe("StreamingEventProcessor", () => {
         name: "course-projection",
         eventSource: eventStore as StreamableEventSource,
         handlerGroups: [projection],
-        contextFactory: (metadata: Metadata) => ({
-          load: async () => { throw new Error("not needed") },
-          send: async () => {},
-          emitUpdate: () => {},
-          metadata,
-        }),
         tokenStore,
       })
 
@@ -203,12 +191,6 @@ describe("StreamingEventProcessor", () => {
         name: "resettable",
         eventSource: eventStore as StreamableEventSource,
         handlerGroups: [projection],
-        contextFactory: (metadata: Metadata) => ({
-          load: async () => { throw new Error("not needed") },
-          send: async () => {},
-          emitUpdate: () => {},
-          metadata,
-        }),
       })
 
       await processor.resetTokens()
@@ -223,12 +205,6 @@ describe("StreamingEventProcessor", () => {
         name: "test",
         eventSource: eventStore as StreamableEventSource,
         handlerGroups: [],
-        contextFactory: (metadata: Metadata) => ({
-          load: async () => { throw new Error("not needed") },
-          send: async () => {},
-          emitUpdate: () => {},
-          metadata,
-        }),
       })
 
       await processor.start()

@@ -1,9 +1,8 @@
 import { describe, expect, it, afterEach } from "bun:test"
 import { qn, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import type { EventMessage } from "../message.js"
-import type { EventHandlerContext, EventHandlerRegistration } from "../handler.js"
+import type { EventHandlerRegistration } from "../handler.js"
 import type { EventHandlersDefinition } from "../event-handler.js"
-import type { Metadata } from "@kronos-ts/common"
 import type { SubscribableEventSource } from "../subscribing-event-processor.js"
 import { createSubscribingEventProcessor } from "../subscribing-event-processor.js"
 
@@ -41,15 +40,6 @@ function createInMemorySubscribableSource(): SubscribableEventSource & {
   }
 }
 
-function simpleContextFactory(metadata: Metadata): EventHandlerContext {
-  return {
-    load: async () => { throw new Error("No state manager") },
-    send: async () => undefined,
-    emitUpdate: () => {},
-    metadata,
-  }
-}
-
 function handlerGroup(
   name: string,
   handlers: EventHandlerRegistration<any>[],
@@ -76,7 +66,7 @@ describe("SubscribingEventProcessor", () => {
         name: "test-sub",
         eventSource: source,
         handlerGroups: [],
-        contextFactory: simpleContextFactory,
+
       })
 
       // when / then
@@ -94,7 +84,7 @@ describe("SubscribingEventProcessor", () => {
         name: "my-projection",
         eventSource: source,
         handlerGroups: [],
-        contextFactory: simpleContextFactory,
+
       })
 
       // then
@@ -108,7 +98,7 @@ describe("SubscribingEventProcessor", () => {
         name: "test-sub",
         eventSource: source,
         handlerGroups: [],
-        contextFactory: simpleContextFactory,
+
       })
 
       // then
@@ -122,7 +112,7 @@ describe("SubscribingEventProcessor", () => {
         name: "test-sub",
         eventSource: source,
         handlerGroups: [],
-        contextFactory: simpleContextFactory,
+
       })
 
       // when
@@ -149,7 +139,7 @@ describe("SubscribingEventProcessor", () => {
         name: "test-sub",
         eventSource: source,
         handlerGroups: [handlerGroup("test-sub", [handler])],
-        contextFactory: simpleContextFactory,
+
       })
       processor.start()
 
@@ -175,7 +165,7 @@ describe("SubscribingEventProcessor", () => {
         name: "test-sub",
         eventSource: source,
         handlerGroups: [handlerGroup("test-sub", [handler])],
-        contextFactory: simpleContextFactory,
+
       })
       processor.start()
 
@@ -200,7 +190,7 @@ describe("SubscribingEventProcessor", () => {
         name: "test-sub",
         eventSource: source,
         handlerGroups: [handlerGroup("test-sub", [handler])],
-        contextFactory: simpleContextFactory,
+
       })
       processor.start()
       processor.stop()
@@ -226,7 +216,7 @@ describe("SubscribingEventProcessor", () => {
         name: "test-sub",
         eventSource: source,
         handlerGroups: [handlerGroup("test-sub", [handler])],
-        contextFactory: simpleContextFactory,
+
       })
       processor.start()
 
@@ -257,7 +247,7 @@ describe("SubscribingEventProcessor", () => {
         name: "test-sub",
         eventSource: source,
         handlerGroups: [handlerGroup("test-sub", [handler])],
-        contextFactory: simpleContextFactory,
+
         errorHandler: {
           handleError(error) { errors.push(error) },
         },
