@@ -6,6 +6,11 @@ import type {
   EventProcessorModule,
   CommandGateway,
   QueryGateway,
+  CommandMessage,
+  QueryMessage,
+  EventMessage,
+  DispatchInterceptor,
+  HandlerInterceptor,
 } from "@kronos-ts/messaging"
 import { subscribingProcessor } from "@kronos-ts/messaging"
 import { EventSourcingConfigurer } from "@kronos-ts/eventsourcing"
@@ -47,6 +52,23 @@ export interface App {
   forceSet<K extends SlotName>(slot: K, factory: SlotFactory<K> | KronosComponents[K]): App
   decorate<K extends SlotName>(slot: K, factory: DecoratorFactory<K>): DecoratorHandle<K>
   removeDecorator<K extends SlotName>(handle: DecoratorHandle<K>): App
+  /**
+   * Register a dispatch interceptor for the command bus. The interceptor runs as
+   * part of the framework `intercepting` default decorator (Defaults.commandBus.intercepting).
+   * If that default has been removed via `removeDecorator()`, registered interceptors
+   * have no effect on dispatch.
+   */
+  commandDispatchInterceptor(fn: DispatchInterceptor<CommandMessage>): App
+  /** Same as commandDispatchInterceptor, scoped to the query bus. */
+  queryDispatchInterceptor(fn: DispatchInterceptor<QueryMessage>): App
+  /** Same as commandDispatchInterceptor, scoped to the event bus. */
+  eventDispatchInterceptor(fn: DispatchInterceptor<EventMessage>): App
+  /**
+   * Register a bus-agnostic handler interceptor. Wired into the framework `intercepting`
+   * defaults for commandBus and queryBus only — eventBus has no handler-interceptor concept
+   * in the existing intercepting wrapper.
+   */
+  handlerInterceptor(fn: HandlerInterceptor): App
   start(): Promise<RunningApp>
 }
 
@@ -67,6 +89,10 @@ export interface AppState {
   readonly extensions: Extension[]
   readonly warningChannel: WarningChannel
   readonly decoratorRegistrations: DecoratorEntry[]   // NEW: per-app registration order; pipeline = left-to-right
+  readonly commandDispatchInterceptors: DispatchInterceptor<CommandMessage>[]
+  readonly queryDispatchInterceptors: DispatchInterceptor<QueryMessage>[]
+  readonly eventDispatchInterceptors: DispatchInterceptor<EventMessage>[]
+  readonly handlerInterceptors: HandlerInterceptor[]
 }
 
 export interface AppImplOptions {
@@ -88,6 +114,10 @@ export class AppImpl implements App {
       extensions: [],
       warningChannel: options.warningChannel,
       decoratorRegistrations: [],
+      commandDispatchInterceptors: [],
+      queryDispatchInterceptors: [],
+      eventDispatchInterceptors: [],
+      handlerInterceptors: [],
     }
   }
 
@@ -195,6 +225,30 @@ export class AppImpl implements App {
       throw new UnknownDecoratorHandleError(handle as DecoratorHandle<SlotName>)
     }
     this._state.decoratorRegistrations.splice(idx, 1)
+    return this
+  }
+
+  commandDispatchInterceptor(fn: DispatchInterceptor<CommandMessage>): App {
+    this.guard()
+    this._state.commandDispatchInterceptors.push(fn)
+    return this
+  }
+
+  queryDispatchInterceptor(fn: DispatchInterceptor<QueryMessage>): App {
+    this.guard()
+    this._state.queryDispatchInterceptors.push(fn)
+    return this
+  }
+
+  eventDispatchInterceptor(fn: DispatchInterceptor<EventMessage>): App {
+    this.guard()
+    this._state.eventDispatchInterceptors.push(fn)
+    return this
+  }
+
+  handlerInterceptor(fn: HandlerInterceptor): App {
+    this.guard()
+    this._state.handlerInterceptors.push(fn)
     return this
   }
 
