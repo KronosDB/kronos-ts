@@ -9,3 +9,13 @@ export {
   type WarningChannelOptions,
   type WarningChannel,
 } from "./warnings.js"
+export {
+  AppImpl,
+  AppAlreadyStartedError,
+  type App,
+  type RunningApp,
+  type Extension,
+  type AppState,
+  type AppImplOptions,
+} from "./app.js"
+export { registerInMemoryDefaults } from "./defaults.js"
