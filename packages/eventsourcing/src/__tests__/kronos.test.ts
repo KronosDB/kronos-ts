@@ -13,7 +13,7 @@ import {
   subscribingProcessor,
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
-import { kronos, type Kronos, type KronosApplication } from "../kronos.js"
+import { legacyKronos, type LegacyKronos, type KronosApplication } from "../kronos.js"
 import { createInMemorySnapshotStore, afterEvents, load, append } from "../index.js"
 
 // ============================================================================
@@ -87,7 +87,7 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
 // Tests
 // ============================================================================
 
-describe("Kronos API", () => {
+describe("LegacyKronos API", () => {
   let app: KronosApplication
 
   afterEach(async () => {
@@ -99,7 +99,7 @@ describe("Kronos API", () => {
       // given
       const courseViews = new Map<string, CourseView>()
 
-      function courses(k: Kronos) {
+      function courses(k: LegacyKronos) {
         const Course = k.state({
           name: "Course",
           id: { courseId: z.string() },
@@ -167,7 +167,7 @@ describe("Kronos API", () => {
         ])
       }
 
-      app = await kronos().register(courses).start()
+      app = await legacyKronos().register(courses).start()
 
       // when
       await app.commandGateway.send(CreateCourse, {
@@ -186,7 +186,7 @@ describe("Kronos API", () => {
 
     it("enforces business rules", async () => {
       // given
-      function courses(k: Kronos) {
+      function courses(k: LegacyKronos) {
         const Course = k.state({
           name: "Course",
           id: { courseId: z.string() },
@@ -217,7 +217,7 @@ describe("Kronos API", () => {
         })
       }
 
-      app = await kronos().register(courses).start()
+      app = await legacyKronos().register(courses).start()
 
       // when
       await app.commandGateway.send(CreateCourse, {
@@ -298,7 +298,7 @@ describe("Kronos API", () => {
       })
 
       // register in plugin — pre-built definitions
-      app = await kronos()
+      app = await legacyKronos()
         .register((k) => {
           k.state(CourseEntity)
           k.commandHandler(createCourse)
@@ -327,7 +327,7 @@ describe("Kronos API", () => {
       // given
       const courseViews = new Map<string, CourseView>()
 
-      function courseCommands(k: Kronos) {
+      function courseCommands(k: LegacyKronos) {
         const Course = k.state({
           name: "Course",
           id: { courseId: z.string() },
@@ -347,7 +347,7 @@ describe("Kronos API", () => {
         })
       }
 
-      function courseProjections(k: Kronos) {
+      function courseProjections(k: LegacyKronos) {
         k.trackingProcessor("course-projection", [
           on(CourseCreated, async (e) => {
             courseViews.set(e.courseId, {
@@ -368,7 +368,7 @@ describe("Kronos API", () => {
         ])
       }
 
-      app = await kronos()
+      app = await legacyKronos()
         .register(courseCommands)
         .register(courseProjections)
         .start()
@@ -393,7 +393,7 @@ describe("Kronos API", () => {
       // given
       const received: string[] = []
 
-      function courses(k: Kronos) {
+      function courses(k: LegacyKronos) {
         const Course = k.state({
           name: "Course",
           id: { courseId: z.string() },
@@ -418,7 +418,7 @@ describe("Kronos API", () => {
         ])
       }
 
-      app = await kronos().register(courses).start()
+      app = await legacyKronos().register(courses).start()
 
       // when
       await app.commandGateway.send(CreateCourse, {
@@ -437,7 +437,7 @@ describe("Kronos API", () => {
       // given
       const snapshotStore = createInMemorySnapshotStore()
 
-      function courses(k: Kronos) {
+      function courses(k: LegacyKronos) {
         const Course = k.state({
           name: "Course",
           id: { courseId: z.string() },
@@ -465,7 +465,7 @@ describe("Kronos API", () => {
         })
       }
 
-      app = await kronos()
+      app = await legacyKronos()
         .register(courses)
         .componentRegistry((r) => {
           r.register(ComponentKeys.SNAPSHOT_STORE, () => snapshotStore)
