@@ -33,9 +33,6 @@ import type {
   SubscribableEventSource,
   SubscribingEventProcessor,
   EventHandlerContext,
-  LoadFunction,
-  SendFunction,
-  EmitUpdateFunction,
   EventProcessorModule,
   CorrelationDataProvider,
   HandlerEnhancerDefinition,
@@ -72,7 +69,13 @@ import {
   TrackingProcessorBuilder,
   SubscribingProcessorBuilder,
   createEventGateway,
+  send as moduleLevelSend,
+  emitUpdate as moduleLevelEmitUpdate,
+  COMMAND_BUS_KEY,
+  QUERY_BUS_KEY,
 } from "@kronos-ts/messaging"
+import { setResource } from "@kronos-ts/messaging/processing-state"
+import { STATE_MANAGER_KEY, load as moduleLevelLoad } from "./load.js"
 import type { EventStore } from "./event-store.js"
 import { createInMemoryEventStore } from "./in-memory-event-store.js"
 import { createEventSourcedRepository } from "./event-sourced-repository.js"
@@ -909,37 +912,22 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
         const evtDispatchInterceptors = evtDispatchInterceptorBuilders.map(b => b(config))
         const evtHandlerInterceptors = evtHandlerInterceptorBuilders.map(b => b(config))
 
-        // Plan 03-04 (D-34): contextFactory takes per-event metadata.
-        // Lifecycle wiring (correlation, monitor success/failure) happens through
-        // module-level ALS accessors (whenComplete/onError) inside the runner.
+        // Plan 04-01 (D-44): contextFactory writes framework components into ALS
+        // resources at per-event invocation entry, then returns a delegating wrapper
+        // carrying module-level helpers as field values.
+        // Plan 02 deletes the wrapper entirely and calls handler(payload, metadata) directly.
         const contextFactory = (metadata: import("@kronos-ts/common").Metadata): EventHandlerContext => {
-          const load: LoadFunction = config.hasComponent(ComponentKeys.STATE_MANAGER)
-            ? async <S>(entity: any, id: any) => {
-                const result = await config.getComponent<any>(ComponentKeys.STATE_MANAGER).load(entity, id)
-                return result.state as S
-              }
-            : async () => { throw new Error("No state manager configured") }
-
-          const send: SendFunction = async (descriptor, payload) => {
-            const bus = config.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS)
-            return bus.dispatch({
-              identifier: generateIdentifier(),
-              name: descriptor.name,
-              payload,
-              metadata,
-              timestamp: Date.now(),
-            })
-          }
-
-          const emitUpdate: EmitUpdateFunction = (queryDescriptor, filter, update) => {
-            const queryName = qualifiedNameToString(queryDescriptor.name)
-            queryBus.emitUpdate(queryName, filter as (q: unknown) => boolean, update)
+          // D-44 wiring: write components to ALS at per-event seam (inside runner — ALS state is live).
+          setResource(COMMAND_BUS_KEY, config.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS))
+          setResource(QUERY_BUS_KEY, queryBus)
+          if (config.hasComponent(ComponentKeys.STATE_MANAGER)) {
+            setResource(STATE_MANAGER_KEY, config.getComponent<any>(ComponentKeys.STATE_MANAGER))
           }
 
           return {
-            load,
-            send,
-            emitUpdate,
+            load: moduleLevelLoad,
+            send: moduleLevelSend,
+            emitUpdate: moduleLevelEmitUpdate,
             metadata,
           }
         }
