@@ -14,7 +14,9 @@ import { ALL_SLOTS, type KronosComponents, type SlotName } from "./components.js
 import { SlotRegistry, type SlotFactory, type SlotMeta } from "./slot-registry.js"
 import { buildResolved } from "./resolved.js"
 import type { WarningChannel } from "./warnings.js"
-import type { DecoratorEntry } from "./decorator.js"
+import type { DecoratorEntry, DecoratorFactory, DecoratorHandle } from "./decorator.js"
+import { applyDecorators } from "./decorator.js"
+import { UnknownDecoratorHandleError } from "./errors.js"
 
 /** Thrown when the App's mutating methods are called after .start() (D-50 footgun closure). */
 export class AppAlreadyStartedError extends Error {
@@ -43,6 +45,8 @@ export interface App {
   ): App
   set<K extends SlotName>(slot: K, factory: SlotFactory<K> | KronosComponents[K]): App
   forceSet<K extends SlotName>(slot: K, factory: SlotFactory<K> | KronosComponents[K]): App
+  decorate<K extends SlotName>(slot: K, factory: DecoratorFactory<K>): DecoratorHandle<K>
+  removeDecorator<K extends SlotName>(handle: DecoratorHandle<K>): App
   start(): Promise<RunningApp>
 }
 
@@ -164,6 +168,57 @@ export class AppImpl implements App {
     return this
   }
 
+  decorate<K extends SlotName>(
+    slot: K,
+    factory: DecoratorFactory<K>,
+  ): DecoratorHandle<K> {
+    this.guard()
+    const handle: DecoratorHandle<K> = Object.freeze({
+      __slot: slot,
+      __id: Symbol(`user.${slot}`),
+      __name: `user.${slot}.${this._state.decoratorRegistrations.length}`,
+    }) as DecoratorHandle<K>
+    this._state.decoratorRegistrations.push({
+      handle: handle as DecoratorHandle<SlotName>,
+      factory: factory as DecoratorFactory<SlotName>,
+      frameworkDefault: false,
+    })
+    return handle
+  }
+
+  removeDecorator<K extends SlotName>(handle: DecoratorHandle<K>): App {
+    this.guard()
+    const idx = this._state.decoratorRegistrations.findIndex(
+      (entry) => entry.handle.__id === handle.__id,
+    )
+    if (idx < 0) {
+      throw new UnknownDecoratorHandleError(handle as DecoratorHandle<SlotName>)
+    }
+    this._state.decoratorRegistrations.splice(idx, 1)
+    return this
+  }
+
+  /**
+   * @internal — used by `kronos()` bootstrap (Plan 02) to register framework-default
+   * decorators with pre-allocated handle identities from `Defaults`. Distinguished
+   * from user `.decorate()` registrations by `frameworkDefault: true` — at `.start()`,
+   * framework defaults wrap innermost (handler-adjacent) and user decorators wrap
+   * outside them (D-62, DESIGN.md §8 line 248).
+   *
+   * Called once per slot per kronos() invocation. Idempotent guard not added here
+   * because kronos() bootstrap controls call sites.
+   */
+  _registerFrameworkDefaultDecorator<K extends SlotName>(
+    handle: DecoratorHandle<K>,
+    factory: DecoratorFactory<K>,
+  ): void {
+    this._state.decoratorRegistrations.push({
+      handle: handle as DecoratorHandle<SlotName>,
+      factory: factory as DecoratorFactory<SlotName>,
+      frameworkDefault: true,
+    })
+  }
+
   async start(): Promise<RunningApp> {
     if (this._started) throw new AppAlreadyStartedError()
 
@@ -180,7 +235,7 @@ export class AppImpl implements App {
     // 3. Build the lazy Resolved proxy and EAGERLY resolve all 8 slots up-front
     //    (Pitfall 1 — interleaving slot resolution with configurer registration creates stale-cache hazards).
     const resolved = buildResolved(this._state.slotRegistry)
-    const built: KronosComponents = {
+    const built: { -readonly [K in SlotName]: KronosComponents[K] } = {
       eventStore: resolved.eventStore,
       snapshotStore: resolved.snapshotStore,
       commandBus: resolved.commandBus,
@@ -189,6 +244,17 @@ export class AppImpl implements App {
       serializer: resolved.serializer,
       unitOfWorkFactory: resolved.unitOfWorkFactory,
       tagResolver: resolved.tagResolver,
+    }
+
+    // 3b. Apply decorators in two passes per slot (D-62, D-64, DESIGN.md §8):
+    //     - framework defaults first (innermost, handler-adjacent)
+    //     - user decorators after (outer; last .decorate() = outermost wrap)
+    //     Pipeline visualization for slot K (outer → inner):
+    //       [user decorators in registration order, last=outermost]
+    //         [framework defaults in registration order, last=outermost]
+    //           [base = resolved[K]]
+    for (const slot of ALL_SLOTS) {
+      built[slot] = applyDecorators(slot, built[slot], this._state.decoratorRegistrations, resolved)
     }
 
     // 4. Emit startup warnings for any slot still using a flagged in-memory default (SLT-04).
