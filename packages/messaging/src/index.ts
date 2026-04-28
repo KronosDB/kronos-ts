@@ -55,14 +55,10 @@ export {
 } from "./unit-of-work.js"
 
 // Handler registration
+// Note: Handler context wrapper types deleted (Plan 04-02 / D-41).
+// Helper function types deleted.
+// Consumers import load/append from @kronos-ts/eventsourcing and send/emitUpdate from here directly.
 export {
-  type CommandHandlerContext,
-  type EventHandlerContext,
-  type QueryHandlerContext,
-  type LoadFunction,
-  type AppendFunction,
-  type SendFunction,
-  type EmitUpdateFunction,
   type EventHandlerRegistration,
   type EvolverRegistration,
   type QueryHandlerRegistration,

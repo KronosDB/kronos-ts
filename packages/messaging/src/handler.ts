@@ -7,92 +7,12 @@ import type {
 } from "./descriptor.js"
 
 // ---------------------------------------------------------------------------
-// Handler context shapes — what each handler type receives
+// Handler context shapes — DELETED (Plan 04-02, D-41)
+// CommandHandlerContext / EventHandlerContext / QueryHandlerContext removed.
+// LoadFunction / AppendFunction / SendFunction / EmitUpdateFunction removed.
+// Consumers import load/append from @kronos-ts/eventsourcing and
+// send/emitUpdate from @kronos-ts/messaging directly.
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Context function types — flat functions, no wrapper objects
-// ---------------------------------------------------------------------------
-
-/** Load event-sourced entity state. State type inferred from the entity module. */
-export interface LoadFunction {
-  <Id, S>(entity: { kind: "entity-module"; name: string; create: (id: Id) => S }, id: Id): Promise<S>
-  <S>(entity: { name: string }, id: unknown): Promise<S>
-}
-
-/** Append events, buffered until commit. */
-export interface AppendFunction {
-  <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>): void
-  <P extends z.ZodType>(
-    event: EventDescriptor<P>,
-    payload: z.infer<P>,
-    metadata: Metadata,
-  ): void
-}
-
-/** Send a command within the current processing context. */
-export interface SendFunction {
-  <P extends z.ZodType>(
-    command: CommandDescriptor<P>,
-    payload: z.infer<P>,
-  ): Promise<unknown>
-}
-
-/** Emit updates to active subscription queries. */
-export interface EmitUpdateFunction {
-  <Q extends z.ZodType>(
-    query: QueryDescriptor<Q>,
-    filter: (query: z.infer<Q>) => boolean,
-    update: unknown,
-  ): void
-}
-
-// ---------------------------------------------------------------------------
-// Handler context shapes — what each handler type receives
-// ---------------------------------------------------------------------------
-
-/**
- * Context available to command handlers.
- *
- * Plan 03-04 (CTX-04 / D-34): the `processingContext` field is gone.
- * Lifecycle / resource access uses module-level accessors from
- * `processing-state.js` (e.g. `getResource`, `setResource`, `on`,
- * `onError`, `whenComplete`).
- */
-export interface CommandHandlerContext {
-  /** Load event-sourced entity state. */
-  load: LoadFunction
-  /** Append events (buffered until commit). */
-  append: AppendFunction
-  /** Message metadata (includes correlationId etc). */
-  metadata: Metadata
-}
-
-/**
- * Context available to event handlers.
- *
- * Plan 03-04 (CTX-04 / D-34): the `processingContext` field is gone.
- */
-export interface EventHandlerContext {
-  /** Load event-sourced entity state. */
-  load: LoadFunction
-  /** Send a command within the current processing context. */
-  send: SendFunction
-  /** Emit updates to active subscription queries. */
-  emitUpdate: EmitUpdateFunction
-  /** Message metadata. */
-  metadata: Metadata
-}
-
-/**
- * Context available to query handlers.
- *
- * Plan 03-04 (CTX-04 / D-34): the `processingContext` field is gone.
- */
-export interface QueryHandlerContext {
-  /** Message metadata. */
-  metadata: Metadata
-}
 
 // ---------------------------------------------------------------------------
 // Registration types
@@ -104,7 +24,7 @@ export interface EventHandlerRegistration<P extends z.ZodType = z.ZodType> {
   readonly descriptor: EventDescriptor<P>
   readonly handler: (
     event: z.infer<P>,
-    context: EventHandlerContext,
+    metadata: Metadata,
   ) => Promise<void> | void
 }
 
@@ -135,7 +55,7 @@ export interface QueryHandlerRegistration<
   readonly descriptor: QueryDescriptor<Q>
   readonly handler: (
     query: z.infer<Q>,
-    context: QueryHandlerContext,
+    metadata: Metadata,
   ) => Promise<R> | R
 }
 
@@ -170,7 +90,7 @@ export function on<S, P extends z.ZodType>(
 // Overload: event handler (event descriptor + handler function)
 export function on<P extends z.ZodType>(
   descriptor: EventDescriptor<P>,
-  handler: (event: z.infer<P>, context: EventHandlerContext) => Promise<void> | void,
+  handler: (event: z.infer<P>, metadata: Metadata) => Promise<void> | void,
 ): EventHandlerRegistration<P>
 
 // Overload: query handler
@@ -178,7 +98,7 @@ export function on<Q extends z.ZodType, R>(
   descriptor: QueryDescriptor<Q>,
   handler: (
     query: z.infer<Q>,
-    context: QueryHandlerContext,
+    metadata: Metadata,
   ) => Promise<R> | R,
 ): QueryHandlerRegistration<Q, R>
 

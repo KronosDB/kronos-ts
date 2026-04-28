@@ -5,9 +5,9 @@ import type {
   ConfigurationEnhancer,
   LifecycleRegistry,
 } from "@kronos-ts/common"
+import type { Metadata } from "@kronos-ts/common"
 import type {
   CommandHandlerDefinition,
-  CommandHandlerContext,
   CommandDescriptor,
   CommandMessage,
   CommandBus,
@@ -193,7 +193,7 @@ export class Kronos {
     descriptor: CommandDescriptor<P, undefined>,
     handler: (
       command: z.infer<P>,
-      context: CommandHandlerContext,
+      metadata: Metadata,
     ) => Promise<void> | void,
   ): this
 
@@ -204,7 +204,7 @@ export class Kronos {
     descriptor: CommandDescriptor<P, R>,
     handler: (
       command: z.infer<P>,
-      context: CommandHandlerContext,
+      metadata: Metadata,
     ) => Promise<z.infer<R>> | z.infer<R>,
   ): this
 
@@ -217,7 +217,7 @@ export class Kronos {
     options: {
       handler: (
         command: z.infer<P>,
-        context: CommandHandlerContext,
+        metadata: Metadata,
       ) => Promise<void> | void
       appendCondition?: (
         command: z.infer<P>,
