@@ -26,7 +26,7 @@ interface FastifyInstance {
  *
  * ```typescript
  * import Fastify from "fastify"
- * import { kronos } from "@kronos-ts/eventsourcing"
+ * import { legacyKronos } from "@kronos-ts/eventsourcing"
  * import { withFastify } from "@kronos-ts/fastify"
  *
  * const fastify = Fastify()
@@ -36,7 +36,7 @@ interface FastifyInstance {
  *   reply.code(201).send()
  * })
  *
- * await kronos()
+ * await legacyKronos()
  *   .register(courses)
  *   .register(withFastify(fastify))
  *   .start()

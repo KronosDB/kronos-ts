@@ -30,7 +30,7 @@ interface HonoApp {
  *
  * ```typescript
  * import { Hono } from "hono"
- * import { kronos } from "@kronos-ts/eventsourcing"
+ * import { legacyKronos } from "@kronos-ts/eventsourcing"
  * import { withHono, getKronos } from "@kronos-ts/hono"
  *
  * const app = new Hono()
@@ -41,7 +41,7 @@ interface HonoApp {
  *   return c.json({ status: "created" }, 201)
  * })
  *
- * await kronos()
+ * await legacyKronos()
  *   .register(courses)
  *   .register(withHono(app))
  *   .start()

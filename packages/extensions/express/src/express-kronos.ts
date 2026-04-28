@@ -26,7 +26,7 @@ interface ExpressApp {
  *
  * ```typescript
  * import express from "express"
- * import { kronos } from "@kronos-ts/eventsourcing"
+ * import { legacyKronos } from "@kronos-ts/eventsourcing"
  * import { withExpress, getKronos } from "@kronos-ts/express"
  *
  * const app = express()
@@ -37,7 +37,7 @@ interface ExpressApp {
  *   res.status(201).end()
  * })
  *
- * await kronos()
+ * await legacyKronos()
  *   .register(courses)
  *   .register(withExpress(app, { port: 3000 }))
  *   .start()
