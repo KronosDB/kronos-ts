@@ -3,3 +3,9 @@ export { ALL_SLOTS } from "./components.js"
 export { CircularSlotDependencyError, SlotNotRegisteredError } from "./errors.js"
 export { SlotRegistry, type SlotMeta, type SlotEntry, type SlotFactory } from "./slot-registry.js"
 export { buildResolved, type Resolved } from "./resolved.js"
+export {
+  createWarningChannel,
+  type WarningLogger,
+  type WarningChannelOptions,
+  type WarningChannel,
+} from "./warnings.js"
