@@ -26,12 +26,15 @@ import {
   subscribingProcessor,
   simpleCorrelationDataProvider,
   getActiveCorrelationData,
+  emitUpdate,
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
 import {
   EventSourcingConfigurer,
   createInMemorySnapshotStore,
   afterEvents,
+  load,
+  append,
 } from "@kronos-ts/eventsourcing"
 
 // ============================================================================
@@ -111,19 +114,19 @@ const CourseEntity = eventSourcedEntity({
 
 // -- Command handlers --
 
-const createCourse = commandHandler(CreateCourse, async (cmd, { load, append }) => {
+const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async (cmd, { load, append }) => {
+const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, { load, append }) => {
+const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
@@ -141,7 +144,7 @@ function createProjection() {
   const projection = eventHandlers({
     name: "course-projection",
     handlers: [
-      on(CourseCreated, async (e, ctx) => {
+      on(CourseCreated, async (e, _metadata) => {
         const view: CourseView = {
           courseId: e.courseId,
           name: e.name,
@@ -149,20 +152,20 @@ function createProjection() {
           enrolledCount: 0,
         }
         courseViews.set(e.courseId, view)
-        ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
       }),
-      on(CourseCapacityChanged, async (e, ctx) => {
+      on(CourseCapacityChanged, async (e, _metadata) => {
         const view = courseViews.get(e.courseId)
         if (view) {
           view.capacity = e.capacity
-          ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+          emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
         }
       }),
-      on(StudentSubscribed, async (e, ctx) => {
+      on(StudentSubscribed, async (e, _metadata) => {
         const view = courseViews.get(e.courseId)
         if (view) {
           view.enrolledCount++
-          ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+          emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
         }
       }),
     ],

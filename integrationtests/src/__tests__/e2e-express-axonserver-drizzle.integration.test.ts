@@ -20,9 +20,10 @@ import {
   queryHandlers,
   EventCriteria,
   trackingProcessor,
+  emitUpdate,
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
-import { EventSourcingConfigurer } from "@kronos-ts/eventsourcing"
+import { EventSourcingConfigurer, load, append } from "@kronos-ts/eventsourcing"
 import { axonServerConfigurationEnhancer } from "@kronos-ts/axon-server"
 
 // ============================================================================
@@ -71,13 +72,13 @@ const CourseEntity = eventSourcedEntity({
   ],
 })
 
-const createCourse = commandHandler(CreateCourse, async (cmd, { load, append }) => {
+const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, { load, append }) => {
+const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
   const course = await load(CourseEntity, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
@@ -92,15 +93,15 @@ const courseViews = new Map<string, CourseView>()
 const courseProjection = eventHandlers({
   name: "course-projection",
   handlers: [
-    on(CourseCreated, async (e, ctx) => {
+    on(CourseCreated, async (e, _metadata) => {
       courseViews.set(e.courseId, { courseId: e.courseId, name: e.name, capacity: e.capacity, enrolledCount: 0 })
-      ctx.emitUpdate(GetCourse, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
+      emitUpdate(GetCourse, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
     }),
-    on(StudentSubscribed, async (e, ctx) => {
+    on(StudentSubscribed, async (e, _metadata) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.enrolledCount++
-        ctx.emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
+        emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
       }
     }),
   ],
