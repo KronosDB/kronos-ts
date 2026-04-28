@@ -44,6 +44,7 @@ export {
   onError,
   whenComplete,
   NoActiveUnitOfWork,
+  WrongUoWPhase,
 } from "./processing-state.js"
 
 // Unit of Work runners (Plan 03-04: replaces UnitOfWorkFactory shape)

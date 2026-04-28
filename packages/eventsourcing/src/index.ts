@@ -76,3 +76,13 @@ export {
   Kronos,
   kronos,
 } from "./kronos.js"
+
+// Module-level handler helpers (Plan 04-01 / HDL-02 / D-42)
+export { load, STATE_MANAGER_KEY } from "./load.js"
+export {
+  append,
+  BUFFERED_EVENTS_KEY,
+  SOURCING_INFOS_KEY,
+  ENTITY_CACHE_KEY,
+  ENTITY_MODULES_KEY,
+} from "./append.js"

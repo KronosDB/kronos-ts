@@ -213,6 +213,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/eventsourcing": "workspace:*",
         "zod": "^3.24",
       },
       "devDependencies": {

@@ -13,6 +13,7 @@ import type { CommandBus } from "../command-bus.js"
 import type { CommandMessage } from "../message.js"
 import type { EventCriteria } from "../event-criteria.js"
 import { processingStateStorage, Phase } from "../processing-state.js"
+import { runInNewUoW } from "../unit-of-work.js"
 import { inUoW } from "./_helpers/in-uow.js"
 
 // ---------------------------------------------------------------------------
@@ -153,7 +154,7 @@ describe("commandHandlingModule", () => {
 
   describe("handler receives state from state manager", () => {
     it("loads state via load()", async () => {
-      await inUoW(async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
         // given
         const bus = createRecordingCommandBus()
         const stateManager = {
@@ -190,7 +191,7 @@ describe("commandHandlingModule", () => {
 
   describe("event buffering", () => {
     it("handler can append events which are buffered", async () => {
-      await inUoW(async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
         // given
         const bus = createRecordingCommandBus()
         const config = createStubConfiguration({ commandBus: bus })
@@ -215,7 +216,7 @@ describe("commandHandlingModule", () => {
     })
 
     it("buffered events are flushed at PREPARE_COMMIT", async () => {
-      await inUoW(async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
         // given
         const appendedEvents: any[] = []
         const bus = createRecordingCommandBus()
@@ -251,7 +252,7 @@ describe("commandHandlingModule", () => {
 
   describe("append condition", () => {
     it("builds append condition from sourcing info", async () => {
-      await inUoW(async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
         // given
         let capturedCondition: any = null
         const bus = createRecordingCommandBus()
@@ -296,7 +297,7 @@ describe("commandHandlingModule", () => {
     })
 
     it("custom appendCondition override works", async () => {
-      await inUoW(async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
         // given
         let capturedCondition: any = null
         const bus = createRecordingCommandBus()
@@ -345,7 +346,7 @@ describe("commandHandlingModule", () => {
 
   describe("entity cache", () => {
     it("prevents duplicate load() in same invocation", async () => {
-      await inUoW(async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
         // given
         let loadCount = 0
         const bus = createRecordingCommandBus()
@@ -383,7 +384,7 @@ describe("commandHandlingModule", () => {
     })
 
     it("loads different entities independently", async () => {
-      await inUoW(async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
         // given
         const loadedIds: string[] = []
         const bus = createRecordingCommandBus()
@@ -420,7 +421,7 @@ describe("commandHandlingModule", () => {
     })
 
     it("combines sourcing info from multiple loads into either criteria", async () => {
-      await inUoW(async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
         // given
         let capturedCondition: any = null
         const bus = createRecordingCommandBus()

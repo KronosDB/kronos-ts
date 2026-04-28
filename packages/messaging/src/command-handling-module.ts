@@ -1,39 +1,22 @@
 import {
   ComponentKeys,
   qualifiedNameToString,
-  generateIdentifier,
-  resourceKey,
   type Configuration,
   type Module,
-  type Metadata,
-  type ResourceKey,
 } from "@kronos-ts/common"
 import type { CommandHandlerDefinition } from "./command-handler.js"
 import type { CommandBus } from "./command-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import { CORRELATION_DATA_KEY } from "./correlation-data.js"
-import { getResource, computeIfAbsent, onPrepareCommit } from "./processing-state.js"
+import { getResource, setResource, onPrepareCommit } from "./processing-state.js"
 import type { CommandMessage, EventMessage } from "./message.js"
-import type { EventDescriptor } from "./descriptor.js"
-import type { EventCriteria } from "./event-criteria.js"
-import type { LoadFunction, AppendFunction } from "./handler.js"
-
-// ---------------------------------------------------------------------------
-// Resource keys for ProcessingContext-scoped state
-// ---------------------------------------------------------------------------
-
-/** Buffered events waiting to be flushed at PREPARE_COMMIT. */
-const BUFFERED_EVENTS_KEY: ResourceKey<EventMessage[]> = resourceKey("bufferedEvents")
-
-/** Sourcing info from load() calls, used to build append condition. */
-const SOURCING_INFOS_KEY: ResourceKey<Array<{ criteria: EventCriteria; markerPosition: bigint }>> =
-  resourceKey("sourcingInfos")
-
-/** Entity cache: prevents duplicate load() calls within same UnitOfWork. */
-const ENTITY_CACHE_KEY: ResourceKey<Map<string, Promise<unknown>>> = resourceKey("entityCache")
-
-/** Entity module references keyed by cache key, used to apply evolvers on append. */
-const ENTITY_MODULES_KEY: ResourceKey<Map<string, { entity: any; id: unknown }>> = resourceKey("entityModules")
+import {
+  append as moduleLevelAppend,
+  load as moduleLevelLoad,
+  BUFFERED_EVENTS_KEY,
+  SOURCING_INFOS_KEY,
+  STATE_MANAGER_KEY,
+} from "@kronos-ts/eventsourcing"
 
 // ---------------------------------------------------------------------------
 // Command invocation — builds handler context from ProcessingContext
@@ -48,80 +31,11 @@ function createCommandInvocation(
   config: Configuration,
 ) {
   return async (message: CommandMessage): Promise<unknown> => {
-    const rawStateManager = config.hasComponent(ComponentKeys.STATE_MANAGER)
-      ? config.getComponent<{ load: (entity: any, id: any) => Promise<{ state: any; sourcingInfo: { criteria: EventCriteria; markerPosition: bigint } }> }>(ComponentKeys.STATE_MANAGER)
-      : null
-
-    // Load function with entity caching per ProcessingContext
-    const trackingLoad: LoadFunction = async <S>(entity: { name: string }, id: unknown): Promise<S> => {
-      if (!rawStateManager) throw new Error("No state manager configured")
-
-      const cache = computeIfAbsent(ENTITY_CACHE_KEY, () => new Map())
-      const cacheKey = `${entity.name}:${String(id)}`
-
-      if (!cache.has(cacheKey)) {
-        cache.set(cacheKey, rawStateManager.load(entity, id))
-        // Store entity module reference for evolver lookups during append
-        const modules = computeIfAbsent(ENTITY_MODULES_KEY, () => new Map())
-        modules.set(cacheKey, { entity, id })
-      }
-
-      const result = await cache.get(cacheKey)!
-      const loadResult = result as { state: any; sourcingInfo: { criteria: EventCriteria; markerPosition: bigint } }
-
-      // Track sourcing info for append condition
-      const infos = computeIfAbsent(SOURCING_INFOS_KEY, () => [])
-      infos.push(loadResult.sourcingInfo)
-
-      return loadResult.state as S
+    // D-44 wiring: write state manager into ALS at invocation entry so that
+    // the module-level load + append helpers can access it.
+    if (config.hasComponent(ComponentKeys.STATE_MANAGER)) {
+      setResource(STATE_MANAGER_KEY, config.getComponent<any>(ComponentKeys.STATE_MANAGER))
     }
-
-    // Append function — buffers events in ProcessingContext.
-    // Tags are derived from the descriptor's tags function at creation time
-    // (TS equivalent of Java's @EventTag annotations resolved via reflection).
-    // The TagResolver can enrich with additional tags before storage.
-    const appendFn: AppendFunction = ((
-      eventDescriptor: EventDescriptor<any>,
-      eventPayload: unknown,
-      eventMetadata?: Metadata,
-    ) => {
-      const events = computeIfAbsent(BUFFERED_EVENTS_KEY, () => [])
-      const tags = eventDescriptor.tags ? eventDescriptor.tags(eventPayload) : []
-      const eventMessage: EventMessage = {
-        identifier: generateIdentifier(),
-        name: eventDescriptor.name,
-        version: eventDescriptor.version,
-        payload: eventPayload,
-        metadata: eventMetadata ?? message.metadata,
-        timestamp: Date.now(),
-        tags,
-      }
-      events.push(eventMessage)
-
-      // Update cached entity state by applying matching evolvers
-      const cache = getResource(ENTITY_CACHE_KEY)
-      const modules = getResource(ENTITY_MODULES_KEY)
-      if (cache && modules) {
-        const eventType = qualifiedNameToString(eventDescriptor.name)
-        for (const [cacheKey, { entity, id }] of modules) {
-          const cachedPromise = cache.get(cacheKey)
-          if (!cachedPromise) continue
-          // Only update if the entity has evolvers matching this event
-          const evolvers = (entity as any).evolvers as ReadonlyArray<{ descriptor: { name: any }; evolve: (s: any, e: any, id: any) => any }> | undefined
-          if (!evolvers) continue
-          for (const evolver of evolvers) {
-            if (qualifiedNameToString(evolver.descriptor.name) === eventType) {
-              // Replace cached promise with an updated one that applies the evolver
-              cache.set(cacheKey, cachedPromise.then((result: any) => ({
-                ...result,
-                state: evolver.evolve(result.state, eventPayload, id),
-              })))
-              break
-            }
-          }
-        }
-      }
-    }) as AppendFunction
 
     // Register event flush in PREPARE_COMMIT phase
     onPrepareCommit(async () => {
@@ -175,10 +89,11 @@ function createCommandInvocation(
       await eventStore.append(resolvedEvents, appendCondition)
     })
 
-    // Call user's handler
+    // Transitional wrapper — delegates to module-level helpers.
+    // Plan 02 deletes this object and calls handler.handler(message.payload, message.metadata) directly.
     const context = {
-      load: trackingLoad,
-      append: appendFn,
+      load: moduleLevelLoad,
+      append: moduleLevelAppend,
       metadata: message.metadata,
     }
 
