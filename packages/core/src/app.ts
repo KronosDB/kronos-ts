@@ -22,6 +22,8 @@ import type { WarningChannel } from "./warnings.js"
 import type { DecoratorEntry, DecoratorFactory, DecoratorHandle } from "./decorator.js"
 import { applyDecorators } from "./decorator.js"
 import { UnknownDecoratorHandleError } from "./errors.js"
+import type { LifecycleStage, LifecycleHook } from "./lifecycle.js"
+import { STAGE_TO_PHASE } from "./lifecycle.js"
 
 /** Thrown when the App's mutating methods are called after .start() (D-50 footgun closure). */
 export class AppAlreadyStartedError extends Error {
@@ -69,6 +71,20 @@ export interface App {
    * in the existing intercepting wrapper.
    */
   handlerInterceptor(fn: HandlerInterceptor): App
+  /**
+   * Register a hook that runs at the given lifecycle stage during `.start()`.
+   * Stages execute in forward order (connect → warmup → register → processors → serve).
+   * Within a stage, hooks execute in registration order. Throws AppAlreadyStartedError
+   * if called after `.start()`. (LIF-02, D-68, D-69, D-70)
+   */
+  onStart(stage: LifecycleStage, fn: LifecycleHook): App
+  /**
+   * Register a hook that runs at the given lifecycle stage during `.stop()`.
+   * Stages execute in reverse order (serve → processors → register → warmup → connect).
+   * Within a stage, hooks execute in registration order. Throws AppAlreadyStartedError
+   * if called after `.start()`. (LIF-02, D-68, D-69, D-70)
+   */
+  onStop(stage: LifecycleStage, fn: LifecycleHook): App
   start(): Promise<RunningApp>
 }
 
@@ -93,6 +109,8 @@ export interface AppState {
   readonly queryDispatchInterceptors: DispatchInterceptor<QueryMessage>[]
   readonly eventDispatchInterceptors: DispatchInterceptor<EventMessage>[]
   readonly handlerInterceptors: HandlerInterceptor[]
+  readonly startHooks: Array<{ stage: LifecycleStage; fn: LifecycleHook }>
+  readonly stopHooks:  Array<{ stage: LifecycleStage; fn: LifecycleHook }>
 }
 
 export interface AppImplOptions {
@@ -118,6 +136,8 @@ export class AppImpl implements App {
       queryDispatchInterceptors: [],
       eventDispatchInterceptors: [],
       handlerInterceptors: [],
+      startHooks: [],
+      stopHooks: [],
     }
   }
 
@@ -252,6 +272,18 @@ export class AppImpl implements App {
     return this
   }
 
+  onStart(stage: LifecycleStage, fn: LifecycleHook): App {
+    this.guard()
+    this._state.startHooks.push({ stage, fn })
+    return this
+  }
+
+  onStop(stage: LifecycleStage, fn: LifecycleHook): App {
+    this.guard()
+    this._state.stopHooks.push({ stage, fn })
+    return this
+  }
+
   /**
    * @internal — used by `kronos()` bootstrap (Plan 02) to register framework-default
    * decorators with pre-allocated handle identities from `Defaults`. Distinguished
@@ -357,6 +389,25 @@ export class AppImpl implements App {
     for (const processor of this._state.processors) {
       configurer.registerEventProcessor(() => processor)
     }
+
+    // 6b. Bridge typed-stage lifecycle hooks onto the legacy LifecycleRegistry (D-68, LIF-03).
+    //     Forward typed-stage execution order is encoded in STAGE_TO_PHASE numeric values
+    //     (-1000 < -500 < 0 < 1000 < 2000), which the legacy registry uses for its
+    //     ascending start-order / descending shutdown-order semantics. The legacy
+    //     LifecycleHandler signature is `(config?: any) => void | Promise<void>`; our
+    //     LifecycleHook is `() => void | Promise<void>` — the `() => fn()` wrapper
+    //     drops the legacy config arg per D-68.
+    //     transitional: Phase 8 deletes this bridge — typed-stage hooks will execute
+    //     directly off AppState.startHooks / AppState.stopHooks once the configurer
+    //     disappears.
+    configurer.lifecycleRegistry((reg) => {
+      for (const { stage, fn } of this._state.startHooks) {
+        reg.onStart(STAGE_TO_PHASE[stage], () => fn())
+      }
+      for (const { stage, fn } of this._state.stopHooks) {
+        reg.onShutdown(STAGE_TO_PHASE[stage], () => fn())
+      }
+    })
 
     // 7. Build & start.
     const kronosApp = await configurer.start()
