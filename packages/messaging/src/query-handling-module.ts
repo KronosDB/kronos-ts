@@ -1,37 +1,26 @@
-import {
-  ComponentKeys,
-  qualifiedNameToString,
-  type Configuration,
-  type Module,
-} from "@kronos-ts/common"
+import { qualifiedNameToString } from "@kronos-ts/common"
 import type { QueryHandlersDefinition } from "./query-handler.js"
 import type { QueryBus } from "./query-bus.js"
 import type { QueryMessage } from "./message.js"
 
 /**
- * A module that registers query handlers with the query bus.
+ * Plan 08-03a (D-82 reshape): function-style helper called by AppImpl.start()
+ * to subscribe query handlers natively, without the configurer's Module shape.
  *
- * ```
- * queryHandlingModule("course-queries", [courseQueries])
- * ```
+ * Query handlers do NOT need a Configuration shim — queries don't append
+ * events, so no per-invocation ALS resource setup is required at query
+ * subscription level.
  */
-export function queryHandlingModule(
-  moduleName: string,
-  handlerGroups: ReadonlyArray<QueryHandlersDefinition>,
-): Module {
-  return {
-    name: moduleName,
-
-    initialize(config: Configuration) {
-      const bus = config.getComponent<QueryBus>(ComponentKeys.QUERY_BUS)
-      for (const group of handlerGroups) {
-        for (const reg of group.handlers) {
-          const queryName = qualifiedNameToString(reg.descriptor.name)
-          bus.subscribe(queryName, async (message: QueryMessage) => {
-            return reg.handler(message.payload, message.metadata)
-          })
-        }
-      }
-    },
+export function registerQueryHandlersNatively(
+  groups: ReadonlyArray<QueryHandlersDefinition>,
+  deps: { queryBus: QueryBus },
+): void {
+  for (const group of groups) {
+    for (const reg of group.handlers) {
+      const queryName = qualifiedNameToString(reg.descriptor.name)
+      deps.queryBus.subscribe(queryName, async (message: QueryMessage) => {
+        return reg.handler(message.payload, message.metadata)
+      })
+    }
   }
 }

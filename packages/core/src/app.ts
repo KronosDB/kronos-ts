@@ -129,6 +129,8 @@ export interface AppState {
 
 export interface AppImplOptions {
   warningChannel: WarningChannel
+  /** Per-stage timeout (ms) for native lifecycle execution (D-77). Default: 5000. */
+  stageTimeoutMs?: number
 }
 
 export class AppImpl implements App {
@@ -136,6 +138,8 @@ export class AppImpl implements App {
   private _started = false
   private _commandGateway: CommandGateway | undefined = undefined
   private _queryGateway: QueryGateway | undefined = undefined
+  /** D-77: per-stage timeout for native lifecycle execution. */
+  private readonly _stageTimeoutMs: number
 
   /**
    * Live CommandGateway. Throws AppNotStartedError if accessed before the
@@ -156,6 +160,7 @@ export class AppImpl implements App {
   }
 
   constructor(options: AppImplOptions) {
+    this._stageTimeoutMs = options.stageTimeoutMs ?? 5000
     this._state = {
       slotRegistry: new SlotRegistry(),
       entities: [],

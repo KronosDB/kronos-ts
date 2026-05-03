@@ -6,7 +6,7 @@ import {
   ComponentKeys,
   type Configuration,
 } from "@kronos-ts/common"
-import { commandHandlingModule } from "../command-handling-module.js"
+import { registerCommandHandlersNatively } from "../command-handling-module.js"
 import { commandHandler } from "../command-handler.js"
 import { command, event } from "../descriptor.js"
 import type { CommandBus } from "../command-bus.js"
@@ -128,7 +128,7 @@ async function runPrepareCommit(): Promise<void> {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("commandHandlingModule", () => {
+describe("registerCommandHandlersNatively", () => {
   describe("handler registration", () => {
     it("registers handlers with the command bus", () => {
       // given
@@ -141,10 +141,12 @@ describe("commandHandlingModule", () => {
 
       const changeCapacity = commandHandler(ChangeCourseCapacity, async () => {})
 
-      const mod = commandHandlingModule("course-commands", [createCourse, changeCapacity])
-
       // when
-      mod.initialize!(config)
+      registerCommandHandlersNatively([createCourse, changeCapacity], {
+        commandBus: bus,
+        config,
+        moduleName: "course-commands",
+      })
 
       // then
       expect(bus.subscriptions.has("university.CreateCourse")).toBe(true)
@@ -175,8 +177,7 @@ describe("commandHandlingModule", () => {
           loadedState = await load({ name: "Course" }, cmd.courseId)
         })
 
-        const mod = commandHandlingModule("course-commands", [changeCapacity])
-        mod.initialize!(config)
+        registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
@@ -200,8 +201,7 @@ describe("commandHandlingModule", () => {
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
         })
 
-        const mod = commandHandlingModule("course-commands", [createCourse])
-        mod.initialize!(config)
+        registerCommandHandlersNatively([createCourse], { commandBus: bus, config, moduleName: "course-commands" })
 
         // when
         const handler = bus.subscriptions.get("university.CreateCourse")!
@@ -231,8 +231,7 @@ describe("commandHandlingModule", () => {
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
         })
 
-        const mod = commandHandlingModule("course-commands", [createCourse])
-        mod.initialize!(config)
+        registerCommandHandlersNatively([createCourse], { commandBus: bus, config, moduleName: "course-commands" })
 
         // when
         const handler = bus.subscriptions.get("university.CreateCourse")!
@@ -279,8 +278,7 @@ describe("commandHandlingModule", () => {
           append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
         })
 
-        const mod = commandHandlingModule("course-commands", [changeCapacity])
-        mod.initialize!(config)
+        registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
@@ -328,8 +326,7 @@ describe("commandHandlingModule", () => {
           appendCondition: (_cmd, _sourcedCriteria) => customCriteria,
         })
 
-        const mod = commandHandlingModule("course-commands", [changeCapacity])
-        mod.initialize!(config)
+        registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
@@ -370,8 +367,7 @@ describe("commandHandlingModule", () => {
           await load({ name: "Course" }, cmd.courseId)
         })
 
-        const mod = commandHandlingModule("course-commands", [changeCapacity])
-        mod.initialize!(config)
+        registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
@@ -407,8 +403,7 @@ describe("commandHandlingModule", () => {
           await load({ name: "Course" }, "cs-202")
         })
 
-        const mod = commandHandlingModule("course-commands", [changeCapacity])
-        mod.initialize!(config)
+        registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
@@ -449,8 +444,7 @@ describe("commandHandlingModule", () => {
           append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
         })
 
-        const mod = commandHandlingModule("course-commands", [changeCapacity])
-        mod.initialize!(config)
+        registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
 
         // when
         const handler = bus.subscriptions.get("university.ChangeCourseCapacity")!
@@ -467,13 +461,17 @@ describe("commandHandlingModule", () => {
     })
   })
 
-  describe("module metadata", () => {
-    it("exposes module name", () => {
+  describe("empty handler list", () => {
+    it("does nothing when given an empty handler array", () => {
       // given
-      const mod = commandHandlingModule("course-commands", [])
+      const bus = createRecordingCommandBus()
+      const config = createStubConfiguration({ commandBus: bus })
+
+      // when
+      registerCommandHandlersNatively([], { commandBus: bus, config, moduleName: "course-commands" })
 
       // then
-      expect(mod.name).toBe("course-commands")
+      expect(bus.subscriptions.size).toBe(0)
     })
   })
 })

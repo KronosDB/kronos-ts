@@ -253,9 +253,12 @@ export {
 export { send, COMMAND_BUS_KEY } from "./send.js"
 export { emitUpdate, QUERY_BUS_KEY } from "./emit-update.js"
 
-// Modules
-export { commandHandlingModule } from "./command-handling-module.js"
-export { queryHandlingModule } from "./query-handling-module.js"
+// Modules — Plan 08-03a (D-82): function-style helpers replace Module-shape factories
+export {
+  registerCommandHandlersNatively,
+  createCommandInvocation,
+} from "./command-handling-module.js"
+export { registerQueryHandlersNatively } from "./query-handling-module.js"
 
 // Subscribing event processor
 export {

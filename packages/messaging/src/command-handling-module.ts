@@ -2,13 +2,15 @@ import {
   ComponentKeys,
   qualifiedNameToString,
   type Configuration,
-  type Module,
 } from "@kronos-ts/common"
 import type { CommandHandlerDefinition } from "./command-handler.js"
 import type { CommandBus } from "./command-bus.js"
+import type { QueryBus } from "./query-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import { CORRELATION_DATA_KEY } from "./correlation-data.js"
 import { getResource, setResource, onPrepareCommit } from "./processing-state.js"
+import { COMMAND_BUS_KEY } from "./send.js"
+import { QUERY_BUS_KEY } from "./emit-update.js"
 import type { CommandMessage, EventMessage } from "./message.js"
 import {
   BUFFERED_EVENTS_KEY,
@@ -17,22 +19,35 @@ import {
 } from "@kronos-ts/eventsourcing"
 
 // ---------------------------------------------------------------------------
-// Command invocation — builds handler context from ProcessingContext
+// Command invocation — D-82: byte-identical ALS resource setup at invocation entry.
+// Plan 08-03a expanded the ALS three-key set: STATE_MANAGER + COMMAND_BUS + QUERY_BUS.
 // ---------------------------------------------------------------------------
 
 /**
  * Creates a command handler invocation function that uses the ProcessingContext
  * for state caching, event buffering, and lifecycle-aware event flushing.
+ *
+ * D-82: ALS resource setup is preserved BYTE-IDENTICAL across the configurer
+ * deletion. The invocation entry seeds the three-key ALS set so module-level
+ * helpers (load/append/send/emitUpdate) and the onPrepareCommit closure all
+ * resolve their dependencies from the active UoW state.
  */
-function createCommandInvocation(
+export function createCommandInvocation(
   handler: CommandHandlerDefinition<any, any>,
   config: Configuration,
 ) {
   return async (message: CommandMessage): Promise<unknown> => {
-    // D-44 wiring: write state manager into ALS at invocation entry so that
-    // the module-level load + append helpers can access it.
+    // D-82 — full ALS resource setup at command invocation entry.
+    // STATE_MANAGER: read by load() helper. COMMAND_BUS: read by send() helper.
+    // QUERY_BUS: read by emitUpdate() helper.
     if (config.hasComponent(ComponentKeys.STATE_MANAGER)) {
       setResource(STATE_MANAGER_KEY, config.getComponent<any>(ComponentKeys.STATE_MANAGER))
+    }
+    if (config.hasComponent(ComponentKeys.COMMAND_BUS)) {
+      setResource(COMMAND_BUS_KEY, config.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS))
+    }
+    if (config.hasComponent(ComponentKeys.QUERY_BUS)) {
+      setResource(QUERY_BUS_KEY, config.getComponent<QueryBus>(ComponentKeys.QUERY_BUS))
     }
 
     // Register event flush in PREPARE_COMMIT phase
@@ -92,39 +107,44 @@ function createCommandInvocation(
 }
 
 /**
- * A module that registers command handlers with the command bus.
+ * Plan 08-03a (D-82 reshape): function-style helper called by AppImpl.start()
+ * to subscribe command handlers natively, without the configurer's Module shape.
  *
- * ```
- * commandHandlingModule("course-commands", [createCourse, changeCourseCapacity])
- * ```
+ * Subscribes each handler onto the commandBus with the createCommandInvocation
+ * wrapper that does Phase 4 D-44 ALS resource setup at invocation entry.
+ *
+ * @param handlers Array of handler definitions to register
+ * @param deps Resolved dependencies — commandBus to subscribe onto, plus a
+ *             Configuration shim (built natively in AppImpl.start()) that
+ *             createCommandInvocation reads inside the dispatch hot path.
+ *             Optional handlerEnhancer mirrors the legacy module's enhancer
+ *             wrap (kept for parity; default-decorator pipeline already
+ *             handles framework-default interceptors).
+ * @param moduleName Logical name passed to the handler enhancer for
+ *                   discriminating command handler groups (default: "commands").
  */
-export function commandHandlingModule(
-  moduleName: string,
+export function registerCommandHandlersNatively(
   handlers: ReadonlyArray<CommandHandlerDefinition<any, any>>,
-): Module {
-  return {
-    name: moduleName,
+  deps: {
+    commandBus: CommandBus
+    config: Configuration
+    handlerEnhancer?: HandlerEnhancerDefinition
+    moduleName?: string
+  },
+): void {
+  const moduleName = deps.moduleName ?? "commands"
+  for (const handler of handlers) {
+    const commandName = qualifiedNameToString(handler.descriptor.name)
+    let invocation = createCommandInvocation(handler, deps.config)
 
-    initialize(config: Configuration) {
-      const bus = config.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS)
-      const enhancer = config.getOptionalComponent<HandlerEnhancerDefinition>(
-        ComponentKeys.HANDLER_ENHANCER_DEFINITIONS,
-      )
+    if (deps.handlerEnhancer) {
+      invocation = deps.handlerEnhancer.wrapHandler(invocation, {
+        messageType: "command",
+        messageName: commandName,
+        handlerGroup: moduleName,
+      })
+    }
 
-      for (const handler of handlers) {
-        const commandName = qualifiedNameToString(handler.descriptor.name)
-        let invocation = createCommandInvocation(handler, config)
-
-        if (enhancer) {
-          invocation = enhancer.wrapHandler(invocation, {
-            messageType: "command",
-            messageName: commandName,
-            handlerGroup: moduleName,
-          })
-        }
-
-        bus.subscribe(commandName, invocation)
-      }
-    },
+    deps.commandBus.subscribe(commandName, invocation)
   }
 }

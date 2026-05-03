@@ -30,6 +30,14 @@ export interface KronosPartialConfig {
   processors?: EventProcessorModule[]
   quiet?: boolean
   logger?: WarningLogger
+  /**
+   * Per-stage timeout (ms) for native lifecycle execution (D-77).
+   * If a single stage exceeds this, AppImpl emits a warning and continues
+   * to the next stage WITHOUT cancelling the slow hooks (warn-then-continue).
+   *
+   * Default: 5000.
+   */
+  stageTimeoutMs?: number
 }
 
 /**
@@ -52,7 +60,7 @@ export interface KronosPartialConfig {
  */
 export function kronos(partial?: KronosPartialConfig): App {
   const warningChannel = createWarningChannel({ quiet: partial?.quiet, logger: partial?.logger })
-  const app = new AppImpl({ warningChannel })
+  const app = new AppImpl({ warningChannel, stageTimeoutMs: partial?.stageTimeoutMs })
 
   // Register in-memory defaults FIRST so user partial-config / fluent calls override them
   // via set/forceSet (setDefault is ifAbsent — first registration wins).

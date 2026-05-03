@@ -45,8 +45,8 @@ import type {
 import {
   createMessageMonitorRegistry,
   jsonSerializer,
-  commandHandlingModule,
-  queryHandlingModule,
+  registerCommandHandlersNatively,
+  registerQueryHandlersNatively,
   createSimpleCommandBus,
   createSimpleQueryBus,
   createInterceptingCommandBus,
@@ -604,13 +604,36 @@ export class EventSourcingConfigurer implements ApplicationConfigurer {
     const config = this.reg.build()
     const commandHandlers = this.msg._commandHandlerBuilders.map(b => b(config))
     if (commandHandlers.length > 0) {
-      this.reg.registerModule(commandHandlingModule("commands", commandHandlers))
+      // Plan 08-03a: Module-shape wrapper around the new native helper, so the
+      // legacy configurer's module-initialize machinery still works for the
+      // enhancer-using e2es. Plan 04 deletes the entire configurer.
+      this.reg.registerModule({
+        name: "commands",
+        initialize(cfg) {
+          const cmdBus = cfg.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS)
+          const enhancer = cfg.getOptionalComponent<HandlerEnhancerDefinition>(
+            ComponentKeys.HANDLER_ENHANCER_DEFINITIONS,
+          )
+          registerCommandHandlersNatively(commandHandlers, {
+            commandBus: cmdBus,
+            config: cfg,
+            handlerEnhancer: enhancer,
+            moduleName: "commands",
+          })
+        },
+      })
     }
 
     // Build query handlers from ComponentBuilders
     const queryHandlerGroups = this.msg._queryHandlerBuilders.map(b => b(config))
     if (queryHandlerGroups.length > 0) {
-      this.reg.registerModule(queryHandlingModule("queries", queryHandlerGroups))
+      this.reg.registerModule({
+        name: "queries",
+        initialize(cfg) {
+          const qryBus = cfg.getComponent<QueryBus>(ComponentKeys.QUERY_BUS)
+          registerQueryHandlersNatively(queryHandlerGroups, { queryBus: qryBus })
+        },
+      })
     }
 
     // Rebuild config after modules are registered
