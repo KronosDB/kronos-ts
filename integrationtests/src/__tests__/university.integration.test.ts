@@ -1,9 +1,9 @@
 import { describe, expect, it, afterEach, beforeEach } from "bun:test"
 import { EventSourcingConfigurer, type KronosApplication } from "@kronos-ts/eventsourcing"
+import { kronos, type RunningApp } from "@kronos-ts/core"
 import { createTestFixture, type TestFixture } from "@kronos-ts/test"
-import { createInMemoryTokenStore, isReplay } from "@kronos-ts/messaging"
-import { ComponentKeys } from "@kronos-ts/common"
-import { configureCourses } from "../domain/courses/configuration.js"
+import { createInMemoryTokenStore } from "@kronos-ts/messaging"
+import { configureCourses, configureCoursesApp } from "../domain/courses/configuration.js"
 import { getCourseViews, clearCourseViews } from "../domain/courses/projections.js"
 import {
   CreateCourse, ChangeCourseCapacity, SubscribeStudent, UnsubscribeStudent,
@@ -35,7 +35,7 @@ describe("University — Given-When-Then Fixture", () => {
 
   describe("Course creation", () => {
     it("creates a course with valid data", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given().noPriorActivity()
@@ -46,7 +46,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("rejects duplicate course creation", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given().events([CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }])
@@ -59,7 +59,7 @@ describe("University — Given-When-Then Fixture", () => {
 
   describe("Course capacity changes", () => {
     it("changes capacity on existing course", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given().events([CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }])
@@ -70,7 +70,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("rejects capacity change on nonexistent course", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given().noPriorActivity()
@@ -81,7 +81,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("skips no-op capacity change", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given().events([CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }])
@@ -92,7 +92,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("rejects capacity below enrolled count", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given()
@@ -111,7 +111,7 @@ describe("University — Given-When-Then Fixture", () => {
 
   describe("Student subscription", () => {
     it("subscribes a student to a course", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given().events([CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }])
@@ -122,7 +122,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("rejects subscription to nonexistent course", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given().noPriorActivity()
@@ -132,7 +132,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("rejects subscription when course is full", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given()
@@ -147,7 +147,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("rejects duplicate subscription", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given()
@@ -164,7 +164,7 @@ describe("University — Given-When-Then Fixture", () => {
 
   describe("Student unsubscription", () => {
     it("unsubscribes a student from a course", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given()
@@ -179,7 +179,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("rejects unsubscription of non-subscribed student", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given().events([CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }])
@@ -192,7 +192,7 @@ describe("University — Given-When-Then Fixture", () => {
 
   describe("Chained scenarios", () => {
     it("creates a course then subscribes multiple students", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given().noPriorActivity()
@@ -224,7 +224,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("subscribe then unsubscribe frees up a spot", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given()
@@ -245,7 +245,7 @@ describe("University — Given-When-Then Fixture", () => {
     })
 
     it("given with commands flows through the full bus", async () => {
-      fixture = await createTestFixture(configureCourses)
+      fixture = await createTestFixture(configureCoursesApp)
 
       await fixture
         .given()
@@ -265,17 +265,22 @@ describe("University — Given-When-Then Fixture", () => {
 // ============================================================================
 
 describe("University — Full Application Flow", () => {
-  let app: KronosApplication
+  let app: RunningApp | undefined
+  // Legacy KronosApplication path retained ONLY for the token-store test below
+  // (componentRegistry("tokenStore") has no kronos() slot equivalent yet —
+  // tokenStore is not part of KronosComponents in Phase 8). Plan 03/04 removes
+  // the remaining EventSourcingConfigurer reference once the persistence
+  // extensions migrate to native kronos extensions.
+  let legacyApp: KronosApplication | undefined
 
   beforeEach(() => { clearCourseViews() })
-  afterEach(async () => { await app?.stop() })
+  afterEach(async () => {
+    if (app) { await app.stop(); app = undefined }
+    if (legacyApp) { await legacyApp.stop(); legacyApp = undefined }
+  })
 
   it("command → event → processor → projection → query", async () => {
-    app = EventSourcingConfigurer.create()
-      .configure(configureCourses)
-      .build()
-
-    await app.start()
+    app = await kronos({ quiet: true }).use(configureCoursesApp).start()
 
     // when
     await app.commandGateway.send(CreateCourse, {
@@ -292,11 +297,7 @@ describe("University — Full Application Flow", () => {
   })
 
   it("multiple commands update the projection correctly", async () => {
-    app = EventSourcingConfigurer.create()
-      .configure(configureCourses)
-      .build()
-
-    await app.start()
+    app = await kronos({ quiet: true }).use(configureCoursesApp).start()
 
     await app.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 })
     await app.commandGateway.send(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" })
@@ -314,11 +315,7 @@ describe("University — Full Application Flow", () => {
   })
 
   it("business rules enforced after state sourced from events", async () => {
-    app = EventSourcingConfigurer.create()
-      .configure(configureCourses)
-      .build()
-
-    await app.start()
+    app = await kronos({ quiet: true }).use(configureCoursesApp).start()
 
     await app.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 2 })
     await app.commandGateway.send(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" })
@@ -331,18 +328,22 @@ describe("University — Full Application Flow", () => {
   })
 
   it("token store tracks processor position across restart", async () => {
+    // NOTE: still on EventSourcingConfigurer — kronos() App doesn't expose
+    // componentRegistry("tokenStore", ...) since tokenStore isn't a typed slot.
+    // Plan 03/04 (or a future tokenStore-extension migration) replaces this
+    // path. Tracked in deferred-items.md.
     const tokenStore = createInMemoryTokenStore()
 
-    app = EventSourcingConfigurer.create()
+    legacyApp = EventSourcingConfigurer.create()
       .configure(configureCourses)
       .componentRegistry((cr) => {
         cr.register("tokenStore", () => tokenStore)
       })
       .build()
 
-    await app.start()
+    await legacyApp.start()
 
-    await app.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 })
+    await legacyApp.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 })
     await waitFor(() => getCourseViews().has("cs-101"))
 
     // Token should be stored
@@ -352,11 +353,7 @@ describe("University — Full Application Flow", () => {
   })
 
   it("query returns all courses", async () => {
-    app = EventSourcingConfigurer.create()
-      .configure(configureCourses)
-      .build()
-
-    await app.start()
+    app = await kronos({ quiet: true }).use(configureCoursesApp).start()
 
     await app.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 })
     await app.commandGateway.send(CreateCourse, { courseId: "cs-201", name: "Advanced", capacity: 20 })
