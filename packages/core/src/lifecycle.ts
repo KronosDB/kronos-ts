@@ -26,27 +26,7 @@ export type LifecycleStage = "connect" | "register" | "warmup" | "processors" | 
  */
 export type LifecycleHook = () => void | Promise<void>
 
-/**
- * Internal mapping from typed stages to legacy numeric `LifecyclePhase` values
- * (LIF-03, D-67). Used by `AppImpl.start()` to bridge typed-stage registrations
- * onto the existing `EventSourcingConfigurer.lifecycleRegistry((reg) => …)`
- * callback API.
- *
- * NOT exported from `@kronos-ts/core` — module-private. The numeric scale is a
- * Phase 8 deletion target; widening its consumer base in Phase 7 is anti-goal.
- *
- * Numeric slots (rationale per D-67):
- * - connect=-1000     aligns with LifecyclePhase.EXTERNAL_CONNECTIONS
- * - warmup=-500       new clean gap between connect and register (no collisions
- *                     with OUTBOUND_EVENT_CONNECTORS=-10)
- * - register=0        aligns with LifecyclePhase.LOCAL_MESSAGE_HANDLER_REGISTRATIONS
- * - processors=1000   aligns with LifecyclePhase.INBOUND_EVENT_CONNECTORS
- * - serve=2000        new clean gap past INSTRUCTION_COMPONENTS=1010
- */
-export const STAGE_TO_PHASE: Record<LifecycleStage, number> = {
-  connect: -1000,
-  warmup: -500,
-  register: 0,
-  processors: 1000,
-  serve: 2000,
-}
+// Plan 08-03a (D-77): STAGE_TO_PHASE deleted. Native AppImpl.start() executes
+// typed-stage hooks directly off AppState.startHooks/stopHooks — no numeric-phase
+// bridge to the legacy LifecycleRegistry. Plan 03b's enhancer-bridge keeps a
+// private inverted PHASE_TO_STAGE copy locally for the D-81 fallback path.

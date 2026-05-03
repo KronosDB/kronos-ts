@@ -32,6 +32,10 @@ describe("AppImpl native lifecycle execution (D-77)", () => {
     expect(order).toEqual(["serve", "processors", "register", "warmup", "connect"])
   })
 
+  // Note: canonical typed-stage order per packages/core/src/lifecycle.ts is
+  // connect → warmup → register → processors → serve (not register before warmup).
+  // Tests 1 & 2 above pin this — Phase 7's lifecycle.test.ts already enforced it.
+
   it("Test 3: runs hooks within a stage concurrently (Promise.all, not sequential)", async () => {
     const startedAt: number[] = []
     const finishedAt: number[] = []
@@ -55,9 +59,11 @@ describe("AppImpl native lifecycle execution (D-77)", () => {
   })
 
   it("Test 4: warn-then-continue when a hook exceeds stageTimeoutMs (kronos partial-config override)", async () => {
+    // NOTE: cannot pass `quiet: true` here — `quiet` short-circuits warningChannel.emit
+    // before the logger fires (see warnings.ts D-51). Instead, route ALL warnings to a
+    // capture array and filter for the lifecycle-stage timeout marker.
     const warnings: string[] = []
     const app = kronos({
-      quiet: true,
       stageTimeoutMs: 100,
       logger: { warn: (m: string) => warnings.push(m) },
     })
@@ -70,15 +76,14 @@ describe("AppImpl native lifecycle execution (D-77)", () => {
     const elapsed = Date.now() - t0
     // start() resolved before the slow hook finished — within ~250ms (timeout 100ms + small overhead)
     expect(elapsed).toBeLessThan(280)
-    // A warning was emitted referencing the connect stage
-    expect(warnings.some((m) => m.toLowerCase().includes("connect"))).toBe(true)
+    // A warning was emitted referencing the connect stage timeout
+    expect(warnings.some((m) => m.includes("connect") && m.toLowerCase().includes("timeout"))).toBe(true)
     await running.stop()
   })
 
   it("Test 5: kronos({ stageTimeoutMs }) override warns within the configured timeout", async () => {
     const warnings: string[] = []
     const app = kronos({
-      quiet: true,
       stageTimeoutMs: 50,
       logger: { warn: (m: string) => warnings.push(m) },
     })
@@ -91,7 +96,8 @@ describe("AppImpl native lifecycle execution (D-77)", () => {
     const elapsed = Date.now() - t0
     // The stage timeout is 50ms — start() must resolve well under 200ms
     expect(elapsed).toBeLessThan(180)
-    expect(warnings.length).toBeGreaterThan(0)
+    // At least one warning explicitly mentions the stage-timeout marker
+    expect(warnings.some((m) => m.toLowerCase().includes("timeout"))).toBe(true)
     await running.stop()
   })
 

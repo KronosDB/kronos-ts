@@ -1,4 +1,5 @@
 import type { EntityModule } from "@kronos-ts/modelling"
+import { createStateManager, type StateManager } from "@kronos-ts/modelling"
 import type {
   CommandHandlerDefinition,
   QueryHandlersDefinition,
@@ -11,10 +12,21 @@ import type {
   EventMessage,
   DispatchInterceptor,
   HandlerInterceptor,
+  TrackingEventProcessor,
+  SubscribingEventProcessor,
+  StreamableEventSource,
+  SubscribableEventSource,
 } from "@kronos-ts/messaging"
-import { subscribingProcessor } from "@kronos-ts/messaging"
-import { EventSourcingConfigurer } from "@kronos-ts/eventsourcing"
-import { ComponentKeys } from "@kronos-ts/common"
+import {
+  registerCommandHandlersNatively,
+  registerQueryHandlersNatively,
+  createCommandGateway,
+  createQueryGateway,
+  createTrackingEventProcessor,
+  createSubscribingEventProcessor,
+} from "@kronos-ts/messaging"
+import { createEventSourcedRepository } from "@kronos-ts/eventsourcing"
+import { ComponentKeys, type Configuration } from "@kronos-ts/common"
 import { ALL_SLOTS, type KronosComponents, type SlotName } from "./components.js"
 import { SlotRegistry, type SlotFactory, type SlotMeta } from "./slot-registry.js"
 import { buildResolved } from "./resolved.js"
@@ -23,7 +35,6 @@ import type { DecoratorEntry, DecoratorFactory, DecoratorHandle } from "./decora
 import { applyDecorators } from "./decorator.js"
 import { AppNotStartedError, UnknownDecoratorHandleError } from "./errors.js"
 import type { LifecycleStage, LifecycleHook } from "./lifecycle.js"
-import { STAGE_TO_PHASE } from "./lifecycle.js"
 
 /** Thrown when the App's mutating methods are called after .start() (D-50 footgun closure). */
 export class AppAlreadyStartedError extends Error {
@@ -392,86 +403,275 @@ export class AppImpl implements App {
       }
     }
 
-    // 5. Build the EventSourcingConfigurer chain (D-49). Order matters: register slot
-    //    overrides BEFORE configurer.start() runs build() internally (Pitfall 1).
-    const configurer = EventSourcingConfigurer.create()
+    // ----------------------------------------------------------------------
+    // 5. Native wiring (Plan 08-03a — Configurer chain deleted).
+    //    Build StateManager from registered entities + resolved eventStore, then
+    //    subscribe command/query handlers and event-handler subscribing processors
+    //    directly off the resolved buses. No EventSourcingConfigurer, no Module
+    //    initialize() shells, no LifecycleRegistry numeric-phase bridge.
+    // ----------------------------------------------------------------------
 
-    // Slot → configurer registration mapping (uses public methods that call reg.register, NOT registerIfAbsent):
-    configurer.registerEventStore(() => built.eventStore)
-    configurer.registerTagResolver(() => built.tagResolver)
-    configurer.componentRegistry((reg) => {
-      reg.register(ComponentKeys.SNAPSHOT_STORE, () => built.snapshotStore)
-      reg.register(ComponentKeys.SERIALIZER, () => built.serializer)
-      reg.register(ComponentKeys.EVENT_BUS, () => built.eventBus)
-    })
-    configurer.messaging((m) => {
-      m.registerCommandBus(() => built.commandBus)
-      m.registerQueryBus(() => built.queryBus)
-      m.registerUnitOfWorkFactory(() => built.unitOfWorkFactory)
-    })
-
-    // 6. Translate domain registrations to configurer calls.
+    // 5a. Construct StateManager from registered entities (mirrors the configurer's
+    //     registerDefaults() pattern at eventsourcing-configurer.ts ~line 755).
+    //     EntityModule has no .initialize() — entities are wired purely via repository
+    //     registration on the StateManager.
+    const stateManager: StateManager = createStateManager()
     for (const entity of this._state.entities) {
-      configurer.registerEntity(entity)
-    }
-    for (const handler of this._state.commandHandlers) {
-      configurer.registerCommandHandler(() => handler)
-    }
-    for (const queryGroup of this._state.queryHandlerGroups) {
-      configurer.registerQueryHandlers(() => queryGroup)
-    }
-    for (const eventGroup of this._state.eventHandlerGroups) {
-      // Translate .events() registrations to subscribing processors (mirrors legacy pattern)
-      const builder = subscribingProcessor(eventGroup.name).registerEventHandler(eventGroup)
-      configurer.registerEventProcessor(() => builder.build())
-    }
-    for (const processor of this._state.processors) {
-      configurer.registerEventProcessor(() => processor)
+      stateManager.register(
+        entity,
+        createEventSourcedRepository(entity, built.eventStore),
+      )
     }
 
-    // 6b. Bridge typed-stage lifecycle hooks onto the legacy LifecycleRegistry (D-68, LIF-03).
-    //     Forward typed-stage execution order is encoded in STAGE_TO_PHASE numeric values
-    //     (-1000 < -500 < 0 < 1000 < 2000), which the legacy registry uses for its
-    //     ascending start-order / descending shutdown-order semantics. The legacy
-    //     LifecycleHandler signature is `(config?: any) => void | Promise<void>`; our
-    //     LifecycleHook is `() => void | Promise<void>` — the `() => fn()` wrapper
-    //     drops the legacy config arg per D-68.
-    //     transitional: Phase 8 deletes this bridge — typed-stage hooks will execute
-    //     directly off AppState.startHooks / AppState.stopHooks once the configurer
-    //     disappears.
-    configurer.lifecycleRegistry((reg) => {
-      for (const { stage, fn } of this._state.startHooks) {
-        reg.onStart(STAGE_TO_PHASE[stage], () => fn())
-      }
-      for (const { stage, fn } of this._state.stopHooks) {
-        reg.onShutdown(STAGE_TO_PHASE[stage], () => fn())
-      }
+    // 5b. Build the minimal Configuration shim that createCommandInvocation reads
+    //     during dispatch (D-82). Surface kept narrow on purpose — anything outside
+    //     the documented set throws loudly so misuse is obvious.
+    const configShim = createConfigShim(built, stateManager)
+
+    // 5c. Subscribe command handlers natively. createCommandInvocation seeds the
+    //     ALS three-key set (STATE_MANAGER + COMMAND_BUS + QUERY_BUS) and registers
+    //     the onPrepareCommit event-flush — verbatim from D-82.
+    registerCommandHandlersNatively(this._state.commandHandlers, {
+      commandBus: built.commandBus,
+      config: configShim,
+      moduleName: "commands",
     })
 
-    // 7. Build & start. Split build()+start() so the legacy LifecycleRegistry can
-    //    capture gateways onto the AppImpl instance at the `register` phase (numeric
-    //    phase 0) — BEFORE serve-stage hooks (phase 2000) fire and AFTER connect-stage
-    //    hooks (phase -1000) fire. This preserves the AppNotStartedError contract for
-    //    pre-register lifecycle hooks while making the getters live by the time
-    //    serve-stage user hooks see them. (Plan 08-01.)
-    //    transitional: Plan 08-03 deletes the configurer and sets gateways directly.
-    const kronosApp = configurer.build()
-    configurer.lifecycleRegistry((reg) => {
-      reg.onStart(STAGE_TO_PHASE.register, () => {
-        this._commandGateway = kronosApp.commandGateway
-        this._queryGateway = kronosApp.queryGateway
-      })
+    // 5d. Subscribe query handler groups directly onto the queryBus.
+    registerQueryHandlersNatively(this._state.queryHandlerGroups, {
+      queryBus: built.queryBus,
     })
-    await kronosApp.start()
 
+    // 5e. Build event processors: explicit `.processors(...)` modules + implicit
+    //     `.events(...)` groups (each event group becomes a per-name subscribing
+    //     processor, mirroring the legacy bridge in app.ts pre-Plan 08-03a).
+    const builtProcessors: Array<TrackingEventProcessor | SubscribingEventProcessor> = []
+    const eventGroupModules: EventProcessorModule[] = this._state.eventHandlerGroups.map(
+      (group) => ({
+        kind: "subscribing",
+        name: group.name,
+        handlerGroups: [group],
+      }),
+    )
+    const allProcessorModules: EventProcessorModule[] = [
+      ...this._state.processors,
+      ...eventGroupModules,
+    ]
+    for (const proc of allProcessorModules) {
+      if (proc.kind === "subscribing") {
+        const subscribable = built.eventStore as unknown as SubscribableEventSource
+        if (!subscribable.subscribe) {
+          throw new Error(
+            `Event source does not support subscription. ` +
+              `Cannot create subscribing processor "${proc.name}".`,
+          )
+        }
+        builtProcessors.push(
+          createSubscribingEventProcessor({
+            name: proc.name,
+            eventSource: subscribable,
+            handlerGroups: proc.handlerGroups,
+            stateManager,
+            commandBus: built.commandBus,
+            queryBus: built.queryBus,
+            unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
+            errorHandler: proc.errorHandler,
+          }),
+        )
+      } else {
+        builtProcessors.push(
+          createTrackingEventProcessor({
+            name: proc.name,
+            eventSource: built.eventStore as unknown as StreamableEventSource,
+            handlerGroups: proc.handlerGroups,
+            stateManager,
+            commandBus: built.commandBus,
+            queryBus: built.queryBus,
+            unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
+            tokenStore: proc.tokenStore,
+            batchSize: proc.batchSize,
+            pollingIntervalMs: proc.pollingIntervalMs,
+            errorHandler: proc.errorHandler,
+          }),
+        )
+      }
+    }
+
+    // 5f. Build CommandGateway / QueryGateway from resolved buses, threading the
+    //     configured UoW runner through so transactional wrappers span the dispatch
+    //     boundary (CTX-04 / D-34). Gateways are constructed eagerly but the
+    //     `app.commandGateway` / `app.queryGateway` accessors are only populated at
+    //     the `register` stage — preserving the AppNotStartedError contract for
+    //     pre-register hooks (Plan 08-01).
+    const commandGateway = createCommandGateway(built.commandBus, built.unitOfWorkFactory)
+    const queryGateway = createQueryGateway(built.queryBus, built.unitOfWorkFactory)
+
+    // 5g. Run typed-stage start hooks in forward order with D-77 warn-then-continue
+    //     per-stage timeout. Hooks within a stage run concurrently via Promise.all.
+    //     At the `register` stage, populate the live-gateway accessors so any
+    //     register/processors/serve-stage hooks (and downstream handlers) see them.
+    for (const stage of FORWARD_STAGES) {
+      if (stage === "register") {
+        this._commandGateway = commandGateway
+        this._queryGateway = queryGateway
+      }
+      const hooks = this._state.startHooks.filter((h) => h.stage === stage)
+      if (hooks.length === 0) continue
+      await this._runStageWithTimeout(
+        stage,
+        hooks.map((h) => h.fn),
+        this._stageTimeoutMs,
+      )
+    }
+
+    // 5h. Start event processors AFTER processors-stage hooks have run — mirrors
+    //     the configurer's old sequencing (eventsourcing-configurer.ts lines 670+).
+    for (const proc of builtProcessors) {
+      await proc.start()
+    }
+
+    // 5i. Build the RunningApp. stop() reverses: processors first, then user stop
+    //     hooks in reverse stage order, again with the warn-then-continue timeout.
+    const runStageWithTimeout = this._runStageWithTimeout.bind(this)
+    const stageTimeoutMs = this._stageTimeoutMs
+    const stopHooks = this._state.stopHooks
     return {
       get commandGateway(): CommandGateway {
-        return kronosApp.commandGateway
+        return commandGateway
       },
       get queryGateway(): QueryGateway {
-        return kronosApp.queryGateway
+        return queryGateway
       },
-      stop: () => kronosApp.stop(),
+      async stop() {
+        // Stop processors first (mirrors legacy shutdown order).
+        for (const proc of builtProcessors) {
+          proc.stop()
+        }
+        // Reverse stage order for stop hooks.
+        for (const stage of REVERSE_STAGES) {
+          const hooks = stopHooks.filter((h) => h.stage === stage)
+          if (hooks.length === 0) continue
+          await runStageWithTimeout(
+            stage,
+            hooks.map((h) => h.fn),
+            stageTimeoutMs,
+          )
+        }
+      },
     }
   }
+
+  /**
+   * D-77 native lifecycle execution: per-stage Promise.all + Promise.race with
+   * warn-then-continue. If the stage exceeds `timeoutMs`, log a warning and
+   * STOP WAITING — the slow hooks continue to pend in the background; they are
+   * NOT cancelled. Reproduces createLifecycleRegistry's per-phase semantics
+   * verbatim, but over typed stages instead of numeric phases.
+   */
+  private async _runStageWithTimeout(
+    stage: LifecycleStage,
+    fns: LifecycleHook[],
+    timeoutMs: number,
+  ): Promise<void> {
+    const stageWork = Promise.all(fns.map((fn) => Promise.resolve(fn())))
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs)
+    })
+    // Swallow background rejections from the slow hooks if the stage has already
+    // returned via the timeout branch — without this, an unhandled rejection
+    // could surface long after start() resolved (the hook is intentionally not
+    // cancelled per D-77, but its eventual rejection is no longer observable).
+    stageWork.catch(() => {
+      /* warn-then-continue: failures after the timeout are intentionally dropped */
+    })
+    const result = await Promise.race([
+      stageWork.then(() => "done" as const),
+      timeout,
+    ])
+    if (timer) clearTimeout(timer)
+    if (result === "timeout") {
+      this._state.warningChannel.emit(
+        `[kronos] Lifecycle stage '${stage}' exceeded ${timeoutMs}ms timeout — continuing without waiting for completion (warn-then-continue per D-77).`,
+      )
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module-private helpers (Plan 08-03a native execution)
+// ---------------------------------------------------------------------------
+
+/** Forward typed-stage order for `.start()` execution (D-77, LIF-01). */
+const FORWARD_STAGES: ReadonlyArray<LifecycleStage> = [
+  "connect",
+  "warmup",
+  "register",
+  "processors",
+  "serve",
+] as const
+
+/** Reverse typed-stage order for `.stop()` execution (D-77, LIF-01). */
+const REVERSE_STAGES: ReadonlyArray<LifecycleStage> = [
+  "serve",
+  "processors",
+  "register",
+  "warmup",
+  "connect",
+] as const
+
+/**
+ * Construct a minimal Configuration shim for createCommandInvocation (D-82).
+ *
+ * The shim implements ONLY the methods createCommandInvocation invokes:
+ * - hasComponent / getComponent for STATE_MANAGER, COMMAND_BUS, QUERY_BUS
+ *   (the three keys seeded into ALS at command-invocation entry per D-82)
+ * - hasComponent / getComponent for EVENT_STORE (read inside the
+ *   onPrepareCommit closure when flushing buffered events)
+ * - getOptionalComponent for TAG_RESOLVER (read inside onPrepareCommit when
+ *   enriching events with tags)
+ *
+ * Everything else (decorators, modules, factories, getComponents, getParent)
+ * throws or returns empty — the configurer-era surface is gone. Plan 04 will
+ * delete the Configuration interface entirely; this shim is the bridge.
+ */
+function createConfigShim(
+  built: { -readonly [K in SlotName]: KronosComponents[K] },
+  stateManager: StateManager,
+): Configuration {
+  const components: Record<string, unknown> = {
+    [ComponentKeys.STATE_MANAGER]: stateManager,
+    [ComponentKeys.COMMAND_BUS]: built.commandBus,
+    [ComponentKeys.QUERY_BUS]: built.queryBus,
+    [ComponentKeys.EVENT_STORE]: built.eventStore,
+    [ComponentKeys.EVENT_BUS]: built.eventBus,
+    [ComponentKeys.SNAPSHOT_STORE]: built.snapshotStore,
+    [ComponentKeys.SERIALIZER]: built.serializer,
+    [ComponentKeys.UNIT_OF_WORK_FACTORY]: built.unitOfWorkFactory,
+    [ComponentKeys.TAG_RESOLVER]: built.tagResolver,
+  }
+  const config: Configuration = {
+    hasComponent(type: string, _name?: string): boolean {
+      return type in components
+    },
+    getComponent<T>(type: string, _name?: string): T {
+      if (!(type in components)) {
+        throw new Error(`[kronos] Configuration shim does not provide "${type}"`)
+      }
+      return components[type] as T
+    },
+    getOptionalComponent<T>(type: string, _name?: string): T | undefined {
+      return components[type] as T | undefined
+    },
+    getComponents<T>(_type: string): Map<string, T> {
+      return new Map<string, T>()
+    },
+    getModules() {
+      return []
+    },
+    getParent() {
+      return undefined
+    },
+  }
+  return config
 }
