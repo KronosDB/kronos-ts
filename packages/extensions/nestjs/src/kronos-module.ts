@@ -1,4 +1,5 @@
-import type { KronosApplication, EventSourcingConfigurer } from "@kronos-ts/eventsourcing"
+import type { App, RunningApp } from "@kronos-ts/core"
+import { kronos } from "@kronos-ts/core"
 import type { CommandGateway, QueryGateway } from "@kronos-ts/messaging"
 
 /**
@@ -7,17 +8,17 @@ import type { CommandGateway, QueryGateway } from "@kronos-ts/messaging"
 export const KRONOS_APPLICATION = Symbol("KRONOS_APPLICATION")
 export const KRONOS_COMMAND_GATEWAY = Symbol("KRONOS_COMMAND_GATEWAY")
 export const KRONOS_QUERY_GATEWAY = Symbol("KRONOS_QUERY_GATEWAY")
-export const KRONOS_CONFIGURER = Symbol("KRONOS_CONFIGURER")
+export const KRONOS_APP = Symbol("KRONOS_APP")
 
 /**
  * Options for `KronosModule.forRoot()`.
  */
 export interface KronosModuleOptions {
   /**
-   * Configure function that receives the EventSourcingConfigurer.
-   * Register entities, handlers, processors, etc.
+   * Configure function that receives the unstarted Kronos App.
+   * Register entities, handlers, processors, and extensions via the fluent App API.
    */
-  configure: (configurer: EventSourcingConfigurer) => void
+  configure: (app: App) => void
 }
 
 /**
@@ -30,10 +31,10 @@ export interface KronosModuleAsyncOptions {
    */
   inject?: any[]
   /**
-   * Factory function that receives injected dependencies and
-   * returns the EventSourcingConfigurer (already configured).
+   * Factory function that receives injected dependencies and returns
+   * the unstarted App.
    */
-  useFactory: (...args: any[]) => EventSourcingConfigurer | Promise<EventSourcingConfigurer>
+  useFactory: (...args: any[]) => App | Promise<App>
 }
 
 /**
@@ -48,14 +49,13 @@ export interface KronosModuleAsyncOptions {
  * @Module({
  *   imports: [
  *     KronosModule.forRoot({
- *       configure: (c) => {
- *         c.registerEntity(CourseEntity)
- *         c.messaging(m => {
- *           m.registerCommandHandler(() => createCourse)
- *           m.registerEventProcessor(config =>
- *             trackingProcessor("courses").registerEventHandler(projection).build()
+ *       configure: (app) => {
+ *         app
+ *           .entities(CourseEntity)
+ *           .commands(createCourse)
+ *           .processors(
+ *             trackingProcessor("courses").registerEventHandler(projection).build(),
  *           )
- *         })
  *       },
  *     }),
  *   ],
@@ -78,18 +78,16 @@ export const KronosModule = {
    * during Kronos configuration.
    */
   forRoot(options: KronosModuleOptions) {
-    const { EventSourcingConfigurer } = require("@kronos-ts/eventsourcing")
-
     return {
       module: KronosModule as any,
       global: true,
       providers: [
         {
-          provide: KRONOS_CONFIGURER,
+          provide: KRONOS_APP,
           useFactory: () => {
-            const configurer = EventSourcingConfigurer.create()
-            options.configure(configurer)
-            return configurer
+            const app = kronos()
+            options.configure(app)
+            return app
           },
         },
         ...kronosProviders(),
@@ -108,7 +106,7 @@ export const KronosModule = {
       global: true,
       providers: [
         {
-          provide: KRONOS_CONFIGURER,
+          provide: KRONOS_APP,
           useFactory: options.useFactory,
           inject: options.inject ?? [],
         },
@@ -123,19 +121,17 @@ function kronosProviders() {
   return [
     {
       provide: KRONOS_APPLICATION,
-      useFactory: async (configurer: EventSourcingConfigurer): Promise<KronosApplication> => {
-        return configurer.start()
-      },
-      inject: [KRONOS_CONFIGURER],
+      useFactory: async (app: App): Promise<RunningApp> => app.start(),
+      inject: [KRONOS_APP],
     },
     {
       provide: KRONOS_COMMAND_GATEWAY,
-      useFactory: (app: KronosApplication): CommandGateway => app.commandGateway,
+      useFactory: (app: RunningApp): CommandGateway => app.commandGateway,
       inject: [KRONOS_APPLICATION],
     },
     {
       provide: KRONOS_QUERY_GATEWAY,
-      useFactory: (app: KronosApplication): QueryGateway => app.queryGateway,
+      useFactory: (app: RunningApp): QueryGateway => app.queryGateway,
       inject: [KRONOS_APPLICATION],
     },
   ]
