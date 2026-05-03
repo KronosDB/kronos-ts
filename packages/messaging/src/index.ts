@@ -257,6 +257,7 @@ export { emitUpdate, QUERY_BUS_KEY } from "./emit-update.js"
 export {
   registerCommandHandlersNatively,
   createCommandInvocation,
+  type MinimalConfiguration,
 } from "./command-handling-module.js"
 export { registerQueryHandlersNatively } from "./query-handling-module.js"
 

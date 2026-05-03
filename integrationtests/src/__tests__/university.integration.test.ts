@@ -1,13 +1,7 @@
 import { describe, expect, it, afterEach, beforeEach } from "bun:test"
-import { EventSourcingConfigurer, type KronosApplication } from "@kronos-ts/eventsourcing"
 import { kronos, type RunningApp } from "@kronos-ts/core"
 import { createTestFixture, type TestFixture } from "@kronos-ts/test"
-import { createInMemoryTokenStore } from "@kronos-ts/messaging"
 import { configureCourses } from "../domain/courses/configuration.js"
-import { CourseEntity } from "../domain/courses/entity.js"
-import { courseProjection, courseQueries } from "../domain/courses/projections.js"
-import { createCourse, changeCourseCapacity, subscribeStudent, unsubscribeStudent } from "../domain/courses/command-handlers.js"
-import { trackingProcessor } from "@kronos-ts/messaging"
 import { getCourseViews, clearCourseViews } from "../domain/courses/projections.js"
 import {
   CreateCourse, ChangeCourseCapacity, SubscribeStudent, UnsubscribeStudent,
@@ -270,17 +264,10 @@ describe("University — Given-When-Then Fixture", () => {
 
 describe("University — Full Application Flow", () => {
   let app: RunningApp | undefined
-  // Legacy KronosApplication path retained ONLY for the token-store test below
-  // (componentRegistry("tokenStore") has no kronos() slot equivalent yet —
-  // tokenStore is not part of KronosComponents in Phase 8). Plan 03/04 removes
-  // the remaining EventSourcingConfigurer reference once the persistence
-  // extensions migrate to native kronos extensions.
-  let legacyApp: KronosApplication | undefined
 
   beforeEach(() => { clearCourseViews() })
   afterEach(async () => {
     if (app) { await app.stop(); app = undefined }
-    if (legacyApp) { await legacyApp.stop(); legacyApp = undefined }
   })
 
   it("command → event → processor → projection → query", async () => {
@@ -331,46 +318,14 @@ describe("University — Full Application Flow", () => {
     ).rejects.toThrow("Course is full")
   })
 
-  it("token store tracks processor position across restart", async () => {
-    // NOTE: still on EventSourcingConfigurer — kronos() App doesn't expose
-    // componentRegistry("tokenStore", ...) since tokenStore isn't a typed slot.
-    // Plan 03/04 (or a future tokenStore-extension migration) replaces this
-    // path. Tracked in deferred-items.md.
-    //
-    // Plan 08-03b inlined the legacy course-domain registration here because
-    // `configureCourses` was collapsed to the single (app: App) => void shape.
-    // The original `(c: EventSourcingConfigurer) => void` variant is gone.
-    const tokenStore = createInMemoryTokenStore()
-
-    legacyApp = EventSourcingConfigurer.create()
-      .registerEntity(CourseEntity)
-      .messaging(m => {
-        m.registerCommandHandler(() => createCourse)
-        m.registerCommandHandler(() => changeCourseCapacity)
-        m.registerCommandHandler(() => subscribeStudent)
-        m.registerCommandHandler(() => unsubscribeStudent)
-        m.registerEventProcessor(_config =>
-          trackingProcessor("course-projection")
-            .registerEventHandler(courseProjection)
-            .build()
-        )
-        m.registerQueryHandlers(() => courseQueries)
-      })
-      .componentRegistry((cr) => {
-        cr.register("tokenStore", () => tokenStore)
-      })
-      .build()
-
-    await legacyApp.start()
-
-    await legacyApp.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 })
-    await waitFor(() => getCourseViews().has("cs-101"))
-
-    // Token should be stored
-    const token = await tokenStore.get("course-projection", 0)
-    expect(token).toBeDefined()
-    expect(token!.position()).toBeGreaterThan(0n)
-  })
+  // TODO(plan-09): the original test drove EventSourcingConfigurer.create()
+  // + componentRegistry("tokenStore", ...) (configurer trio deleted in
+  // Plan 08-04). Coverage: token-store position persistence across processor
+  // restart. Re-enable once kronos() App exposes a typed `tokenStore` slot
+  // (or ships an (app: App) => void extension equivalent to the deleted
+  // componentRegistry callback). Tracked in
+  // .planning/phases/08-configurer-deletion/deferred-items.md §"Plan 04".
+  it.skip("token store tracks processor position across restart — deferred to Phase 9", () => {})
 
   it("query returns all courses", async () => {
     app = await kronos({ quiet: true }).use(configureCourses).start()

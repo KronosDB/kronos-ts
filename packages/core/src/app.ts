@@ -26,14 +26,12 @@ import {
   createSubscribingEventProcessor,
 } from "@kronos-ts/messaging"
 import { createEventSourcedRepository } from "@kronos-ts/eventsourcing"
-// transitional: Phase 9 deletes — legacy Configuration / ConfigurationEnhancer / ComponentKeys
-// are owned by the bridge file; app.ts uses them only to (a) build the Configuration shim
-// for createCommandInvocation (D-82) and (b) accept ConfigurationEnhancer in App.use().
-import {
-  ComponentKeys,
-  type Configuration,
-  type ConfigurationEnhancer,
-} from "./legacy-enhancer-bridge.js"
+// transitional: Phase 9 deletes — legacy ConfigurationEnhancer is owned by the bridge file.
+// app.ts only needs ConfigurationEnhancer to accept it in App.use() (D-73 / D-74).
+// The Configuration shim consumed by createCommandInvocation uses MinimalConfiguration
+// (defined in @kronos-ts/messaging) with inline string-literal component keys.
+import { type ConfigurationEnhancer } from "./legacy-enhancer-bridge.js"
+import type { MinimalConfiguration } from "@kronos-ts/messaging"
 import { ALL_SLOTS, type KronosComponents, type SlotName } from "./components.js"
 import { SlotRegistry, type SlotFactory, type SlotMeta } from "./slot-registry.js"
 import { buildResolved } from "./resolved.js"
@@ -695,19 +693,23 @@ const REVERSE_STAGES: ReadonlyArray<LifecycleStage> = [
 function createConfigShim(
   built: { -readonly [K in SlotName]: KronosComponents[K] },
   stateManager: StateManager,
-): Configuration {
+): MinimalConfiguration {
+  // Inline string-literal keys mirror the kronos() framework defaults that
+  // createCommandInvocation reads (STATE_MANAGER, COMMAND_BUS, QUERY_BUS,
+  // EVENT_STORE, TAG_RESOLVER) plus the additional slot mirrors carried
+  // forward for parity with the previous Configuration shim.
   const components: Record<string, unknown> = {
-    [ComponentKeys.STATE_MANAGER]: stateManager,
-    [ComponentKeys.COMMAND_BUS]: built.commandBus,
-    [ComponentKeys.QUERY_BUS]: built.queryBus,
-    [ComponentKeys.EVENT_STORE]: built.eventStore,
-    [ComponentKeys.EVENT_BUS]: built.eventBus,
-    [ComponentKeys.SNAPSHOT_STORE]: built.snapshotStore,
-    [ComponentKeys.SERIALIZER]: built.serializer,
-    [ComponentKeys.UNIT_OF_WORK_FACTORY]: built.unitOfWorkFactory,
-    [ComponentKeys.TAG_RESOLVER]: built.tagResolver,
+    stateManager,
+    commandBus: built.commandBus,
+    queryBus: built.queryBus,
+    eventStore: built.eventStore,
+    eventBus: built.eventBus,
+    snapshotStore: built.snapshotStore,
+    serializer: built.serializer,
+    unitOfWorkFactory: built.unitOfWorkFactory,
+    tagResolver: built.tagResolver,
   }
-  const config: Configuration = {
+  const config: MinimalConfiguration = {
     hasComponent(type: string, _name?: string): boolean {
       return type in components
     },
@@ -719,15 +721,6 @@ function createConfigShim(
     },
     getOptionalComponent<T>(type: string, _name?: string): T | undefined {
       return components[type] as T | undefined
-    },
-    getComponents<T>(_type: string): Map<string, T> {
-      return new Map<string, T>()
-    },
-    getModules() {
-      return []
-    },
-    getParent() {
-      return undefined
     },
   }
   return config

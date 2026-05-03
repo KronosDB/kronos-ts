@@ -6,9 +6,9 @@ import {
 } from "@kronos-ts/common"
 import { registerCommandHandlersNatively, type MinimalConfiguration } from "../command-handling-module.js"
 
-// Phase 8 D-82: ComponentKeys constant deleted in Plan 08-04. Tests now use
-// the same string literals that the kronos() AppImpl config-shim uses.
-const ComponentKeys = {
+// Phase 8 D-82: the framework component-key constant was deleted in Plan 08-04.
+// Tests use the same string literals that the kronos() AppImpl config-shim uses.
+const CONFIG_KEYS = {
   COMMAND_BUS: "commandBus",
   STATE_MANAGER: "stateManager",
   EVENT_STORE: "eventStore",
@@ -72,12 +72,12 @@ function createStubConfiguration(overrides: {
   eventStore?: { append: (events: ReadonlyArray<any>, condition?: any) => Promise<void> }
 }): MinimalConfiguration {
   const components = new Map<string, unknown>()
-  components.set(ComponentKeys.COMMAND_BUS, overrides.commandBus)
+  components.set(CONFIG_KEYS.COMMAND_BUS, overrides.commandBus)
   if (overrides.stateManager) {
-    components.set(ComponentKeys.STATE_MANAGER, overrides.stateManager)
+    components.set(CONFIG_KEYS.STATE_MANAGER, overrides.stateManager)
   }
   if (overrides.eventStore) {
-    components.set(ComponentKeys.EVENT_STORE, overrides.eventStore)
+    components.set(CONFIG_KEYS.EVENT_STORE, overrides.eventStore)
   }
 
   return {

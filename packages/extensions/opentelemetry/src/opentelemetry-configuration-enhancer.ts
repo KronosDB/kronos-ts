@@ -30,9 +30,10 @@ import {
  *
  * Usage:
  * ```typescript
- * EventSourcingConfigurer.create()
- *   .registerEnhancer(openTelemetryEnhancer())
- *   // ...
+ * // transitional — the (app: App) => void shape lands in Phase 9 (EXT-04);
+ * // until then production callers register the legacy enhancer via .use().
+ * await kronos()
+ *   .use(openTelemetryEnhancer())
  *   .start()
  * ```
  */

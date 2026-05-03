@@ -97,11 +97,10 @@ function defaultQueryInstructions(timeoutMs: number): any[] {
  * This is the TypeScript equivalent of AF5's `AxonServerConfigurationEnhancer`.
  *
  * ```
- * EventSourcingConfigurer.create()
- *   .configure(configureCourses)
- *   .registerEnhancer(axonServerConfigurationEnhancer({
- *     componentName: "university-service",
- *   }))
+ * // transitional — the (app: App) => void shape lands in Phase 9 (EXT-02);
+ * // until then production callers register the legacy enhancer via .use().
+ * await kronos()
+ *   .use(axonServerConfigurationEnhancer({ componentName: "university-service" }))
  *   .start()
  * ```
  */

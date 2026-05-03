@@ -16,8 +16,8 @@ export interface MonitorCallback {
  * of messages flowing through the framework.
  *
  * Used by tracing, metrics, and custom observability extensions.
- * Monitors are registered on the MessagingConfigurer and automatically
- * wired as interceptors.
+ * Monitors are registered via the kronos() App messageMonitorRegistry slot
+ * (Phase 8 reshape — was previously the MessagingConfigurer surface).
  *
  * Aligned with AF5's `MessageMonitor`.
  */

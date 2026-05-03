@@ -79,11 +79,10 @@ function defaultQueryInstructions(timeoutMs: number): any[] {
  * - Replaces the query bus with a distributed query bus
  *
  * ```ts
- * EventSourcingConfigurer.create()
- *   .configure(configureCourses)
- *   .registerEnhancer(kronosDbConfigurationEnhancer({
- *     componentName: "university-service",
- *   }))
+ * // transitional — the (app: App) => void shape lands in Phase 9 (EXT-01);
+ * // until then production callers register the legacy enhancer via .use().
+ * await kronos()
+ *   .use(kronosDbConfigurationEnhancer({ componentName: "university-service" }))
  *   .start()
  * ```
  */

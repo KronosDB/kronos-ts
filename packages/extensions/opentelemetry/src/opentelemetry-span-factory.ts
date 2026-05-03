@@ -76,12 +76,10 @@ export interface OpenTelemetrySpanFactoryOptions {
  * Aligned with Kronos Framework's `OpenTelemetrySpanFactory`.
  *
  * ```typescript
+ * // transitional — registration via the legacy openTelemetryEnhancer until
+ * // Phase 9 (EXT-04) ships a typed (app: App) => void shape.
  * const spanFactory = createOpenTelemetrySpanFactory()
- *
- * configurer.componentRegistry(cr => {
- *   cr.register(ComponentKeys.HANDLER_ENHANCER_DEFINITIONS,
- *     () => tracingHandlerEnhancerDefinition(spanFactory))
- * })
+ * await kronos().use(openTelemetryEnhancer()).start()
  * ```
  */
 export function createOpenTelemetrySpanFactory(
