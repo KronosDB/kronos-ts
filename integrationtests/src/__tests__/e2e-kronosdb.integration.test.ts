@@ -23,7 +23,8 @@ import {
   emitUpdate,
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
-import { EventSourcingConfigurer, load, append } from "@kronos-ts/eventsourcing"
+import { type EventStore, load, append } from "@kronos-ts/eventsourcing"
+import { kronos, type App, type RunningApp } from "@kronos-ts/core"
 import { kronosDbConfigurationEnhancer } from "@kronos-ts/kronosdb"
 
 // ============================================================================
@@ -140,27 +141,45 @@ function id(name: string) { return `${name}-${runId}` }
 // ============================================================================
 
 describe("E2E: KronosDB full stack", () => {
-  let app: Awaited<ReturnType<typeof EventSourcingConfigurer.prototype.start>>
+  let app: RunningApp
+  let capturedEventStore: EventStore | undefined
 
   beforeAll(async () => {
     courseViews.clear()
+    capturedEventStore = undefined
 
-    app = await EventSourcingConfigurer.create()
-      .registerEntity(CourseEntity)
-      .registerCommandHandler(() => createCourse)
-      .registerCommandHandler(() => subscribeStudent)
-      .registerEventProcessor(config =>
+    // Plan 08-03b migration: native kronos() + legacy ConfigurationEnhancer routed
+    // via the App.use() overload (D-73, D-74). The KronosDB enhancer's enhance()
+    // registers EVENT_STORE/SNAPSHOT_STORE/COMMAND_BUS/QUERY_BUS via the bridge's
+    // registry shim, which translates each to app.set(slot, ...).
+    const kronosDbEnhancer = kronosDbConfigurationEnhancer({
+      componentName: "kronosdb-e2e-test",
+      host: "localhost",
+      port: 50051,
+      context: "default",
+    })
+
+    // Capture the resolved eventStore via an identity decorator. Native RunningApp
+    // does not expose eventStore directly — see e2e-inmemory.integration.test.ts
+    // §captureEventStore for the same pattern.
+    const captureExtension = (kronosApp: App) => {
+      kronosApp.decorate("eventStore", (inner) => {
+        capturedEventStore = inner
+        return inner
+      })
+    }
+
+    app = await kronos({ quiet: true })
+      .entities(CourseEntity)
+      .commands(createCourse, subscribeStudent)
+      .queries(courseQueries)
+      .processors(
         trackingProcessor("kronosdb-course-projection")
           .registerEventHandler(courseProjection)
-          .build()
+          .build(),
       )
-      .registerQueryHandlers(() => courseQueries)
-      .registerEnhancer(kronosDbConfigurationEnhancer({
-        componentName: "kronosdb-e2e-test",
-        host: "localhost",
-        port: 50051,
-        context: "default",
-      }))
+      .use(captureExtension)
+      .use(kronosDbEnhancer) // routed through legacy-enhancer-bridge per D-73
       .start()
 
     // Give KronosDB time to process handler subscriptions
@@ -171,6 +190,11 @@ describe("E2E: KronosDB full stack", () => {
     await app?.stop()
   })
 
+  function eventStore(): EventStore {
+    if (!capturedEventStore) throw new Error("eventStore capture failed — start() did not run probe decorator")
+    return capturedEventStore
+  }
+
   it("command persists events to KronosDB event store", async () => {
     const courseId = id("cs-101")
 
@@ -180,7 +204,7 @@ describe("E2E: KronosDB full stack", () => {
       capacity: 30,
     })
 
-    const { events } = await app.eventStore.source({
+    const { events } = await eventStore().source({
       criteria: EventCriteria.havingTags(tag("courseId", courseId)),
     })
     expect(events.length).toBe(1)
@@ -196,7 +220,7 @@ describe("E2E: KronosDB full stack", () => {
       studentId: "stu-1",
     })
 
-    const { events } = await app.eventStore.source({
+    const { events } = await eventStore().source({
       criteria: EventCriteria.havingTags(tag("courseId", courseId)),
     })
     expect(events.length).toBe(2)
@@ -230,7 +254,7 @@ describe("E2E: KronosDB full stack", () => {
       app.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-2" }),
     ).rejects.toThrow()
 
-    const { events } = await app.eventStore.source({
+    const { events } = await eventStore().source({
       criteria: EventCriteria.havingTags(tag("courseId", courseId)),
     })
     expect(events.length).toBe(2) // CourseCreated + StudentSubscribed
@@ -243,8 +267,8 @@ describe("E2E: KronosDB full stack", () => {
     await app.commandGateway.send(CreateCourse, { courseId: courseA, name: "Course A", capacity: 10 })
     await app.commandGateway.send(CreateCourse, { courseId: courseB, name: "Course B", capacity: 20 })
 
-    const eventsA = await app.eventStore.source({ criteria: EventCriteria.havingTags(tag("courseId", courseA)) })
-    const eventsB = await app.eventStore.source({ criteria: EventCriteria.havingTags(tag("courseId", courseB)) })
+    const eventsA = await eventStore().source({ criteria: EventCriteria.havingTags(tag("courseId", courseA)) })
+    const eventsB = await eventStore().source({ criteria: EventCriteria.havingTags(tag("courseId", courseB)) })
 
     expect(eventsA.events.length).toBe(1)
     expect(eventsB.events.length).toBe(1)

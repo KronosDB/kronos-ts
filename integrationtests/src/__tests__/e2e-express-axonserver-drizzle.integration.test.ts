@@ -8,8 +8,9 @@
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
+import express from "express"
 import { z } from "zod"
-import { qn, tag, ComponentKeys } from "@kronos-ts/common"
+import { qn, tag } from "@kronos-ts/common"
 import {
   command,
   event,
@@ -23,7 +24,9 @@ import {
   emitUpdate,
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
-import { EventSourcingConfigurer, load, append } from "@kronos-ts/eventsourcing"
+import { type EventStore, load, append } from "@kronos-ts/eventsourcing"
+import { kronos, type App, type RunningApp } from "@kronos-ts/core"
+import { withExpress } from "@kronos-ts/extensions/express"
 import { axonServerConfigurationEnhancer } from "@kronos-ts/axon-server"
 
 // ============================================================================
@@ -140,17 +143,22 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 // Tests
 // ============================================================================
 
-// TODO(plan-03b): unskip + update wiring once legacy-enhancer-bridge lands.
-// Plan 08-01 migrated the HTTP extensions to native Extension shape; this test
-// still uses legacy ConfigurationEnhancer wiring for axonServerConfigurationEnhancer.
-// Plan 08-03 lands the .use(legacyEnhancer) bridge AND rewires this consumer to
-// kronos().entities(...).use(withExpress(...)).use(axonServerEnhancer).start().
-describe.skip("E2E: Axon Server full stack", () => {
+// Plan 08-03b unskipped + rewired to native kronos() + legacy-enhancer-bridge:
+//   .entities(...).commands(...).queries(...).processors(...)
+//   .use(withExpress(...))                  // Plan 01 native HTTP Extension
+//   .use(axonServerConfigurationEnhancer)   // ConfigurationEnhancer routed via bridge (D-73)
+// Express extension is wired up to validate Plan 01's HTTP-extension shape end-to-end
+// alongside the bridge. The Axon Server enhancer registers EVENT_STORE / COMMAND_BUS /
+// QUERY_BUS via the registry shim's TOKEN_TO_SLOT translation (D-74).
+describe("E2E: Axon Server full stack", () => {
   let container: StartedTestContainer
-  let app: Awaited<ReturnType<typeof EventSourcingConfigurer.prototype.start>>
+  let app: RunningApp
+  let capturedEventStore: EventStore | undefined
+  let httpServerPort: number
 
   beforeAll(async () => {
     courseViews.clear()
+    capturedEventStore = undefined
 
     container = await new GenericContainer("axoniq/axonserver:2025.2.5")
       .withExposedPorts(8024, 8124)
@@ -166,17 +174,31 @@ describe.skip("E2E: Axon Server full stack", () => {
     // Extra delay for DCB event store stream endpoint initialization
     await new Promise(r => setTimeout(r, 3000))
 
-    app = await EventSourcingConfigurer.create()
-      .registerEntity(CourseEntity)
-      .registerCommandHandler(() => createCourse)
-      .registerCommandHandler(() => subscribeStudent)
-      .registerEventProcessor(config =>
+    // Express + withExpress (Plan 01 native shape)
+    const expressApp = express()
+    // Random ephemeral port to avoid collisions with other tests in the file
+    httpServerPort = 30_000 + Math.floor(Math.random() * 5000)
+
+    // Capture eventStore via probe decorator (native RunningApp has no eventStore field).
+    const captureExtension = (kronosApp: App) => {
+      kronosApp.decorate("eventStore", (inner) => {
+        capturedEventStore = inner
+        return inner
+      })
+    }
+
+    app = await kronos({ quiet: true })
+      .entities(CourseEntity)
+      .commands(createCourse, subscribeStudent)
+      .queries(courseQueries)
+      .processors(
         trackingProcessor("course-projection")
           .registerEventHandler(courseProjection)
-          .build()
+          .build(),
       )
-      .registerQueryHandlers(() => courseQueries)
-      .registerEnhancer(axonServerConfigurationEnhancer({
+      .use(captureExtension)
+      .use(withExpress(expressApp, { port: httpServerPort })) // Plan 01 HTTP wiring
+      .use(axonServerConfigurationEnhancer({                    // Plan 03b bridge wiring
         componentName: "e2e-full-stack",
         host,
         port: grpcPort,
@@ -191,6 +213,11 @@ describe.skip("E2E: Axon Server full stack", () => {
     await app?.stop()
     await container?.stop()
   })
+
+  function eventStore(): EventStore {
+    if (!capturedEventStore) throw new Error("eventStore capture failed — start() did not run probe decorator")
+    return capturedEventStore
+  }
 
   async function waitFor(check: () => boolean, timeoutMs = 30000): Promise<void> {
     const start = Date.now()
@@ -210,7 +237,7 @@ describe.skip("E2E: Axon Server full stack", () => {
     })
 
     // then — events persisted in Axon Server
-    const { events } = await app.eventStore.source({
+    const { events } = await eventStore().source({
       criteria: EventCriteria.havingTags(tag("courseId", "e2e-101")),
     })
     expect(events.length).toBe(1)
@@ -223,14 +250,14 @@ describe.skip("E2E: Axon Server full stack", () => {
     })
 
     // and — re-source shows both events
-    const { events: allEvents } = await app.eventStore.source({
+    const { events: allEvents } = await eventStore().source({
       criteria: EventCriteria.havingTags(tag("courseId", "e2e-101")),
     })
     expect(allEvents.length).toBe(2)
   }, 60_000)
 
   it("events persist in Axon Server", async () => {
-    const { events } = await app.eventStore.source({
+    const { events } = await eventStore().source({
       criteria: EventCriteria.havingTags(tag("courseId", "e2e-101")),
     })
     // 2 events: CourseCreated + StudentSubscribed (from previous test)
@@ -262,7 +289,7 @@ describe.skip("E2E: Axon Server full stack", () => {
     ).rejects.toThrow()
 
     // Verify events in store
-    const { events } = await app.eventStore.source({
+    const { events } = await eventStore().source({
       criteria: EventCriteria.havingTags(tag("courseId", "e2e-cap")),
     })
     expect(events.length).toBe(2) // CourseCreated + StudentSubscribed
@@ -272,8 +299,8 @@ describe.skip("E2E: Axon Server full stack", () => {
     await app.commandGateway.send(CreateCourse, { courseId: "e2e-a", name: "Course A", capacity: 10 })
     await app.commandGateway.send(CreateCourse, { courseId: "e2e-b", name: "Course B", capacity: 20 })
 
-    const eventsA = await app.eventStore.source({ criteria: EventCriteria.havingTags(tag("courseId", "e2e-a")) })
-    const eventsB = await app.eventStore.source({ criteria: EventCriteria.havingTags(tag("courseId", "e2e-b")) })
+    const eventsA = await eventStore().source({ criteria: EventCriteria.havingTags(tag("courseId", "e2e-a")) })
+    const eventsB = await eventStore().source({ criteria: EventCriteria.havingTags(tag("courseId", "e2e-b")) })
 
     expect(eventsA.events.length).toBe(1)
     expect(eventsB.events.length).toBe(1)

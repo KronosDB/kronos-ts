@@ -1,4 +1,3 @@
-import type { EventSourcingConfigurer } from "@kronos-ts/eventsourcing"
 import type { App } from "@kronos-ts/core"
 import { trackingProcessor } from "@kronos-ts/messaging"
 import { CourseEntity } from "./entity.js"
@@ -6,13 +5,13 @@ import { createCourse, changeCourseCapacity, subscribeStudent, unsubscribeStuden
 import { courseProjection, courseQueries } from "./projections.js"
 
 /**
- * Course domain slice configuration — NEW kronos() App shape.
+ * Course domain slice configuration — kronos() App shape.
  *
- * Used by tests that drive through the kronos() App fluent surface
- * (university.integration.test.ts via createTestFixture; future
- * e2e-* migrations under Plan 03).
+ * Plan 08-03b collapsed Plan 02's transitional dual-export back into a single
+ * native (app: App) => void shape. The legacy configurer-shaped variant has
+ * been deleted; the only remaining shape is the native App API.
  */
-export function configureCoursesApp(app: App): void {
+export function configureCourses(app: App): void {
   app.entities(CourseEntity)
   app.commands(createCourse, changeCourseCapacity, subscribeStudent, unsubscribeStudent)
   app.queries(courseQueries)
@@ -21,29 +20,4 @@ export function configureCoursesApp(app: App): void {
       .registerEventHandler(courseProjection)
       .build(),
   )
-}
-
-/**
- * Course domain slice configuration — LEGACY EventSourcingConfigurer shape.
- *
- * Still consumed by e2e-* integration tests that exercise EventSourcingConfigurer
- * directly. Plan 03 migrates those tests; Plan 04 deletes this export along with
- * the EventSourcingConfigurer surface.
- *
- * DO NOT add new callers — use {@link configureCoursesApp} instead.
- */
-export function configureCourses(c: EventSourcingConfigurer) {
-  c.registerEntity(CourseEntity)
-  c.messaging(m => {
-    m.registerCommandHandler(() => createCourse)
-    m.registerCommandHandler(() => changeCourseCapacity)
-    m.registerCommandHandler(() => subscribeStudent)
-    m.registerCommandHandler(() => unsubscribeStudent)
-    m.registerEventProcessor(config =>
-      trackingProcessor("course-projection")
-        .registerEventHandler(courseProjection)
-        .build()
-    )
-    m.registerQueryHandlers(() => courseQueries)
-  })
 }
