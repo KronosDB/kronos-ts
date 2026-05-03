@@ -6,10 +6,15 @@
   "types": "src/index.ts",
   "dependencies": {
     "@kronos-ts/common": "workspace:*",
+    "@kronos-ts/core": "workspace:*",
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/eventsourcing": "workspace:*"
   },
   "peerDependencies": {
     "fastify": ">=4.0.0"
+  },
+  "devDependencies": {
+    "@kronos-ts/modelling": "workspace:*",
+    "zod": "^4.3.6"
   }
 }
