@@ -11,6 +11,7 @@
       "dependencies": {
         "@kronos-ts/axon-server": "workspace:*",
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/extensions/drizzle": "workspace:*",
         "@kronos-ts/extensions/express": "workspace:*",
@@ -102,8 +103,13 @@
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
+      },
+      "devDependencies": {
+        "@kronos-ts/modelling": "workspace:*",
+        "zod": "^4.3.6",
       },
       "peerDependencies": {
         "express": ">=4.0.0",
@@ -114,8 +120,13 @@
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
+      },
+      "devDependencies": {
+        "@kronos-ts/modelling": "workspace:*",
+        "zod": "^4.3.6",
       },
       "peerDependencies": {
         "fastify": ">=4.0.0",
@@ -126,8 +137,13 @@
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
+      },
+      "devDependencies": {
+        "@kronos-ts/modelling": "workspace:*",
+        "zod": "^4.3.6",
       },
       "peerDependencies": {
         "hono": ">=4.0.0",
@@ -181,6 +197,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
       },
@@ -245,6 +262,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
         "@kronos-ts/modelling": "workspace:*",
