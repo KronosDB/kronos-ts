@@ -27,6 +27,21 @@ export class SlotNotRegisteredError extends Error {
 }
 
 /**
+ * Thrown when `app.commandGateway` or `app.queryGateway` is accessed before
+ * the `register` lifecycle stage completes during `.start()`. Available inside
+ * `onStart('warmup'|'register'|'processors'|'serve', fn)` hooks AFTER register
+ * completes, and after `.start()` resolves. (Plan 08-01.)
+ */
+export class AppNotStartedError extends Error {
+  constructor(accessor: string) {
+    super(
+      `[kronos] App not started: ${accessor} is only accessible after register-stage completes during .start().`,
+    )
+    this.name = "AppNotStartedError"
+  }
+}
+
+/**
  * Thrown by `app.removeDecorator(handle)` when the handle is not found in the
  * app's registration list (D-59). Catches typos like
  * `Defaults.commandBus.interceptingg` and removal of a handle that was never

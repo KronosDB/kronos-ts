@@ -27,5 +27,5 @@ export {
   applyDecorators,
 } from "./decorator.js"
 export { Defaults } from "./defaults-handles.js"
-export { UnknownDecoratorHandleError } from "./errors.js"
+export { UnknownDecoratorHandleError, AppNotStartedError } from "./errors.js"
 export type { LifecycleStage, LifecycleHook } from "./lifecycle.js"

@@ -21,7 +21,7 @@ import { buildResolved } from "./resolved.js"
 import type { WarningChannel } from "./warnings.js"
 import type { DecoratorEntry, DecoratorFactory, DecoratorHandle } from "./decorator.js"
 import { applyDecorators } from "./decorator.js"
-import { UnknownDecoratorHandleError } from "./errors.js"
+import { AppNotStartedError, UnknownDecoratorHandleError } from "./errors.js"
 import type { LifecycleStage, LifecycleHook } from "./lifecycle.js"
 import { STAGE_TO_PHASE } from "./lifecycle.js"
 
@@ -72,6 +72,20 @@ export interface App {
    */
   handlerInterceptor(fn: HandlerInterceptor): App
   /**
+   * Live CommandGateway. Throws AppNotStartedError if accessed before the
+   * `register` lifecycle stage completes during `.start()`. Available inside
+   * `onStart('warmup'|'register'|'processors'|'serve', fn)` hooks (after register)
+   * and after `.start()` resolves. (Plan 08-01.)
+   */
+  readonly commandGateway: CommandGateway
+  /**
+   * Live QueryGateway. Throws AppNotStartedError if accessed before the
+   * `register` lifecycle stage completes during `.start()`. Available inside
+   * `onStart('warmup'|'register'|'processors'|'serve', fn)` hooks (after register)
+   * and after `.start()` resolves. (Plan 08-01.)
+   */
+  readonly queryGateway: QueryGateway
+  /**
    * Register a hook that runs at the given lifecycle stage during `.start()`.
    * Stages execute in forward order (connect → warmup → register → processors → serve).
    * Within a stage, hooks execute in registration order. Throws AppAlreadyStartedError
@@ -120,6 +134,26 @@ export interface AppImplOptions {
 export class AppImpl implements App {
   readonly _state: AppState
   private _started = false
+  private _commandGateway: CommandGateway | undefined = undefined
+  private _queryGateway: QueryGateway | undefined = undefined
+
+  /**
+   * Live CommandGateway. Throws AppNotStartedError if accessed before the
+   * `register` lifecycle stage completes during `.start()`. (Plan 08-01.)
+   */
+  get commandGateway(): CommandGateway {
+    if (!this._commandGateway) throw new AppNotStartedError("commandGateway")
+    return this._commandGateway
+  }
+
+  /**
+   * Live QueryGateway. Throws AppNotStartedError if accessed before the
+   * `register` lifecycle stage completes during `.start()`. (Plan 08-01.)
+   */
+  get queryGateway(): QueryGateway {
+    if (!this._queryGateway) throw new AppNotStartedError("queryGateway")
+    return this._queryGateway
+  }
 
   constructor(options: AppImplOptions) {
     this._state = {
@@ -409,8 +443,21 @@ export class AppImpl implements App {
       }
     })
 
-    // 7. Build & start.
-    const kronosApp = await configurer.start()
+    // 7. Build & start. Split build()+start() so the legacy LifecycleRegistry can
+    //    capture gateways onto the AppImpl instance at the `register` phase (numeric
+    //    phase 0) — BEFORE serve-stage hooks (phase 2000) fire and AFTER connect-stage
+    //    hooks (phase -1000) fire. This preserves the AppNotStartedError contract for
+    //    pre-register lifecycle hooks while making the getters live by the time
+    //    serve-stage user hooks see them. (Plan 08-01.)
+    //    transitional: Plan 08-03 deletes the configurer and sets gateways directly.
+    const kronosApp = configurer.build()
+    configurer.lifecycleRegistry((reg) => {
+      reg.onStart(STAGE_TO_PHASE.register, () => {
+        this._commandGateway = kronosApp.commandGateway
+        this._queryGateway = kronosApp.queryGateway
+      })
+    })
+    await kronosApp.start()
 
     return {
       get commandGateway(): CommandGateway {
