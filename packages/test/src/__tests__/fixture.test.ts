@@ -77,12 +77,9 @@ describe("Test Fixture", () => {
   })
 
   it("creates a course and verifies the event", async () => {
-    fixture = await createTestFixture((c) => {
-      c.registerEntity(CourseEntity)
-      c.messaging(m => {
-        m.registerCommandHandler(() => createCourse)
-        m.registerCommandHandler(() => subscribeStudent)
-      })
+    fixture = await createTestFixture((app) => {
+      app.entities(CourseEntity)
+      app.commands(createCourse, subscribeStudent)
     })
 
     await fixture
@@ -98,12 +95,9 @@ describe("Test Fixture", () => {
   })
 
   it("rejects duplicate course creation", async () => {
-    fixture = await createTestFixture((c) => {
-      c.registerEntity(CourseEntity)
-      c.messaging(m => {
-        m.registerCommandHandler(() => createCourse)
-        m.registerCommandHandler(() => subscribeStudent)
-      })
+    fixture = await createTestFixture((app) => {
+      app.entities(CourseEntity)
+      app.commands(createCourse, subscribeStudent)
     })
 
     await fixture
@@ -117,12 +111,9 @@ describe("Test Fixture", () => {
   })
 
   it("subscribes a student to a course", async () => {
-    fixture = await createTestFixture((c) => {
-      c.registerEntity(CourseEntity)
-      c.messaging(m => {
-        m.registerCommandHandler(() => createCourse)
-        m.registerCommandHandler(() => subscribeStudent)
-      })
+    fixture = await createTestFixture((app) => {
+      app.entities(CourseEntity)
+      app.commands(createCourse, subscribeStudent)
     })
 
     await fixture
@@ -138,12 +129,9 @@ describe("Test Fixture", () => {
   })
 
   it("rejects subscription when course is full", async () => {
-    fixture = await createTestFixture((c) => {
-      c.registerEntity(CourseEntity)
-      c.messaging(m => {
-        m.registerCommandHandler(() => createCourse)
-        m.registerCommandHandler(() => subscribeStudent)
-      })
+    fixture = await createTestFixture((app) => {
+      app.entities(CourseEntity)
+      app.commands(createCourse, subscribeStudent)
     })
 
     await fixture
@@ -160,12 +148,9 @@ describe("Test Fixture", () => {
   })
 
   it("supports given with commands", async () => {
-    fixture = await createTestFixture((c) => {
-      c.registerEntity(CourseEntity)
-      c.messaging(m => {
-        m.registerCommandHandler(() => createCourse)
-        m.registerCommandHandler(() => subscribeStudent)
-      })
+    fixture = await createTestFixture((app) => {
+      app.entities(CourseEntity)
+      app.commands(createCourse, subscribeStudent)
     })
 
     await fixture
@@ -181,12 +166,9 @@ describe("Test Fixture", () => {
   })
 
   it("supports chained scenarios with and()", async () => {
-    fixture = await createTestFixture((c) => {
-      c.registerEntity(CourseEntity)
-      c.messaging(m => {
-        m.registerCommandHandler(() => createCourse)
-        m.registerCommandHandler(() => subscribeStudent)
-      })
+    fixture = await createTestFixture((app) => {
+      app.entities(CourseEntity)
+      app.commands(createCourse, subscribeStudent)
     })
 
     // First scenario: create a course
@@ -210,11 +192,9 @@ describe("Test Fixture", () => {
   })
 
   it("provides custom event assertion via expectEventsSatisfying", async () => {
-    fixture = await createTestFixture((c) => {
-      c.registerEntity(CourseEntity)
-      c.messaging(m => {
-        m.registerCommandHandler(() => createCourse)
-      })
+    fixture = await createTestFixture((app) => {
+      app.entities(CourseEntity)
+      app.commands(createCourse)
     })
 
     await fixture

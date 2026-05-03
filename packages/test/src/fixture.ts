@@ -1,23 +1,24 @@
 import {
-  ComponentKeys,
   generateIdentifier,
   emptyMetadata,
   qualifiedNameToString,
-  type ConfigurationEnhancer,
   type Metadata,
-  type ComponentRegistry,
 } from "@kronos-ts/common"
 import type {
   CommandDescriptor,
   EventDescriptor,
   EventMessage,
   CommandMessage,
-  CommandBus,
 } from "@kronos-ts/messaging"
 import { runInNewUoW } from "@kronos-ts/messaging"
-import { EventSourcingConfigurer } from "@kronos-ts/eventsourcing"
+import { kronos, type App, type RunningApp } from "@kronos-ts/core"
+import type { EventStore } from "@kronos-ts/eventsourcing"
 import type { z } from "zod"
-import { createRecordingEnhancer, type Recordings } from "./recording-enhancer.js"
+import {
+  createRecordings,
+  testRecordingExtension,
+  type Recordings,
+} from "./recording-enhancer.js"
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -35,16 +36,13 @@ type CommandPair = [CommandDescriptor<any>, unknown]
  * against an in-memory event store with recording decorators.
  *
  * Pass a configuration function that sets up the same domain
- * as your production app.
+ * as your production app via the kronos() App fluent surface.
  *
  * ```typescript
- * const fixture = await createTestFixture((c) => {
- *   c.registerEntity(CourseEntity)
- *   c.messaging(m => {
- *     m.registerCommandHandler(() => createCourse)
- *     m.registerCommandHandler(() => subscribeStudent)
- *     m.registerQueryHandlers(() => courseQueries)
- *   })
+ * const fixture = await createTestFixture((app) => {
+ *   app.entities(CourseEntity)
+ *   app.commands(createCourse, subscribeStudent)
+ *   app.queries(courseQueries)
  * })
  *
  * await fixture
@@ -60,31 +58,43 @@ type CommandPair = [CommandDescriptor<any>, unknown]
  * ```
  */
 export async function createTestFixture(
-  configureFn: (configurer: EventSourcingConfigurer) => void,
+  configureFn: (app: App) => void,
 ): Promise<TestFixture> {
-  const recordingEnhancer = createRecordingEnhancer()
+  const recordings = createRecordings()
+  const app = kronos({ quiet: true })
 
-  const app = EventSourcingConfigurer.create()
-    .configure(configureFn)
-    .registerEnhancer(recordingEnhancer)
-    .build()
+  // Apply testRecordingExtension synchronously BEFORE configureFn so its
+  // decorators land FIRST in the registration order — Phase 6 D-62: first
+  // registered = innermost wrap. Recording must be innermost so it captures
+  // messages AFTER all interceptors have enriched them.
+  testRecordingExtension(recordings)(app)
 
-  await app.start()
+  // Capture the eventStore reference via an identity decorator so the BDD
+  // given/when paths can append events directly. The decorator runs as
+  // part of the user-decorator pass at .start(), so it sees whatever
+  // (recording-wrapped) store the framework resolved.
+  let capturedEventStore: EventStore | undefined
+  app.decorate("eventStore", (inner) => {
+    capturedEventStore = inner
+    return inner
+  })
 
-  const recordings = app.configuration.getComponent<Recordings>("testRecordings")
-  if (!recordings) {
-    throw new Error("Test fixture: recordings not found.")
+  configureFn(app)
+
+  const running = await app.start()
+
+  if (!capturedEventStore) {
+    throw new Error("Test fixture: eventStore capture failed (start() did not run probe decorator).")
   }
-
-  const commandBus = app.configuration.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS)
+  const eventStore = capturedEventStore
 
   return {
     given() {
-      return new GivenPhaseImpl(app, recordings, commandBus)
+      return new GivenPhaseImpl(running, recordings, eventStore)
     },
 
     async stop() {
-      await app.stop()
+      await running.stop()
     },
   }
 }
@@ -101,7 +111,7 @@ export interface TestFixture {
 export interface GivenPhase {
   events(...pairs: EventPair[]): GivenPhase
   commands(...pairs: CommandPair[]): GivenPhase
-  execute(fn: (app: any) => void | Promise<void>): GivenPhase
+  execute(fn: (app: RunningApp) => void | Promise<void>): GivenPhase
   noPriorActivity(): GivenPhase
   when(): WhenPhase
 }
@@ -109,13 +119,13 @@ export interface GivenPhase {
 class GivenPhaseImpl implements GivenPhase {
   private readonly givenEvents: EventPair[] = []
   private readonly givenCommands: CommandPair[] = []
-  private readonly givenSetupFns: Array<(app: any) => void | Promise<void>> = []
+  private readonly givenSetupFns: Array<(app: RunningApp) => void | Promise<void>> = []
   _prerequisite: Promise<void> | undefined
 
   constructor(
-    private readonly app: any,
+    private readonly app: RunningApp,
     private readonly recordings: Recordings,
-    private readonly commandBus: CommandBus,
+    private readonly eventStore: EventStore,
   ) {}
 
   events(...pairs: EventPair[]): GivenPhase {
@@ -128,7 +138,7 @@ class GivenPhaseImpl implements GivenPhase {
     return this
   }
 
-  execute(fn: (app: any) => void | Promise<void>): GivenPhase {
+  execute(fn: (app: RunningApp) => void | Promise<void>): GivenPhase {
     this.givenSetupFns.push(fn)
     return this
   }
@@ -139,7 +149,7 @@ class GivenPhaseImpl implements GivenPhase {
 
   when(): WhenPhase {
     return new WhenPhaseImpl(
-      this.app, this.recordings, this.commandBus,
+      this.app, this.recordings, this.eventStore,
       this.givenEvents, this.givenCommands, this.givenSetupFns,
       this._prerequisite,
     )
@@ -162,18 +172,18 @@ export interface WhenResult {
 
 class WhenPhaseImpl implements WhenPhase {
   constructor(
-    private readonly app: any,
+    private readonly app: RunningApp,
     private readonly recordings: Recordings,
-    private readonly commandBus: CommandBus,
+    private readonly eventStore: EventStore,
     private readonly givenEvents: EventPair[],
     private readonly givenCommands: CommandPair[],
-    private readonly givenSetupFns: Array<(app: any) => void | Promise<void>>,
+    private readonly givenSetupFns: Array<(app: RunningApp) => void | Promise<void>>,
     private readonly prerequisite?: Promise<void>,
   ) {}
 
   command<P extends z.ZodType>(descriptor: CommandDescriptor<P>, payload: z.infer<P>, metadata?: Metadata): WhenResult {
     const thenPhase = new ThenPhaseImpl(
-      this.app, this.recordings, this.commandBus,
+      this.app, this.recordings, this.eventStore,
       this.givenEvents, this.givenCommands, this.givenSetupFns,
       { kind: "command", descriptor, payload, metadata },
       this.prerequisite,
@@ -183,7 +193,7 @@ class WhenPhaseImpl implements WhenPhase {
 
   event<P extends z.ZodType>(descriptor: EventDescriptor<P>, payload: z.infer<P>, metadata?: Metadata): WhenResult {
     const thenPhase = new ThenPhaseImpl(
-      this.app, this.recordings, this.commandBus,
+      this.app, this.recordings, this.eventStore,
       this.givenEvents, this.givenCommands, this.givenSetupFns,
       { kind: "event", descriptor, payload, metadata },
       this.prerequisite,
@@ -193,7 +203,7 @@ class WhenPhaseImpl implements WhenPhase {
 
   nothing(): WhenResult {
     const thenPhase = new ThenPhaseImpl(
-      this.app, this.recordings, this.commandBus,
+      this.app, this.recordings, this.eventStore,
       this.givenEvents, this.givenCommands, this.givenSetupFns,
       { kind: "nothing" },
       this.prerequisite,
@@ -207,8 +217,8 @@ class WhenPhaseImpl implements WhenPhase {
 // ---------------------------------------------------------------------------
 
 type WhenAction =
-  | { kind: "command"; descriptor: CommandDescriptor; payload: unknown; metadata?: Metadata }
-  | { kind: "event"; descriptor: EventDescriptor; payload: unknown; metadata?: Metadata }
+  | { kind: "command"; descriptor: CommandDescriptor<any>; payload: unknown; metadata?: Metadata }
+  | { kind: "event"; descriptor: EventDescriptor<any>; payload: unknown; metadata?: Metadata }
   | { kind: "nothing" }
 
 export interface ThenPhase extends PromiseLike<void> {
@@ -225,8 +235,8 @@ export interface ThenPhase extends PromiseLike<void> {
   expectCommands(...pairs: CommandPair[]): ThenPhase
   expectNoCommands(): ThenPhase
   expectCommandsSatisfying(fn: (commands: ReadonlyArray<CommandMessage>) => void): ThenPhase
-  expect(fn: (app: any) => void | Promise<void>): ThenPhase
-  await(assertion: (app: any) => void | Promise<void>, timeoutMs?: number, intervalMs?: number): ThenPhase
+  expect(fn: (app: RunningApp) => void | Promise<void>): ThenPhase
+  await(assertion: (app: RunningApp) => void | Promise<void>, timeoutMs?: number, intervalMs?: number): ThenPhase
   and(): TestFixture
 }
 
@@ -235,12 +245,12 @@ class ThenPhaseImpl implements ThenPhase {
   private executionPromise: Promise<void> | null = null
 
   constructor(
-    private readonly app: any,
+    private readonly app: RunningApp,
     private readonly recordings: Recordings,
-    private readonly commandBus: CommandBus,
+    private readonly eventStore: EventStore,
     private readonly givenEvents: EventPair[],
     private readonly givenCommands: CommandPair[],
-    private readonly givenSetupFns: Array<(app: any) => void | Promise<void>>,
+    private readonly givenSetupFns: Array<(app: RunningApp) => void | Promise<void>>,
     private readonly whenAction: WhenAction,
     private readonly prerequisite?: Promise<void>,
   ) {}
@@ -380,12 +390,12 @@ class ThenPhaseImpl implements ThenPhase {
     return this
   }
 
-  expect(fn: (app: any) => void | Promise<void>): ThenPhase {
+  expect(fn: (app: RunningApp) => void | Promise<void>): ThenPhase {
     this.assertions.push(async () => { await fn(this.app) })
     return this
   }
 
-  await(assertion: (app: any) => void | Promise<void>, timeoutMs: number = 5000, intervalMs: number = 50): ThenPhase {
+  await(assertion: (app: RunningApp) => void | Promise<void>, timeoutMs: number = 5000, intervalMs: number = 50): ThenPhase {
     this.assertions.push(async () => {
       const start = Date.now()
       let lastError: unknown
@@ -401,7 +411,7 @@ class ThenPhaseImpl implements ThenPhase {
     const prerequisite = this.getExecutionPromise()
     return {
       given: () => {
-        const given = new GivenPhaseImpl(this.app, this.recordings, this.commandBus)
+        const given = new GivenPhaseImpl(this.app, this.recordings, this.eventStore)
         given._prerequisite = prerequisite
         return given
       },
@@ -424,7 +434,7 @@ class ThenPhaseImpl implements ThenPhase {
   private async execute(): Promise<void> {
     if (this.prerequisite) await this.prerequisite
 
-    const eventStore = this.app.eventStore
+    const eventStore = this.eventStore
 
     // 1. Given: publish events within a UnitOfWork
     if (this.givenEvents.length > 0) {
@@ -440,9 +450,11 @@ class ThenPhaseImpl implements ThenPhase {
     // 1b. Given: run custom setup
     for (const fn of this.givenSetupFns) { await fn(this.app) }
 
-    // 1c. Given: dispatch commands
+    // 1c. Given: dispatch commands via the gateway (matches user-facing semantics).
+    //     The recording decorator on the bus captures messages whether they
+    //     arrive via gateway or direct bus dispatch.
     for (const [desc, payload] of this.givenCommands) {
-      await this.commandBus.dispatch({ identifier: generateIdentifier(), name: desc.name, payload, metadata: emptyMetadata(), timestamp: Date.now() })
+      await this.app.commandGateway.send(desc, payload, emptyMetadata())
     }
 
     // 2. Reset recordings
@@ -454,7 +466,11 @@ class ThenPhaseImpl implements ThenPhase {
 
     if (this.whenAction.kind === "command") {
       try {
-        result = await this.commandBus.dispatch({ identifier: generateIdentifier(), name: this.whenAction.descriptor.name, payload: this.whenAction.payload, metadata: this.whenAction.metadata ?? emptyMetadata(), timestamp: Date.now() })
+        result = await this.app.commandGateway.send(
+          this.whenAction.descriptor,
+          this.whenAction.payload,
+          this.whenAction.metadata ?? emptyMetadata(),
+        )
       } catch (err) { error = err }
     } else if (this.whenAction.kind === "event") {
       const desc = this.whenAction.descriptor
