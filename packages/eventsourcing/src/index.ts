@@ -62,21 +62,6 @@ export {
 
 export { createInterceptingEventStore } from "./intercepting-event-store.js"
 
-export {
-  MessagingConfigurer,
-  ModellingConfigurer,
-  EventSourcingConfigurer,
-  type KronosApplication,
-} from "./eventsourcing-configurer.js"
-
-export {
-  type LegacyKronosPlugin,
-  type TrackingProcessorOptions,
-  type SubscribingProcessorOptions,
-  LegacyKronos,
-  legacyKronos,
-} from "./kronos.js"
-
 // Module-level handler helpers (Plan 04-01 / HDL-02 / D-42)
 export { load, STATE_MANAGER_KEY } from "./load.js"
 export {

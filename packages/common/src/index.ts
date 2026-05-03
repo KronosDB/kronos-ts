@@ -30,31 +30,3 @@ export {
 } from "./converter.js"
 
 export { generateIdentifier } from "./identifier.js"
-
-export {
-  type ComponentId,
-  type ComponentRegistry,
-  type Configuration,
-  type ComponentBuilder,
-  type ComponentDecorator,
-  type ApplicationConfigurer,
-  type ComponentFactory,
-  type Module,
-  type ConfigurationEnhancer,
-  type OverridePolicy,
-  type SearchScope,
-  ComponentOverrideError,
-  createComponentRegistry,
-} from "./configuration.js"
-
-export { ComponentKeys } from "./component-keys.js"
-
-export {
-  type LifecycleRegistry,
-  type LifecycleHandler,
-  type LifecyclePhaseValue,
-  type LifecycleRegistryOptions,
-  LifecyclePhase,
-  createLifecycleRegistry,
-} from "./lifecycle.js"
-

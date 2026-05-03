@@ -23,7 +23,7 @@ import {
   type ConfigurationEnhancer,
   type ComponentRegistry,
   type Configuration,
-} from "@kronos-ts/common"
+} from "../legacy-enhancer-bridge.js"
 import { kronos } from "../kronos.js"
 import { createSimpleCommandBus } from "@kronos-ts/messaging"
 import type { CommandBus, CommandMessage } from "@kronos-ts/messaging"
