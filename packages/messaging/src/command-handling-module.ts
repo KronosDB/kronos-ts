@@ -1,9 +1,36 @@
-import {
-  ComponentKeys,
-  qualifiedNameToString,
-  type Configuration,
-} from "@kronos-ts/common"
+import { qualifiedNameToString } from "@kronos-ts/common"
 import type { CommandHandlerDefinition } from "./command-handler.js"
+
+/**
+ * Minimal Configuration shape consumed by createCommandInvocation /
+ * registerCommandHandlersNatively. Phase 8 D-82 reshape: messaging no longer
+ * depends on the full @kronos-ts/common Configuration interface (deleted
+ * with the configurer trio in Plan 08-04). Callers (kronos() AppImpl.start())
+ * pass a shim that satisfies just these methods.
+ *
+ * The component-key strings used by createCommandInvocation are inlined
+ * below (COMMAND_INVOCATION_KEYS) so this file has zero dependency on the
+ * deleted ComponentKeys constant.
+ */
+export interface MinimalConfiguration {
+  hasComponent(type: string, name?: string): boolean
+  getComponent<T>(type: string, name?: string): T
+  getOptionalComponent<T>(type: string, name?: string): T | undefined
+}
+
+/**
+ * Component-key strings consumed by createCommandInvocation. Inlined here
+ * (rather than imported from a shared ComponentKeys constant) because the
+ * configurer trio's ComponentKeys export is deleted in Plan 08-04. The kronos()
+ * AppImpl populates its config-shim with the same string keys.
+ */
+const COMMAND_INVOCATION_KEYS = {
+  STATE_MANAGER: "stateManager",
+  COMMAND_BUS: "commandBus",
+  QUERY_BUS: "queryBus",
+  EVENT_STORE: "eventStore",
+  TAG_RESOLVER: "tagResolver",
+} as const
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
@@ -34,29 +61,29 @@ import {
  */
 export function createCommandInvocation(
   handler: CommandHandlerDefinition<any, any>,
-  config: Configuration,
+  config: MinimalConfiguration,
 ) {
   return async (message: CommandMessage): Promise<unknown> => {
     // D-82 — full ALS resource setup at command invocation entry.
     // STATE_MANAGER: read by load() helper. COMMAND_BUS: read by send() helper.
     // QUERY_BUS: read by emitUpdate() helper.
-    if (config.hasComponent(ComponentKeys.STATE_MANAGER)) {
-      setResource(STATE_MANAGER_KEY, config.getComponent<any>(ComponentKeys.STATE_MANAGER))
+    if (config.hasComponent(COMMAND_INVOCATION_KEYS.STATE_MANAGER)) {
+      setResource(STATE_MANAGER_KEY, config.getComponent<any>(COMMAND_INVOCATION_KEYS.STATE_MANAGER))
     }
-    if (config.hasComponent(ComponentKeys.COMMAND_BUS)) {
-      setResource(COMMAND_BUS_KEY, config.getComponent<CommandBus>(ComponentKeys.COMMAND_BUS))
+    if (config.hasComponent(COMMAND_INVOCATION_KEYS.COMMAND_BUS)) {
+      setResource(COMMAND_BUS_KEY, config.getComponent<CommandBus>(COMMAND_INVOCATION_KEYS.COMMAND_BUS))
     }
-    if (config.hasComponent(ComponentKeys.QUERY_BUS)) {
-      setResource(QUERY_BUS_KEY, config.getComponent<QueryBus>(ComponentKeys.QUERY_BUS))
+    if (config.hasComponent(COMMAND_INVOCATION_KEYS.QUERY_BUS)) {
+      setResource(QUERY_BUS_KEY, config.getComponent<QueryBus>(COMMAND_INVOCATION_KEYS.QUERY_BUS))
     }
 
     // Register event flush in PREPARE_COMMIT phase
     onPrepareCommit(async () => {
       const buffered = getResource(BUFFERED_EVENTS_KEY)
       if (!buffered || buffered.length === 0) return
-      if (!config.hasComponent(ComponentKeys.EVENT_STORE)) return
+      if (!config.hasComponent(COMMAND_INVOCATION_KEYS.EVENT_STORE)) return
 
-      const eventStore = config.getComponent<{ append: (events: ReadonlyArray<EventMessage>, condition?: any) => Promise<unknown> }>(ComponentKeys.EVENT_STORE)
+      const eventStore = config.getComponent<{ append: (events: ReadonlyArray<EventMessage>, condition?: any) => Promise<unknown> }>(COMMAND_INVOCATION_KEYS.EVENT_STORE)
 
       // Enrich events with correlation data from ProcessingContext
       // (set by the CorrelationDataHandlerInterceptor during handler execution)
@@ -69,7 +96,7 @@ export function createCommandInvocation(
         : buffered
 
       // Resolve tags via TagResolver (if configured)
-      const tagResolver = config.getOptionalComponent<{ resolve: (event: EventMessage) => Array<{ key: string; value: string }> }>(ComponentKeys.TAG_RESOLVER)
+      const tagResolver = config.getOptionalComponent<{ resolve: (event: EventMessage) => Array<{ key: string; value: string }> }>(COMMAND_INVOCATION_KEYS.TAG_RESOLVER)
       const resolvedEvents = tagResolver
         ? enrichedEvents.map(event => ({
             ...event,
@@ -127,7 +154,7 @@ export function registerCommandHandlersNatively(
   handlers: ReadonlyArray<CommandHandlerDefinition<any, any>>,
   deps: {
     commandBus: CommandBus
-    config: Configuration
+    config: MinimalConfiguration
     handlerEnhancer?: HandlerEnhancerDefinition
     moduleName?: string
   },

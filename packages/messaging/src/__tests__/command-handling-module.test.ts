@@ -3,10 +3,16 @@ import { z } from "zod"
 import {
   qn,
   emptyMetadata,
-  ComponentKeys,
-  type Configuration,
 } from "@kronos-ts/common"
-import { registerCommandHandlersNatively } from "../command-handling-module.js"
+import { registerCommandHandlersNatively, type MinimalConfiguration } from "../command-handling-module.js"
+
+// Phase 8 D-82: ComponentKeys constant deleted in Plan 08-04. Tests now use
+// the same string literals that the kronos() AppImpl config-shim uses.
+const ComponentKeys = {
+  COMMAND_BUS: "commandBus",
+  STATE_MANAGER: "stateManager",
+  EVENT_STORE: "eventStore",
+} as const
 import { commandHandler } from "../command-handler.js"
 import { command, event } from "../descriptor.js"
 import type { CommandBus } from "../command-bus.js"
@@ -64,7 +70,7 @@ function createStubConfiguration(overrides: {
   commandBus: CommandBus
   stateManager?: { load: (entity: any, id: any) => Promise<any> }
   eventStore?: { append: (events: ReadonlyArray<any>, condition?: any) => Promise<void> }
-}): Configuration {
+}): MinimalConfiguration {
   const components = new Map<string, unknown>()
   components.set(ComponentKeys.COMMAND_BUS, overrides.commandBus)
   if (overrides.stateManager) {
@@ -83,16 +89,9 @@ function createStubConfiguration(overrides: {
     getOptionalComponent<T>(type: string): T | undefined {
       return components.get(type) as T | undefined
     },
-    getComponents<T>(type: string): Map<string, T> {
-      const c = components.get(type)
-      if (!c) return new Map()
-      return new Map([[type, c as T]])
-    },
     hasComponent(type: string): boolean {
       return components.has(type)
     },
-    getModules() { return [] },
-    getParent() { return undefined },
   }
 }
 
