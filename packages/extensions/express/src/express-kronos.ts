@@ -1,4 +1,4 @@
-import { ComponentKeys, type ConfigurationEnhancer } from "@kronos-ts/common"
+import type { App, Extension } from "@kronos-ts/core"
 import type { CommandGateway, QueryGateway } from "@kronos-ts/messaging"
 
 /**
@@ -19,14 +19,14 @@ interface ExpressApp {
 }
 
 /**
- * Integrates an Express application with Kronos as a ConfigurationEnhancer.
+ * Integrates an Express application with Kronos as a native Extension.
  *
- * On start: bridges gateways into `app.locals.kronos` and starts listening.
- * On stop: closes the server gracefully.
+ * On `serve` start: bridges gateways into `app.locals.kronos` and starts listening.
+ * On `serve` stop: closes the server gracefully.
  *
  * ```typescript
  * import express from "express"
- * import { legacyKronos } from "@kronos-ts/eventsourcing"
+ * import { kronos } from "@kronos-ts/core"
  * import { withExpress, getKronos } from "@kronos-ts/express"
  *
  * const app = express()
@@ -37,31 +37,35 @@ interface ExpressApp {
  *   res.status(201).end()
  * })
  *
- * await legacyKronos()
- *   .register(courses)
- *   .register(withExpress(app, { port: 3000 }))
+ * await kronos()
+ *   .entities(CourseEntity)
+ *   .commands(createCourse)
+ *   .use(withExpress(app, { port: 3000 }))
  *   .start()
  * ```
  */
 export function withExpress(
   app: ExpressApp,
   options?: { port?: number },
-): ConfigurationEnhancer {
+): Extension {
   let server: any
-
-  return {
-    enhance() {},
-    async onStart(config) {
+  return (kronosApp: App) => {
+    kronosApp.onStart("serve", async () => {
       const locals: KronosLocals = {
-        commandGateway: config.getComponent<CommandGateway>(ComponentKeys.COMMAND_GATEWAY),
-        queryGateway: config.getComponent<QueryGateway>(ComponentKeys.QUERY_GATEWAY),
+        commandGateway: kronosApp.commandGateway,
+        queryGateway: kronosApp.queryGateway,
       }
       app.locals.kronos = locals
       server = app.listen(options?.port ?? 3000)
-    },
-    async onStop() {
-      if (server) server.close()
-    },
+    })
+    kronosApp.onStop("serve", async () => {
+      if (server) {
+        // Express server.close is callback-style; wrap in Promise for async stop.
+        await new Promise<void>((resolve, reject) => {
+          server.close((err: any) => (err ? reject(err) : resolve()))
+        })
+      }
+    })
   }
 }
 

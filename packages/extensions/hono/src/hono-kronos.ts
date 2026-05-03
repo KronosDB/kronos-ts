@@ -1,4 +1,4 @@
-import { ComponentKeys, type ConfigurationEnhancer } from "@kronos-ts/common"
+import type { App, Extension } from "@kronos-ts/core"
 import type { CommandGateway, QueryGateway } from "@kronos-ts/messaging"
 
 /**
@@ -22,15 +22,15 @@ interface HonoApp {
 }
 
 /**
- * Integrates a Hono application with Kronos as a ConfigurationEnhancer.
+ * Integrates a Hono application with Kronos as a native Extension.
  *
- * On start: registers a middleware that sets gateways on every request context.
+ * On `serve` start: registers a middleware that sets gateways on every request context.
  *
  * Works across all Hono runtimes: Node.js, Bun, Deno, Cloudflare Workers.
  *
  * ```typescript
  * import { Hono } from "hono"
- * import { legacyKronos } from "@kronos-ts/eventsourcing"
+ * import { kronos } from "@kronos-ts/core"
  * import { withHono, getKronos } from "@kronos-ts/hono"
  *
  * const app = new Hono()
@@ -41,25 +41,25 @@ interface HonoApp {
  *   return c.json({ status: "created" }, 201)
  * })
  *
- * await legacyKronos()
- *   .register(courses)
- *   .register(withHono(app))
+ * await kronos()
+ *   .entities(CourseEntity)
+ *   .commands(createCourse)
+ *   .use(withHono(app))
  *   .start()
  * ```
  */
-export function withHono(app: HonoApp): ConfigurationEnhancer {
-  return {
-    enhance() {},
-    async onStart(config) {
+export function withHono(app: HonoApp): Extension {
+  return (kronosApp: App) => {
+    kronosApp.onStart("serve", async () => {
       const kronosCtx: KronosContext = {
-        commandGateway: config.getComponent<CommandGateway>(ComponentKeys.COMMAND_GATEWAY),
-        queryGateway: config.getComponent<QueryGateway>(ComponentKeys.QUERY_GATEWAY),
+        commandGateway: kronosApp.commandGateway,
+        queryGateway: kronosApp.queryGateway,
       }
       app.use("*", async (c: any, next: () => Promise<void>) => {
         c.set(KRONOS_CONTEXT_KEY, kronosCtx)
         await next()
       })
-    },
+    })
   }
 }
 

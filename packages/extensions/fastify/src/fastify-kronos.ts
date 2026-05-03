@@ -1,4 +1,4 @@
-import { ComponentKeys, type ConfigurationEnhancer } from "@kronos-ts/common"
+import type { App, Extension } from "@kronos-ts/core"
 import type { CommandGateway, QueryGateway } from "@kronos-ts/messaging"
 
 /**
@@ -19,14 +19,14 @@ interface FastifyInstance {
 }
 
 /**
- * Integrates a Fastify instance with Kronos as a ConfigurationEnhancer.
+ * Integrates a Fastify instance with Kronos as a native Extension.
  *
- * On start: decorates the Fastify instance with `fastify.kronos` for gateway access.
- * On stop: closes the Fastify server gracefully.
+ * On `serve` start: decorates the Fastify instance with `fastify.kronos` for gateway access.
+ * On `serve` stop: closes the Fastify server gracefully.
  *
  * ```typescript
  * import Fastify from "fastify"
- * import { legacyKronos } from "@kronos-ts/eventsourcing"
+ * import { kronos } from "@kronos-ts/core"
  * import { withFastify } from "@kronos-ts/fastify"
  *
  * const fastify = Fastify()
@@ -36,9 +36,10 @@ interface FastifyInstance {
  *   reply.code(201).send()
  * })
  *
- * await legacyKronos()
- *   .register(courses)
- *   .register(withFastify(fastify))
+ * await kronos()
+ *   .entities(CourseEntity)
+ *   .commands(createCourse)
+ *   .use(withFastify(fastify))
  *   .start()
  *
  * await fastify.listen({ port: 3000 })
@@ -53,19 +54,17 @@ interface FastifyInstance {
  * }
  * ```
  */
-export function withFastify(fastify: FastifyInstance): ConfigurationEnhancer {
-  return {
-    enhance() {},
-    async onStart(config) {
+export function withFastify(fastify: FastifyInstance): Extension {
+  return (kronosApp: App) => {
+    kronosApp.onStart("serve", async () => {
       const decorator: KronosDecorator = {
-        commandGateway: config.getComponent<CommandGateway>(ComponentKeys.COMMAND_GATEWAY),
-        queryGateway: config.getComponent<QueryGateway>(ComponentKeys.QUERY_GATEWAY),
+        commandGateway: kronosApp.commandGateway,
+        queryGateway: kronosApp.queryGateway,
       }
       fastify.decorate("kronos", decorator)
-    },
-    async onStop() {
+    })
+    kronosApp.onStop("serve", async () => {
       await fastify.close()
-    },
+    })
   }
 }
-
