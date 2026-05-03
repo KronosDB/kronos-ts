@@ -1,14 +1,10 @@
-import {
-  ComponentKeys,
-  type ComponentRegistry,
-  type ConfigurationEnhancer,
-} from "@kronos-ts/common"
-import type { EventMessage, CommandBus, CommandMessage } from "@kronos-ts/messaging"
+import type { Extension, App } from "@kronos-ts/core"
+import type { CommandBus, CommandMessage, EventMessage } from "@kronos-ts/messaging"
 
 /**
  * Recorded state from the test fixture.
- * Events and commands are captured by decorators installed
- * at the innermost position (after all interceptors have run).
+ * Events and commands are captured by decorators installed at the
+ * INNERMOST position (after all interceptors have run).
  */
 export interface Recordings {
   /** Events recorded since the last reset. */
@@ -20,70 +16,98 @@ export interface Recordings {
 }
 
 /**
- * Creates a ConfigurationEnhancer that installs recording decorators
- * on the CommandBus and EventStore.
- *
- * The decorators sit at the INNERMOST position in the decorator chain
- * (decoration order = very low number), so they capture messages
- * AFTER all dispatch interceptors have enriched them.
- *
- * This is the TypeScript equivalent of AF5's MessagesRecordingConfigurationEnhancer.
+ * Internal-shape extension of {@link Recordings} carrying the writer pair
+ * used by the decorators created in {@link testRecordingExtension}. Kept
+ * `private` to the module — callers see only the {@link Recordings} surface.
  */
-export function createRecordingEnhancer(): ConfigurationEnhancer {
+interface RecordingsInternal extends Recordings {
+  readonly _push: {
+    event: (e: EventMessage) => void
+    command: (c: CommandMessage) => void
+  }
+}
+
+/**
+ * Create a fresh Recordings handle. Pass it into {@link testRecordingExtension}
+ * so the fixture and the decorators share the same backing arrays.
+ *
+ * Replaces the legacy "register testRecordings as a component, retrieve via
+ * configuration.getComponent" pattern (removed in Phase 8).
+ */
+export function createRecordings(): Recordings {
   const recordedEvents: EventMessage[] = []
   const recordedCommands: CommandMessage[] = []
-
-  const recordings: Recordings = {
-    events() { return [...recordedEvents] },
-    commands() { return [...recordedCommands] },
+  const internal: RecordingsInternal = {
+    events() {
+      return [...recordedEvents]
+    },
+    commands() {
+      return [...recordedCommands]
+    },
     reset() {
       recordedEvents.length = 0
       recordedCommands.length = 0
     },
-  }
-
-  return {
-    // Run LAST among enhancers so all other components are set up first
-    order: Number.MAX_SAFE_INTEGER,
-
-    enhance(registry: ComponentRegistry) {
-      // Register the recordings as a component so the fixture can retrieve them
-      registry.register("testRecordings", () => recordings)
-
-      // Wrap the EventStore at the innermost position.
-      // Decoration order = very low = innermost = after all interceptors.
-      registry.registerDecorator(
-        ComponentKeys.EVENT_STORE,
-        Number.MIN_SAFE_INTEGER,
-        (_config, _name, delegate: any) => {
-          const original = delegate.append.bind(delegate)
-          return {
-            ...delegate,
-            async append(events: ReadonlyArray<EventMessage>, condition?: any) {
-              const result = await original(events, condition)
-              recordedEvents.push(...events)
-              return result
-            },
-          }
-        },
-      )
-
-      // Wrap the CommandBus at a position just outside the innermost
-      // (after distributed bus decorator if any, but before user decorators).
-      registry.registerDecorator(
-        ComponentKeys.COMMAND_BUS,
-        Number.MIN_SAFE_INTEGER + 1,
-        (_config, _name, delegate: CommandBus) => {
-          const originalDispatch = delegate.dispatch.bind(delegate)
-          return {
-            ...delegate,
-            async dispatch(message: CommandMessage) {
-              recordedCommands.push(message)
-              return originalDispatch(message)
-            },
-          } as CommandBus
-        },
-      )
+    _push: {
+      event: (e) => {
+        recordedEvents.push(e)
+      },
+      command: (c) => {
+        recordedCommands.push(c)
+      },
     },
+  }
+  return internal
+}
+
+/**
+ * Native Extension that decorates the eventStore and commandBus with
+ * recording wrappers.
+ *
+ * **Decoration order** (Phase 6 D-62): user decorators registered AFTER this
+ * extension's `app.use(...)` wrap OUTSIDE the recording decorators. To land
+ * the recording decorators at the INNERMOST position (capturing messages
+ * AFTER all interceptors have enriched them), call
+ * `app.use(testRecordingExtension(recordings))` BEFORE applying any user
+ * decorators / `configureFn(app)`.
+ *
+ * The legacy enhancer used `Number.MIN_SAFE_INTEGER` numeric priority for the
+ * same effect; Phase 6 dropped numeric priorities — innermost = first
+ * registered.
+ */
+export function testRecordingExtension(recordings: Recordings): Extension {
+  const push = (recordings as RecordingsInternal)._push
+  if (!push) {
+    throw new Error(
+      "[testRecordingExtension] Recordings handle missing internal writers — pass an instance from createRecordings().",
+    )
+  }
+  return (app: App) => {
+    // EventStore append wrapper — records events after a successful append.
+    app.decorate("eventStore", (inner) => {
+      const originalAppend = inner.append.bind(inner)
+      return {
+        ...inner,
+        async append(events: ReadonlyArray<EventMessage>, condition?: any) {
+          const result = await originalAppend(events, condition)
+          for (const e of events) push.event(e)
+          return result
+        },
+      }
+    })
+
+    // CommandBus dispatch wrapper — records commands BEFORE dispatch (legacy
+    // semantics: legacy fixture inspected the raw dispatched command, not
+    // the post-handler outcome).
+    app.decorate("commandBus", (inner) => {
+      const originalDispatch = inner.dispatch.bind(inner)
+      return {
+        ...inner,
+        async dispatch(message: CommandMessage) {
+          push.command(message)
+          return originalDispatch(message)
+        },
+      } as CommandBus
+    })
   }
 }

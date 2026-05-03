@@ -13,5 +13,6 @@ export {
 
 export {
   type Recordings,
-  createRecordingEnhancer,
+  createRecordings,
+  testRecordingExtension,
 } from "./recording-enhancer.js"

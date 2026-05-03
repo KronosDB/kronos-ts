@@ -86,7 +86,7 @@ describe("testRecordingExtension", () => {
       const recorded = recordings.events()
       expect(recorded.length).toBeGreaterThanOrEqual(1)
       const evt = recorded[0]!
-      expect(evt.name.localName).toBe("TestThingHappened")
+      expect(evt.name.name).toBe("TestThingHappened")
       expect((evt.payload as any).id).toBe("thing-1")
     } finally {
       await running.stop()
@@ -105,7 +105,7 @@ describe("testRecordingExtension", () => {
       const recordedCmds = recordings.commands()
       expect(recordedCmds.length).toBeGreaterThanOrEqual(1)
       const cmd = recordedCmds[recordedCmds.length - 1]!
-      expect(cmd.name.localName).toBe("DoTestThing")
+      expect(cmd.name.name).toBe("DoTestThing")
       expect((cmd.payload as any).id).toBe("thing-2")
     } finally {
       await running.stop()
@@ -145,8 +145,11 @@ describe("testRecordingExtension", () => {
       .entities(ThingEntity)
       .commands(doTestThingHandler)
 
-    // Apply recording extension FIRST (innermost wrap)
-    app.use(testRecordingExtension(recordings))
+    // Apply recording extension SYNCHRONOUSLY first so its decorators land in
+    // `decoratorRegistrations` before the user-decorate call below. (Going via
+    // `app.use` would defer execution to start(), placing user decorate FIRST
+    // in the registration order.) This mirrors what the fixture does internally.
+    testRecordingExtension(recordings)(app)
 
     // User decorator registered AFTER — should see the recording-wrapped store as `inner`.
     // The recording wrapper is identifiable because its `append` is NOT the in-memory base
