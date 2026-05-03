@@ -26,7 +26,8 @@ export type LifecycleStage = "connect" | "register" | "warmup" | "processors" | 
  */
 export type LifecycleHook = () => void | Promise<void>
 
-// Plan 08-03a (D-77): STAGE_TO_PHASE deleted. Native AppImpl.start() executes
-// typed-stage hooks directly off AppState.startHooks/stopHooks — no numeric-phase
-// bridge to the legacy LifecycleRegistry. Plan 03b's enhancer-bridge keeps a
-// private inverted PHASE_TO_STAGE copy locally for the D-81 fallback path.
+// Plan 08-03a (D-77): the legacy numeric-phase mapping is deleted. Native
+// AppImpl.start() executes typed-stage hooks directly off
+// AppState.startHooks/stopHooks — no numeric-phase bridge to the legacy
+// LifecycleRegistry. Plan 03b's enhancer-bridge keeps a private inverted copy
+// locally for the D-81 fallback path.

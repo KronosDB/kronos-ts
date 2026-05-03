@@ -407,7 +407,7 @@ export class AppImpl implements App {
     // 5. Native wiring (Plan 08-03a — Configurer chain deleted).
     //    Build StateManager from registered entities + resolved eventStore, then
     //    subscribe command/query handlers and event-handler subscribing processors
-    //    directly off the resolved buses. No EventSourcingConfigurer, no Module
+    //    directly off the resolved buses. No legacy configurer chain, no Module
     //    initialize() shells, no LifecycleRegistry numeric-phase bridge.
     // ----------------------------------------------------------------------
 
