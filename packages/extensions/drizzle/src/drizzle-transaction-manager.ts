@@ -29,10 +29,10 @@ export type DrizzleTransaction = any
  *
  * const db = drizzle(sql)
  *
- * configurer.componentRegistry(cr => {
- *   cr.register(ComponentKeys.TRANSACTION_MANAGER,
- *     () => drizzleTransactionManager(db))
- * })
+ * // transactionManager wiring to a kronos() App is pending a typed
+ * // `transactionManager` slot (Phase 9). For now, construct the manager
+ * // and pass it directly into the unitOfWorkFactory composition:
+ * const txManager = drizzleTransactionManager(db)
  * ```
  */
 export function drizzleTransactionManager(

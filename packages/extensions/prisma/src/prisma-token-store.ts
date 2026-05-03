@@ -68,9 +68,10 @@ function isClaimExpired(row: TokenRow, claimTimeoutMs: number): boolean {
  * ```typescript
  * import { prismaTokenStore } from "@kronos-ts/extensions-prisma"
  *
- * configurer.componentRegistry(cr => {
- *   cr.register(ComponentKeys.TOKEN_STORE, () => prismaTokenStore(prisma))
- * })
+ * // tokenStore wiring to a kronos() App is pending a typed `tokenStore` slot
+ * // (Phase 9). For now, construct the store and pass it directly to the
+ * // tracking processor that owns it:
+ * const tokenStore = prismaTokenStore(prisma)
  * ```
  */
 export function prismaTokenStore(

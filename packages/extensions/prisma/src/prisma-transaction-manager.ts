@@ -34,11 +34,10 @@ export interface PrismaClientLike {
  *
  * const prisma = new PrismaClient()
  *
- * EventSourcingConfigurer.create()
- *   .componentRegistry(cr => {
- *     cr.register(ComponentKeys.TRANSACTION_MANAGER,
- *       () => prismaTransactionManager(prisma))
- *   })
+ * // transactionManager wiring to a kronos() App is pending a typed
+ * // `transactionManager` slot (Phase 9). For now, construct the manager
+ * // and pass it directly into the unitOfWorkFactory composition:
+ * const txManager = prismaTransactionManager(prisma)
  * ```
  */
 export function prismaTransactionManager(

@@ -26,7 +26,14 @@ import {
   createSubscribingEventProcessor,
 } from "@kronos-ts/messaging"
 import { createEventSourcedRepository } from "@kronos-ts/eventsourcing"
-import { ComponentKeys, type Configuration, type ConfigurationEnhancer } from "@kronos-ts/common"
+// transitional: Phase 9 deletes — legacy Configuration / ConfigurationEnhancer / ComponentKeys
+// are owned by the bridge file; app.ts uses them only to (a) build the Configuration shim
+// for createCommandInvocation (D-82) and (b) accept ConfigurationEnhancer in App.use().
+import {
+  ComponentKeys,
+  type Configuration,
+  type ConfigurationEnhancer,
+} from "./legacy-enhancer-bridge.js"
 import { ALL_SLOTS, type KronosComponents, type SlotName } from "./components.js"
 import { SlotRegistry, type SlotFactory, type SlotMeta } from "./slot-registry.js"
 import { buildResolved } from "./resolved.js"

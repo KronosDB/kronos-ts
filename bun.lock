@@ -73,6 +73,7 @@
         "@bufbuild/protobuf": "^2.3",
         "@grpc/grpc-js": "^1.12",
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
         "@kronos-ts/modelling": "workspace:*",
@@ -167,6 +168,7 @@
         "@bufbuild/protobuf": "^2.3",
         "@grpc/grpc-js": "^1.12",
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
         "@kronos-ts/modelling": "workspace:*",
@@ -210,6 +212,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
         "@opentelemetry/api": "^1.9",
       },

@@ -71,9 +71,11 @@ function nowIso(): string {
  * import { drizzleTokenStore } from "@kronos-ts/extensions/drizzle"
  * import { kronosTokenEntries } from "./schema"
  *
- * configurer.componentRegistry(cr => {
- *   cr.register(ComponentKeys.TOKEN_STORE, () =>
- *     drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull }))
+ * // tokenStore wiring to a kronos() App is pending a typed `tokenStore` slot
+ * // (Phase 9). For now, construct the store and pass it directly to the
+ * // tracking processor that owns it:
+ * const tokenStore = drizzleTokenStore({
+ *   db, table: kronosTokenEntries, eq, and, or, lt, isNull,
  * })
  * ```
  */

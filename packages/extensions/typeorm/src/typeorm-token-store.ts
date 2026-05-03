@@ -52,9 +52,10 @@ export interface TypeOrmManagerLike {
  * ```typescript
  * import { typeormTokenStore } from "@kronos-ts/extensions/typeorm"
  *
- * configurer.componentRegistry(cr => {
- *   cr.register(ComponentKeys.TOKEN_STORE, () => typeormTokenStore(dataSource.manager))
- * })
+ * // tokenStore wiring to a kronos() App is pending a typed `tokenStore` slot
+ * // (Phase 9). For now, construct the store and pass it directly to the
+ * // tracking processor that owns it:
+ * const tokenStore = typeormTokenStore(dataSource.manager)
  * ```
  */
 export function typeormTokenStore(

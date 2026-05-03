@@ -1,12 +1,16 @@
 import {
-  ComponentKeys,
   qualifiedNameToString,
   qualifiedNameFromString,
   generateIdentifier,
-  type ComponentRegistry,
-  type ConfigurationEnhancer,
   type Serializer,
 } from "@kronos-ts/common"
+// transitional: Phase 9 deletes — pulls legacy ConfigurationEnhancer surface from
+// the bridge until this extension is migrated to (app: App) => void.
+import {
+  ComponentKeys,
+  type ComponentRegistry,
+  type ConfigurationEnhancer,
+} from "@kronos-ts/core/legacy-enhancer-bridge"
 import type { CommandBus, QueryBus, CommandMessage, QueryMessage, SubscriptionQueryResult, UpdateHandler } from "@kronos-ts/messaging"
 import { type UoWRunner, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
 import type { KronosDbConnectionConfig } from "./connection.js"

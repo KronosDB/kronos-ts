@@ -1,27 +1,238 @@
 // transitional: Phase 9 deletes
 //
 // Bridge adapter: routes legacy ConfigurationEnhancer instances passed to App.use()
-// through the typed App API. The ONLY surviving consumer of the numeric LifecyclePhase
-// scale + ComponentKeys string tokens after Phase 8.
+// through the typed App API. The ONLY surviving consumer of the legacy
+// ConfigurationEnhancer / ComponentRegistry / ComponentKeys surface after Phase 8.
 //
 // D-73, D-74, D-81. Production extensions (KronosDB, Axon Server, OpenTelemetry) keep
 // loading via this bridge until Phase 9 migrates them to (app: App) => void.
 //
-// NOT exported from packages/core/src/index.ts. Internal only.
+// Plan 08-04 relocation: the legacy ConfigurationEnhancer / ComponentRegistry /
+// Configuration / Module / ComponentBuilder / ComponentDecorator / ComponentFactory /
+// ComponentId / OverridePolicy / SearchScope / ComponentOverrideError type declarations
+// AND the ComponentKeys constant are now owned by THIS file (formerly in
+// @kronos-ts/common's configuration.ts + component-keys.ts, both deleted in Plan 04).
+// Production extensions import these via `@kronos-ts/core/legacy-enhancer-bridge`.
+//
+// Exported as a SUBMODULE from packages/core via the package.json exports map
+// `./legacy-enhancer-bridge` entry. NOT re-exported from packages/core/src/index.ts.
 
-import type {
-  ConfigurationEnhancer,
-  ComponentRegistry,
-  ComponentBuilder,
-  ComponentDecorator,
-  Configuration,
-  Module,
-  ComponentFactory,
-} from "@kronos-ts/common"
-import { ComponentKeys } from "@kronos-ts/common"
 import type { App } from "./app.js"
 import type { LifecycleStage } from "./lifecycle.js"
 import type { KronosComponents, SlotName } from "./components.js"
+
+// ─────────────────────────────────────────────────────────────────
+// transitional: Phase 9 deletes
+// The legacy ConfigurationEnhancer / ComponentRegistry / ComponentKeys
+// surface is preserved here ONLY for the three production extensions
+// (KronosDB, Axon Server, OpenTelemetry). Phase 9 migrates them to
+// (app: App) => void and deletes this entire block.
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * A component identifier — a type key with an optional name for disambiguation.
+ * Allows multiple components of the same type (e.g., different TokenStores per processor).
+ */
+export type ComponentId = {
+  readonly type: string
+  readonly name?: string
+}
+
+/**
+ * Controls what happens when a component is registered with a key
+ * that already has a builder.
+ *
+ * CFG-03: deleted from public surface — bridge keeps the type alive
+ * for ConfigurationEnhancer signature compatibility only.
+ */
+export type OverridePolicy = "allow" | "warn" | "reject"
+
+/**
+ * Controls where to search when resolving components in hierarchical configurations.
+ *
+ * CFG-03: deleted from public surface — bridge keeps the type alive
+ * for ConfigurationEnhancer signature compatibility only.
+ */
+export type SearchScope = "all" | "current" | "ancestors"
+
+/**
+ * A factory that can create components on demand.
+ * Only consulted when a component is NOT already registered.
+ */
+export interface ComponentFactory<T = unknown> {
+  /** Whether this factory can create a component for the given key. */
+  canCreate(type: string, name?: string): boolean
+  /** Create the component. */
+  create(config: Configuration, type: string, name?: string): T
+}
+
+/**
+ * A type-keyed component registry for wiring framework infrastructure.
+ *
+ * Components are registered by type (and optional name) and built lazily on first access.
+ * Decorators wrap components after they're built, applied in order (lower = first).
+ */
+export interface ComponentRegistry {
+  /**
+   * Register a component builder. Behavior on duplicate keys depends on
+   * the override policy (default: "warn").
+   */
+  register<T>(type: string, builder: ComponentBuilder<T>): ComponentRegistry
+  register<T>(type: string, name: string, builder: ComponentBuilder<T>): ComponentRegistry
+
+  /**
+   * Register a component builder only if no component exists for this key.
+   */
+  registerIfAbsent<T>(type: string, builder: ComponentBuilder<T>): ComponentRegistry
+  registerIfAbsent<T>(type: string, name: string, builder: ComponentBuilder<T>): ComponentRegistry
+
+  /**
+   * Register a decorator that wraps a component after it's built.
+   * Lower order values execute first (innermost decorator has highest order).
+   */
+  registerDecorator<T>(type: string, order: number, decorator: ComponentDecorator<T>): ComponentRegistry
+  registerDecorator<T>(type: string, name: string, order: number, decorator: ComponentDecorator<T>): ComponentRegistry
+
+  /**
+   * Register a module — a self-contained group of components that registers
+   * itself with the appropriate buses/registries during initialization.
+   */
+  registerModule(module: Module): ComponentRegistry
+
+  /**
+   * Register a component factory for on-demand component creation.
+   */
+  registerFactory(factory: ComponentFactory): ComponentRegistry
+
+  /**
+   * Set the override policy for this registry.
+   */
+  setOverridePolicy(policy: OverridePolicy): ComponentRegistry
+}
+
+/**
+ * Resolved configuration — provides access to built components.
+ */
+export interface Configuration {
+  /** Get a component by type (and optional name). */
+  getComponent<T>(type: string): T
+  getComponent<T>(type: string, name: string): T
+
+  /** Get a component, returning undefined if not registered (instead of throwing). */
+  getOptionalComponent<T>(type: string, name?: string): T | undefined
+
+  /** Get all components of a given type as a map of name → component. */
+  getComponents<T>(type: string): Map<string, T>
+
+  /** Check if a component is registered. */
+  hasComponent(type: string, name?: string): boolean
+
+  /** Get all registered modules. */
+  getModules(): ReadonlyArray<Module>
+
+  /** Get the parent configuration (if this is a nested/child config). */
+  getParent(): Configuration | undefined
+}
+
+/**
+ * Builds a component, given access to the full configuration for resolving dependencies.
+ */
+export type ComponentBuilder<T> = (config: Configuration) => T
+
+/**
+ * Decorates/wraps a component. Receives the configuration, the component's
+ * registered name (or the type key if unnamed), and the built delegate.
+ */
+export type ComponentDecorator<T> = (config: Configuration, name: string, delegate: T) => T
+
+/**
+ * A self-contained group of related handlers/components that can register
+ * itself with the messaging infrastructure.
+ */
+export interface Module {
+  readonly name: string
+  /** Called after all components are built. */
+  initialize(config: Configuration): void
+}
+
+/**
+ * Enhances a component registry with additional components, decorators, etc.
+ */
+export interface ConfigurationEnhancer {
+  enhance(registry: ComponentRegistry): void
+  /** Lower values execute first. Defaults to 0. CFG-03: bridge IGNORES this field. */
+  order?: number
+  /** Called when the application starts. Receives the built configuration. */
+  onStart?: (config: Configuration) => void | Promise<void>
+  /** Called when the application stops. */
+  onStop?: () => void | Promise<void>
+}
+
+/**
+ * Thrown when a component registration is rejected by the override policy.
+ */
+export class ComponentOverrideError extends Error {
+  constructor(key: string) {
+    super(`Component override rejected for "${key}". Override policy is set to "reject".`)
+    this.name = "ComponentOverrideError"
+  }
+}
+
+/**
+ * Well-known component keys used by the framework.
+ * These are the string keys for looking up components in the legacy registry.
+ *
+ * Plan 08-04 relocation: formerly in @kronos-ts/common's component-keys.ts.
+ * Phase 9 deletes this constant alongside the bridge.
+ */
+export const ComponentKeys = {
+  COMMAND_BUS: "commandBus",
+  COMMAND_GATEWAY: "commandGateway",
+  QUERY_BUS: "queryBus",
+  QUERY_GATEWAY: "queryGateway",
+  EVENT_STORE: "eventStore",
+  STATE_MANAGER: "stateManager",
+  EVENT_PROCESSORS: "eventProcessors",
+  UNIT_OF_WORK_FACTORY: "unitOfWorkFactory",
+  TOKEN_STORE: "tokenStore",
+  TRANSACTION_MANAGER: "transactionManager",
+  /** Default serializer — fallback for all serialization. */
+  SERIALIZER: "serializer",
+  /** Serializer for event payloads. Falls back to SERIALIZER if not configured. */
+  EVENT_SERIALIZER: "eventSerializer",
+  /** Serializer for command/query message payloads. Falls back to SERIALIZER if not configured. */
+  MESSAGE_SERIALIZER: "messageSerializer",
+  /** Schema registry for event payload validation. */
+  EVENT_SCHEMA_REGISTRY: "eventSchemaRegistry",
+  /** Schema registry for command payload validation. */
+  COMMAND_SCHEMA_REGISTRY: "commandSchemaRegistry",
+  /** Schema registry for query payload validation. */
+  QUERY_SCHEMA_REGISTRY: "querySchemaRegistry",
+  /** Correlation data providers for automatic metadata propagation. */
+  CORRELATION_DATA_PROVIDERS: "correlationDataProviders",
+  /** Handler enhancer definitions for wrapping handlers at registration time. */
+  HANDLER_ENHANCER_DEFINITIONS: "handlerEnhancerDefinitions",
+  /** Routing strategy for command routing in distributed scenarios. */
+  ROUTING_STRATEGY: "routingStrategy",
+  /** Snapshot store for entity state caching. */
+  SNAPSHOT_STORE: "snapshotStore",
+  /** Event bus — combines event publication with push-based subscription. */
+  EVENT_BUS: "eventBus",
+  /** Event gateway — user-facing API for direct event publication. */
+  EVENT_GATEWAY: "eventGateway",
+  /** Event sink — publish-only contract for event distribution. */
+  EVENT_SINK: "eventSink",
+  /** Event storage engine — raw storage backend for events. */
+  EVENT_STORAGE_ENGINE: "eventStorageEngine",
+  /** Tag resolver for deriving tags from event messages. */
+  TAG_RESOLVER: "tagResolver",
+  /** Message monitor registry for observability. */
+  MESSAGE_MONITOR_REGISTRY: "messageMonitorRegistry",
+} as const
+
+// ─────────────────────────────────────────────────────────────────
+// End relocated legacy surface
+// ─────────────────────────────────────────────────────────────────
 
 /**
  * Translation table from ComponentKeys string tokens to the typed

@@ -21,10 +21,10 @@ export type TypeOrmTransaction = any
  * ```typescript
  * import { typeormTransactionManager } from "@kronos-ts/extensions/typeorm"
  *
- * configurer.componentRegistry(cr => {
- *   cr.register(ComponentKeys.TRANSACTION_MANAGER,
- *     () => typeormTransactionManager(dataSource))
- * })
+ * // transactionManager wiring to a kronos() App is pending a typed
+ * // `transactionManager` slot (Phase 9). For now, construct the manager
+ * // and pass it directly into the unitOfWorkFactory composition:
+ * const txManager = typeormTransactionManager(dataSource)
  * ```
  */
 export function typeormTransactionManager(

@@ -36,9 +36,10 @@ export interface KnexQueryable {
  * ```typescript
  * import { knexTokenStore } from "@kronos-ts/extensions/knex"
  *
- * configurer.componentRegistry(cr => {
- *   cr.register(ComponentKeys.TOKEN_STORE, () => knexTokenStore(knex))
- * })
+ * // tokenStore wiring to a kronos() App is pending a typed `tokenStore` slot
+ * // (Phase 9). For now, construct the store and pass it directly to the
+ * // tracking processor that owns it:
+ * const tokenStore = knexTokenStore(knex)
  * ```
  */
 export function knexTokenStore(
