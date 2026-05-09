@@ -27,7 +27,7 @@ import { eventSourcedEntity } from "@kronos-ts/modelling"
 import { type EventStore, load, append } from "@kronos-ts/eventsourcing"
 import { kronos, type App, type RunningApp } from "@kronos-ts/core"
 import { withExpress } from "@kronos-ts/extensions/express"
-import { axonServerConfigurationEnhancer } from "@kronos-ts/axon-server"
+import { axonServer } from "@kronos-ts/axon-server"
 
 // ============================================================================
 // Domain
@@ -143,13 +143,15 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 // Tests
 // ============================================================================
 
-// Plan 08-03b unskipped + rewired to native kronos() + legacy-enhancer-bridge:
+// Plan 09-04 — wired against the native Axon Server extension (D-95):
 //   .entities(...).commands(...).queries(...).processors(...)
-//   .use(withExpress(...))                  // Plan 01 native HTTP Extension
-//   .use(axonServerConfigurationEnhancer)   // ConfigurationEnhancer routed via bridge (D-73)
-// Express extension is wired up to validate Plan 01's HTTP-extension shape end-to-end
-// alongside the bridge. The Axon Server enhancer registers EVENT_STORE / COMMAND_BUS /
-// QUERY_BUS via the registry shim's TOKEN_TO_SLOT translation (D-74).
+//   .use(withExpress(...))   // Plan 01 native HTTP Extension
+//   .use(axonServer({...}))  // Plan 09-04 native (app: App) => void
+// Express extension validates Plan 01's HTTP-extension shape end-to-end
+// alongside the native Axon Server extension. axonServer() populates
+// eventStore / snapshotStore / commandBus / queryBus typed slots via app.set(...)
+// and runs connect/processors/stop hooks under the @kronos-ts/common
+// resilience helper.
 describe("E2E: Axon Server full stack", () => {
   let container: StartedTestContainer
   let app: RunningApp
@@ -198,7 +200,7 @@ describe("E2E: Axon Server full stack", () => {
       )
       .use(captureExtension)
       .use(withExpress(expressApp, { port: httpServerPort })) // Plan 01 HTTP wiring
-      .use(axonServerConfigurationEnhancer({                    // Plan 03b bridge wiring
+      .use(axonServer({                                         // Plan 09-04 native shape
         componentName: "e2e-full-stack",
         host,
         port: grpcPort,

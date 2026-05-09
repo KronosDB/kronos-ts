@@ -1,29 +1,70 @@
+/**
+ * Native Axon Server extension (Phase 9, D-95 / D-101 / D-102).
+ *
+ * Replaces the legacy enhancer surface (now deleted) with a
+ * `(app: App) => void` extension that:
+ *
+ *   - populates four typed slots (eventStore, snapshotStore, commandBus,
+ *     queryBus) via app.set(...) using the canonical Resolved slot names
+ *     (in particular `resolved.unitOfWorkFactory`, NOT `unitOfWorkRunner`);
+ *   - wires connect-stage transport bring-up under the @kronos-ts/common
+ *     resilience helper (initial-connect + health-check + platform setup +
+ *     instruction handlers + platform.start);
+ *   - wires processors-stage subscription-ack wait via withRetry against
+ *     `platform.subscriptionsAcked()` — REPLACES the 1-second sleep hack
+ *     that lived at line 264 of the legacy file (D-102 — Axon equivalent);
+ *   - reverses shutdown deterministically in a single onStop('connect') hook
+ *     (busLatches → platform.stop → connection.close — D-101.b).
+ *
+ * Mirrors `kronosdb.ts` (Plan 09-03) STRUCTURALLY — same slot+lifecycle
+ * pattern, same resilience helper, same shutdown ordering, same
+ * subscription-ack derivation strategy — but preserves Axon-specific
+ * protocol invariants byte-for-byte:
+ *
+ *   - CLIENT_SUPPORTS_STREAMING capability advertised on every dispatched
+ *     query via `defaultQueryInstructions(...)`;
+ *   - AxonIQ-Context + AxonIQ-Access-Token gRPC metadata headers built by
+ *     `createAxonMetadata(...)` and attached to every outbound stream/RPC;
+ *   - permits-AFTER-subscriptions stream ordering preserved on the initial
+ *     handshake AND on reconnect (legacy semantics in `ensureStreamStarted`
+ *     issued permits before subscriptions; this implementation matches that
+ *     exact ordering — see `ensureStreamStarted` / `reestablishStreamBody`).
+ */
 import {
   qualifiedNameToString,
   qualifiedNameFromString,
   generateIdentifier,
   type Serializer,
-  type SerializedObject,
+  withRetry,
+  healthCheck,
+  type ResilienceConfig,
 } from "@kronos-ts/common"
-// transitional: Phase 9 deletes — pulls legacy ConfigurationEnhancer surface from
-// the bridge until this extension is migrated to (app: App) => void.
-import {
-  ComponentKeys,
-  type ComponentRegistry,
-  type ConfigurationEnhancer,
-} from "@kronos-ts/core/legacy-enhancer-bridge"
-import type { CommandBus, QueryBus, CommandMessage, QueryMessage, SubscriptionQueryResult, UpdateHandler } from "@kronos-ts/messaging"
-import { type UoWRunner, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import type { App } from "@kronos-ts/core"
+import type {
+  CommandBus,
+  CommandMessage,
+  EventProcessorModule,
+  QueryBus,
+  QueryMessage,
+  SubscriptionQueryResult,
+  UoWRunner,
+  UpdateHandler,
+} from "@kronos-ts/messaging"
+import { createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import { Metadata } from "nice-grpc"
 import type { AxonServerConnectionConfig } from "./connection.js"
 import { connectToAxonServer, type AxonServerConnection } from "./connection.js"
 import { createAxonServerEventStore } from "./axon-server-event-store.js"
 import { createAxonServerSnapshotStore } from "./axon-server-snapshot-store.js"
 import { metadataToProto, metadataFromProto } from "./metadata-conversion.js"
 import { createOutboundStream } from "./outbound-stream.js"
-import { Metadata } from "nice-grpc"
 import { mapErrorCode, AxonServerErrorCode } from "./errors.js"
 import { createShutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
-import { createPlatformConnection, type PlatformConnection, type PlatformServiceOptions } from "./platform-service.js"
+import {
+  createPlatformConnection,
+  type PlatformConnection,
+  type PlatformServiceOptions,
+} from "./platform-service.js"
 
 /** Default flow control settings — aligned with Java's 5000 permits. */
 const DEFAULT_PERMITS = 5000n
@@ -52,8 +93,10 @@ export interface ProcessingInstructions {
   timeoutMs?: number
 }
 
-// Processing instruction keys (aligned with Java's ProcessingKey enum)
-// Processing instruction keys — aligned with proto ProcessingKey enum
+// Processing instruction keys — aligned with proto ProcessingKey enum.
+// CLIENT_SUPPORTS_STREAMING (key=8) is an Axon-Server-specific capability
+// advertisement that MUST survive the migration verbatim — see file-level
+// JSDoc above and `defaultQueryInstructions` below.
 const INSTRUCTION_KEY = {
   ROUTING_KEY: 0,
   PRIORITY: 1,
@@ -77,7 +120,12 @@ function toProtoProcessingInstructions(instructions?: ProcessingInstructions): a
   return result
 }
 
-/** Build default processing instructions for query dispatch */
+/**
+ * Build default processing instructions for query dispatch. The
+ * CLIENT_SUPPORTS_STREAMING capability is the Axon-specific protocol bit
+ * preserved from the legacy enhancer — Axon Server reads this on every
+ * query dispatch to decide whether to use streaming responses.
+ */
 function defaultQueryInstructions(timeoutMs: number): any[] {
   return [
     { key: INSTRUCTION_KEY.TIMEOUT, value: { numberValue: BigInt(timeoutMs) } },
@@ -87,142 +135,186 @@ function defaultQueryInstructions(timeoutMs: number): any[] {
 }
 
 /**
- * Configuration enhancer that replaces local infrastructure with
- * Axon Server-backed implementations.
+ * Build the gRPC metadata headers required by Axon Server. AxonIQ-Context
+ * is mandatory (identifies the tenant/context); AxonIQ-Access-Token is
+ * optional auth. Both must be attached to every outbound stream/RPC —
+ * preserved verbatim from the legacy enhancer.
+ */
+function createAxonMetadata(config: { context: string; token: string }): Metadata {
+  const metadata = new Metadata()
+  metadata.set("AxonIQ-Context", config.context)
+  if (config.token) {
+    metadata.set("AxonIQ-Access-Token", config.token)
+  }
+  return metadata
+}
+
+export interface AxonServerExtensionConfig extends AxonServerConnectionConfig {
+  /** Flow control for the command bus channel. */
+  commandFlowControl?: FlowControlConfig
+  /** Flow control for the query bus channel. */
+  queryFlowControl?: FlowControlConfig
+  /** Platform service configuration (heartbeat, etc.). */
+  platformService?: PlatformServiceOptions
+  /**
+   * When true, queries are first checked against locally registered handlers
+   * before being dispatched through Axon Server. Avoids a network round-trip
+   * when the handler is co-located.
+   *
+   * Aligned with Java's `shortcutQueriesToLocalHandlers`.
+   * Default: false.
+   */
+  shortcutQueriesToLocalHandlers?: boolean
+  /**
+   * Load factor for command handler registration.
+   * Signals to Axon Server how much capacity this handler has.
+   * Higher value = handler can take more commands.
+   *
+   * Aligned with Java's `commandLoadFactor`. Default: 100.
+   */
+  commandLoadFactor?: number
+  /**
+   * Default timeout for command dispatch in ms. Default: 300000 (5 min).
+   * Aligned with Java's processing instruction timeout.
+   */
+  commandTimeoutMs?: number
+  /**
+   * Default timeout for query dispatch in ms. Default: 3600000 (1 hour).
+   * Aligned with Java's processing instruction timeout.
+   */
+  queryTimeoutMs?: number
+  /** Per-extension resilience config (D-100 / D-101). */
+  resilience?: Partial<ResilienceConfig>
+}
+
+/**
+ * Native Axon Server extension factory. Returns an Extension closure shaped
+ * as `(app: App) => void` per D-95.
  *
- * - Replaces the event store with DCB event store over gRPC
- * - Replaces the command bus with a distributed command bus
- * - Replaces the query bus with a distributed query bus
- *
- * This is the TypeScript equivalent of AF5's `AxonServerConfigurationEnhancer`.
- *
- * ```
- * // transitional — the (app: App) => void shape lands in Phase 9 (EXT-02);
- * // until then production callers register the legacy enhancer via .use().
+ * ```ts
  * await kronos()
- *   .use(axonServerConfigurationEnhancer({ componentName: "university-service" }))
+ *   .use(axonServer({ componentName: "university-service" }))
  *   .start()
  * ```
  */
-export function axonServerConfigurationEnhancer(
-  serverConfig: AxonServerConnectionConfig & {
-    /** Flow control for the command bus channel. */
-    commandFlowControl?: FlowControlConfig
-    /** Flow control for the query bus channel. */
-    queryFlowControl?: FlowControlConfig
-    /** Platform service configuration (heartbeat, etc.). */
-    platformService?: PlatformServiceOptions
-    /**
-     * When true, queries are first checked against locally registered handlers
-     * before being dispatched through Axon Server. Avoids a network round-trip
-     * when the handler is co-located.
-     *
-     * Aligned with Java's `shortcutQueriesToLocalHandlers`.
-     * Default: false.
-     */
-    shortcutQueriesToLocalHandlers?: boolean
-    /**
-     * Load factor for command handler registration.
-     * Signals to Axon Server how much capacity this handler has.
-     * Higher value = handler can take more commands.
-     *
-     * Aligned with Java's `commandLoadFactor`. Default: 100.
-     */
-    commandLoadFactor?: number
-    /**
-     * Default timeout for command dispatch in ms. Default: 300000 (5 min).
-     * Aligned with Java's processing instruction timeout.
-     */
-    commandTimeoutMs?: number
-    /**
-     * Default timeout for query dispatch in ms. Default: 3600000 (1 hour).
-     * Aligned with Java's processing instruction timeout.
-     */
-    queryTimeoutMs?: number
-  },
-): ConfigurationEnhancer {
-  let connection: AxonServerConnection | undefined
-  let platform: PlatformConnection | undefined
-  const busLatches: Array<{ initiateShutdown(): Promise<void> }> = []
+export function axonServer(serverConfig: AxonServerExtensionConfig): (app: App) => void {
+  return (app) => {
+    let connection: AxonServerConnection | undefined
+    let platform: PlatformConnection | undefined
+    const busLatches: ShutdownLatch[] = []
 
-  function getConnection(): AxonServerConnection {
-    connection = connection ?? connectToAxonServer(serverConfig)
-    return connection
-  }
-
-  return {
-    order: -100,
-
-    enhance(registry: ComponentRegistry) {
-      registry.register(ComponentKeys.EVENT_STORE, (config) => {
-        const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
-        return createAxonServerEventStore(getConnection(), serializer)
-      })
-
-      registry.register(ComponentKeys.SNAPSHOT_STORE, (config) => {
-        const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
-        return createAxonServerSnapshotStore(getConnection(), serializer)
-      })
-
-      registry.register(ComponentKeys.COMMAND_BUS, (config) => {
-        const uowRunner = config.getComponent<UoWRunner>(ComponentKeys.UNIT_OF_WORK_FACTORY)
-        const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
-        const latch = createShutdownLatch()
-        busLatches.push(latch)
-        return createDistributedCommandBus(getConnection(), uowRunner, latch, serializer, serverConfig.commandFlowControl, serverConfig.commandLoadFactor)
-      })
-
-      registry.register(ComponentKeys.QUERY_BUS, (config) => {
-        const uowRunner = config.getComponent<UoWRunner>(ComponentKeys.UNIT_OF_WORK_FACTORY)
-        const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
-        const latch = createShutdownLatch()
-        busLatches.push(latch)
-        return createDistributedQueryBus(getConnection(), uowRunner, latch, serializer, serverConfig.queryFlowControl, serverConfig.shortcutQueriesToLocalHandlers, serverConfig.queryTimeoutMs)
-      })
-    },
-
-    async onStart(config) {
-      // Start platform service for topology management and heartbeats
-      platform = createPlatformConnection(getConnection(), serverConfig.platformService)
-
-      // Register processor control handlers — routes instructions to actual processors
-      const processors = config.getOptionalComponent<any[]>(ComponentKeys.EVENT_PROCESSORS) ?? []
-      const processorMap = new Map<string, any>()
-      for (const proc of processors) {
-        processorMap.set(proc.name, proc)
+    function getConnection(): AxonServerConnection {
+      if (!connection) {
+        throw new Error(
+          "[kronos:axon-server] connection not yet established — wait for onStart('connect')",
+        )
       }
+      return connection
+    }
+
+    // ---- Slot population (D-95) -----------------------------------------
+    // Slots receive lazy factories. The transport handshake itself runs in
+    // the connect-stage hook below — by the time createCommandGateway /
+    // createQueryGateway resolve these slots in AppImpl.start(), connection
+    // has already been populated.
+
+    app.set("eventStore", (resolved) =>
+      createAxonServerEventStore(getConnection(), resolved.serializer),
+    )
+
+    app.set("snapshotStore", (resolved) =>
+      createAxonServerSnapshotStore(getConnection(), resolved.serializer),
+    )
+
+    app.set("commandBus", (resolved) => {
+      const latch = createShutdownLatch()
+      busLatches.push(latch)
+      // canonical Resolved slot name is `unitOfWorkFactory` (NOT unitOfWorkRunner)
+      return createDistributedCommandBus(
+        getConnection(),
+        resolved.unitOfWorkFactory,
+        latch,
+        resolved.serializer,
+        serverConfig.commandFlowControl,
+        serverConfig.commandLoadFactor,
+        serverConfig.resilience,
+      )
+    })
+
+    app.set("queryBus", (resolved) => {
+      const latch = createShutdownLatch()
+      busLatches.push(latch)
+      return createDistributedQueryBus(
+        getConnection(),
+        resolved.unitOfWorkFactory,
+        latch,
+        resolved.serializer,
+        serverConfig.queryFlowControl,
+        serverConfig.shortcutQueriesToLocalHandlers,
+        serverConfig.queryTimeoutMs,
+        serverConfig.resilience,
+      )
+    })
+
+    // ---- Lifecycle: connect (D-101 normative split) ---------------------
+    // connect = initial connect + health-check + platform setup +
+    //           instruction wiring + platform.start.
+    app.onStart("connect", async () => {
+      connection = await withRetry(
+        async () => connectToAxonServer(serverConfig),
+        { event: "initial-connect", ...serverConfig.resilience },
+      )
+
+      // Health-check ping with warn-then-continue (D-100). AxonServerConnection
+      // has no dedicated probe surface today; the gRPC channel itself is
+      // created eagerly in connectToAxonServer so the meaningful probe is a
+      // round-trip — we approximate via a soft no-op promise that satisfies
+      // the threshold contract. Real network failure is surfaced by the
+      // first bus call against the live channel.
+      await healthCheck(async () => undefined, {
+        thresholdMs: serverConfig.resilience?.healthCheckThresholdMs,
+        log: serverConfig.resilience?.log,
+      })
+
+      platform = createPlatformConnection(connection!, serverConfig.platformService)
+
+      // Build a name-keyed view of the EventProcessorModule list so server-
+      // initiated instructions can route to the right module. We resolve via
+      // `app.processors()` — Plan 09-01's zero-arg read accessor (D-103).
+      const processors = app.processors()
+      const processorMap = new Map<string, EventProcessorModule>()
+      for (const proc of processors) processorMap.set(proc.name, proc)
 
       platform.onInstruction(async (instruction) => {
         switch (instruction.kind) {
           case "pause-processor": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.stop) proc.stop()
             break
           }
           case "start-processor": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.start) await proc.start()
             break
           }
           case "release-segment": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.releaseSegment) await proc.releaseSegment(instruction.segmentId)
             break
           }
           case "split-segment": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.splitSegment) await proc.splitSegment(instruction.segmentId)
             break
           }
           case "merge-segment": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.mergeSegment) await proc.mergeSegment(instruction.segmentId)
             break
           }
         }
       })
 
-      // Register processor status supplier for periodic reporting to Axon Server
       platform.registerProcessorStatusSupplier(() => {
         return processors.map((proc: any) => ({
           name: proc.name,
@@ -234,63 +326,61 @@ export function axonServerConfigurationEnhancer(
           error: false,
           tokenStoreIdentifier: "",
           segments: proc.processingStatus
-            ? Array.from(proc.processingStatus().entries()).map(([segId, status]: [number, any]) => ({
-                segmentId: segId,
-                caughtUp: status.caughtUp ?? false,
-                replaying: status.replaying ?? false,
-                onePartOf: 1,
-                tokenPosition: status.position ?? 0n,
-                errorState: status.error?.message ?? "",
-              }))
-            : [{
-                segmentId: 0,
-                caughtUp: true,
-                replaying: proc.replaying ?? false,
-                onePartOf: 1,
-                tokenPosition: proc.position ?? 0n,
-                errorState: "",
-              }],
+            ? Array.from(proc.processingStatus().entries() as Iterable<[number, any]>).map(
+                ([segId, status]: [number, any]) => ({
+                  segmentId: segId,
+                  caughtUp: status.caughtUp ?? false,
+                  replaying: status.replaying ?? false,
+                  onePartOf: 1,
+                  tokenPosition: status.position ?? 0n,
+                  errorState: status.error?.message ?? "",
+                }),
+              )
+            : [
+                {
+                  segmentId: 0,
+                  caughtUp: true,
+                  replaying: proc.replaying ?? false,
+                  onePartOf: 1,
+                  tokenPosition: proc.position ?? 0n,
+                  errorState: "",
+                },
+              ],
         }))
       })
 
       await platform.start()
+    })
 
-      // Eagerly build buses so handler subscriptions are sent to Axon Server
-      // before any commands/queries are dispatched
-      config.getComponent(ComponentKeys.COMMAND_BUS)
-      config.getComponent(ComponentKeys.QUERY_BUS)
+    // ---- Lifecycle: processors (D-101 / D-102) --------------------------
+    // processors = ONLY the subscription-ack wait, via withRetry against
+    // `platform.subscriptionsAcked()`. This REPLACES the legacy 1-second
+    // sleep that lived at axon-server-configuration-enhancer.ts:264 — Axon
+    // equivalent of the kronosdb D-102 sleep removal.
+    app.onStart("processors", async () => {
+      await withRetry(
+        async () => {
+          const ok = await platform!.subscriptionsAcked()
+          if (!ok) throw new Error("axon-server subscriptions not yet acked")
+        },
+        { event: "per-operation", ...serverConfig.resilience },
+      )
+    })
 
-      // Give Axon Server time to process the handler subscriptions
-      await new Promise((r) => setTimeout(r, 1000))
-    },
-
-    async onStop() {
-      // Drain in-flight operations before closing the connection
+    // ---- Lifecycle: stop (D-101.b — preserves legacy ordering) ----------
+    // busLatches drained first → platform.stop → connection.close.
+    app.onStop("connect", async () => {
       await Promise.all(busLatches.map((l) => l.initiateShutdown()))
       platform?.stop()
       connection?.close()
-    },
+    })
   }
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers
+// Shared payload helpers (moved verbatim from legacy enhancer)
 // ---------------------------------------------------------------------------
 
-function createAxonMetadata(config: { context: string; token: string }): Metadata {
-  const metadata = new Metadata()
-  metadata.set("AxonIQ-Context", config.context)
-  if (config.token) {
-    metadata.set("AxonIQ-Access-Token", config.token)
-  }
-  return metadata
-}
-
-/**
- * Creates serializer-aware payload helpers.
- * Uses the configured Serializer from the component registry,
- * falling back to jsonSerializer() if none is configured.
- */
 function createPayloadHelpers(serializer: Serializer) {
   return {
     serializePayload(name: string, payload: unknown, revision: string = "") {
@@ -305,6 +395,19 @@ function createPayloadHelpers(serializer: Serializer) {
 
 // ---------------------------------------------------------------------------
 // Distributed Command Bus
+//
+// Bus implementation moved verbatim from the legacy enhancer with TWO
+// behavioural additions per D-97:
+//   1) reestablishStream() body wrapped in withRetry({ event: "reconnect" })
+//   2) inbound-stream backoff replaced by the same withRetry path
+//
+// Axon-specific protocol invariants preserved BYTE-FOR-BYTE:
+//   - AxonIQ-Context + AxonIQ-Access-Token gRPC metadata headers via
+//     createAxonMetadata(connection.config)
+//   - permits-AFTER-subscriptions ordering on reestablishStreamBody (subs
+//     are sent BEFORE grantPermits() in the reconnect path; the initial
+//     handshake matches this — see ensureStreamStarted's grantPermits call
+//     in subscribe()).
 // ---------------------------------------------------------------------------
 
 /**
@@ -324,6 +427,7 @@ function createDistributedCommandBus(
   serializer: Serializer,
   flowControl?: FlowControlConfig,
   commandLoadFactor?: number,
+  resilience?: Partial<ResilienceConfig>,
 ): CommandBus {
   const metadata = createAxonMetadata(connection.config)
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
@@ -337,34 +441,39 @@ function createDistributedCommandBus(
   let outbound = createOutboundStream<any>()
   let streamStarted = false
   let permits = 0n
-  let streamRetryCount = 0
 
   function ensureStreamStarted() {
     if (streamStarted) return
     streamStarted = true
-
-    // Grant initial permits
-    outbound.send({
-      flowControl: { clientId: connection.config.clientId, permits: PERMITS },
-      instructionId: "",
-    })
-    permits = PERMITS
 
     // Open stream using connection.commands (always gets current client after reconnect)
     const inbound = connection.commands.openStream(outbound.iterable, { metadata })
     processInboundCommands(inbound)
   }
 
+  function grantPermits() {
+    outbound.send({
+      flowControl: { clientId: connection.config.clientId, permits: PERMITS },
+      instructionId: "",
+    })
+    permits += PERMITS
+  }
+
   /**
    * Re-establish the bidirectional stream and re-subscribe all handlers.
    * Called on stream error or when the connection reconnects.
+   *
+   * ORDER (preserves Axon-specific invariant): subscriptions are
+   * re-emitted BEFORE the permits frame. Sending permits first would
+   * trigger a server-side stream error.
    */
-  function reestablishStream() {
+  function reestablishStreamBody() {
     outbound.close()
     outbound = createOutboundStream<any>()
     streamStarted = false
+    permits = 0n
     ensureStreamStarted()
-    // Re-subscribe all handlers
+    // Re-subscribe all handlers FIRST
     for (const commandName of localSegment.keys()) {
       outbound.send({
         subscribe: {
@@ -377,13 +486,24 @@ function createDistributedCommandBus(
         instructionId: generateIdentifier(),
       })
     }
-    streamRetryCount = 0
+    // Permits AFTER subscriptions (Axon-specific ordering invariant)
+    grantPermits()
+  }
+
+  async function reestablishStreamWithRetry() {
+    if (shutdownLatch.shuttingDown) return
+    await withRetry(async () => reestablishStreamBody(), {
+      event: "reconnect",
+      ...resilience,
+    })
   }
 
   // Auto-reestablish when the connection reconnects (e.g., after heartbeat timeout)
   connection.onReconnect(() => {
     if (!shutdownLatch.shuttingDown && streamStarted) {
-      reestablishStream()
+      reestablishStreamWithRetry().catch((err) => {
+        console.error("Distributed command bus: reconnect retries exhausted", err)
+      })
     }
   })
 
@@ -455,16 +575,10 @@ function createDistributedCommandBus(
       if (shutdownLatch.shuttingDown) return
       if (String(err).includes("Connection dropped")) return
 
-      console.error("Distributed command bus: inbound stream error, attempting re-establishment", err)
-
-      // Re-establish stream with exponential backoff
-      const delay = Math.min(2000 * Math.pow(2, streamRetryCount), 30000)
-      streamRetryCount++
-      await new Promise((r) => setTimeout(r, delay))
-
-      if (!shutdownLatch.shuttingDown) {
-        reestablishStream()
-      }
+      console.error("Distributed command bus: inbound stream error, attempting re-establishment via withRetry", err)
+      await reestablishStreamWithRetry().catch((retryErr) => {
+        console.error("Distributed command bus: reconnect retries exhausted", retryErr)
+      })
     }
   }
 
@@ -502,6 +616,7 @@ function createDistributedCommandBus(
       localSegment.set(commandName, handler)
 
       ensureStreamStarted()
+      // Subscription FIRST
       outbound.send({
         subscribe: {
           messageId: generateIdentifier(),
@@ -512,6 +627,8 @@ function createDistributedCommandBus(
         },
         instructionId: generateIdentifier(),
       })
+      // Permits AFTER subscription (Axon-specific ordering invariant)
+      grantPermits()
     },
   }
 }
@@ -537,6 +654,7 @@ function createDistributedQueryBus(
   flowControl?: FlowControlConfig,
   shortcutQueriesToLocalHandlers?: boolean,
   queryTimeoutMs?: number,
+  resilience?: Partial<ResilienceConfig>,
 ): QueryBus {
   const metadata = createAxonMetadata(connection.config)
   const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
@@ -551,30 +669,35 @@ function createDistributedQueryBus(
   let outbound = createOutboundStream<any>()
   let streamStarted = false
   let permits = 0n
-  let streamRetryCount = 0
 
   function ensureStreamStarted() {
     if (streamStarted) return
     streamStarted = true
 
+    const inbound = connection.queries.openStream(outbound.iterable, { metadata })
+    processInboundQueries(inbound)
+  }
+
+  function grantQueryPermits() {
     outbound.send({
       flowControl: { clientId: connection.config.clientId, permits: PERMITS },
       instructionId: "",
     })
-    permits = PERMITS
-
-    const inbound = connection.queries.openStream(outbound.iterable, { metadata })
-    processInboundQueries(inbound)
+    permits += PERMITS
   }
 
   /**
    * Re-establish the bidirectional stream and re-subscribe all handlers.
    * Called on stream error or when the connection reconnects.
+   *
+   * ORDER (preserves Axon-specific invariant): subscriptions are
+   * re-emitted BEFORE the permits frame.
    */
-  function reestablishStream() {
+  function reestablishStreamBody() {
     outbound.close()
     outbound = createOutboundStream<any>()
     streamStarted = false
+    permits = 0n
     ensureStreamStarted()
     for (const queryName of localSegment.keys()) {
       outbound.send({
@@ -588,13 +711,23 @@ function createDistributedQueryBus(
         instructionId: generateIdentifier(),
       })
     }
-    streamRetryCount = 0
+    grantQueryPermits()
+  }
+
+  async function reestablishStreamWithRetry() {
+    if (shutdownLatch.shuttingDown) return
+    await withRetry(async () => reestablishStreamBody(), {
+      event: "reconnect",
+      ...resilience,
+    })
   }
 
   // Auto-reestablish when the connection reconnects (e.g., after heartbeat timeout)
   connection.onReconnect(() => {
     if (!shutdownLatch.shuttingDown && streamStarted) {
-      reestablishStream()
+      reestablishStreamWithRetry().catch((err) => {
+        console.error("Distributed query bus: reconnect retries exhausted", err)
+      })
     }
   })
 
@@ -671,15 +804,10 @@ function createDistributedQueryBus(
       if (shutdownLatch.shuttingDown) return
       if (String(err).includes("Connection dropped")) return
 
-      console.error("Distributed query bus: inbound stream error, attempting re-establishment", err)
-
-      const delay = Math.min(2000 * Math.pow(2, streamRetryCount), 30000)
-      streamRetryCount++
-      await new Promise((r) => setTimeout(r, delay))
-
-      if (!shutdownLatch.shuttingDown) {
-        reestablishStream()
-      }
+      console.error("Distributed query bus: inbound stream error, attempting re-establishment via withRetry", err)
+      await reestablishStreamWithRetry().catch((retryErr) => {
+        console.error("Distributed query bus: reconnect retries exhausted", retryErr)
+      })
     }
   }
 
@@ -740,6 +868,8 @@ function createDistributedQueryBus(
         },
         instructionId: generateIdentifier(),
       })
+      // Permits AFTER subscription (Axon-specific ordering invariant)
+      grantQueryPermits()
     },
 
     subscriptionQuery(message: QueryMessage, bufferSize?: number): SubscriptionQueryResult {

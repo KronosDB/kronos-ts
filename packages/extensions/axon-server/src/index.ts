@@ -18,10 +18,11 @@ export {
 } from "./axon-server-snapshot-store.js"
 
 export {
-  axonServerConfigurationEnhancer,
+  axonServer,
+  type AxonServerExtensionConfig,
   type FlowControlConfig,
   type ProcessingInstructions,
-} from "./axon-server-configuration-enhancer.js"
+} from "./axon-server.js"
 
 export {
   type MessageSizeConfig,

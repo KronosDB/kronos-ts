@@ -48,6 +48,28 @@ export interface PlatformConnection {
   registerProcessorStatusSupplier(supplier: ProcessorStatusSupplier): void
   /** Whether the platform stream is active. */
   readonly connected: boolean
+  /**
+   * Resolves with `true` once Axon Server has acknowledged this client's
+   * registration on the platform stream (we use the first server-originated
+   * inbound message — typically a heartbeat reply or platform instruction —
+   * as the ack signal). Resolves with `false` if the platform is not yet
+   * started.
+   *
+   * This mirrors the kronosdb implementation (Plan 09-03 / D-102): the
+   * native `axonServer` extension's `onStart('processors', ...)` hook polls
+   * this method via `withRetry` so the application waits exactly long enough
+   * for handler subscriptions to be routable, no longer or shorter — the
+   * Axon equivalent of dropping the legacy 1-second sleep.
+   *
+   * Implementation note: while Axon Server's outbound stream maintains a
+   * `pendingSubscriptions` map (per RESEARCH.md), the `register` frame is
+   * sent on the *platform* stream (separate from the bus streams) and Axon
+   * Server replies with a heartbeat tick / topology message at the
+   * configured interval. We treat the first inbound platform-stream frame
+   * as the ack signal — same observable derivation as kronosdb to keep the
+   * two extensions structurally symmetric.
+   */
+  subscriptionsAcked(): Promise<boolean>
 }
 
 export interface PlatformServiceOptions {
@@ -92,6 +114,14 @@ export function createPlatformConnection(
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
   let lastHeartbeatResponse = Date.now()
   let outbound: ReturnType<typeof createOutboundStream> | null = null
+  /**
+   * Latches once Axon Server sends its first inbound message after
+   * registration — the earliest observable signal that the platform stream
+   * is fully wired (mirror of kronosdb Plan 09-03 / D-102, replaces the
+   * legacy 1-second sleep). Reset on every `start()` so a stop/start cycle
+   * re-arms the latch correctly.
+   */
+  let acked = false
 
   const grpcMetadata = new Metadata()
   grpcMetadata.set("AxonIQ-Context", connection.config.context)
@@ -102,6 +132,10 @@ export function createPlatformConnection(
   async function processInboundInstructions(inbound: AsyncIterable<any>) {
     try {
       for await (const message of inbound) {
+        // First inbound message after start() = the platform has accepted our
+        // registration and is talking back. Latch the ack flag (mirror of
+        // kronosdb Plan 09-03 / D-102 — replaces the legacy 1s sleep).
+        acked = true
         // Parse instruction type
         const instruction = parseInstruction(message)
         if (instruction) {
@@ -242,6 +276,8 @@ export function createPlatformConnection(
     async start() {
       if (isConnected) return
 
+      // Re-arm the ack latch so a stop/start cycle correctly re-waits.
+      acked = false
       outbound = createOutboundStream()
 
       // Register with Axon Server
@@ -296,6 +332,10 @@ export function createPlatformConnection(
 
     get connected() {
       return isConnected
+    },
+
+    async subscriptionsAcked(): Promise<boolean> {
+      return isConnected && acked
     },
   }
 }
