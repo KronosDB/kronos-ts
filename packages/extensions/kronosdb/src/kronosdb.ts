@@ -1,8 +1,7 @@
 /**
  * Native KronosDB extension (Phase 9, D-95 / D-101 / D-102).
  *
- * Replaces the legacy `kronosDbConfigurationEnhancer` (now deleted) with a
- * `(app: App) => void` extension that:
+ * Native `(app: App) => void` extension that:
  *
  *   - populates four typed slots (eventStore, snapshotStore, commandBus,
  *     queryBus) via app.set(...) using the canonical Resolved slot names

@@ -9,8 +9,7 @@ import type { CommandHandlerDefinition } from "./command-handler.js"
  * pass a shim that satisfies just these methods.
  *
  * The component-key strings used by createCommandInvocation are inlined
- * below (COMMAND_INVOCATION_KEYS) so this file has zero dependency on the
- * deleted ComponentKeys constant.
+ * below (COMMAND_INVOCATION_KEYS) so this file owns its own key set.
  */
 export interface MinimalConfiguration {
   hasComponent(type: string, name?: string): boolean
@@ -20,9 +19,8 @@ export interface MinimalConfiguration {
 
 /**
  * Component-key strings consumed by createCommandInvocation. Inlined here
- * (rather than imported from a shared ComponentKeys constant) because the
- * configurer trio's ComponentKeys export is deleted in Plan 08-04. The kronos()
- * AppImpl populates its config-shim with the same string keys.
+ * so this file has no shared-constant dependency. The kronos() AppImpl
+ * populates its config-shim with the same string keys.
  */
 const COMMAND_INVOCATION_KEYS = {
   STATE_MANAGER: "stateManager",

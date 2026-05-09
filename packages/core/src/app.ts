@@ -29,11 +29,6 @@ import {
 } from "@kronos-ts/messaging"
 import { createEventSourcedRepository } from "@kronos-ts/eventsourcing"
 import type { SnapshotPolicy, SnapshotStore } from "@kronos-ts/eventsourcing"
-// transitional: Phase 9 deletes — legacy ConfigurationEnhancer is owned by the bridge file.
-// app.ts only needs ConfigurationEnhancer to accept it in App.use() (D-73 / D-74).
-// The Configuration shim consumed by createCommandInvocation uses MinimalConfiguration
-// (defined in @kronos-ts/messaging) with inline string-literal component keys.
-import { type ConfigurationEnhancer } from "./legacy-enhancer-bridge.js"
 import type { MinimalConfiguration } from "@kronos-ts/messaging"
 import { ALL_SLOTS, type KronosComponents, type SlotName } from "./components.js"
 import { SlotRegistry, type SlotFactory, type SlotMeta } from "./slot-registry.js"
@@ -43,8 +38,6 @@ import type { DecoratorEntry, DecoratorFactory, DecoratorHandle } from "./decora
 import { applyDecorators } from "./decorator.js"
 import { AppNotStartedError, UnknownDecoratorHandleError } from "./errors.js"
 import type { LifecycleStage, LifecycleHook } from "./lifecycle.js"
-// transitional: Phase 9 deletes — bridge is the only consumer of legacy ConfigurationEnhancer
-import { applyEnhancerToApp } from "./legacy-enhancer-bridge.js"
 
 /** Thrown when the App's mutating methods are called after .start() (D-50 footgun closure). */
 export class AppAlreadyStartedError extends Error {
@@ -93,14 +86,6 @@ export interface App {
   processors(...modules: EventProcessorModule[]): App
   /** D-73: register an Extension (function) — runs during start() before slot resolution. */
   use(extension: Extension): App
-  /**
-   * D-73 / D-74: register a legacy ConfigurationEnhancer object — routed through
-   * the private legacy-enhancer-bridge. The bridge is transitional; Phase 9 deletes
-   * it once production extensions (KronosDB, Axon Server, OpenTelemetry) migrate
-   * to the (app: App) => void shape. CFG-03: enhancer.order is IGNORED — .use()
-   * registration order is the sole ordering signal.
-   */
-  use(enhancer: ConfigurationEnhancer): App
   setDefault<K extends SlotName>(
     slot: K,
     factory: SlotFactory<K> | KronosComponents[K],
@@ -211,15 +196,6 @@ export class AppImpl implements App {
   private _queryGateway: QueryGateway | undefined = undefined
   /** D-77: per-stage timeout for native lifecycle execution. */
   private readonly _stageTimeoutMs: number
-  /**
-   * Post-decoration resolved slot snapshot, populated inside `start()` AFTER
-   * Step 3b decorator application. Read by the legacy-enhancer-bridge's
-   * Configuration shim via {@link _resolvedSlot} so legacy enhancers calling
-   * `config.getComponent(token)` from inside `onStart(config)` see the same
-   * decorated component instance the rest of the app sees. transitional —
-   * deleted with the bridge in Phase 9.
-   */
-  private _builtSlots: { -readonly [K in SlotName]: KronosComponents[K] } | undefined = undefined
 
   /**
    * Live CommandGateway. Throws AppNotStartedError if accessed before the
@@ -276,17 +252,6 @@ export class AppImpl implements App {
     this._started = true
   }
 
-  /**
-   * @internal — read by the legacy-enhancer-bridge's Configuration shim only.
-   * Returns the post-decoration component instance for `slot` if `start()` has
-   * progressed past Step 3b, otherwise undefined. The bridge falls back to its
-   * own per-app token store when this returns undefined (pre-start). transitional —
-   * deleted with the bridge in Phase 9.
-   */
-  _resolvedSlot<K extends SlotName>(slot: K): KronosComponents[K] | undefined {
-    return this._builtSlots?.[slot]
-  }
-
   private guard(): void {
     if (this._started) throw new AppAlreadyStartedError()
   }
@@ -339,22 +304,9 @@ export class AppImpl implements App {
     return this
   }
 
-  use(extOrEnhancer: Extension | ConfigurationEnhancer): App {
+  use(extension: Extension): App {
     this.guard()
-    if (typeof extOrEnhancer === "function") {
-      this._state.extensions.push(extOrEnhancer)
-    } else if (
-      extOrEnhancer &&
-      typeof (extOrEnhancer as ConfigurationEnhancer).enhance === "function"
-    ) {
-      // transitional: Phase 9 deletes — route legacy ConfigurationEnhancer through bridge.
-      // CFG-03: enhancer.order is IGNORED inside the bridge — registration order wins.
-      applyEnhancerToApp(extOrEnhancer as ConfigurationEnhancer, this)
-    } else {
-      throw new TypeError(
-        `[kronos] App.use() expects either a function (Extension) or a ConfigurationEnhancer object with an .enhance method.`,
-      )
-    }
+    this._state.extensions.push(extension)
     return this
   }
 
@@ -514,12 +466,6 @@ export class AppImpl implements App {
     for (const slot of ALL_SLOTS) {
       built[slot] = applyDecorators(slot, built[slot], this._state.decoratorRegistrations, resolved)
     }
-
-    // 3c. Publish the post-decoration snapshot so the legacy-enhancer-bridge's
-    //     Configuration shim (read inside enhancer.onStart(config)) returns the
-    //     decorated instance — same one the rest of the app uses. transitional:
-    //     Phase 9 deletes both the field and the bridge.
-    this._builtSlots = built
 
     // 4. Emit startup warnings for any slot still using a flagged in-memory default (SLT-04).
     //    Iterate ALL_SLOTS for deterministic order. Warning emission goes through the channel

@@ -1,8 +1,8 @@
 /**
  * Plan 09-01 Task 3 — unskips the original Plan 08-04 deferred coverage.
  *
- * Original test (deleted with EventSourcingConfigurer + ComponentKeys.TOKEN_STORE
- * / TRANSACTION_MANAGER in Plan 08-04) covered:
+ * Original test (deleted with EventSourcingConfigurer + the legacy token-store /
+ * transaction-manager component keys in Plan 08-04) covered:
  *   (a) token position persistence via TokenStore
  *   (b) resume-from-stored-token-position
  *   (c) wrapping event processing in a TransactionManager
