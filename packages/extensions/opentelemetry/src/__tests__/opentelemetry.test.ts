@@ -119,7 +119,8 @@ describe("openTelemetry() native extension", () => {
     // Wrap a recording delegate so we can confirm dispatch flowed through the bus
     const recordingDelegate: CommandBus = {
       dispatch: async (msg) => {
-        dispatched.push(String(msg.name))
+        const n = msg.name as unknown as { namespace: string; name: string }
+        dispatched.push(`${n.namespace}:${n.name}`)
         return undefined
       },
       subscribe: () => {},
@@ -127,7 +128,7 @@ describe("openTelemetry() native extension", () => {
     const wrappedBus = decoratorFactory(recordingDelegate)
     await wrappedBus.dispatch({
       identifier: "id-1",
-      name: { namespace: "test", name: "Cmd" } as unknown as ReturnType<typeof String>,
+      name: { namespace: "test", name: "Cmd" } as unknown as Parameters<CommandBus["dispatch"]>[0]["name"],
       payload: {},
       metadata: {},
       timestamp: 0,
