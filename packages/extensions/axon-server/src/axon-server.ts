@@ -185,6 +185,15 @@ export interface AxonServerExtensionConfig extends AxonServerConnectionConfig {
   queryTimeoutMs?: number
   /** Per-extension resilience config (D-100 / D-101). */
   resilience?: Partial<ResilienceConfig>
+  /**
+   * Delay in ms after the platform-stream ack to give Axon Server's
+   * routing tables time to register the subscribe frames sent on the
+   * command/query streams. The platform stream cannot observe these (they
+   * travel on different streams). Default: 1000 — matches the legacy
+   * enhancer's wait. Tests against a freshly-booted server can tighten
+   * this once subscriptions are observed to land faster.
+   */
+  busSubscriptionAckDelayMs?: number
 }
 
 /**
@@ -213,47 +222,148 @@ export function axonServer(serverConfig: AxonServerExtensionConfig): (app: App) 
     }
 
     // ---- Slot population (D-95) -----------------------------------------
-    // Slots receive lazy factories. The transport handshake itself runs in
-    // the connect-stage hook below — by the time createCommandGateway /
-    // createQueryGateway resolve these slots in AppImpl.start(), connection
-    // has already been populated.
+    //
+    // AppImpl.start() in @kronos-ts/core eagerly resolves all 8 slots and
+    // runs `commandBus.subscribe(...)` for every registered handler BEFORE
+    // any onStart('connect') hook fires (see app.ts §3 / §5c). The Axon
+    // bus factories open real gRPC streams against the live channel during
+    // construction (createAxonMetadata / connection.onReconnect / inbound
+    // stream openers), so they CANNOT run until the connect hook has
+    // populated `connection`.
+    //
+    // Solution: the slot factories return wrappers around lazily-built
+    // inner instances. EventStore/SnapshotStore use a lightweight lazy
+    // proxy because their factories never dereference `connection` at
+    // construction time (only inside method bodies). CommandBus/QueryBus
+    // use a `subscribe()`-buffering wrapper that queues subscriptions
+    // synchronously and replays them once the connect hook completes —
+    // dispatch / query calls await the same readiness promise.
 
-    app.set("eventStore", (resolved) =>
-      createAxonServerEventStore(getConnection(), resolved.serializer),
-    )
+    /** Latches once the connect hook has populated `connection`. */
+    let resolveConnected: () => void = () => {}
+    const connected: Promise<void> = new Promise((res) => {
+      resolveConnected = res
+    })
 
-    app.set("snapshotStore", (resolved) =>
-      createAxonServerSnapshotStore(getConnection(), resolved.serializer),
-    )
+    app.set("eventStore", (resolved) => {
+      // Lazy proxy: createAxonServerEventStore stores `connection` in
+      // closure scope but only dereferences it inside method bodies, so
+      // a Proxy that forwards property access to getConnection() works
+      // — by the time framework code calls source/append/stream the
+      // connect hook has populated the closure.
+      const lazyConnection = new Proxy({} as AxonServerConnection, {
+        get(_t, prop) {
+          return (getConnection() as any)[prop]
+        },
+      })
+      return createAxonServerEventStore(lazyConnection, resolved.serializer)
+    })
+
+    app.set("snapshotStore", (resolved) => {
+      const lazyConnection = new Proxy({} as AxonServerConnection, {
+        get(_t, prop) {
+          return (getConnection() as any)[prop]
+        },
+      })
+      return createAxonServerSnapshotStore(lazyConnection, resolved.serializer)
+    })
 
     app.set("commandBus", (resolved) => {
       const latch = createShutdownLatch()
       busLatches.push(latch)
-      // canonical Resolved slot name is `unitOfWorkFactory` (NOT unitOfWorkRunner)
-      return createDistributedCommandBus(
-        getConnection(),
-        resolved.unitOfWorkFactory,
-        latch,
-        resolved.serializer,
-        serverConfig.commandFlowControl,
-        serverConfig.commandLoadFactor,
-        serverConfig.resilience,
-      )
+
+      let inner: CommandBus | undefined
+      const pendingSubs: Array<[string, (m: CommandMessage) => Promise<unknown>]> = []
+
+      // Build the real bus once the connect hook fires + replay buffered subs.
+      connected.then(() => {
+        inner = createDistributedCommandBus(
+          getConnection(),
+          resolved.unitOfWorkFactory,
+          latch,
+          resolved.serializer,
+          serverConfig.commandFlowControl,
+          serverConfig.commandLoadFactor,
+          serverConfig.resilience,
+        )
+        for (const [name, h] of pendingSubs) inner.subscribe(name, h)
+        pendingSubs.length = 0
+      })
+
+      const wrapper: CommandBus = {
+        async dispatch(message) {
+          await connected
+          return inner!.dispatch(message)
+        },
+        subscribe(name, handler) {
+          if (inner) inner.subscribe(name, handler)
+          else pendingSubs.push([name, handler])
+        },
+      }
+      return wrapper
     })
 
     app.set("queryBus", (resolved) => {
       const latch = createShutdownLatch()
       busLatches.push(latch)
-      return createDistributedQueryBus(
-        getConnection(),
-        resolved.unitOfWorkFactory,
-        latch,
-        resolved.serializer,
-        serverConfig.queryFlowControl,
-        serverConfig.shortcutQueriesToLocalHandlers,
-        serverConfig.queryTimeoutMs,
-        serverConfig.resilience,
-      )
+
+      let inner: QueryBus | undefined
+      const pendingSubs: Array<[string, (m: QueryMessage) => Promise<unknown>]> = []
+
+      connected.then(() => {
+        inner = createDistributedQueryBus(
+          getConnection(),
+          resolved.unitOfWorkFactory,
+          latch,
+          resolved.serializer,
+          serverConfig.queryFlowControl,
+          serverConfig.shortcutQueriesToLocalHandlers,
+          serverConfig.queryTimeoutMs,
+          serverConfig.resilience,
+        )
+        for (const [name, h] of pendingSubs) inner.subscribe(name, h)
+        pendingSubs.length = 0
+      })
+
+      const wrapper: QueryBus = {
+        async query(message) {
+          await connected
+          return inner!.query(message)
+        },
+        subscribe(name, handler) {
+          if (inner) inner.subscribe(name, handler)
+          else pendingSubs.push([name, handler])
+        },
+        subscriptionQuery(message, bufferSize) {
+          if (!inner) {
+            throw new Error(
+              "[kronos:axon-server] subscriptionQuery called before connect hook completed",
+            )
+          }
+          return inner.subscriptionQuery(message, bufferSize)
+        },
+        subscribeToUpdates(message, bufferSize) {
+          if (!inner) {
+            throw new Error(
+              "[kronos:axon-server] subscribeToUpdates called before connect hook completed",
+            )
+          }
+          return inner.subscribeToUpdates(message, bufferSize)
+        },
+        async emitUpdate(name, filter, update) {
+          await connected
+          return inner!.emitUpdate(name, filter, update)
+        },
+        async completeSubscription(name, filter) {
+          await connected
+          return inner!.completeSubscription(name, filter)
+        },
+        async completeSubscriptionExceptionally(name, error, filter) {
+          await connected
+          return inner!.completeSubscriptionExceptionally(name, error, filter)
+        },
+      }
+      return wrapper
     })
 
     // ---- Lifecycle: connect (D-101 normative split) ---------------------
@@ -350,13 +460,39 @@ export function axonServer(serverConfig: AxonServerExtensionConfig): (app: App) 
       })
 
       await platform.start()
+
+      // Latch the connected promise so the deferred bus wrappers built in
+      // the slot factories above construct their inner instances and replay
+      // any subscriptions that were buffered while connect was running.
+      // This MUST happen synchronously before any subsequent stage hook so
+      // register/processors-stage code sees the fully-wired buses. The
+      // microtask queue drains the `.then(...)` callbacks attached in the
+      // slot factories before this hook resolves.
+      resolveConnected()
+      await Promise.resolve()
     })
 
     // ---- Lifecycle: processors (D-101 / D-102) --------------------------
-    // processors = ONLY the subscription-ack wait, via withRetry against
-    // `platform.subscriptionsAcked()`. This REPLACES the legacy 1-second
-    // sleep that lived at axon-server-configuration-enhancer.ts:264 — Axon
-    // equivalent of the kronosdb D-102 sleep removal.
+    // processors = subscription-ack wait. The two-step shape mirrors the
+    // kronosdb sibling (Plan 09-03 / D-102) but is adapted for Axon Server's
+    // protocol shape, which differs from kronosdb's in one observable way:
+    //
+    //   - kronosdb's PlatformService proactively emits a frame in response
+    //     to `register`, so its `subscriptionsAcked` latches on the first
+    //     inbound platform-stream message.
+    //
+    //   - Axon Server's PlatformService holds the stream open silently
+    //     until either a topology change or a heartbeat round-trip occurs.
+    //     The platform stream therefore latches `acked` synchronously once
+    //     the `register` frame has been flushed (see platform-service.ts).
+    //
+    // The bus-side subscription frames (sent on the command/query streams,
+    // not the platform stream) need a small processing window on the
+    // server before commands dispatched here are routed back to our
+    // handler. Empirically Axon Server processes the subscribe within
+    // 1 second — same number the legacy enhancer used. Wrapped in the same
+    // `withRetry({event: "per-operation"})` shape as kronosdb so per-extension
+    // resilience overrides still apply uniformly.
     app.onStart("processors", async () => {
       await withRetry(
         async () => {
@@ -365,6 +501,12 @@ export function axonServer(serverConfig: AxonServerExtensionConfig): (app: App) 
         },
         { event: "per-operation", ...serverConfig.resilience },
       )
+      // Axon-specific: give the server's command/query routing tables a
+      // beat to register the subscribe frames we just sent on the bus
+      // streams. The legacy enhancer carried this same 1s wait at line 264;
+      // it cannot be derived from the platform stream because subscribes
+      // travel on a different stream entirely.
+      await new Promise((r) => setTimeout(r, serverConfig.busSubscriptionAckDelayMs ?? 1000))
     })
 
     // ---- Lifecycle: stop (D-101.b — preserves legacy ordering) ----------

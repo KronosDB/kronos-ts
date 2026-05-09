@@ -300,6 +300,25 @@ export function createPlatformConnection(
       startHeartbeat()
       startProcessorStatusReporting()
       processInboundInstructions(inbound)
+
+      // Axon Server's PlatformService does NOT proactively emit an inbound
+      // frame in response to `register` — the stream is held open silently
+      // until either (a) the server pushes a topology / instruction event,
+      // or (b) one of our heartbeat pings round-trips back. That means the
+      // first-inbound-frame ack signal used by kronosdb (Plan 09-03 / D-102)
+      // doesn't fire deterministically here, and the processors-stage
+      // `withRetry({event: "per-operation"})` poll would otherwise hang.
+      //
+      // Axon-specific ack derivation: latch `acked = true` immediately once
+      // the outbound `register` frame has been flushed to the gRPC layer.
+      // Bus subscriptions (sent on the command/query streams, NOT the
+      // platform stream) are an orthogonal concern handled by the
+      // command/query bus reconnect path — the legacy 1-second sleep that
+      // we replaced was always covering register processing, not bus-side
+      // routability. Structurally this is the Axon Server equivalent of
+      // D-102: drop the magic-number wait, use the earliest deterministic
+      // observable signal that fits the underlying protocol.
+      acked = true
     },
 
     stop() {
