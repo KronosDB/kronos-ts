@@ -29,3 +29,6 @@ export {
 export { Defaults } from "./defaults-handles.js"
 export { UnknownDecoratorHandleError, AppNotStartedError } from "./errors.js"
 export type { LifecycleStage, LifecycleHook } from "./lifecycle.js"
+// Plan 09-01 Task 1: re-export of typed-slot interfaces so extension packages don't
+// need to deep-import from @kronos-ts/messaging just to set/replace slots.
+export type { TokenStore, TransactionManager } from "@kronos-ts/messaging"

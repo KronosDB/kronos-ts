@@ -10,6 +10,8 @@ import {
   createSimpleQueryBus,
   jsonSerializer,
   runInNewUoW,
+  createInMemoryTokenStore,
+  noTransactionManager,
 } from "@kronos-ts/messaging"
 
 /**
@@ -47,4 +49,16 @@ export function registerInMemoryDefaults(app: App): void {
   app.setDefault("serializer", () => jsonSerializer())
   app.setDefault("unitOfWorkFactory", () => runInNewUoW)
   app.setDefault("tagResolver", () => descriptorBasedTagResolver())
+
+  // Plan 09-01 (D-84): typed slots for token persistence + transactional wrapping.
+  // Both default to in-memory — extensions (KronosDB, Drizzle/Knex/Kysely token stores,
+  // user-supplied TransactionManagers) override via app.set('tokenStore', ...) etc.
+  app.setDefault("tokenStore", () => createInMemoryTokenStore(), {
+    inMemory: true,
+    warning: "[kronos] tokenStore: in-memory — not durable, configure a persistence extension for production",
+  })
+  app.setDefault("transactionManager", () => noTransactionManager(), {
+    inMemory: true,
+    warning: "[kronos] transactionManager: in-memory — pass-through, configure a transactional extension for production",
+  })
 }

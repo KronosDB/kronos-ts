@@ -1,10 +1,21 @@
 import type { EventStore, SnapshotStore, TagResolver } from "@kronos-ts/eventsourcing"
-import type { CommandBus, QueryBus, EventBus, UoWRunner } from "@kronos-ts/messaging"
+import type {
+  CommandBus,
+  QueryBus,
+  EventBus,
+  UoWRunner,
+  TokenStore,
+  TransactionManager,
+} from "@kronos-ts/messaging"
 import type { Serializer } from "@kronos-ts/common"
 
 /**
- * Fixed slot interface. SLT-01: enumerates ALL 8 framework slots.
+ * Fixed slot interface. SLT-01: enumerates ALL 10 framework slots.
  * No declaration merging, no string tokens — closed contract.
+ *
+ * Plan 09-01 (D-84): tokenStore + transactionManager added so persistence
+ * extensions (KronosDB, etc.) replace typed slots instead of routing through
+ * the deleted configurer's componentRegistry.
  */
 export interface KronosComponents {
   eventStore: EventStore
@@ -15,6 +26,8 @@ export interface KronosComponents {
   serializer: Serializer
   unitOfWorkFactory: UoWRunner
   tagResolver: TagResolver
+  tokenStore: TokenStore
+  transactionManager: TransactionManager
 }
 
 /** Type-level: keyof KronosComponents — for verb signatures. */
@@ -30,4 +43,6 @@ export const ALL_SLOTS: readonly SlotName[] = [
   "serializer",
   "unitOfWorkFactory",
   "tagResolver",
+  "tokenStore",
+  "transactionManager",
 ] as const
