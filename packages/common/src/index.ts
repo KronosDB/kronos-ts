@@ -30,3 +30,10 @@ export {
 } from "./converter.js"
 
 export { generateIdentifier } from "./identifier.js"
+
+export {
+  withRetry,
+  healthCheck,
+  type ResilienceConfig,
+  type RetryEvent,
+} from "./resilience.js"
