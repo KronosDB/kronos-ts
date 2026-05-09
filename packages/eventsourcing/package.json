@@ -9,5 +9,8 @@
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/modelling": "workspace:*",
     "zod": "^3.24"
+  },
+  "devDependencies": {
+    "@kronos-ts/core": "workspace:*"
   }
 }

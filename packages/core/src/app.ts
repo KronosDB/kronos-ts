@@ -498,6 +498,10 @@ export class AppImpl implements App {
       serializer: resolved.serializer,
       unitOfWorkFactory: resolved.unitOfWorkFactory,
       tagResolver: resolved.tagResolver,
+      // Plan 09-01 (D-84): two new typed slots — eagerly resolved so decorator
+      // application + processor wiring see the same instance.
+      tokenStore: resolved.tokenStore,
+      transactionManager: resolved.transactionManager,
     }
 
     // 3b. Apply decorators in two passes per slot (D-62, D-64, DESIGN.md §8):
@@ -634,7 +638,11 @@ export class AppImpl implements App {
             commandBus: built.commandBus,
             queryBus: built.queryBus,
             unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
-            tokenStore: proc.tokenStore,
+            // Plan 09-01 (D-84): per-processor override wins, otherwise fall
+            // back to the resolved tokenStore slot so the default in-memory
+            // store (or any extension-supplied replacement) drives position
+            // persistence — the slot is the single source of truth.
+            tokenStore: proc.tokenStore ?? built.tokenStore,
             batchSize: proc.batchSize,
             pollingIntervalMs: proc.pollingIntervalMs,
             errorHandler: proc.errorHandler,
@@ -800,6 +808,11 @@ function createConfigShim(
     serializer: built.serializer,
     unitOfWorkFactory: built.unitOfWorkFactory,
     tagResolver: built.tagResolver,
+    // Plan 09-01: shim mirrors of the two new typed slots so legacy
+    // enhancers / probes that look them up via the Configuration shape
+    // see the resolved instance.
+    tokenStore: built.tokenStore,
+    transactionManager: built.transactionManager,
   }
   const config: MinimalConfiguration = {
     hasComponent(type: string, _name?: string): boolean {

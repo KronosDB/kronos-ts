@@ -2,3 +2,7 @@ node_modules
 .DS_Store
 .planning/
 .claude/
+# Project uses bun (bun.lock); reject stray lockfiles from other package managers
+pnpm-lock.yaml
+package-lock.json
+yarn.lock

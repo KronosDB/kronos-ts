@@ -311,17 +311,16 @@ describe("E2E: In-memory full CQRS flow", () => {
     ).rejects.toThrow("Course is full")
   })
 
-  // TODO(plan-09): native App.entities() does not thread snapshotPolicy / snapshotStore
-  // through to createEventSourcedRepository. Legacy EventSourcingConfigurer did. See
-  // .planning/phases/08-configurer-deletion/deferred-items.md §"Plan 03b" for the
-  // proposed resolution (entities() tuple-style overload).
-  it.skip("snapshots accelerate entity loading", async () => {
+  // Plan 09-01 Task 3 — unskipped via the new entities() tuple-style overload
+  // (Plan 09-01 Task 2). Per-entity { snapshotPolicy, snapshotStore } now
+  // threads through to createEventSourcedRepository.
+  it("snapshots accelerate entity loading", async () => {
     // given
     const snapshotStore: SnapshotStore = createInMemorySnapshotStore()
     const { projection, queries } = createProjection()
 
     running = await kronos({ quiet: true })
-      .entities(CourseEntity, { snapshotPolicy: afterEvents(3) } as any)
+      .entities([CourseEntity, { snapshotPolicy: afterEvents(3), snapshotStore }])
       .commands(createCourse, changeCourseCapacity)
       .queries(queries)
       .processors(
@@ -329,7 +328,6 @@ describe("E2E: In-memory full CQRS flow", () => {
           .registerEventHandler(projection)
           .build(),
       )
-      .set("snapshotStore", () => snapshotStore)
       .start()
 
     // when — create + 4 capacity changes (5 events total)

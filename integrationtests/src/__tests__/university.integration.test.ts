@@ -318,14 +318,30 @@ describe("University — Full Application Flow", () => {
     ).rejects.toThrow("Course is full")
   })
 
-  // TODO(plan-09): the original test drove EventSourcingConfigurer.create()
-  // + componentRegistry("tokenStore", ...) (configurer trio deleted in
-  // Plan 08-04). Coverage: token-store position persistence across processor
-  // restart. Re-enable once kronos() App exposes a typed `tokenStore` slot
-  // (or ships an (app: App) => void extension equivalent to the deleted
-  // componentRegistry callback). Tracked in
-  // .planning/phases/08-configurer-deletion/deferred-items.md §"Plan 04".
-  it.skip("token store tracks processor position across restart — deferred to Phase 9", () => {})
+  // Plan 09-01 Task 3 — unskipped now that kronos() App exposes a typed
+  // `tokenStore` slot (Plan 09-01 Task 1). Coverage: token-store position
+  // persistence — an injected tokenStore receives processor position writes
+  // for the configured "course-projection" processor.
+  it("token store records processor position via the typed slot", async () => {
+    const { createInMemoryTokenStore } = await import("@kronos-ts/messaging")
+    const probe = createInMemoryTokenStore()
+    app = await kronos({ quiet: true })
+      .set("tokenStore", () => probe)
+      .use(configureCourses)
+      .start()
+
+    await app.commandGateway.send(CreateCourse, {
+      courseId: "tk-101", name: "TokenStore", capacity: 10,
+    })
+    await waitFor(() => getCourseViews().has("tk-101"))
+
+    // Slot-default tokenStore was overridden by the probe; the
+    // course-projection processor must have written its position there.
+    const segments = await probe.fetchSegments("course-projection")
+    expect(segments.length).toBeGreaterThan(0)
+    const token = await probe.get("course-projection", segments[0]!)
+    expect(token).toBeDefined()
+  })
 
   it("query returns all courses", async () => {
     app = await kronos({ quiet: true }).use(configureCourses).start()

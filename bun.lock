@@ -65,6 +65,9 @@
         "@kronos-ts/modelling": "workspace:*",
         "zod": "^3.24",
       },
+      "devDependencies": {
+        "@kronos-ts/core": "workspace:*",
+      },
     },
     "packages/extensions/axon-server": {
       "name": "@kronos-ts/axon-server",
