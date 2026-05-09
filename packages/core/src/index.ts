@@ -32,3 +32,6 @@ export type { LifecycleStage, LifecycleHook } from "./lifecycle.js"
 // Plan 09-01 Task 1: re-export of typed-slot interfaces so extension packages don't
 // need to deep-import from @kronos-ts/messaging just to set/replace slots.
 export type { TokenStore, TransactionManager } from "@kronos-ts/messaging"
+// Plan 09-01 Task 2: handler enhancer + entities() tuple-shape types.
+export type { HandlerEnhancerDefinition } from "@kronos-ts/messaging"
+export type { EntityOptions, EntitiesArg } from "./app.js"

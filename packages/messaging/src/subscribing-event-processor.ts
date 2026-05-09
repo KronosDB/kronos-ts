@@ -9,6 +9,7 @@ import { loggingErrorHandler } from "./tracking-event-processor.js"
 import type { SubscribableEventSource } from "./event-bus.js"
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
+import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import { setResource } from "./processing-state.js"
 import { STATE_MANAGER_KEY } from "@kronos-ts/eventsourcing"
 import { COMMAND_BUS_KEY } from "./send.js"
@@ -51,6 +52,13 @@ export interface SubscribingEventProcessorOptions {
   onEventDelivery?: () => void
   unitOfWorkRunner?: UoWRunner
   errorHandler?: EventProcessingErrorHandler
+  /**
+   * Plan 09-01: optional handler enhancer applied to each event handler at
+   * registration time. Symmetric to TrackingEventProcessor.handlerEnhancer.
+   * When set, each registered handler is wrapped via wrapHandler with
+   * messageType "event" and the group name as handlerGroup.
+   */
+  handlerEnhancer?: HandlerEnhancerDefinition
 }
 
 /**
@@ -73,18 +81,31 @@ export function createSubscribingEventProcessor(
     onEventDelivery,
     unitOfWorkRunner = runInNewUoW,
     errorHandler = loggingErrorHandler(name),
+    handlerEnhancer,
   } = options
 
   // Build handler lookup: eventName → handler[]
+  // Plan 09-01: when a handlerEnhancer is supplied, wrap each handler at
+  // registration time symmetric to TrackingEventProcessor.
   const handlerMap = new Map<string, EventHandlerRegistration<any>[]>()
   for (const group of handlerGroups) {
     for (const reg of group.handlers) {
       const eventName = qualifiedNameToString(reg.descriptor.name)
+      const enhanced = handlerEnhancer
+        ? {
+            ...reg,
+            handler: handlerEnhancer.wrapHandler(reg.handler, {
+              messageType: "event" as const,
+              messageName: eventName,
+              handlerGroup: group.name,
+            }),
+          }
+        : reg
       const existing = handlerMap.get(eventName)
       if (existing) {
-        existing.push(reg)
+        existing.push(enhanced)
       } else {
-        handlerMap.set(eventName, [reg])
+        handlerMap.set(eventName, [enhanced])
       }
     }
   }

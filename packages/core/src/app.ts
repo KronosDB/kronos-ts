@@ -12,6 +12,7 @@ import type {
   EventMessage,
   DispatchInterceptor,
   HandlerInterceptor,
+  HandlerEnhancerDefinition,
   TrackingEventProcessor,
   SubscribingEventProcessor,
   StreamableEventSource,
@@ -24,8 +25,10 @@ import {
   createQueryGateway,
   createTrackingEventProcessor,
   createSubscribingEventProcessor,
+  multiHandlerEnhancerDefinition,
 } from "@kronos-ts/messaging"
 import { createEventSourcedRepository } from "@kronos-ts/eventsourcing"
+import type { SnapshotPolicy, SnapshotStore } from "@kronos-ts/eventsourcing"
 // transitional: Phase 9 deletes — legacy ConfigurationEnhancer is owned by the bridge file.
 // app.ts only needs ConfigurationEnhancer to accept it in App.use() (D-73 / D-74).
 // The Configuration shim consumed by createCommandInvocation uses MinimalConfiguration
@@ -56,11 +59,37 @@ export class AppAlreadyStartedError extends Error {
  */
 export type Extension = (app: App) => void | Promise<void>
 
+/**
+ * Plan 09-01 (D-88): per-entity options accepted in App.entities() tuple form.
+ * Both fields optional — extensions or user code that wants snapshotting on a
+ * particular entity passes one or both, and the value flows through into
+ * createEventSourcedRepository at start-time Step 5a.
+ */
+export interface EntityOptions {
+  readonly snapshotPolicy?: SnapshotPolicy
+  readonly snapshotStore?: SnapshotStore
+}
+
+/**
+ * Plan 09-01 (D-88): argument shape accepted by App.entities() — either a bare
+ * EntityModule or a [module, options] tuple. Mixed lists are fine.
+ */
+export type EntitiesArg = EntityModule | readonly [EntityModule, EntityOptions]
+
 export interface App {
-  entities(...modules: EntityModule[]): App
+  entities(...args: EntitiesArg[]): App
   commands(...handlers: CommandHandlerDefinition<any, any>[]): App
   queries(...handlers: QueryHandlersDefinition[]): App
   events(...handlers: EventHandlersDefinition[]): App
+  /**
+   * Read accessor (Plan 09-01, D-103): when called with zero arguments,
+   * returns the registered EventProcessorModule[] in registration order.
+   * Returned array is a frozen view; mutations have no effect on app state.
+   * Consumed by extensions (e.g. Axon Server) inside `onStart('connect', ...)`
+   * to build a fan-out registration list before processors start.
+   */
+  processors(): readonly EventProcessorModule[]
+  /** Writer overload (D-103): appends EventProcessorModule registrations. */
   processors(...modules: EventProcessorModule[]): App
   /** D-73: register an Extension (function) — runs during start() before slot resolution. */
   use(extension: Extension): App
@@ -98,6 +127,18 @@ export interface App {
    * in the existing intercepting wrapper.
    */
   handlerInterceptor(fn: HandlerInterceptor): App
+  /**
+   * Plan 09-01 (D-86): accumulator for HandlerEnhancerDefinition. Mirrors the
+   * Phase 6 dispatch-interceptor accumulator pattern. Multiple registrations
+   * compose left-to-right via multiHandlerEnhancerDefinition (first registered
+   * wraps outermost). Composed at start-time and threaded through:
+   * - registerCommandHandlersNatively (Step 5c)
+   * - registerQueryHandlersNatively (Step 5d, RESEARCH Open Question #4)
+   * - createTrackingEventProcessor / createSubscribingEventProcessor (Step 5e)
+   *
+   * Returns App for chaining. Throws AppAlreadyStartedError after .start().
+   */
+  handlerEnhancer(def: HandlerEnhancerDefinition): App
   /**
    * Live CommandGateway. Throws AppNotStartedError if accessed before the
    * `register` lifecycle stage completes during `.start()`. Available inside
@@ -138,7 +179,8 @@ export interface RunningApp {
 /** Internal accumulators populated by fluent methods; consumed by .start(). */
 export interface AppState {
   readonly slotRegistry: SlotRegistry
-  readonly entities: EntityModule[]
+  /** Plan 09-01 (D-88): replaces flat `entities: EntityModule[]` to carry per-entity options. */
+  readonly entityEntries: Array<{ module: EntityModule; options: EntityOptions }>
   readonly commandHandlers: CommandHandlerDefinition<any, any>[]
   readonly queryHandlerGroups: QueryHandlersDefinition[]
   readonly eventHandlerGroups: EventHandlersDefinition[]
@@ -150,6 +192,8 @@ export interface AppState {
   readonly queryDispatchInterceptors: DispatchInterceptor<QueryMessage>[]
   readonly eventDispatchInterceptors: DispatchInterceptor<EventMessage>[]
   readonly handlerInterceptors: HandlerInterceptor[]
+  /** Plan 09-01 (D-86): accumulator composed via multiHandlerEnhancerDefinition at start. */
+  readonly handlerEnhancers: HandlerEnhancerDefinition[]
   readonly startHooks: Array<{ stage: LifecycleStage; fn: LifecycleHook }>
   readonly stopHooks:  Array<{ stage: LifecycleStage; fn: LifecycleHook }>
 }
@@ -199,7 +243,7 @@ export class AppImpl implements App {
     this._stageTimeoutMs = options.stageTimeoutMs ?? 5000
     this._state = {
       slotRegistry: new SlotRegistry(),
-      entities: [],
+      entityEntries: [],
       commandHandlers: [],
       queryHandlerGroups: [],
       eventHandlerGroups: [],
@@ -211,6 +255,7 @@ export class AppImpl implements App {
       queryDispatchInterceptors: [],
       eventDispatchInterceptors: [],
       handlerInterceptors: [],
+      handlerEnhancers: [],
       startHooks: [],
       stopHooks: [],
     }
@@ -246,9 +291,16 @@ export class AppImpl implements App {
     if (this._started) throw new AppAlreadyStartedError()
   }
 
-  entities(...modules: EntityModule[]): App {
+  entities(...args: EntitiesArg[]): App {
     this.guard()
-    this._state.entities.push(...modules)
+    for (const arg of args) {
+      if (Array.isArray(arg)) {
+        const [module, options] = arg as readonly [EntityModule, EntityOptions]
+        this._state.entityEntries.push({ module, options })
+      } else {
+        this._state.entityEntries.push({ module: arg as EntityModule, options: {} })
+      }
+    }
     return this
   }
 
@@ -270,7 +322,18 @@ export class AppImpl implements App {
     return this
   }
 
-  processors(...modules: EventProcessorModule[]): App {
+  // Plan 09-01 (D-103): dual-overload processors() — read accessor + writer.
+  processors(): readonly EventProcessorModule[]
+  processors(...modules: EventProcessorModule[]): App
+  processors(
+    ...modules: EventProcessorModule[]
+  ): App | readonly EventProcessorModule[] {
+    if (modules.length === 0) {
+      // Frozen view so accidental .push() on the returned array doesn't smuggle
+      // mutations into _state. The underlying array is still mutable for the
+      // writer overload below.
+      return Object.freeze([...this._state.processors]) as readonly EventProcessorModule[]
+    }
     this.guard()
     this._state.processors.push(...modules)
     return this
@@ -368,6 +431,12 @@ export class AppImpl implements App {
   handlerInterceptor(fn: HandlerInterceptor): App {
     this.guard()
     this._state.handlerInterceptors.push(fn)
+    return this
+  }
+
+  handlerEnhancer(def: HandlerEnhancerDefinition): App {
+    this.guard()
+    this._state.handlerEnhancers.push(def)
     return this
   }
 
@@ -470,11 +539,18 @@ export class AppImpl implements App {
     //     registerDefaults() pattern at eventsourcing-configurer.ts ~line 755).
     //     EntityModule has no .initialize() — entities are wired purely via repository
     //     registration on the StateManager.
+    //     Plan 09-01 (D-88): per-entity tuple options (snapshotPolicy, snapshotStore)
+    //     thread through into createEventSourcedRepository.
     const stateManager: StateManager = createStateManager()
-    for (const entity of this._state.entities) {
+    for (const { module, options } of this._state.entityEntries) {
       stateManager.register(
-        entity,
-        createEventSourcedRepository(entity, built.eventStore),
+        module,
+        createEventSourcedRepository(
+          module,
+          built.eventStore,
+          options.snapshotStore,
+          options.snapshotPolicy,
+        ),
       )
     }
 
@@ -483,6 +559,15 @@ export class AppImpl implements App {
     //     the documented set throws loudly so misuse is obvious.
     const configShim = createConfigShim(built, stateManager)
 
+    // Plan 09-01 (D-86, RESEARCH Open Question #4): compose the accumulated
+    // handlerEnhancers ONCE and thread the composed definition into command,
+    // query, tracking, and subscribing handler registration so cross-cutting
+    // (tracing, timing, security) wraps every handler kind uniformly.
+    const composedHandlerEnhancer: HandlerEnhancerDefinition | undefined =
+      this._state.handlerEnhancers.length > 0
+        ? multiHandlerEnhancerDefinition(this._state.handlerEnhancers)
+        : undefined
+
     // 5c. Subscribe command handlers natively. createCommandInvocation seeds the
     //     ALS three-key set (STATE_MANAGER + COMMAND_BUS + QUERY_BUS) and registers
     //     the onPrepareCommit event-flush — verbatim from D-82.
@@ -490,11 +575,16 @@ export class AppImpl implements App {
       commandBus: built.commandBus,
       config: configShim,
       moduleName: "commands",
+      handlerEnhancer: composedHandlerEnhancer,
     })
 
     // 5d. Subscribe query handler groups directly onto the queryBus.
+    //     Plan 09-01: query handlers receive the same enhancer treatment as
+    //     commands (closes RESEARCH Open Question #4).
     registerQueryHandlersNatively(this._state.queryHandlerGroups, {
       queryBus: built.queryBus,
+      moduleName: "queries",
+      handlerEnhancer: composedHandlerEnhancer,
     })
 
     // 5e. Build event processors: explicit `.processors(...)` modules + implicit
@@ -531,6 +621,7 @@ export class AppImpl implements App {
             queryBus: built.queryBus,
             unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
             errorHandler: proc.errorHandler,
+            handlerEnhancer: composedHandlerEnhancer,
           }),
         )
       } else {
@@ -547,6 +638,7 @@ export class AppImpl implements App {
             batchSize: proc.batchSize,
             pollingIntervalMs: proc.pollingIntervalMs,
             errorHandler: proc.errorHandler,
+            handlerEnhancer: composedHandlerEnhancer,
           }),
         )
       }
