@@ -15,10 +15,11 @@ export {
 } from "./kronosdb-snapshot-store.js"
 
 export {
-  kronosDbConfigurationEnhancer,
+  kronosDb,
+  type KronosDbExtensionConfig,
   type FlowControlConfig,
   type ProcessingInstructions,
-} from "./kronosdb-configuration-enhancer.js"
+} from "./kronosdb.js"
 
 export {
   type PlatformConnection,

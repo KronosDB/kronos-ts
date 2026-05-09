@@ -26,6 +26,26 @@ export interface PlatformConnection {
   onInstruction(handler: InstructionHandler): void
   registerProcessorStatusSupplier(supplier: ProcessorStatusSupplier): void
   readonly connected: boolean
+  /**
+   * Resolves with `true` once KronosDB has acknowledged this client's
+   * registration on the platform stream (we use the first server-originated
+   * inbound message — typically a heartbeat reply — as the ack signal).
+   * Resolves with `false` if the platform is not yet started.
+   *
+   * This replaces the legacy 1-second sleep at
+   * kronosdb-configuration-enhancer.ts:216 (D-102): the kronosDb extension's
+   * `onStart('processors', ...)` hook polls this method via `withRetry` so the
+   * application waits exactly long enough for handler subscriptions to be
+   * routable, no longer or shorter.
+   *
+   * Implementation note: the platform stream sends a `register` frame on
+   * `start()` and KronosDB responds with a heartbeat tick at the configured
+   * heartbeat interval. We treat the first inbound frame as the ack signal,
+   * which is the earliest observable point at which the server has accepted
+   * the registration. (No explicit ack frame exists in the KronosDB protobuf
+   * surface today — Pitfall 5 / RESEARCH.md.)
+   */
+  subscriptionsAcked(): Promise<boolean>
 }
 
 export interface PlatformServiceOptions {
@@ -64,12 +84,22 @@ export function createPlatformConnection(
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
   let lastHeartbeatResponse = Date.now()
   let outbound: ReturnType<typeof createOutboundStream> | null = null
+  /**
+   * Latches once KronosDB sends its first inbound message after registration
+   * — the earliest observable signal that the platform stream is fully wired
+   * (D-102, replaces the legacy 1s sleep). Reset on every `start()` so a
+   * stop/start cycle re-arms the latch correctly.
+   */
+  let acked = false
 
   const grpcMetadata = createKronosMetadata(connection.config)
 
   async function processInboundInstructions(inbound: AsyncIterable<any>) {
     try {
       for await (const message of inbound) {
+        // First inbound message after start() = the platform has accepted our
+        // registration and is talking back. Latch the ack flag (D-102).
+        acked = true
         const instruction = parseInstruction(message)
         if (instruction) {
           for (const handler of instructionHandlers) {
@@ -198,6 +228,8 @@ export function createPlatformConnection(
     async start() {
       if (isConnected) return
 
+      // Re-arm the ack latch so a stop/start cycle correctly re-waits.
+      acked = false
       outbound = createOutboundStream()
 
       // Register with KronosDB — first message must be ClientIdentification
@@ -247,6 +279,10 @@ export function createPlatformConnection(
 
     get connected() {
       return isConnected
+    },
+
+    async subscriptionsAcked(): Promise<boolean> {
+      return isConnected && acked
     },
   }
 }

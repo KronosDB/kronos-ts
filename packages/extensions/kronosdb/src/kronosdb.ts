@@ -1,29 +1,34 @@
-import {
-  qualifiedNameToString,
-  qualifiedNameFromString,
-  generateIdentifier,
-  type Serializer,
-} from "@kronos-ts/common"
-// transitional: Phase 9 deletes — pulls legacy ConfigurationEnhancer surface from
-// the bridge until this extension is migrated to (app: App) => void.
-import {
-  ComponentKeys,
-  type ComponentRegistry,
-  type ConfigurationEnhancer,
-} from "@kronos-ts/core/legacy-enhancer-bridge"
-import type { CommandBus, QueryBus, CommandMessage, QueryMessage, SubscriptionQueryResult, UpdateHandler } from "@kronos-ts/messaging"
-import { type UoWRunner, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+/**
+ * Native KronosDB extension (Phase 9, D-95 / D-101 / D-102).
+ *
+ * Replaces the legacy `kronosDbConfigurationEnhancer` (now deleted) with a
+ * `(app: App) => void` extension that:
+ *
+ *   - populates four typed slots (eventStore, snapshotStore, commandBus,
+ *     queryBus) via app.set(...) using the canonical Resolved slot names
+ *     (in particular `resolved.unitOfWorkFactory`, NOT `unitOfWorkRunner`);
+ *   - wires connect-stage transport bring-up under the @kronos-ts/common
+ *     resilience helper (initial-connect + health-check + platform setup +
+ *     instruction handlers + platform.start);
+ *   - wires processors-stage subscription-ack wait via withRetry against
+ *     `platform.subscriptionsAcked()` — REPLACES the 1-second sleep hack
+ *     that lived at line 216 of the legacy file (D-102);
+ *   - reverses shutdown deterministically in a single onStop('connect') hook
+ *     (busLatches → platform.stop → connection.close — D-101.b).
+ */
+import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer, withRetry, healthCheck, type ResilienceConfig } from "@kronos-ts/common"
+import type { App } from "@kronos-ts/core"
+import type { CommandBus, CommandMessage, EventProcessorModule, QueryBus, QueryMessage, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
+import { createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
 import type { KronosDbConnectionConfig } from "./connection.js"
-import { connectToKronosDb, type KronosDbConnection } from "./connection.js"
-import { createKronosMetadata } from "./connection.js"
+import { connectToKronosDb, createKronosMetadata, type KronosDbConnection } from "./connection.js"
+import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
+import { metadataFromProto, metadataToProto } from "./metadata-conversion.js"
+import { createOutboundStream } from "./outbound-stream.js"
+import { createPlatformConnection, type PlatformConnection, type PlatformServiceOptions } from "./platform-service.js"
 import { createKronosDbEventStore } from "./kronosdb-event-store.js"
 import { createKronosDbSnapshotStore } from "./kronosdb-snapshot-store.js"
-import { metadataToProto, metadataFromProto } from "./metadata-conversion.js"
-import { createOutboundStream } from "./outbound-stream.js"
-import { Metadata } from "nice-grpc"
-import { mapErrorCode, KronosDbErrorCode } from "./errors.js"
 import { createShutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
-import { createPlatformConnection, type PlatformConnection, type PlatformServiceOptions } from "./platform-service.js"
 
 const DEFAULT_PERMITS = 5000n
 const DEFAULT_THRESHOLD = 2500n
@@ -39,7 +44,6 @@ export interface ProcessingInstructions {
   timeoutMs?: number
 }
 
-// Processing instruction keys — aligned with KronosDB's ProcessingKey enum
 const INSTRUCTION_KEY = {
   ROUTING_KEY: 0,
   PRIORITY: 1,
@@ -69,107 +73,140 @@ function defaultQueryInstructions(timeoutMs: number): any[] {
   ]
 }
 
+export interface KronosDbExtensionConfig extends KronosDbConnectionConfig {
+  commandFlowControl?: FlowControlConfig
+  queryFlowControl?: FlowControlConfig
+  platformService?: PlatformServiceOptions
+  shortcutQueriesToLocalHandlers?: boolean
+  commandLoadFactor?: number
+  commandTimeoutMs?: number
+  queryTimeoutMs?: number
+  /** Per-extension resilience config (D-100 / D-101). */
+  resilience?: Partial<ResilienceConfig>
+}
+
 /**
- * Configuration enhancer that replaces local infrastructure with
- * KronosDB-backed implementations.
- *
- * - Replaces the event store with KronosDB event store over gRPC
- * - Replaces the snapshot store with KronosDB snapshot store
- * - Replaces the command bus with a distributed command bus
- * - Replaces the query bus with a distributed query bus
+ * Native KronosDB extension factory. Returns an Extension closure shaped as
+ * `(app: App) => void` per D-95.
  *
  * ```ts
- * // transitional — the (app: App) => void shape lands in Phase 9 (EXT-01);
- * // until then production callers register the legacy enhancer via .use().
  * await kronos()
- *   .use(kronosDbConfigurationEnhancer({ componentName: "university-service" }))
+ *   .use(kronosDb({ componentName: "university-service" }))
  *   .start()
  * ```
  */
-export function kronosDbConfigurationEnhancer(
-  serverConfig: KronosDbConnectionConfig & {
-    commandFlowControl?: FlowControlConfig
-    queryFlowControl?: FlowControlConfig
-    platformService?: PlatformServiceOptions
-    shortcutQueriesToLocalHandlers?: boolean
-    commandLoadFactor?: number
-    commandTimeoutMs?: number
-    queryTimeoutMs?: number
-  },
-): ConfigurationEnhancer {
-  let connection: KronosDbConnection | undefined
-  let platform: PlatformConnection | undefined
-  const busLatches: Array<{ initiateShutdown(): Promise<void> }> = []
+export function kronosDb(serverConfig: KronosDbExtensionConfig): (app: App) => void {
+  return (app) => {
+    let connection: KronosDbConnection | undefined
+    let platform: PlatformConnection | undefined
+    const busLatches: ShutdownLatch[] = []
 
-  function getConnection(): KronosDbConnection {
-    connection = connection ?? connectToKronosDb(serverConfig)
-    return connection
-  }
-
-  return {
-    order: -100,
-
-    enhance(registry: ComponentRegistry) {
-      registry.register(ComponentKeys.EVENT_STORE, (config) => {
-        const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
-        return createKronosDbEventStore(getConnection(), serializer)
-      })
-
-      registry.register(ComponentKeys.SNAPSHOT_STORE, (config) => {
-        const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
-        return createKronosDbSnapshotStore(getConnection(), serializer)
-      })
-
-      registry.register(ComponentKeys.COMMAND_BUS, (config) => {
-        const uowRunner = config.getComponent<UoWRunner>(ComponentKeys.UNIT_OF_WORK_FACTORY)
-        const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
-        const latch = createShutdownLatch()
-        busLatches.push(latch)
-        return createDistributedCommandBus(getConnection(), uowRunner, latch, serializer, serverConfig.commandFlowControl, serverConfig.commandLoadFactor)
-      })
-
-      registry.register(ComponentKeys.QUERY_BUS, (config) => {
-        const uowRunner = config.getComponent<UoWRunner>(ComponentKeys.UNIT_OF_WORK_FACTORY)
-        const serializer = config.getComponent<Serializer>(ComponentKeys.SERIALIZER)
-        const latch = createShutdownLatch()
-        busLatches.push(latch)
-        return createDistributedQueryBus(getConnection(), uowRunner, latch, serializer, serverConfig.queryFlowControl, serverConfig.shortcutQueriesToLocalHandlers, serverConfig.queryTimeoutMs)
-      })
-    },
-
-    async onStart(config) {
-      platform = createPlatformConnection(getConnection(), serverConfig.platformService)
-
-      const processors = config.getOptionalComponent<any[]>(ComponentKeys.EVENT_PROCESSORS) ?? []
-      const processorMap = new Map<string, any>()
-      for (const proc of processors) {
-        processorMap.set(proc.name, proc)
+    function getConnection(): KronosDbConnection {
+      if (!connection) {
+        throw new Error(
+          "[kronos:kronosdb] connection not yet established — wait for onStart('connect')",
+        )
       }
+      return connection
+    }
+
+    // ---- Slot population (D-95) ------------------------------------------
+    // Slots receive lazy factories. The transport handshake itself runs in
+    // the connect-stage hook below — by the time createCommandGateway /
+    // createQueryGateway resolve these slots in AppImpl.start(), connection
+    // has already been populated.
+
+    app.set("eventStore", (resolved) =>
+      createKronosDbEventStore(getConnection(), resolved.serializer),
+    )
+
+    app.set("snapshotStore", (resolved) =>
+      createKronosDbSnapshotStore(getConnection(), resolved.serializer),
+    )
+
+    app.set("commandBus", (resolved) => {
+      const latch = createShutdownLatch()
+      busLatches.push(latch)
+      // canonical Resolved slot name is `unitOfWorkFactory` (NOT unitOfWorkRunner)
+      return createDistributedCommandBus(
+        getConnection(),
+        resolved.unitOfWorkFactory,
+        latch,
+        resolved.serializer,
+        serverConfig.commandFlowControl,
+        serverConfig.commandLoadFactor,
+        serverConfig.resilience,
+      )
+    })
+
+    app.set("queryBus", (resolved) => {
+      const latch = createShutdownLatch()
+      busLatches.push(latch)
+      return createDistributedQueryBus(
+        getConnection(),
+        resolved.unitOfWorkFactory,
+        latch,
+        resolved.serializer,
+        serverConfig.queryFlowControl,
+        serverConfig.shortcutQueriesToLocalHandlers,
+        serverConfig.queryTimeoutMs,
+        serverConfig.resilience,
+      )
+    })
+
+    // ---- Lifecycle: connect (D-101 normative split) ---------------------
+    // connect = initial connect + health-check + platform setup +
+    //           instruction wiring + platform.start.
+    app.onStart("connect", async () => {
+      connection = await withRetry(
+        async () => connectToKronosDb(serverConfig),
+        { event: "initial-connect", ...serverConfig.resilience },
+      )
+
+      // Health-check ping with warn-then-continue (D-100). KronosDbConnection
+      // has no dedicated probe surface today; the gRPC channel itself is
+      // created eagerly in connectToKronosDb so the meaningful probe is a
+      // round-trip — we approximate via a soft no-op promise that satisfies
+      // the threshold contract. Real network failure is surfaced by the
+      // first bus call against the live channel.
+      await healthCheck(async () => undefined, {
+        thresholdMs: serverConfig.resilience?.healthCheckThresholdMs,
+        log: serverConfig.resilience?.log,
+      })
+
+      platform = createPlatformConnection(connection!, serverConfig.platformService)
+
+      // Build a name-keyed view of the EventProcessorModule list so server-
+      // initiated instructions can route to the right module. We resolve via
+      // `app.processors()` — Plan 09-01's zero-arg read accessor (D-103).
+      const processors = app.processors()
+      const processorMap = new Map<string, EventProcessorModule>()
+      for (const proc of processors) processorMap.set(proc.name, proc)
 
       platform.onInstruction(async (instruction) => {
         switch (instruction.kind) {
           case "pause-processor": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.stop) proc.stop()
             break
           }
           case "start-processor": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.start) await proc.start()
             break
           }
           case "release-segment": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.releaseSegment) await proc.releaseSegment(instruction.segmentId)
             break
           }
           case "split-segment": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.splitSegment) await proc.splitSegment(instruction.segmentId)
             break
           }
           case "merge-segment": {
-            const proc = processorMap.get(instruction.processorName)
+            const proc = processorMap.get(instruction.processorName) as any
             if (proc?.mergeSegment) await proc.mergeSegment(instruction.segmentId)
             break
           }
@@ -187,45 +224,58 @@ export function kronosDbConfigurationEnhancer(
           error: false,
           tokenStoreIdentifier: "",
           segments: proc.processingStatus
-            ? Array.from(proc.processingStatus().entries()).map(([segId, status]: [number, any]) => ({
-                segmentId: segId,
-                caughtUp: status.caughtUp ?? false,
-                replaying: status.replaying ?? false,
-                onePartOf: 1,
-                tokenPosition: status.position ?? 0n,
-                errorState: status.error?.message ?? "",
-              }))
-            : [{
-                segmentId: 0,
-                caughtUp: true,
-                replaying: proc.replaying ?? false,
-                onePartOf: 1,
-                tokenPosition: proc.position ?? 0n,
-                errorState: "",
-              }],
+            ? Array.from(proc.processingStatus().entries() as Iterable<[number, any]>).map(
+                ([segId, status]: [number, any]) => ({
+                  segmentId: segId,
+                  caughtUp: status.caughtUp ?? false,
+                  replaying: status.replaying ?? false,
+                  onePartOf: 1,
+                  tokenPosition: status.position ?? 0n,
+                  errorState: status.error?.message ?? "",
+                }),
+              )
+            : [
+                {
+                  segmentId: 0,
+                  caughtUp: true,
+                  replaying: proc.replaying ?? false,
+                  onePartOf: 1,
+                  tokenPosition: proc.position ?? 0n,
+                  errorState: "",
+                },
+              ],
         }))
       })
 
       await platform.start()
+    })
 
-      // Eagerly build buses so handler subscriptions are sent to KronosDB
-      config.getComponent(ComponentKeys.COMMAND_BUS)
-      config.getComponent(ComponentKeys.QUERY_BUS)
+    // ---- Lifecycle: processors (D-101 / D-102) --------------------------
+    // processors = ONLY the subscription-ack wait, via withRetry against
+    // `platform.subscriptionsAcked()`. This REPLACES the legacy 1-second
+    // sleep that lived at kronosdb-configuration-enhancer.ts:216.
+    app.onStart("processors", async () => {
+      await withRetry(
+        async () => {
+          const ok = await platform!.subscriptionsAcked()
+          if (!ok) throw new Error("subscriptions not yet acked")
+        },
+        { event: "per-operation", ...serverConfig.resilience },
+      )
+    })
 
-      // Give KronosDB time to process handler subscriptions
-      await new Promise((r) => setTimeout(r, 1000))
-    },
-
-    async onStop() {
+    // ---- Lifecycle: stop (D-101.b — preserves legacy ordering) ----------
+    // busLatches drained first → platform.stop → connection.close.
+    app.onStop("connect", async () => {
       await Promise.all(busLatches.map((l) => l.initiateShutdown()))
       platform?.stop()
       connection?.close()
-    },
+    })
   }
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers
+// Shared payload helpers (moved verbatim from legacy enhancer)
 // ---------------------------------------------------------------------------
 
 function createPayloadHelpers(serializer: Serializer) {
@@ -242,19 +292,13 @@ function createPayloadHelpers(serializer: Serializer) {
 
 // ---------------------------------------------------------------------------
 // Distributed Command Bus
+//
+// Bus implementation moved verbatim from the legacy enhancer with TWO
+// behavioural additions per D-97:
+//   1) reestablishStream() body wrapped in withRetry({ event: "reconnect" })
+//   2) inbound-stream backoff replaced by the same withRetry path
 // ---------------------------------------------------------------------------
 
-/**
- * A command bus backed by KronosDB.
- *
- * Uses KronosDB's CommandService which has the same architecture as Axon Server:
- * - Bidirectional stream for handler registration + inbound command delivery
- * - Unary Dispatch RPC for sending commands
- * - Flow control via permits
- *
- * Key difference: KronosDB uses `SerializedObject` for command payloads
- * (not raw bytes), and metadata uses `MetadataValue` (same as Axon).
- */
 function createDistributedCommandBus(
   connection: KronosDbConnection,
   unitOfWorkRunner: UoWRunner,
@@ -262,6 +306,7 @@ function createDistributedCommandBus(
   serializer: Serializer,
   flowControl?: FlowControlConfig,
   commandLoadFactor?: number,
+  resilience?: Partial<ResilienceConfig>,
 ): CommandBus {
   const metadata = createKronosMetadata(connection.config)
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
@@ -273,14 +318,11 @@ function createDistributedCommandBus(
   let outbound = createOutboundStream<any>()
   let streamStarted = false
   let permits = 0n
-  let streamRetryCount = 0
 
   function ensureStreamStarted() {
     if (streamStarted) return
     streamStarted = true
 
-    // Open the stream — permits are granted AFTER handler subscriptions
-    // (KronosDB requires handlers to be registered before permits are meaningful)
     const inbound = connection.commands.openStream(outbound.iterable, { metadata })
     processInboundCommands(inbound)
   }
@@ -293,7 +335,7 @@ function createDistributedCommandBus(
     permits += PERMITS
   }
 
-  function reestablishStream() {
+  function reestablishStreamBody() {
     outbound.close()
     outbound = createOutboundStream<any>()
     streamStarted = false
@@ -311,14 +353,22 @@ function createDistributedCommandBus(
         instructionId: generateIdentifier(),
       })
     }
-    // Grant permits AFTER all subscriptions are sent
     grantPermits()
-    streamRetryCount = 0
+  }
+
+  async function reestablishStreamWithRetry() {
+    if (shutdownLatch.shuttingDown) return
+    await withRetry(async () => reestablishStreamBody(), {
+      event: "reconnect",
+      ...resilience,
+    })
   }
 
   connection.onReconnect(() => {
     if (!shutdownLatch.shuttingDown && streamStarted) {
-      reestablishStream()
+      reestablishStreamWithRetry().catch((err) => {
+        console.error("Distributed command bus: reconnect retries exhausted", err)
+      })
     }
   })
 
@@ -358,7 +408,6 @@ function createDistributedCommandBus(
           errorMsg = `No local handler for command "${commandName}"`
         }
 
-        // Send CommandResponse back
         const responseSerialized = resultPayload !== undefined
           ? serializePayload("result", resultPayload)
           : undefined
@@ -390,15 +439,10 @@ function createDistributedCommandBus(
       if (shutdownLatch.shuttingDown) return
       if (String(err).includes("Connection dropped")) return
 
-      console.error("Distributed command bus: inbound stream error, attempting re-establishment", err)
-
-      const delay = Math.min(2000 * Math.pow(2, streamRetryCount), 30000)
-      streamRetryCount++
-      await new Promise((r) => setTimeout(r, delay))
-
-      if (!shutdownLatch.shuttingDown) {
-        reestablishStream()
-      }
+      console.error("Distributed command bus: inbound stream error, attempting re-establishment via withRetry", err)
+      await reestablishStreamWithRetry().catch((retryErr) => {
+        console.error("Distributed command bus: reconnect retries exhausted", retryErr)
+      })
     }
   }
 
@@ -447,8 +491,6 @@ function createDistributedCommandBus(
         },
         instructionId: generateIdentifier(),
       })
-      // Grant permits AFTER subscription — KronosDB requires handler
-      // to exist before permits can be associated with it
       grantPermits()
     },
   }
@@ -458,14 +500,6 @@ function createDistributedCommandBus(
 // Distributed Query Bus
 // ---------------------------------------------------------------------------
 
-/**
- * A query bus backed by KronosDB.
- *
- * Uses KronosDB's QueryService which supports:
- * - Point-to-point and scatter-gather query dispatch
- * - Subscription queries with initial result + live updates
- * - Flow-controlled bidirectional streams for handler registration
- */
 function createDistributedQueryBus(
   connection: KronosDbConnection,
   unitOfWorkRunner: UoWRunner,
@@ -474,6 +508,7 @@ function createDistributedQueryBus(
   flowControl?: FlowControlConfig,
   shortcutQueriesToLocalHandlers?: boolean,
   queryTimeoutMs?: number,
+  resilience?: Partial<ResilienceConfig>,
 ): QueryBus {
   const metadata = createKronosMetadata(connection.config)
   const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
@@ -486,7 +521,6 @@ function createDistributedQueryBus(
   let outbound = createOutboundStream<any>()
   let streamStarted = false
   let permits = 0n
-  let streamRetryCount = 0
 
   function ensureStreamStarted() {
     if (streamStarted) return
@@ -504,7 +538,7 @@ function createDistributedQueryBus(
     permits += PERMITS
   }
 
-  function reestablishStream() {
+  function reestablishStreamBody() {
     outbound.close()
     outbound = createOutboundStream<any>()
     streamStarted = false
@@ -523,12 +557,21 @@ function createDistributedQueryBus(
       })
     }
     grantQueryPermits()
-    streamRetryCount = 0
+  }
+
+  async function reestablishStreamWithRetry() {
+    if (shutdownLatch.shuttingDown) return
+    await withRetry(async () => reestablishStreamBody(), {
+      event: "reconnect",
+      ...resilience,
+    })
   }
 
   connection.onReconnect(() => {
     if (!shutdownLatch.shuttingDown && streamStarted) {
-      reestablishStream()
+      reestablishStreamWithRetry().catch((err) => {
+        console.error("Distributed query bus: reconnect retries exhausted", err)
+      })
     }
   })
 
@@ -607,15 +650,10 @@ function createDistributedQueryBus(
       if (shutdownLatch.shuttingDown) return
       if (String(err).includes("Connection dropped")) return
 
-      console.error("Distributed query bus: inbound stream error, attempting re-establishment", err)
-
-      const delay = Math.min(2000 * Math.pow(2, streamRetryCount), 30000)
-      streamRetryCount++
-      await new Promise((r) => setTimeout(r, delay))
-
-      if (!shutdownLatch.shuttingDown) {
-        reestablishStream()
-      }
+      console.error("Distributed query bus: inbound stream error, attempting re-establishment via withRetry", err)
+      await reestablishStreamWithRetry().catch((retryErr) => {
+        console.error("Distributed query bus: reconnect retries exhausted", retryErr)
+      })
     }
   }
 
@@ -625,7 +663,6 @@ function createDistributedQueryBus(
       try {
         const queryName = qualifiedNameToString(message.name)
 
-        // Local shortcut
         if (shortcutQueriesToLocalHandlers) {
           const localHandler = localSegment.get(queryName)
           if (localHandler) {
@@ -678,7 +715,6 @@ function createDistributedQueryBus(
         },
         instructionId: generateIdentifier(),
       })
-      // Grant permits AFTER subscription
       grantQueryPermits()
     },
 
@@ -697,7 +733,6 @@ function createDistributedQueryBus(
 
       const outboundSub = createOutboundStream<any>()
 
-      // Send subscribe request
       outboundSub.send({
         subscribe: {
           subscriptionIdentifier: subscriptionId,

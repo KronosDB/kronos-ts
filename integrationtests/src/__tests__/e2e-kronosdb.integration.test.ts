@@ -25,7 +25,7 @@ import {
 import { eventSourcedEntity } from "@kronos-ts/modelling"
 import { type EventStore, load, append } from "@kronos-ts/eventsourcing"
 import { kronos, type App, type RunningApp } from "@kronos-ts/core"
-import { kronosDbConfigurationEnhancer } from "@kronos-ts/kronosdb"
+import { kronosDb } from "@kronos-ts/kronosdb"
 
 // ============================================================================
 // Domain — same university model as the Axon Server E2E test
@@ -148,11 +148,11 @@ describe("E2E: KronosDB full stack", () => {
     courseViews.clear()
     capturedEventStore = undefined
 
-    // Plan 08-03b migration: native kronos() + legacy ConfigurationEnhancer routed
-    // via the App.use() overload (D-73, D-74). The KronosDB enhancer's enhance()
-    // registers EVENT_STORE/SNAPSHOT_STORE/COMMAND_BUS/QUERY_BUS via the bridge's
-    // registry shim, which translates each to app.set(slot, ...).
-    const kronosDbEnhancer = kronosDbConfigurationEnhancer({
+    // Plan 09-03 migration: native (app: App) => void extension shape (D-95).
+    // kronosDb populates eventStore / snapshotStore / commandBus / queryBus
+    // typed slots and wires connect-stage transport bring-up + processors-stage
+    // subscription-ack wait via the @kronos-ts/common resilience helper.
+    const kronosDbExtension = kronosDb({
       componentName: "kronosdb-e2e-test",
       host: "localhost",
       port: 50051,
@@ -179,7 +179,7 @@ describe("E2E: KronosDB full stack", () => {
           .build(),
       )
       .use(captureExtension)
-      .use(kronosDbEnhancer) // routed through legacy-enhancer-bridge per D-73
+      .use(kronosDbExtension)
       .start()
 
     // Give KronosDB time to process handler subscriptions
