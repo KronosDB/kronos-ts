@@ -60,6 +60,57 @@ export interface PlatformServiceOptions {
 }
 
 /**
+ * Parses a raw PlatformOutbound message into a typed PlatformInstruction.
+ *
+ * Returns `null` for any arm that does not correspond to a known instruction
+ * (e.g. heartbeat, nodeNotification, topologyNotification). This is the
+ * correct catch-all for forward-compatibility: new proto fields added to
+ * PlatformOutbound will silently be ignored rather than causing errors.
+ */
+export function parseInstruction(message: any): PlatformInstruction | null {
+  if (message.requestReconnect) {
+    return { kind: "reconnect-request" }
+  }
+
+  // KronosDB sends processor instructions directly on PlatformOutbound
+  if (message.pauseEventProcessor) {
+    return {
+      kind: "pause-processor",
+      processorName: message.pauseEventProcessor.processorName ?? "",
+    }
+  }
+  if (message.startEventProcessor) {
+    return {
+      kind: "start-processor",
+      processorName: message.startEventProcessor.processorName ?? "",
+    }
+  }
+  if (message.releaseSegment) {
+    return {
+      kind: "release-segment",
+      processorName: message.releaseSegment.processorName ?? "",
+      segmentId: message.releaseSegment.segmentIdentifier ?? 0,
+    }
+  }
+  if (message.splitEventProcessorSegment) {
+    return {
+      kind: "split-segment",
+      processorName: message.splitEventProcessorSegment.processorName ?? "",
+      segmentId: message.splitEventProcessorSegment.segmentIdentifier ?? 0,
+    }
+  }
+  if (message.mergeEventProcessorSegment) {
+    return {
+      kind: "merge-segment",
+      processorName: message.mergeEventProcessorSegment.processorName ?? "",
+      segmentId: message.mergeEventProcessorSegment.segmentIdentifier ?? 0,
+    }
+  }
+
+  return null
+}
+
+/**
  * Creates a PlatformService connection to KronosDB.
  *
  * The platform stream is the control plane:
@@ -121,49 +172,6 @@ export function createPlatformConnection(
         isConnected = false
       }
     }
-  }
-
-  function parseInstruction(message: any): PlatformInstruction | null {
-    if (message.requestReconnect) {
-      return { kind: "reconnect-request" }
-    }
-
-    // KronosDB sends processor instructions directly on PlatformOutbound
-    if (message.pauseEventProcessor) {
-      return {
-        kind: "pause-processor",
-        processorName: message.pauseEventProcessor.processorName ?? "",
-      }
-    }
-    if (message.startEventProcessor) {
-      return {
-        kind: "start-processor",
-        processorName: message.startEventProcessor.processorName ?? "",
-      }
-    }
-    if (message.releaseSegment) {
-      return {
-        kind: "release-segment",
-        processorName: message.releaseSegment.processorName ?? "",
-        segmentId: message.releaseSegment.segmentIdentifier ?? 0,
-      }
-    }
-    if (message.splitEventProcessorSegment) {
-      return {
-        kind: "split-segment",
-        processorName: message.splitEventProcessorSegment.processorName ?? "",
-        segmentId: message.splitEventProcessorSegment.segmentIdentifier ?? 0,
-      }
-    }
-    if (message.mergeEventProcessorSegment) {
-      return {
-        kind: "merge-segment",
-        processorName: message.mergeEventProcessorSegment.processorName ?? "",
-        segmentId: message.mergeEventProcessorSegment.segmentIdentifier ?? 0,
-      }
-    }
-
-    return null
   }
 
   function startHeartbeat() {
