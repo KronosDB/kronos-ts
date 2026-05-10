@@ -244,14 +244,11 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
       async function* controlStream() {
         // First message: subscribe with initial permits.
         yield {
-          request: {
-            $case: "subscribe" as const,
-            subscribe: {
-              fromSequence: condition.position,
-              criteria: effectiveCriterions,
-              initialPermits: PERMIT_BATCH,
-              blacklistedNames: [],
-            },
+          subscribe: {
+            fromSequence: condition.position,
+            criteria: effectiveCriterions,
+            initialPermits: BigInt(PERMIT_BATCH),
+            blacklistedNames: [],
           },
         }
 
@@ -269,10 +266,7 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
 
       function grantPermits(count: number) {
         controlQueue.push({
-          request: {
-            $case: "permits" as const,
-            permits: { permits: count },
-          },
+          permits: { permits: BigInt(count) },
         })
         controlResolve?.()
       }
@@ -293,6 +287,10 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
           for await (const response of grpcStream) {
             if (completed) break
             const seqEvent = response.event
+            // StreamResponse is a oneof { event, heartbeat } since kronosdb v0.2.0.
+            // For heartbeat frames, response.event is undefined and this guard skips
+            // them transparently — no explicit heartbeat branch needed (RESEARCH.md
+            // KDB-03, Pitfall 3). Server emits one heartbeat every ~15 seconds.
             if (seqEvent?.event) {
               buffer.push({
                 sequence: seqEvent.sequence,
