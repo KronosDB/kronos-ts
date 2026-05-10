@@ -101,8 +101,26 @@ export interface PlatformOutbound {
   mergeEventProcessorSegment?:
     | EventProcessorSegmentReference
     | undefined;
+  /** Notification that the handler topology has changed (handlers registered/deregistered). */
+  topologyNotification?:
+    | TopologyNotification
+    | undefined;
   /** If set, the client must acknowledge this instruction. */
   instructionId: string;
+}
+
+/** Notification sent to connected platform clients when the handler topology changes. */
+export interface TopologyNotification {
+  /** Type of change: "handler_registered" or "handler_deregistered". */
+  changeType: string;
+  /** The message type (command or query name) affected. */
+  messageType: string;
+  /** Whether this is a command or query handler. */
+  handlerKind: string;
+  /** The client that registered/deregistered. */
+  clientId: string;
+  /** The component name. */
+  componentName: string;
 }
 
 /** Heartbeat message for liveness detection. */
@@ -644,6 +662,7 @@ function createBasePlatformOutbound(): PlatformOutbound {
     requestEventProcessorInfo: undefined,
     splitEventProcessorSegment: undefined,
     mergeEventProcessorSegment: undefined,
+    topologyNotification: undefined,
     instructionId: "",
   };
 }
@@ -676,6 +695,9 @@ export const PlatformOutbound: MessageFns<PlatformOutbound> = {
     }
     if (message.mergeEventProcessorSegment !== undefined) {
       EventProcessorSegmentReference.encode(message.mergeEventProcessorSegment, writer.uint32(74).fork()).join();
+    }
+    if (message.topologyNotification !== undefined) {
+      TopologyNotification.encode(message.topologyNotification, writer.uint32(90).fork()).join();
     }
     if (message.instructionId !== "") {
       writer.uint32(82).string(message.instructionId);
@@ -762,6 +784,14 @@ export const PlatformOutbound: MessageFns<PlatformOutbound> = {
           message.mergeEventProcessorSegment = EventProcessorSegmentReference.decode(reader, reader.uint32());
           continue;
         }
+        case 11: {
+          if (tag !== 90) {
+            break;
+          }
+
+          message.topologyNotification = TopologyNotification.decode(reader, reader.uint32());
+          continue;
+        }
         case 10: {
           if (tag !== 82) {
             break;
@@ -822,6 +852,11 @@ export const PlatformOutbound: MessageFns<PlatformOutbound> = {
         : isSet(object.merge_event_processor_segment)
         ? EventProcessorSegmentReference.fromJSON(object.merge_event_processor_segment)
         : undefined,
+      topologyNotification: isSet(object.topologyNotification)
+        ? TopologyNotification.fromJSON(object.topologyNotification)
+        : isSet(object.topology_notification)
+        ? TopologyNotification.fromJSON(object.topology_notification)
+        : undefined,
       instructionId: isSet(object.instructionId)
         ? globalThis.String(object.instructionId)
         : isSet(object.instruction_id)
@@ -858,6 +893,9 @@ export const PlatformOutbound: MessageFns<PlatformOutbound> = {
     }
     if (message.mergeEventProcessorSegment !== undefined) {
       obj.mergeEventProcessorSegment = EventProcessorSegmentReference.toJSON(message.mergeEventProcessorSegment);
+    }
+    if (message.topologyNotification !== undefined) {
+      obj.topologyNotification = TopologyNotification.toJSON(message.topologyNotification);
     }
     if (message.instructionId !== "") {
       obj.instructionId = message.instructionId;
@@ -900,7 +938,154 @@ export const PlatformOutbound: MessageFns<PlatformOutbound> = {
       (object.mergeEventProcessorSegment !== undefined && object.mergeEventProcessorSegment !== null)
         ? EventProcessorSegmentReference.fromPartial(object.mergeEventProcessorSegment)
         : undefined;
+    message.topologyNotification = (object.topologyNotification !== undefined && object.topologyNotification !== null)
+      ? TopologyNotification.fromPartial(object.topologyNotification)
+      : undefined;
     message.instructionId = object.instructionId ?? "";
+    return message;
+  },
+};
+
+function createBaseTopologyNotification(): TopologyNotification {
+  return { changeType: "", messageType: "", handlerKind: "", clientId: "", componentName: "" };
+}
+
+export const TopologyNotification: MessageFns<TopologyNotification> = {
+  encode(message: TopologyNotification, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.changeType !== "") {
+      writer.uint32(10).string(message.changeType);
+    }
+    if (message.messageType !== "") {
+      writer.uint32(18).string(message.messageType);
+    }
+    if (message.handlerKind !== "") {
+      writer.uint32(26).string(message.handlerKind);
+    }
+    if (message.clientId !== "") {
+      writer.uint32(34).string(message.clientId);
+    }
+    if (message.componentName !== "") {
+      writer.uint32(42).string(message.componentName);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TopologyNotification {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseTopologyNotification();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.changeType = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.messageType = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.handlerKind = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.clientId = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.componentName = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): TopologyNotification {
+    return {
+      changeType: isSet(object.changeType)
+        ? globalThis.String(object.changeType)
+        : isSet(object.change_type)
+        ? globalThis.String(object.change_type)
+        : "",
+      messageType: isSet(object.messageType)
+        ? globalThis.String(object.messageType)
+        : isSet(object.message_type)
+        ? globalThis.String(object.message_type)
+        : "",
+      handlerKind: isSet(object.handlerKind)
+        ? globalThis.String(object.handlerKind)
+        : isSet(object.handler_kind)
+        ? globalThis.String(object.handler_kind)
+        : "",
+      clientId: isSet(object.clientId)
+        ? globalThis.String(object.clientId)
+        : isSet(object.client_id)
+        ? globalThis.String(object.client_id)
+        : "",
+      componentName: isSet(object.componentName)
+        ? globalThis.String(object.componentName)
+        : isSet(object.component_name)
+        ? globalThis.String(object.component_name)
+        : "",
+    };
+  },
+
+  toJSON(message: TopologyNotification): unknown {
+    const obj: any = {};
+    if (message.changeType !== "") {
+      obj.changeType = message.changeType;
+    }
+    if (message.messageType !== "") {
+      obj.messageType = message.messageType;
+    }
+    if (message.handlerKind !== "") {
+      obj.handlerKind = message.handlerKind;
+    }
+    if (message.clientId !== "") {
+      obj.clientId = message.clientId;
+    }
+    if (message.componentName !== "") {
+      obj.componentName = message.componentName;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<TopologyNotification>): TopologyNotification {
+    return TopologyNotification.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<TopologyNotification>): TopologyNotification {
+    const message = createBaseTopologyNotification();
+    message.changeType = object.changeType ?? "";
+    message.messageType = object.messageType ?? "";
+    message.handlerKind = object.handlerKind ?? "";
+    message.clientId = object.clientId ?? "";
+    message.componentName = object.componentName ?? "";
     return message;
   },
 };

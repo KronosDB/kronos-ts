@@ -149,9 +149,21 @@ export interface StreamPermits {
   permits: bigint;
 }
 
-/** A matching event from the infinite stream. */
+/** A message on the event stream — either a matching event or a keep-alive heartbeat. */
 export interface StreamResponse {
-  event: SequencedEvent | undefined;
+  /** A matching event with its sequence. */
+  event?:
+    | SequencedEvent
+    | undefined;
+  /**
+   * Server heartbeat — sent periodically to detect slow/dead consumers.
+   * Clients should ignore this (no response needed).
+   */
+  heartbeat?: StreamHeartbeat | undefined;
+}
+
+/** Keep-alive heartbeat on event streams. */
+export interface StreamHeartbeat {
 }
 
 export interface GetHeadRequest {
@@ -1451,13 +1463,16 @@ export const StreamPermits: MessageFns<StreamPermits> = {
 };
 
 function createBaseStreamResponse(): StreamResponse {
-  return { event: undefined };
+  return { event: undefined, heartbeat: undefined };
 }
 
 export const StreamResponse: MessageFns<StreamResponse> = {
   encode(message: StreamResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.event !== undefined) {
       SequencedEvent.encode(message.event, writer.uint32(10).fork()).join();
+    }
+    if (message.heartbeat !== undefined) {
+      StreamHeartbeat.encode(message.heartbeat, writer.uint32(18).fork()).join();
     }
     return writer;
   },
@@ -1477,6 +1492,14 @@ export const StreamResponse: MessageFns<StreamResponse> = {
           message.event = SequencedEvent.decode(reader, reader.uint32());
           continue;
         }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.heartbeat = StreamHeartbeat.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1487,13 +1510,19 @@ export const StreamResponse: MessageFns<StreamResponse> = {
   },
 
   fromJSON(object: any): StreamResponse {
-    return { event: isSet(object.event) ? SequencedEvent.fromJSON(object.event) : undefined };
+    return {
+      event: isSet(object.event) ? SequencedEvent.fromJSON(object.event) : undefined,
+      heartbeat: isSet(object.heartbeat) ? StreamHeartbeat.fromJSON(object.heartbeat) : undefined,
+    };
   },
 
   toJSON(message: StreamResponse): unknown {
     const obj: any = {};
     if (message.event !== undefined) {
       obj.event = SequencedEvent.toJSON(message.event);
+    }
+    if (message.heartbeat !== undefined) {
+      obj.heartbeat = StreamHeartbeat.toJSON(message.heartbeat);
     }
     return obj;
   },
@@ -1506,6 +1535,52 @@ export const StreamResponse: MessageFns<StreamResponse> = {
     message.event = (object.event !== undefined && object.event !== null)
       ? SequencedEvent.fromPartial(object.event)
       : undefined;
+    message.heartbeat = (object.heartbeat !== undefined && object.heartbeat !== null)
+      ? StreamHeartbeat.fromPartial(object.heartbeat)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseStreamHeartbeat(): StreamHeartbeat {
+  return {};
+}
+
+export const StreamHeartbeat: MessageFns<StreamHeartbeat> = {
+  encode(_: StreamHeartbeat, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): StreamHeartbeat {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseStreamHeartbeat();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): StreamHeartbeat {
+    return {};
+  },
+
+  toJSON(_: StreamHeartbeat): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<StreamHeartbeat>): StreamHeartbeat {
+    return StreamHeartbeat.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<StreamHeartbeat>): StreamHeartbeat {
+    const message = createBaseStreamHeartbeat();
     return message;
   },
 };
@@ -1986,7 +2061,6 @@ export const EventStoreDefinition = {
     /**
      * Provides an infinite stream of events matching the given criteria.
      * Stays open and pushes new events as they are appended.
-     *
      * Bidirectional with permit-based flow control: the first client message
      * carries the criteria and initial permits. Subsequent messages grant
      * additional permits. The server only sends events when permits > 0.
@@ -2055,7 +2129,6 @@ export interface EventStoreServiceImplementation<CallContextExt = {}> {
   /**
    * Provides an infinite stream of events matching the given criteria.
    * Stays open and pushes new events as they are appended.
-   *
    * Bidirectional with permit-based flow control: the first client message
    * carries the criteria and initial permits. Subsequent messages grant
    * additional permits. The server only sends events when permits > 0.
@@ -2091,7 +2164,6 @@ export interface EventStoreClient<CallOptionsExt = {}> {
   /**
    * Provides an infinite stream of events matching the given criteria.
    * Stays open and pushes new events as they are appended.
-   *
    * Bidirectional with permit-based flow control: the first client message
    * carries the criteria and initial permits. Subsequent messages grant
    * additional permits. The server only sends events when permits > 0.
