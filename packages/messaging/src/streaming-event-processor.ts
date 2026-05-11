@@ -1,6 +1,6 @@
 import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
 import type { EventHandlerRegistration } from "./handler.js"
-import type { EventHandlersDefinition } from "./event-handler.js"
+import type { EventHandlerDefinition } from "./event-handler.js"
 import type { StreamableEventSource, MessageStream, SequencedEvent } from "./event-source.js"
 import type { UoWRunner } from "./unit-of-work.js"
 import { runInNewUoW } from "./unit-of-work.js"
@@ -64,7 +64,7 @@ export interface StreamingEventProcessor {
 export interface StreamingEventProcessorOptions {
   name: string
   eventSource: StreamableEventSource
-  handlerGroups: ReadonlyArray<EventHandlersDefinition>
+  eventHandlers: ReadonlyArray<EventHandlerDefinition>
   /** State manager injected into ALS at handler-invocation entry (D-44). */
   stateManager?: unknown
   /** Command bus injected into ALS at handler-invocation entry (D-44). */
@@ -79,6 +79,8 @@ export interface StreamingEventProcessorOptions {
   errorHandler?: EventProcessingErrorHandler
   /** Optional handler enhancer applied to all event handlers at setup time. */
   handlerEnhancer?: HandlerEnhancerDefinition
+  /** Plan 11-02: reset callback invoked from resetTokens(); replaces the deleted EventHandlersDefinition.onReset field. */
+  onReset?: () => Promise<void> | void
 }
 
 export function createStreamingEventProcessor(
@@ -87,7 +89,7 @@ export function createStreamingEventProcessor(
   const {
     name,
     eventSource,
-    handlerGroups,
+    eventHandlers,
     stateManager,
     commandBus,
     queryBus,
@@ -97,29 +99,28 @@ export function createStreamingEventProcessor(
     batchSize = 100,
     errorHandler = loggingErrorHandler(name),
     handlerEnhancer,
+    onReset,
   } = options
 
   const segment = 0
 
   const handlerMap = new Map<string, Array<EventHandlerRegistration<any>>>()
-  for (const group of handlerGroups) {
-    for (const reg of group.handlers) {
-      const eventName = qualifiedNameToString(reg.descriptor.name)
-      if (!handlerMap.has(eventName)) {
-        handlerMap.set(eventName, [])
-      }
-      const enhanced = handlerEnhancer
-        ? {
-            ...reg,
-            handler: handlerEnhancer.wrapHandler(reg.handler, {
-              messageType: "event" as const,
-              messageName: eventName,
-              handlerGroup: group.name,
-            }),
-          }
-        : reg
-      handlerMap.get(eventName)!.push(enhanced)
+  for (const reg of eventHandlers) {
+    const eventName = qualifiedNameToString(reg.descriptor.name)
+    if (!handlerMap.has(eventName)) {
+      handlerMap.set(eventName, [])
     }
+    const enhanced = handlerEnhancer
+      ? {
+          ...reg,
+          handler: handlerEnhancer.wrapHandler(reg.handler, {
+            messageType: "event" as const,
+            messageName: eventName,
+            handlerGroup: name,
+          }),
+        }
+      : reg
+    handlerMap.get(eventName)!.push(enhanced as EventHandlerRegistration<any>)
   }
 
   let token: TrackingToken = globalSequenceToken(0n)
@@ -322,10 +323,8 @@ export function createStreamingEventProcessor(
         await tokenStore.store(name, segment, token)
       }
 
-      for (const group of handlerGroups) {
-        if (group.onReset) {
-          await group.onReset()
-        }
+      if (onReset) {
+        await onReset()
       }
     },
 

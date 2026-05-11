@@ -1,7 +1,7 @@
 import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
 import type { EventMessage } from "./message.js"
 import type { EventHandlerRegistration } from "./handler.js"
-import type { EventHandlersDefinition } from "./event-handler.js"
+import type { EventHandlerDefinition } from "./event-handler.js"
 import type { UoWRunner } from "./unit-of-work.js"
 import { runInNewUoW } from "./unit-of-work.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
@@ -41,7 +41,7 @@ export interface SubscribingEventProcessor {
 export interface SubscribingEventProcessorOptions {
   name: string
   eventSource: SubscribableEventSource
-  handlerGroups: ReadonlyArray<EventHandlersDefinition>
+  eventHandlers: ReadonlyArray<EventHandlerDefinition>
   /** State manager injected into ALS at handler-invocation entry (D-44). */
   stateManager?: unknown
   /** Command bus injected into ALS at handler-invocation entry (D-44). */
@@ -74,7 +74,7 @@ export function createSubscribingEventProcessor(
   const {
     name,
     eventSource,
-    handlerGroups,
+    eventHandlers,
     stateManager,
     commandBus,
     queryBus,
@@ -86,27 +86,26 @@ export function createSubscribingEventProcessor(
 
   // Build handler lookup: eventName → handler[]
   // Plan 09-01: when a handlerEnhancer is supplied, wrap each handler at
-  // registration time symmetric to TrackingEventProcessor.
+  // registration time symmetric to TrackingEventProcessor. Plan 11-02:
+  // handlerGroup is now the processor name (no separate group identity).
   const handlerMap = new Map<string, EventHandlerRegistration<any>[]>()
-  for (const group of handlerGroups) {
-    for (const reg of group.handlers) {
-      const eventName = qualifiedNameToString(reg.descriptor.name)
-      const enhanced = handlerEnhancer
-        ? {
-            ...reg,
-            handler: handlerEnhancer.wrapHandler(reg.handler, {
-              messageType: "event" as const,
-              messageName: eventName,
-              handlerGroup: group.name,
-            }),
-          }
-        : reg
-      const existing = handlerMap.get(eventName)
-      if (existing) {
-        existing.push(enhanced)
-      } else {
-        handlerMap.set(eventName, [enhanced])
-      }
+  for (const reg of eventHandlers) {
+    const eventName = qualifiedNameToString(reg.descriptor.name)
+    const enhanced = handlerEnhancer
+      ? {
+          ...reg,
+          handler: handlerEnhancer.wrapHandler(reg.handler, {
+            messageType: "event" as const,
+            messageName: eventName,
+            handlerGroup: name,
+          }),
+        }
+      : reg
+    const existing = handlerMap.get(eventName)
+    if (existing) {
+      existing.push(enhanced as EventHandlerRegistration<any>)
+    } else {
+      handlerMap.set(eventName, [enhanced as EventHandlerRegistration<any>])
     }
   }
 
