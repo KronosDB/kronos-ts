@@ -1,13 +1,14 @@
 import { describe, expect, it, afterEach, beforeEach } from "bun:test"
 import { kronos, type RunningApp } from "@kronos-ts/core"
 import { createTestFixture, type TestFixture } from "@kronos-ts/test"
-import { configureCourses } from "../domain/courses/configuration.js"
-import { getCourseViews, clearCourseViews } from "../domain/courses/projections.js"
 import {
+  configureCourses,
+  getCourseViews,
+  clearCourseViews,
   CreateCourse, ChangeCourseCapacity, SubscribeStudent, UnsubscribeStudent,
   CourseCreated, CourseCapacityChanged, StudentSubscribed, StudentUnsubscribed,
   GetCourseView, GetAllCourses,
-} from "../domain/courses/messages.js"
+} from "../domain/courses/courses.js"
 
 // ============================================================================
 // Helper
