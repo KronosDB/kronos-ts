@@ -39,3 +39,6 @@ export {
   createPostgresSnapshotStore,
   type PostgresSnapshotStoreConfig,
 } from "./postgres-snapshot-store.js"
+
+// Extension factory (Plan 05)
+export { postgres, type PostgresConfig } from "./postgres.js"
