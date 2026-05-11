@@ -1,8 +1,9 @@
 /**
- * createPostgresEventStore — Plan 12-04 implementation of EventStorageEngine
- * source/appendEvents/append. The StreamableEventSource methods (open,
- * firstToken, latestToken, getHeadPosition, publish, subscribe) land in
- * Plan 12-05.
+ * createPostgresEventStore — full EventStorageEngine + EventBus implementation.
+ *
+ * Plan 12-04 delivered: source, appendEvents, append.
+ * Plan 12-05 adds: open (gap-free tailing via xid8 + pg_snapshot_xmin),
+ *   getHeadPosition, firstToken, latestToken, publish, subscribe.
  *
  * Append path:
  *   1. open transaction at READ COMMITTED
@@ -14,6 +15,12 @@
  *   5. INSERT events returning sequence_position for the ConsistencyMarker
  *   6. commit() → COMMIT; afterCommit() → marker; rollback() → fire-and-forget
  *      ROLLBACK (synchronous void per the framework contract)
+ *
+ * Streaming path (open):
+ *   - Watermark query: (transaction_id, sequence_position) > ($xid, $pos)
+ *     AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
+ *   - Wake-up via LISTEN/NOTIFY on `kronos_events_${tables.events}` channel
+ *   - Fallback to 250ms polling if LISTEN is not supported
  *
  * Note on the stored procedure (buildAppendStoredProcedureDDL): The SP is
  * registered in schema.ts and available on the DB, but this plan uses
@@ -27,13 +34,22 @@
 import type {
   EventStorageEngine,
   AppendTransaction,
+  EventStore,
 } from "@kronos-ts/eventsourcing"
 import { markerAt } from "@kronos-ts/eventsourcing"
 import type { ConsistencyMarker } from "@kronos-ts/eventsourcing"
 import type { SourcingCondition } from "@kronos-ts/eventsourcing"
 import type { SourcingResult } from "@kronos-ts/eventsourcing"
 import type { AppendCondition } from "@kronos-ts/eventsourcing"
-import type { EventMessage, EventCriteria } from "@kronos-ts/messaging"
+import type {
+  EventMessage,
+  EventCriteria,
+  MessageStream,
+  SequencedEvent,
+  StreamingCondition,
+  TrackingToken,
+} from "@kronos-ts/messaging"
+import { createMessageStream, globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/messaging"
 import { qualifiedNameToString, qualifiedNameFromString } from "@kronos-ts/common"
 import type { PostgresAdapter, PostgresAdapterTransaction } from "./adapter.js"
 import { IsolationLevel } from "./adapter.js"
@@ -60,17 +76,17 @@ export interface PostgresEventStoreConfig {
   readonly tableNames?: TableNames
 }
 
-// Partial — Plan 05 will augment this with the StreamableEventSource members.
-export type PartialEventStorageEngine = Pick<
-  EventStorageEngine,
-  "source" | "appendEvents" | "append"
->
-
 export function createPostgresEventStore(
   config: PostgresEventStoreConfig,
-): PartialEventStorageEngine {
+): EventStore {
   const { adapter, tagResolver } = config
   const tables = config.tableNames ?? DEFAULT_TABLE_NAMES
+
+  // Push-based subscriber registry (EventBus.subscribe contract)
+  const eventSubscribers = new Set<(events: ReadonlyArray<EventMessage>) => Promise<void>>()
+
+  // LISTEN/NOTIFY channel name for wake-up of tailing streams (D-12.14)
+  const notifyChannel = `kronos_events_${tables.events}`
 
   function eventTypeOf(e: EventMessage): string {
     return qualifiedNameToString(e.name)
@@ -287,6 +303,11 @@ export function createPostgresEventStore(
           committed = true
           resolveTxControl("commit")
           await outer
+          // Wake up tailing streams + notify push-based subscribers after commit
+          await adapter.query(`NOTIFY ${notifyChannel}`)
+          for (const sub of eventSubscribers) {
+            try { await sub(events) } catch { /* ignore subscriber errors */ }
+          }
         },
         async afterCommit() {
           const result = await outer
@@ -309,8 +330,9 @@ export function createPostgresEventStore(
     ): Promise<ConsistencyMarker> {
       // Convenience: appendEvents + commit + afterCommit in one shot.
       const targets = lockTargetsForCondition(condition)
+      let marker: ConsistencyMarker
       try {
-        return await adapter.transaction(IsolationLevel.READ_COMMITTED, async (tx) => {
+        marker = await adapter.transaction(IsolationLevel.READ_COMMITTED, async (tx) => {
           await acquireWriteLocks(tx, targets)
           const captured = await checkAndInsert(tx, events, condition)
           return markerAt(captured.position)
@@ -325,6 +347,214 @@ export function createPostgresEventStore(
         }
         throw err
       }
+      // Wake up tailing streams + notify push-based subscribers
+      await adapter.query(`NOTIFY ${notifyChannel}`)
+      for (const sub of eventSubscribers) {
+        try { await sub(events) } catch { /* ignore subscriber errors */ }
+      }
+      return marker
+    },
+
+    async getHeadPosition(): Promise<bigint> {
+      const row = await adapter.queryOne<{ head: string | null }>(
+        `SELECT COALESCE(MAX(sequence_position), 0)::text AS head FROM ${tables.events}`,
+      )
+      return row?.head ? BigInt(row.head) : 0n
+    },
+
+    async firstToken(): Promise<TrackingToken> {
+      return FIRST_TOKEN
+    },
+
+    async latestToken(): Promise<TrackingToken> {
+      const row = await adapter.queryOne<{ head: string | null }>(
+        `SELECT COALESCE(MAX(sequence_position), 0)::text AS head FROM ${tables.events}`,
+      )
+      const head = row?.head ? BigInt(row.head) : 0n
+      return globalSequenceToken(head)
+    },
+
+    async publish(events: ReadonlyArray<EventMessage>): Promise<void> {
+      // publish = append without condition; also notifies subscribers + streams
+      const targets: LockTarget[] = []
+      let marker: ConsistencyMarker
+      try {
+        marker = await adapter.transaction(IsolationLevel.READ_COMMITTED, async (tx) => {
+          await acquireWriteLocks(tx, targets)
+          const captured = await checkAndInsert(tx, events, undefined)
+          return markerAt(captured.position)
+        })
+      } catch (err) {
+        if ((err as { code?: string }).code === "23505") {
+          throw AppendConditionError.fromConflictCount(0, -1n)
+        }
+        throw err
+      }
+      void marker
+      await adapter.query(`NOTIFY ${notifyChannel}`)
+      for (const sub of eventSubscribers) {
+        try { await sub(events) } catch { /* ignore subscriber errors */ }
+      }
+    },
+
+    subscribe(
+      handler: (events: ReadonlyArray<EventMessage>) => Promise<void>,
+    ): () => void {
+      eventSubscribers.add(handler)
+      return () => {
+        eventSubscribers.delete(handler)
+      }
+    },
+
+    open(condition: StreamingCondition): MessageStream<SequencedEvent> {
+      let cursorPosition = condition.position
+      // The (xid8, position) tuple bookmark. We start with xid8 = '0' which is
+      // less than any real xid8 — so the (xid8, position) > ($1, $2) predicate
+      // collapses to effectively position > $2 on first read.
+      let cursorXid = "0"
+      const criteria = condition.criteria
+      let closed = false
+      let onAvailable: (() => void) | null = null
+      const buffer: SequencedEvent[] = []
+      let polling = false
+      let listenSub: { unlisten: () => Promise<void> } | undefined
+
+      async function fetchBatch(limit = 100): Promise<void> {
+        if (closed) return
+        // When we have a real xid cursor, use the (xid8, position) tuple comparison
+        // for gap-free ordering. On initial fetch (cursorXid = "0") we don't yet
+        // have a real xid, so fall back to a plain sequence_position > $cursor filter —
+        // the pg_snapshot_xmin watermark still applies to exclude in-flight transactions.
+        let sql: string
+        let queryParams: unknown[]
+
+        if (cursorXid === "0") {
+          // Initial fetch: simple position filter — all committed events after cursorPosition.
+          // $1 = position, criteria starts at $2
+          const builtInitial = criteria
+            ? buildCriteriaWhere(criteria, 2)
+            : { where: "true", params: [] as unknown[], nextParamIndex: 2 }
+          const limitParam = builtInitial.nextParamIndex
+          sql = `
+            SELECT sequence_position::text AS sequence_position,
+                   transaction_id::text AS transaction_id,
+                   type, tags, payload, metadata
+            FROM ${tables.events}
+            WHERE sequence_position > $1::bigint
+              AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
+              AND (${builtInitial.where})
+            ORDER BY transaction_id ASC, sequence_position ASC
+            LIMIT $${limitParam}
+          `
+          queryParams = [String(cursorPosition), ...builtInitial.params, limit]
+        } else {
+          // Subsequent fetch: (xid8, position) tuple comparison for gap-free ordering.
+          // $1 = xid, $2 = position, criteria starts at $3
+          const builtTuple = criteria
+            ? buildCriteriaWhere(criteria, 3)
+            : { where: "true", params: [] as unknown[], nextParamIndex: 3 }
+          const limitParam = builtTuple.nextParamIndex
+          sql = `
+            SELECT sequence_position::text AS sequence_position,
+                   transaction_id::text AS transaction_id,
+                   type, tags, payload, metadata
+            FROM ${tables.events}
+            WHERE (transaction_id, sequence_position) > ($1::xid8, $2::bigint)
+              AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
+              AND (${builtTuple.where})
+            ORDER BY transaction_id ASC, sequence_position ASC
+            LIMIT $${limitParam}
+          `
+          queryParams = [cursorXid, String(cursorPosition), ...builtTuple.params, limit]
+        }
+
+        const rows = await adapter.query<{
+          sequence_position: string
+          transaction_id: string
+          type: string
+          tags: string[]
+          payload: unknown
+          metadata: unknown
+        }>(sql, queryParams)
+
+        for (const r of rows) {
+          const event = decodeEvent(r)
+          const seq = BigInt(r.sequence_position)
+          buffer.push({ sequence: seq, event })
+          cursorXid = r.transaction_id
+          cursorPosition = seq
+        }
+      }
+
+      async function pump(): Promise<void> {
+        if (polling || closed) return
+        polling = true
+        try {
+          await fetchBatch()
+          if (buffer.length > 0 && onAvailable) onAvailable()
+        } finally {
+          polling = false
+        }
+      }
+
+      // Start polling immediately so we don't miss events that were committed
+      // before the LISTEN subscription is established. The poll interval is
+      // replaced by NOTIFY-driven pumps once LISTEN is up.
+      let pollInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+        if (closed) {
+          clearInterval(pollInterval)
+          pollInterval = undefined
+          return
+        }
+        void pump()
+      }, 250)
+
+      // Wake-up via LISTEN/NOTIFY — supplements polling with instant delivery
+      void adapter
+        .listen(notifyChannel, () => {
+          void pump()
+        })
+        .then((sub) => {
+          listenSub = sub
+          // Keep polling as a safety net even with LISTEN active.
+          // The 250ms interval is cheap (no-op when no new events).
+        })
+        .catch(() => {
+          // LISTEN not supported — polling fallback already running above
+        })
+
+      // Also run an immediate fetch to pick up any pre-existing events
+      void pump()
+
+      return createMessageStream<SequencedEvent>({
+        next() {
+          return buffer.shift()
+        },
+        peek() {
+          return buffer[0]
+        },
+        hasNextAvailable() {
+          return buffer.length > 0
+        },
+        setCallback(cb: () => void) {
+          onAvailable = cb
+        },
+        isCompleted() {
+          return closed
+        },
+        error() {
+          return undefined
+        },
+        close() {
+          closed = true
+          onAvailable = null
+          if (pollInterval) {
+            clearInterval(pollInterval)
+            pollInterval = undefined
+          }
+          if (listenSub) void listenSub.unlisten()
+        },
+      })
     },
   }
 }
