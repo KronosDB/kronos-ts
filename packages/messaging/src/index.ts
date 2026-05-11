@@ -76,12 +76,16 @@ export {
 export {
   type EventHandlersDefinition,
   eventHandlers,
+  type EventHandlerDefinition,
+  eventHandler,
 } from "./event-handler.js"
 
 // Query handlers
 export {
   type QueryHandlersDefinition,
   queryHandlers,
+  type QueryHandlerDefinition,
+  queryHandler,
 } from "./query-handler.js"
 
 // Interceptors
