@@ -1,7 +1,6 @@
 // Public entry point for @kronos-ts/postgres.
 //
 // Wave-1 only exports the error surface; subsequent waves layer in:
-//   Plan 03 — adapter interface (./adapter.js)
 //   Plan 04 — postgres() extension factory + PostgresConfig (./postgres.js),
 //             createPostgresEventStore (./postgres-event-store.js)
 //   Plan 05 — createPostgresSnapshotStore (./postgres-snapshot-store.js)
@@ -15,3 +14,14 @@ export {
   KRONOS_DCB_VIOLATION_SQLSTATE,
   isDcbViolation,
 } from "./errors.js"
+
+// Adapter contract types (re-export so users can write
+// `function myFn(adapter: PostgresAdapter)` against the package root).
+// Adapter implementations stay sub-path-only.
+export {
+  IsolationLevel,
+  type PostgresAdapter,
+  type PostgresAdapterTransaction,
+  type ListenSubscription,
+  type QueryRow,
+} from "./adapter.js"
