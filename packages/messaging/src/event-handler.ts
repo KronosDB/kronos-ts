@@ -1,56 +1,10 @@
 import type { z } from "zod"
 import type { Metadata } from "@kronos-ts/common"
 import type { EventDescriptor } from "./descriptor.js"
-import type { EventHandlerRegistration } from "./handler.js"
-
-/**
- * A named group of event handlers — can be a simple projection,
- * a process manager (if it uses state + commands), or anything in between.
- *
- * @deprecated Plan 11-04 deletes this in favour of the singular {@link eventHandler}
- * factory + processor-builder varargs. Kept transitionally in Plan 11-01 so the
- * tree stays green; do NOT add new callers.
- */
-export interface EventHandlersDefinition {
-  readonly kind: "event-handlers"
-  readonly name: string
-  readonly handlers: ReadonlyArray<EventHandlerRegistration<any>>
-  readonly sequencedBy?: (event: unknown) => unknown
-  readonly onReset?: () => Promise<void> | void
-}
-
-/**
- * Defines a group of event handlers.
- *
- * ```
- * eventHandlers({
- *   name: "course-projection",
- *   handlers: [
- *     on(CourseCreated, async (event) => {
- *       await db.courses.insert({ id: event.courseId, name: event.name })
- *     }),
- *   ],
- * })
- * ```
- *
- * @deprecated Plan 11-04 deletes this in favour of the singular {@link eventHandler}
- * factory + processor-builder varargs. Kept transitionally in Plan 11-01 so the
- * tree stays green; do NOT add new callers.
- */
-export function eventHandlers(def: {
-  name: string
-  handlers: EventHandlerRegistration<any>[]
-  sequencedBy?: (event: unknown) => unknown
-  onReset?: () => Promise<void> | void
-}): EventHandlersDefinition {
-  return { kind: "event-handlers", ...def }
-}
 
 // ---------------------------------------------------------------------------
-// Singular factory (Plan 11-01) — mirrors commandHandler / queryHandler.
-// The processor builder consumes these via `.eventHandlers(...handlers)` varargs;
-// see Plan 11-02 for the builder migration and Plan 11-04 for the grouped-form
-// deletion that completes the symmetric API.
+// Singular factory — mirrors commandHandler / queryHandler.
+// The processor builder consumes these via `.eventHandlers(...handlers)` varargs.
 // ---------------------------------------------------------------------------
 
 /**
@@ -58,10 +12,6 @@ export function eventHandlers(def: {
  * function. Mirrors {@link import("./command-handler.js").CommandHandlerDefinition}
  * structurally so all three handler shapes (command / event / query) share the same
  * pattern.
- *
- * Note: `kind: "event-handler"` overlaps with
- * {@link import("./handler.js").EventHandlerRegistration} on purpose — Plan 11-04
- * collapses the two once the grouped {@link EventHandlersDefinition} disappears.
  */
 export interface EventHandlerDefinition<P extends z.ZodType = z.ZodType> {
   readonly kind: "event-handler"

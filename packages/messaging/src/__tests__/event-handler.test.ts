@@ -4,7 +4,6 @@ import { qn, emptyMetadata } from "@kronos-ts/common"
 import { event } from "../descriptor.js"
 import {
   eventHandler,
-  eventHandlers,
   type EventHandlerDefinition,
 } from "../event-handler.js"
 
@@ -61,15 +60,4 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
     expect(def.kind).toBe("event-handler")
   })
 
-  it("old eventHandlers({...}) grouped factory is still exported and functional", () => {
-    // Plan 11-01 is purely additive — grouped factory MUST still work.
-    // Deletion deferred to Plan 11-04.
-    const group = eventHandlers({
-      name: "course-projection",
-      handlers: [],
-    })
-
-    expect(group.kind).toBe("event-handlers")
-    expect(group.name).toBe("course-projection")
-  })
 })

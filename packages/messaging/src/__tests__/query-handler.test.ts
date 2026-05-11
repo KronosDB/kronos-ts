@@ -4,7 +4,6 @@ import { qn, emptyMetadata } from "@kronos-ts/common"
 import { query } from "../descriptor.js"
 import {
   queryHandler,
-  queryHandlers,
   type QueryHandlerDefinition,
 } from "../query-handler.js"
 
@@ -57,15 +56,4 @@ describe("queryHandler() — singular factory (Phase 11-01)", () => {
     expect(def.kind).toBe("query-handler")
   })
 
-  it("old queryHandlers({...}) grouped factory is still exported and functional", () => {
-    // Plan 11-01 is purely additive — grouped factory MUST still work.
-    // Deletion deferred to Plan 11-04.
-    const group = queryHandlers({
-      name: "course-queries",
-      handlers: [],
-    })
-
-    expect(group.kind).toBe("query-handlers")
-    expect(group.name).toBe("course-queries")
-  })
 })
