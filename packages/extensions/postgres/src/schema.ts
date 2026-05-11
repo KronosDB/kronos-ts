@@ -92,6 +92,81 @@ export interface BootstrapSchemaOptions {
 }
 
 /**
+ * Append-with-DCB-check stored procedure.
+ *
+ * Called from `createPostgresEventStore.appendEvents` (Plan 04 Task 3)
+ * after advisory-lock acquisition. The SP is the single SQL statement
+ * that BOTH performs the conflict check AND inserts the new events —
+ * keeping them atomic without round-tripping a separate SELECT.
+ *
+ * Inputs (positional):
+ *   $1  marker_position      bigint     — the AppendCondition.marker.position
+ *   $2  has_condition        boolean    — false ⇒ skip the conflict check
+ *   $3  criteria_where_sql   text       — Plan 04's criteria-sql builder output
+ *   $4  criteria_params      jsonb      — parameter array for criteria_where_sql
+ *   $5  event_ids            uuid[]     — N event identifiers (EventMessage.identifier, UUID v7)
+ *   $6  event_types          text[]     — N event types (one per event)
+ *   $7  event_tags           text[][]   — N tag arrays
+ *   $8  event_payloads       jsonb[]    — N JSONB payloads
+ *   $9  event_metadata       jsonb[]    — N metadata maps
+ *
+ * Returns: TABLE(out_position bigint, out_xid xid8) — one row per inserted event.
+ *          The last row carries the consistency marker.
+ *
+ * On conflict: RAISE EXCEPTION USING ERRCODE = 'KR001' (D-12.12).
+ * On duplicate event_id (UNIQUE violation): Postgres raises SQLSTATE 23505;
+ * caller treats as idempotent no-op or surfaces per consumer policy.
+ *
+ * NOTE: dynamic-SQL is used (EXECUTE) because the criteria WHERE clause is
+ * parameter-shaped and varies per call. SQL injection is mitigated by the
+ * fact that criteria_where_sql is produced by buildCriteriaWhere — a typed
+ * builder that NEVER concatenates user data into the WHERE string (all user
+ * data flows through criteria_params as JSONB).
+ */
+export function buildAppendStoredProcedureDDL(tables: TableNames): string {
+  return `CREATE OR REPLACE FUNCTION kronos_append_with_check(
+  marker_position    bigint,
+  has_condition      boolean,
+  criteria_where_sql text,
+  criteria_params    jsonb,
+  event_ids          uuid[],
+  event_types        text[],
+  event_tags         text[][],
+  event_payloads     jsonb[],
+  event_metadata     jsonb[]
+) RETURNS TABLE(out_position bigint, out_xid xid8) AS $$
+DECLARE
+  conflict_count bigint;
+  i integer;
+BEGIN
+  IF has_condition THEN
+    EXECUTE format(
+      'SELECT count(*) FROM ${tables.events} WHERE sequence_position > $1 AND (%s)',
+      criteria_where_sql
+    )
+    USING marker_position, criteria_params
+    INTO conflict_count;
+
+    IF conflict_count > 0 THEN
+      RAISE EXCEPTION 'Append condition violated: % conflicting event(s) after position %',
+        conflict_count, marker_position
+        USING ERRCODE = 'KR001';
+    END IF;
+  END IF;
+
+  FOR i IN 1 .. array_length(event_types, 1) LOOP
+    -- event_id UNIQUE constraint surfaces duplicates as SQLSTATE 23505 (D-12.12);
+    -- caller (Plan 04 Task 3) maps that to AppendConditionError or idempotent skip.
+    INSERT INTO ${tables.events} (event_id, type, tags, payload, metadata)
+    VALUES (event_ids[i], event_types[i], event_tags[i:i][1], event_payloads[i], event_metadata[i])
+    RETURNING sequence_position, transaction_id INTO out_position, out_xid;
+    RETURN NEXT;
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql;`
+}
+
+/**
  * Idempotently create the event-store schema.
  *
  * Holds a session-scoped advisory lock (KRONOS_SCHEMA_LOCK_KEY) for the
@@ -102,8 +177,8 @@ export interface BootstrapSchemaOptions {
  * NEVER leak a session lock that would block all subsequent bootstraps
  * on the same connection.
  *
- * Stored-procedure DDL for the append path is NOT applied here — Plan
- * 12-04 authors the SP and a follow-up bootstrap step.
+ * The append stored procedure is applied as part of bootstrap so that
+ * the SP is always up-to-date with the schema version.
  */
 export async function bootstrapSchema(
   adapter: SchemaBootstrapAdapter,
@@ -120,6 +195,7 @@ export async function bootstrapSchema(
     await adapter.query(buildEventsTableDDL(tables))
     await adapter.query(buildEventsIndexesDDL(tables))
     await adapter.query(buildSnapshotsTableDDL(tables))
+    await adapter.query(buildAppendStoredProcedureDDL(tables))
   } finally {
     // Release even on partial-DDL failure. The error (if any) propagates
     // to the caller after the lock has been freed.
