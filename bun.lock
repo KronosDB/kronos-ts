@@ -228,6 +228,30 @@
         "zod": "^3.23.0",
       },
     },
+    "packages/extensions/postgres": {
+      "name": "@kronos-ts/postgres",
+      "version": "0.1.0",
+      "dependencies": {
+        "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/core": "workspace:*",
+        "@kronos-ts/eventsourcing": "workspace:*",
+        "@kronos-ts/messaging": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/pg": "^8.11.0",
+        "pg": "^8.20.0",
+        "postgres": "^3.4.9",
+        "testcontainers": "^11.14.0",
+      },
+      "peerDependencies": {
+        "pg": ">=8.0.0",
+        "postgres": ">=3.0.0",
+      },
+      "optionalPeers": [
+        "pg",
+        "postgres",
+      ],
+    },
     "packages/extensions/prisma": {
       "name": "@kronos-ts/extensions/prisma",
       "version": "0.1.0",
@@ -348,6 +372,8 @@
     "@kronos-ts/messaging": ["@kronos-ts/messaging@workspace:packages/messaging"],
 
     "@kronos-ts/modelling": ["@kronos-ts/modelling@workspace:packages/modelling"],
+
+    "@kronos-ts/postgres": ["@kronos-ts/postgres@workspace:packages/extensions/postgres"],
 
     "@kronos-ts/test": ["@kronos-ts/test@workspace:packages/test"],
 
@@ -1100,6 +1126,8 @@
     "@kronos-ts/messaging/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@kronos-ts/modelling/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@kronos-ts/postgres/testcontainers": ["testcontainers@11.14.0", "", { "dependencies": { "@balena/dockerignore": "^1.0.2", "@types/dockerode": "^4.0.1", "archiver": "^7.0.1", "async-lock": "^1.4.1", "byline": "^5.0.0", "debug": "^4.4.3", "docker-compose": "^1.4.2", "dockerode": "^4.0.10", "get-port": "^7.2.0", "proper-lockfile": "^4.1.2", "properties-reader": "^3.0.1", "ssh-remote-port-forward": "^1.0.4", "tar-fs": "^3.1.2", "tmp": "^0.2.5", "undici": "^7.24.5" } }, "sha512-r9pniwv/iwzyHaI7gwAvAm4Y+IvjJg3vBWdjrUCaDMc2AXIr4jKbq7jJO18Mw2ybs73pZy1Aj7p/4RVBGMRWjg=="],
 
     "@kronos-ts/test/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
