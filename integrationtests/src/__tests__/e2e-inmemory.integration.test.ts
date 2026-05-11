@@ -25,7 +25,7 @@ import {
   on,
   commandHandler,
   eventHandler,
-  queryHandlers,
+  queryHandler,
   EventCriteria,
   trackingProcessor,
   subscribingProcessor,
@@ -173,21 +173,19 @@ function createProjection() {
     }),
   ]
 
-  const queries = queryHandlers({
-    name: "course-queries",
-    handlers: [
-      on(GetCourseView, async (q) => {
-        const view = courseViews.get(q.courseId)
-        if (!view) throw new Error("Course not found")
-        return view
-      }),
-      on(GetAllCourses, async () => {
-        return [...courseViews.values()]
-      }),
-    ],
+  const getCourseView = queryHandler(GetCourseView, async (q, _metadata) => {
+    const view = courseViews.get(q.courseId)
+    if (!view) throw new Error("Course not found")
+    return view
   })
 
-  return { projectionHandlers, queries, courseViews }
+  const getAllCourses = queryHandler(GetAllCourses, async (_q, _metadata) => {
+    return [...courseViews.values()]
+  })
+
+  const queryHandlersList = [getCourseView, getAllCourses]
+
+  return { projectionHandlers, queryHandlers: queryHandlersList, courseViews }
 }
 
 // ============================================================================
@@ -241,12 +239,12 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("command → event → processor → projection → query", async () => {
     // given
-    const { projectionHandlers, queries, courseViews } = createProjection()
+    const { projectionHandlers, queryHandlers, courseViews } = createProjection()
 
     running = await kronos({ quiet: true })
       .entities(CourseEntity)
       .commands(createCourse, changeCourseCapacity, subscribeStudent)
-      .queries(queries)
+      .queries(...queryHandlers)
       .processors(
         trackingProcessor("course-projection")
           .eventHandlers(...projectionHandlers)
@@ -272,12 +270,12 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("enforces business rules across commands", async () => {
     // given
-    const { projectionHandlers, queries } = createProjection()
+    const { projectionHandlers, queryHandlers } = createProjection()
 
     running = await kronos({ quiet: true })
       .entities(CourseEntity)
       .commands(createCourse, subscribeStudent)
-      .queries(queries)
+      .queries(...queryHandlers)
       .processors(
         trackingProcessor("course-projection")
           .eventHandlers(...projectionHandlers)
@@ -314,12 +312,12 @@ describe("E2E: In-memory full CQRS flow", () => {
   it("snapshots accelerate entity loading", async () => {
     // given
     const snapshotStore: SnapshotStore = createInMemorySnapshotStore()
-    const { projectionHandlers, queries } = createProjection()
+    const { projectionHandlers, queryHandlers } = createProjection()
 
     running = await kronos({ quiet: true })
       .entities([CourseEntity, { snapshotPolicy: afterEvents(3), snapshotStore }])
       .commands(createCourse, changeCourseCapacity)
-      .queries(queries)
+      .queries(...queryHandlers)
       .processors(
         trackingProcessor("course-projection")
           .eventHandlers(...projectionHandlers)
@@ -371,7 +369,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("multiple processors operate independently", async () => {
     // given
-    const { projectionHandlers, queries, courseViews } = createProjection()
+    const { projectionHandlers, queryHandlers, courseViews } = createProjection()
     const auditLog: string[] = []
 
     const auditOnCourseCreated = eventHandler(CourseCreated, async (e) => { auditLog.push(`created:${e.courseId}`) })
@@ -380,7 +378,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     running = await kronos({ quiet: true })
       .entities(CourseEntity)
       .commands(createCourse, subscribeStudent)
-      .queries(queries)
+      .queries(...queryHandlers)
       .processors(
         trackingProcessor("course-projection")
           .eventHandlers(...projectionHandlers)
@@ -438,12 +436,12 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("query returns all courses", async () => {
     // given
-    const { projectionHandlers, queries, courseViews } = createProjection()
+    const { projectionHandlers, queryHandlers, courseViews } = createProjection()
 
     running = await kronos({ quiet: true })
       .entities(CourseEntity)
       .commands(createCourse)
-      .queries(queries)
+      .queries(...queryHandlers)
       .processors(
         trackingProcessor("course-projection")
           .eventHandlers(...projectionHandlers)

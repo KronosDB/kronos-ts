@@ -14,13 +14,11 @@ describe("AppImpl — fluent API", () => {
     const dummyEntity = {} as any
     const dummyHandler = {} as any
     const dummyQueryHandler = {} as any
-    const dummyEventHandler = {} as any
     const dummyProcessor = {} as any
 
     expect(app.entities(dummyEntity)).toBe(app)
     expect(app.commands(dummyHandler)).toBe(app)
     expect(app.queries(dummyQueryHandler)).toBe(app)
-    expect(app.events(dummyEventHandler)).toBe(app)
     expect(app.processors(dummyProcessor)).toBe(app)
     expect(app.use(() => {})).toBe(app)
   })
@@ -42,7 +40,6 @@ describe("AppImpl — fluent API", () => {
     expect(() => app.entities({} as any)).toThrow(AppAlreadyStartedError)
     expect(() => app.commands({} as any)).toThrow(AppAlreadyStartedError)
     expect(() => app.queries({} as any)).toThrow(AppAlreadyStartedError)
-    expect(() => app.events({} as any)).toThrow(AppAlreadyStartedError)
     expect(() => app.processors({} as any)).toThrow(AppAlreadyStartedError)
     expect(() => app.use(() => {})).toThrow(AppAlreadyStartedError)
     expect(() => app.set("serializer", {} as any)).toThrow(AppAlreadyStartedError)

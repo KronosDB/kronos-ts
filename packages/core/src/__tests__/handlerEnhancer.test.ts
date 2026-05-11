@@ -16,7 +16,7 @@ import {
   event,
   on,
   commandHandler,
-  queryHandlers,
+  queryHandler,
   eventHandler,
   query,
   EventCriteria,
@@ -127,12 +127,9 @@ describe("handlerEnhancer wires through command handler registration", () => {
 describe("handlerEnhancer wires through query handler registration", () => {
   it("composedEnhancer wraps query handlers — TRACED: marker visible on return", async () => {
     const recorded: Array<any> = []
-    const echoHandlers = queryHandlers({
-      name: "echo-queries",
-      handlers: [on(Echo, async (payload) => `OK:${payload.id}`)],
-    })
+    const echo = queryHandler(Echo, async (payload, _metadata) => `OK:${payload.id}`)
     const app = kronos({ quiet: true })
-      .queries(echoHandlers)
+      .queries(echo)
       .handlerEnhancer(tracingEnhancer("TRACED:", recorded))
     const running = await app.start()
     try {

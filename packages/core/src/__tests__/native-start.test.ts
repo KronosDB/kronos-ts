@@ -4,8 +4,8 @@
  * Documentary test: pins the post-Plan-03a wiring claim. After this lands,
  * `app.ts` no longer imports EventSourcingConfigurer; native helpers
  * (registerCommandHandlersNatively, registerQueryHandlersNatively, raw event
- * processors built from .events()/.processors() registrations) drive the
- * entire startup path. Plan 04 will physically delete the configurer.
+ * processors built from .processors() registrations) drive the entire
+ * startup path. Plan 04 will physically delete the configurer.
  */
 import { describe, it, expect } from "bun:test"
 import { z } from "zod"
@@ -15,7 +15,7 @@ import {
   event,
   on,
   commandHandler,
-  queryHandlers,
+  queryHandler,
   eventHandler,
   query,
   EventCriteria,
@@ -73,13 +73,8 @@ describe("native App.start() — end-to-end without configurer (Plan 03a)", () =
   })
 
   it("Test 2: subscribes query handlers natively and returns the handler's result", async () => {
-    const queries = queryHandlers({
-      name: "thing-queries",
-      handlers: [
-        on(GetThing, async (payload) => ({ id: payload.id, created: true })),
-      ],
-    })
-    const app = kronos({ quiet: true }).queries(queries)
+    const getThing = queryHandler(GetThing, async (payload, _metadata) => ({ id: payload.id, created: true }))
+    const app = kronos({ quiet: true }).queries(getThing)
     const running = await app.start()
     const result = await running.queryGateway.query(
       GetThing,

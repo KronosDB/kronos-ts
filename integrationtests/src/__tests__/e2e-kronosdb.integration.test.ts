@@ -17,7 +17,7 @@ import {
   on,
   commandHandler,
   eventHandler,
-  queryHandlers,
+  queryHandler,
   EventCriteria,
   trackingProcessor,
   emitUpdate,
@@ -104,15 +104,10 @@ const onStudentSubscribed = eventHandler(StudentSubscribed, async (e, _metadata)
   }
 })
 
-const courseQueries = queryHandlers({
-  name: "course-queries",
-  handlers: [
-    on(GetCourse, async (q) => {
-      const view = courseViews.get(q.courseId)
-      if (!view) throw new Error("Course not found")
-      return view
-    }),
-  ],
+const getCourse = queryHandler(GetCourse, async (q, _metadata) => {
+  const view = courseViews.get(q.courseId)
+  if (!view) throw new Error("Course not found")
+  return view
 })
 
 // ============================================================================
@@ -168,7 +163,7 @@ describe("E2E: KronosDB full stack", () => {
     app = await kronos({ quiet: true })
       .entities(CourseEntity)
       .commands(createCourse, subscribeStudent)
-      .queries(courseQueries)
+      .queries(getCourse)
       .processors(
         trackingProcessor("kronosdb-course-projection")
           .eventHandlers(onCourseCreated, onStudentSubscribed)

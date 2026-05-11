@@ -7,7 +7,7 @@ import {
   on,
   commandHandler,
   eventHandler,
-  queryHandlers, // transitional — Plan 11-04 swaps for queryHandler singular
+  queryHandler,
   trackingProcessor,
   emitUpdate,
 } from "@kronos-ts/messaging"
@@ -181,25 +181,21 @@ const onUnsubscribed = eventHandler(StudentUnsubscribed, async (e, _metadata) =>
 })
 
 // ---------------------------------------------------------------------------
-// Query handlers (TRANSITIONAL grouped form — Plan 11-04 flips to singular `queryHandler`)
+// Query handlers (singular)
 // ---------------------------------------------------------------------------
 
-const courseQueries = queryHandlers({
-  name: "course-queries",
-  handlers: [
-    on(GetCourseView, async (q) => {
-      const view = courseViews.get(q.courseId)
-      if (!view) throw new Error(`Course "${q.courseId}" not found`)
-      return view
-    }),
-    on(GetAllCourses, async () => {
-      return [...courseViews.values()].map((v) => ({
-        courseId: v.courseId,
-        name: v.name,
-        enrolledCount: v.enrolledCount,
-      }))
-    }),
-  ],
+const getCourseView = queryHandler(GetCourseView, async (q, _metadata) => {
+  const view = courseViews.get(q.courseId)
+  if (!view) throw new Error(`Course "${q.courseId}" not found`)
+  return view
+})
+
+const getAllCourses = queryHandler(GetAllCourses, async (_q, _metadata) => {
+  return [...courseViews.values()].map((v) => ({
+    courseId: v.courseId,
+    name: v.name,
+    enrolledCount: v.enrolledCount,
+  }))
 })
 
 // ---------------------------------------------------------------------------
@@ -220,7 +216,7 @@ const courseQueries = queryHandlers({
 export function configureCourses(app: App): void {
   app.entities(CourseEntity)
   app.commands(createCourse, changeCourseCapacity, subscribeStudent, unsubscribeStudent)
-  app.queries(courseQueries)
+  app.queries(getCourseView, getAllCourses)
   app.processors(
     trackingProcessor("course-projection")
       .eventHandlers(onCreated, onCapChanged, onSubscribed, onUnsubscribed)

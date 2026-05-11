@@ -19,7 +19,7 @@ import {
   on,
   commandHandler,
   eventHandler,
-  queryHandlers,
+  queryHandler,
   EventCriteria,
   trackingProcessor,
 } from "@kronos-ts/messaging"
@@ -75,15 +75,12 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
     const onStudentEnrolled = eventHandler(StudentEnrolled, async (e) => {
       view.set(e.studentId, { studentId: e.studentId, name: e.name })
     })
-    const queries = queryHandlers({
-      name: "student-queries",
-      handlers: [on(GetStudent, async (p) => view.get(p.studentId))],
-    })
+    const getStudent = queryHandler(GetStudent, async (p, _metadata) => view.get(p.studentId))
 
     const running = await kronos({ quiet: true })
       .entities(StudentEntity)
       .commands(enrollStudent)
-      .queries(queries)
+      .queries(getStudent)
       .processors(
         trackingProcessor("student-projection")
           .eventHandlers(onStudentEnrolled)
