@@ -26,10 +26,16 @@ export {
   type QueryRow,
 } from "./adapter.js"
 
-// Engine factory (Plan 04)
+// Engine factory (Plan 04 + extended in Plan 05)
 export {
   createPostgresEventStore,
   type PostgresEventStoreConfig,
   type Serializer,
   type TagResolver,
 } from "./postgres-event-store.js"
+
+// Snapshot store factory (Plan 05)
+export {
+  createPostgresSnapshotStore,
+  type PostgresSnapshotStoreConfig,
+} from "./postgres-snapshot-store.js"
