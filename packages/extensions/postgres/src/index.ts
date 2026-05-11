@@ -25,3 +25,11 @@ export {
   type ListenSubscription,
   type QueryRow,
 } from "./adapter.js"
+
+// Engine factory (Plan 04)
+export {
+  createPostgresEventStore,
+  type PostgresEventStoreConfig,
+  type Serializer,
+  type TagResolver,
+} from "./postgres-event-store.js"
