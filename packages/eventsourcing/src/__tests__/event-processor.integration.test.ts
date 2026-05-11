@@ -2,7 +2,7 @@
  * Plan 09-01 Task 3 — unskips the original Plan 08-04 deferred coverage.
  *
  * Original test (deleted with EventSourcingConfigurer.messaging(...)
- * .registerEventHandlers chain in Plan 08-04) covered the full flow:
+ * legacy handler-registration chain in Plan 08-04) covered the full flow:
  *   command -> event store -> tracking processor -> projection -> query handler.
  *
  * Resolution path: kronos() exposes the full primitive set required —

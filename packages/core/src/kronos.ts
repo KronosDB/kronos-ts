@@ -1,8 +1,7 @@
 import type { EntityModule } from "@kronos-ts/modelling"
 import type {
   CommandHandlerDefinition,
-  QueryHandlersDefinition,
-  EventHandlersDefinition,
+  QueryHandlerDefinition,
   EventProcessorModule,
 } from "@kronos-ts/messaging"
 import {
@@ -25,8 +24,7 @@ import { Defaults } from "./defaults-handles.js"
 export interface KronosPartialConfig {
   entities?: EntityModule[]
   commands?: CommandHandlerDefinition<any, any>[]
-  queries?: QueryHandlersDefinition[]
-  events?: EventHandlersDefinition[]
+  queries?: QueryHandlerDefinition[]
   processors?: EventProcessorModule[]
   quiet?: boolean
   logger?: WarningLogger
@@ -104,7 +102,6 @@ export function kronos(partial?: KronosPartialConfig): App {
   if (partial?.entities) app.entities(...partial.entities)
   if (partial?.commands) app.commands(...partial.commands)
   if (partial?.queries) app.queries(...partial.queries)
-  if (partial?.events) app.events(...partial.events)
   if (partial?.processors) app.processors(...partial.processors)
 
   return app

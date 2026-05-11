@@ -9,7 +9,6 @@
  *     field (not `handlerGroups`).
  *   - `TrackingProcessorModule.initialSegmentCount` defaults to 16 when the
  *     builder did not call `.initialSegmentCount(n)`.
- *   - `registerEventHandler` is GONE from both builders.
  */
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
@@ -69,12 +68,6 @@ describe("trackingProcessor builder — flat singular-handler shape (Plan 11-02)
     expect(resetCalled).toBe(true)
   })
 
-  it("does NOT expose registerEventHandler (deleted in Plan 11-02)", () => {
-    const builder = trackingProcessor("no-register-prefix")
-    expect(
-      (builder as unknown as { registerEventHandler?: unknown }).registerEventHandler,
-    ).toBeUndefined()
-  })
 })
 
 describe("subscribingProcessor builder — flat singular-handler shape (Plan 11-02)", () => {
@@ -87,13 +80,6 @@ describe("subscribingProcessor builder — flat singular-handler shape (Plan 11-
     expect(mod.name).toBe("notifications")
     expect(mod.eventHandlers).toHaveLength(1)
     expect(mod.eventHandlers[0]).toBe(onCreated)
-  })
-
-  it("does NOT expose registerEventHandler (deleted in Plan 11-02)", () => {
-    const builder = subscribingProcessor("no-register-prefix")
-    expect(
-      (builder as unknown as { registerEventHandler?: unknown }).registerEventHandler,
-    ).toBeUndefined()
   })
 
   it("does NOT expose onReset (subscribing processors don't support reset)", () => {

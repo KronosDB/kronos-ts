@@ -2,9 +2,7 @@ import type { EntityModule } from "@kronos-ts/modelling"
 import { createStateManager, type StateManager } from "@kronos-ts/modelling"
 import type {
   CommandHandlerDefinition,
-  QueryHandlersDefinition,
-  EventHandlersDefinition,
-  EventHandlerDefinition,
+  QueryHandlerDefinition,
   EventProcessorModule,
   CommandGateway,
   QueryGateway,
@@ -73,8 +71,7 @@ export type EntitiesArg = EntityModule | readonly [EntityModule, EntityOptions]
 export interface App {
   entities(...args: EntitiesArg[]): App
   commands(...handlers: CommandHandlerDefinition<any, any>[]): App
-  queries(...handlers: QueryHandlersDefinition[]): App
-  events(...handlers: EventHandlersDefinition[]): App
+  queries(...handlers: QueryHandlerDefinition[]): App
   /**
    * Read accessor (Plan 09-01, D-103): when called with zero arguments,
    * returns the registered EventProcessorModule[] in registration order.
@@ -168,8 +165,7 @@ export interface AppState {
   /** Plan 09-01 (D-88): replaces flat `entities: EntityModule[]` to carry per-entity options. */
   readonly entityEntries: Array<{ module: EntityModule; options: EntityOptions }>
   readonly commandHandlers: CommandHandlerDefinition<any, any>[]
-  readonly queryHandlerGroups: QueryHandlersDefinition[]
-  readonly eventHandlerGroups: EventHandlersDefinition[]
+  readonly queryHandlers: QueryHandlerDefinition[]
   readonly processors: EventProcessorModule[]
   readonly extensions: Extension[]
   readonly warningChannel: WarningChannel
@@ -222,8 +218,7 @@ export class AppImpl implements App {
       slotRegistry: new SlotRegistry(),
       entityEntries: [],
       commandHandlers: [],
-      queryHandlerGroups: [],
-      eventHandlerGroups: [],
+      queryHandlers: [],
       processors: [],
       extensions: [],
       warningChannel: options.warningChannel,
@@ -276,15 +271,9 @@ export class AppImpl implements App {
     return this
   }
 
-  queries(...handlers: QueryHandlersDefinition[]): App {
+  queries(...handlers: QueryHandlerDefinition[]): App {
     this.guard()
-    this._state.queryHandlerGroups.push(...handlers)
-    return this
-  }
-
-  events(...handlers: EventHandlersDefinition[]): App {
-    this.guard()
-    this._state.eventHandlerGroups.push(...handlers)
+    this._state.queryHandlers.push(...handlers)
     return this
   }
 
@@ -529,37 +518,21 @@ export class AppImpl implements App {
       handlerEnhancer: composedHandlerEnhancer,
     })
 
-    // 5d. Subscribe query handler groups directly onto the queryBus.
+    // 5d. Subscribe query handlers directly onto the queryBus.
     //     Plan 09-01: query handlers receive the same enhancer treatment as
     //     commands (closes RESEARCH Open Question #4).
-    registerQueryHandlersNatively(this._state.queryHandlerGroups, {
+    registerQueryHandlersNatively(this._state.queryHandlers, {
       queryBus: built.queryBus,
       moduleName: "queries",
       handlerEnhancer: composedHandlerEnhancer,
     })
 
-    // 5e. Build event processors: explicit `.processors(...)` modules + implicit
-    //     `.events(...)` groups (each event group becomes a per-name subscribing
-    //     processor, mirroring the legacy bridge in app.ts pre-Plan 08-03a).
+    // 5e. Build event processors from explicit `.processors(...)` modules.
+    //     Users wanting a subscribing processor write
+    //     `subscribingProcessor(name).eventHandlers(...).build()` and pass it
+    //     to `app.processors(...)` — there is no implicit shortcut.
     const builtProcessors: Array<TrackingEventProcessor | SubscribingEventProcessor> = []
-    // Plan 11-02: the events()-to-subscribing shim now produces modules in the
-    // new flat shape. Each EventHandlerRegistration in the group is
-    // structurally compatible with EventHandlerDefinition (same
-    // kind: "event-handler" / descriptor / handler shape), so the group's
-    // handlers list passes through unchanged. Plan 11-04 deletes the shim and
-    // the `events()` accumulator together.
-    const eventGroupModules: EventProcessorModule[] = this._state.eventHandlerGroups.map(
-      (group) => ({
-        kind: "subscribing" as const,
-        name: group.name,
-        eventHandlers: group.handlers as ReadonlyArray<EventHandlerDefinition>,
-      }),
-    )
-    const allProcessorModules: EventProcessorModule[] = [
-      ...this._state.processors,
-      ...eventGroupModules,
-    ]
-    for (const proc of allProcessorModules) {
+    for (const proc of this._state.processors) {
       if (proc.kind === "subscribing") {
         const subscribable = built.eventStore as unknown as SubscribableEventSource
         if (!subscribable.subscribe) {
@@ -600,9 +573,8 @@ export class AppImpl implements App {
             pollingIntervalMs: proc.pollingIntervalMs,
             errorHandler: proc.errorHandler,
             handlerEnhancer: composedHandlerEnhancer,
-            // Plan 11-02: onReset moved off the deleted EventHandlersDefinition
-            // onto the tracking processor module. Tracking processors support
-            // reset; subscribing processors don't.
+            // Plan 11-02: onReset lives on the tracking processor module.
+            // Tracking processors support reset; subscribing processors don't.
             onReset: proc.onReset,
           }),
         )

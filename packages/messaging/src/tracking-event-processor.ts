@@ -69,7 +69,7 @@ export interface TrackingEventProcessorOptions {
   errorHandler?: EventProcessingErrorHandler
   /** Optional handler enhancer applied to all event handlers at setup time. */
   handlerEnhancer?: HandlerEnhancerDefinition
-  /** Plan 11-02: reset callback invoked from resetTokens(); replaces the deleted EventHandlersDefinition.onReset field. */
+  /** Reset callback invoked from resetTokens(). */
   onReset?: () => Promise<void> | void
 }
 
