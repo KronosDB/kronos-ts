@@ -1,4 +1,4 @@
-import type { EventHandlersDefinition } from "./event-handler.js"
+import type { EventHandlerDefinition } from "./event-handler.js"
 import type { TokenStore } from "./token-store.js"
 import type { UoWRunner } from "./unit-of-work.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
@@ -6,10 +6,14 @@ import type { SequencedDeadLetterQueue } from "./dead-letter-queue.js"
 
 /**
  * Base configuration shared by all event processor types.
+ *
+ * Plan 11-02: option types carry a flat `eventHandlers: EventHandlerDefinition[]`
+ * array. The processor (not the handler bundle) owns reset semantics — see
+ * `TrackingProcessorModule.onReset`.
  */
 interface EventProcessorBase {
   readonly name: string
-  readonly handlerGroups: ReadonlyArray<EventHandlersDefinition>
+  readonly eventHandlers: ReadonlyArray<EventHandlerDefinition>
 }
 
 /**
@@ -23,13 +27,19 @@ export interface TrackingProcessorModule extends EventProcessorBase {
   readonly unitOfWorkRunner?: UoWRunner
   readonly errorHandler?: EventProcessingErrorHandler
   readonly deadLetterQueue?: SequencedDeadLetterQueue
-  readonly initialSegmentCount?: number
+  /** Number of segments created on first startup. Default 16 (Axon Framework parity). Always set by builder.build(). */
+  readonly initialSegmentCount: number
   readonly claimExtensionThresholdMs?: number
   readonly tokenClaimIntervalMs?: number
+  /** Reset callback invoked when the processor is reset. Reset is processor-level (clear token + replay), and the callback that wipes view state belongs alongside it. */
+  readonly onReset?: () => Promise<void> | void
 }
 
 /**
  * Configuration for a subscribing event processor (push-based, no tracking).
+ *
+ * Subscribing processors do not support reset — see `supportsReset()` on the
+ * runtime instance — so there is no `onReset` field here.
  */
 export interface SubscribingProcessorModule extends EventProcessorBase {
   readonly kind: "subscribing"
@@ -50,12 +60,21 @@ export type EventProcessorModule = TrackingProcessorModule | SubscribingProcesso
  * position via a token store, and support replay/reset.
  *
  * ```typescript
+ * const onCreated = eventHandler(CourseCreated, async (e) => { ... })
+ * const onCapChanged = eventHandler(CourseCapacityChanged, async (e) => { ... })
+ *
  * trackingProcessor("course-projection")
- *   .registerEventHandler(courseProjection)
+ *   .eventHandlers(onCreated, onCapChanged)
+ *   .onReset(async () => courseViews.clear())
  *   .batchSize(50)
+ *   .build()
  * ```
  *
- * Aligned with AF5's pooled streaming processor configuration.
+ * NOTE: The "AF5 pooled streaming processor" alignment comment that used to
+ * live here is deferred to a follow-up RESEARCH phase exploring whether the
+ * Axon-Java-ported processor model fits Node/Bun runtime semantics (worker
+ * threads are not reservable the same way as JVM threads). See
+ * `.planning/phases/11-.../CONTEXT.md` "Out of scope" section.
  */
 export function trackingProcessor(name: string): TrackingProcessorBuilder {
   return new TrackingProcessorBuilder(name)
@@ -63,7 +82,8 @@ export function trackingProcessor(name: string): TrackingProcessorBuilder {
 
 export class TrackingProcessorBuilder {
   private readonly _name: string
-  private readonly _handlers: EventHandlersDefinition[] = []
+  private readonly _eventHandlers: EventHandlerDefinition[] = []
+  private _onReset?: () => Promise<void> | void
   private _batchSize?: number
   private _pollingIntervalMs?: number
   private _tokenStore?: TokenStore
@@ -78,9 +98,15 @@ export class TrackingProcessorBuilder {
     this._name = name
   }
 
-  /** Add an event handler group to this processor. */
-  registerEventHandler(handlers: EventHandlersDefinition): this {
-    this._handlers.push(handlers)
+  /** Register one or more singular event handlers on this processor. */
+  eventHandlers(...handlers: EventHandlerDefinition[]): this {
+    this._eventHandlers.push(...handlers)
+    return this
+  }
+
+  /** Register a callback fired when the processor is reset (clears view state for replay). */
+  onReset(fn: () => Promise<void> | void): this {
+    this._onReset = fn
     return this
   }
 
@@ -124,7 +150,7 @@ export class TrackingProcessorBuilder {
     return this
   }
 
-  /** Number of segments to create on first startup. Default: 1. */
+  /** Number of segments to create on first startup. Default: 16 (Axon Framework parity). */
   initialSegmentCount(count: number): this {
     this._initialSegmentCount = count
     return this
@@ -135,16 +161,17 @@ export class TrackingProcessorBuilder {
     return {
       kind: "tracking",
       name: this._name,
-      handlerGroups: this._handlers,
+      eventHandlers: this._eventHandlers,
       batchSize: this._batchSize,
       pollingIntervalMs: this._pollingIntervalMs,
       tokenStore: this._tokenStore,
       unitOfWorkRunner: this._unitOfWorkRunner,
       errorHandler: this._errorHandler,
       deadLetterQueue: this._deadLetterQueue,
-      initialSegmentCount: this._initialSegmentCount,
+      initialSegmentCount: this._initialSegmentCount ?? 16,
       claimExtensionThresholdMs: this._claimExtensionThresholdMs,
       tokenClaimIntervalMs: this._tokenClaimIntervalMs,
+      onReset: this._onReset,
     }
   }
 }
@@ -156,15 +183,20 @@ export class TrackingProcessorBuilder {
 /**
  * Builder for a subscribing event processor.
  *
- * Subscribing processors receive events pushed from the event store
+ * Subscribing processors receive events pushed from the event source
  * as they are appended. No token store, no position tracking, no replay.
  *
  * ```typescript
+ * const onNotification = eventHandler(NotificationRaised, async (e) => { ... })
+ *
  * subscribingProcessor("notifications")
- *   .registerEventHandler(notificationHandlers)
+ *   .eventHandlers(onNotification)
+ *   .build()
  * ```
  *
- * Aligned with AF5's subscribing processor configuration.
+ * Subscribing processors do NOT support reset (`supportsReset() === false`),
+ * so there is no `.onReset(fn)` builder method here — that lives on
+ * `TrackingProcessorBuilder` only.
  */
 export function subscribingProcessor(name: string): SubscribingProcessorBuilder {
   return new SubscribingProcessorBuilder(name)
@@ -172,7 +204,7 @@ export function subscribingProcessor(name: string): SubscribingProcessorBuilder 
 
 export class SubscribingProcessorBuilder {
   private readonly _name: string
-  private readonly _handlers: EventHandlersDefinition[] = []
+  private readonly _eventHandlers: EventHandlerDefinition[] = []
   private _unitOfWorkRunner?: UoWRunner
   private _errorHandler?: EventProcessingErrorHandler
 
@@ -180,9 +212,9 @@ export class SubscribingProcessorBuilder {
     this._name = name
   }
 
-  /** Add an event handler group to this processor. */
-  registerEventHandler(handlers: EventHandlersDefinition): this {
-    this._handlers.push(handlers)
+  /** Register one or more singular event handlers on this processor. */
+  eventHandlers(...handlers: EventHandlerDefinition[]): this {
+    this._eventHandlers.push(...handlers)
     return this
   }
 
@@ -207,7 +239,7 @@ export class SubscribingProcessorBuilder {
     return {
       kind: "subscribing",
       name: this._name,
-      handlerGroups: this._handlers,
+      eventHandlers: this._eventHandlers,
       unitOfWorkRunner: this._unitOfWorkRunner,
       errorHandler: this._errorHandler,
     }
