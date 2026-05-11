@@ -11,8 +11,7 @@
  */
 import { describe, it, expect } from "bun:test"
 import {
-  on,
-  eventHandlers,
+  eventHandler,
   event,
   type EventProcessorModule,
 } from "@kronos-ts/messaging"
@@ -30,12 +29,7 @@ function makeProcessorModule(name: string): EventProcessorModule {
   return {
     kind: "subscribing",
     name,
-    handlerGroups: [
-      eventHandlers({
-        name: `${name}-group`,
-        handlers: [on(Bumped, async () => {})],
-      }),
-    ],
+    eventHandlers: [eventHandler(Bumped, async () => {})],
   }
 }
 

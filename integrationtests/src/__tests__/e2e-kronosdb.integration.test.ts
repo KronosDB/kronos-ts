@@ -16,7 +16,7 @@ import {
   query,
   on,
   commandHandler,
-  eventHandlers,
+  eventHandler,
   queryHandlers,
   EventCriteria,
   trackingProcessor,
@@ -91,21 +91,17 @@ const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata)
 type CourseView = { courseId: string; name: string; capacity: number; enrolledCount: number }
 const courseViews = new Map<string, CourseView>()
 
-const courseProjection = eventHandlers({
-  name: "course-projection",
-  handlers: [
-    on(CourseCreated, async (e, _metadata) => {
-      courseViews.set(e.courseId, { courseId: e.courseId, name: e.name, capacity: e.capacity, enrolledCount: 0 })
-      emitUpdate(GetCourse, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
-    }),
-    on(StudentSubscribed, async (e, _metadata) => {
-      const view = courseViews.get(e.courseId)
-      if (view) {
-        view.enrolledCount++
-        emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
-      }
-    }),
-  ],
+const onCourseCreated = eventHandler(CourseCreated, async (e, _metadata) => {
+  courseViews.set(e.courseId, { courseId: e.courseId, name: e.name, capacity: e.capacity, enrolledCount: 0 })
+  emitUpdate(GetCourse, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
+})
+
+const onStudentSubscribed = eventHandler(StudentSubscribed, async (e, _metadata) => {
+  const view = courseViews.get(e.courseId)
+  if (view) {
+    view.enrolledCount++
+    emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
+  }
 })
 
 const courseQueries = queryHandlers({
@@ -175,7 +171,7 @@ describe("E2E: KronosDB full stack", () => {
       .queries(courseQueries)
       .processors(
         trackingProcessor("kronosdb-course-projection")
-          .registerEventHandler(courseProjection)
+          .eventHandlers(onCourseCreated, onStudentSubscribed)
           .build(),
       )
       .use(captureExtension)

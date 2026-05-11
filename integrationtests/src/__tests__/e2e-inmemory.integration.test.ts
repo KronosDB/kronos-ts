@@ -24,7 +24,7 @@ import {
   query,
   on,
   commandHandler,
-  eventHandlers,
+  eventHandler,
   queryHandlers,
   EventCriteria,
   trackingProcessor,
@@ -146,35 +146,32 @@ type CourseView = { courseId: string; name: string; capacity: number; enrolledCo
 function createProjection() {
   const courseViews = new Map<string, CourseView>()
 
-  const projection = eventHandlers({
-    name: "course-projection",
-    handlers: [
-      on(CourseCreated, async (e, _metadata) => {
-        const view: CourseView = {
-          courseId: e.courseId,
-          name: e.name,
-          capacity: e.capacity,
-          enrolledCount: 0,
-        }
-        courseViews.set(e.courseId, view)
+  const projectionHandlers = [
+    eventHandler(CourseCreated, async (e, _metadata) => {
+      const view: CourseView = {
+        courseId: e.courseId,
+        name: e.name,
+        capacity: e.capacity,
+        enrolledCount: 0,
+      }
+      courseViews.set(e.courseId, view)
+      emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+    }),
+    eventHandler(CourseCapacityChanged, async (e, _metadata) => {
+      const view = courseViews.get(e.courseId)
+      if (view) {
+        view.capacity = e.capacity
         emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
-      }),
-      on(CourseCapacityChanged, async (e, _metadata) => {
-        const view = courseViews.get(e.courseId)
-        if (view) {
-          view.capacity = e.capacity
-          emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
-        }
-      }),
-      on(StudentSubscribed, async (e, _metadata) => {
-        const view = courseViews.get(e.courseId)
-        if (view) {
-          view.enrolledCount++
-          emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
-        }
-      }),
-    ],
-  })
+      }
+    }),
+    eventHandler(StudentSubscribed, async (e, _metadata) => {
+      const view = courseViews.get(e.courseId)
+      if (view) {
+        view.enrolledCount++
+        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+      }
+    }),
+  ]
 
   const queries = queryHandlers({
     name: "course-queries",
@@ -190,7 +187,7 @@ function createProjection() {
     ],
   })
 
-  return { projection, queries, courseViews }
+  return { projectionHandlers, queries, courseViews }
 }
 
 // ============================================================================
@@ -244,7 +241,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("command → event → processor → projection → query", async () => {
     // given
-    const { projection, queries, courseViews } = createProjection()
+    const { projectionHandlers, queries, courseViews } = createProjection()
 
     running = await kronos({ quiet: true })
       .entities(CourseEntity)
@@ -252,7 +249,7 @@ describe("E2E: In-memory full CQRS flow", () => {
       .queries(queries)
       .processors(
         trackingProcessor("course-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(...projectionHandlers)
           .build(),
       )
       .start()
@@ -275,7 +272,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("enforces business rules across commands", async () => {
     // given
-    const { projection, queries } = createProjection()
+    const { projectionHandlers, queries } = createProjection()
 
     running = await kronos({ quiet: true })
       .entities(CourseEntity)
@@ -283,7 +280,7 @@ describe("E2E: In-memory full CQRS flow", () => {
       .queries(queries)
       .processors(
         trackingProcessor("course-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(...projectionHandlers)
           .build(),
       )
       .start()
@@ -317,7 +314,7 @@ describe("E2E: In-memory full CQRS flow", () => {
   it("snapshots accelerate entity loading", async () => {
     // given
     const snapshotStore: SnapshotStore = createInMemorySnapshotStore()
-    const { projection, queries } = createProjection()
+    const { projectionHandlers, queries } = createProjection()
 
     running = await kronos({ quiet: true })
       .entities([CourseEntity, { snapshotPolicy: afterEvents(3), snapshotStore }])
@@ -325,7 +322,7 @@ describe("E2E: In-memory full CQRS flow", () => {
       .queries(queries)
       .processors(
         trackingProcessor("course-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(...projectionHandlers)
           .build(),
       )
       .start()
@@ -351,13 +348,8 @@ describe("E2E: In-memory full CQRS flow", () => {
   it("subscribing processor delivers events synchronously", async () => {
     // given
     const received: string[] = []
-    const syncProjection = eventHandlers({
-      name: "sync-projection",
-      handlers: [
-        on(CourseCreated, async (e) => {
-          received.push(e.courseId)
-        }),
-      ],
+    const onCourseCreated = eventHandler(CourseCreated, async (e) => {
+      received.push(e.courseId)
     })
 
     running = await kronos({ quiet: true })
@@ -365,7 +357,7 @@ describe("E2E: In-memory full CQRS flow", () => {
       .commands(createCourse)
       .processors(
         subscribingProcessor("sync-projection")
-          .registerEventHandler(syncProjection)
+          .eventHandlers(onCourseCreated)
           .build(),
       )
       .start()
@@ -379,16 +371,11 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("multiple processors operate independently", async () => {
     // given
-    const { projection, queries, courseViews } = createProjection()
+    const { projectionHandlers, queries, courseViews } = createProjection()
     const auditLog: string[] = []
 
-    const auditProjection = eventHandlers({
-      name: "audit-log",
-      handlers: [
-        on(CourseCreated, async (e) => { auditLog.push(`created:${e.courseId}`) }),
-        on(StudentSubscribed, async (e) => { auditLog.push(`enrolled:${e.studentId}`) }),
-      ],
-    })
+    const auditOnCourseCreated = eventHandler(CourseCreated, async (e) => { auditLog.push(`created:${e.courseId}`) })
+    const auditOnStudentSubscribed = eventHandler(StudentSubscribed, async (e) => { auditLog.push(`enrolled:${e.studentId}`) })
 
     running = await kronos({ quiet: true })
       .entities(CourseEntity)
@@ -396,10 +383,10 @@ describe("E2E: In-memory full CQRS flow", () => {
       .queries(queries)
       .processors(
         trackingProcessor("course-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(...projectionHandlers)
           .build(),
         trackingProcessor("audit-log")
-          .registerEventHandler(auditProjection)
+          .eventHandlers(auditOnCourseCreated, auditOnStudentSubscribed)
           .build(),
       )
       .start()
@@ -451,7 +438,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("query returns all courses", async () => {
     // given
-    const { projection, queries, courseViews } = createProjection()
+    const { projectionHandlers, queries, courseViews } = createProjection()
 
     running = await kronos({ quiet: true })
       .entities(CourseEntity)
@@ -459,7 +446,7 @@ describe("E2E: In-memory full CQRS flow", () => {
       .queries(queries)
       .processors(
         trackingProcessor("course-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(...projectionHandlers)
           .build(),
       )
       .start()

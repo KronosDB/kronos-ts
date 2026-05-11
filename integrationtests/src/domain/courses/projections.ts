@@ -1,4 +1,4 @@
-import { on, eventHandlers, queryHandlers, emitUpdate } from "@kronos-ts/messaging"
+import { on, eventHandler, queryHandlers, emitUpdate } from "@kronos-ts/messaging"
 import {
   CourseCreated, CourseCapacityChanged, StudentSubscribed, StudentUnsubscribed,
   GetCourseView, GetAllCourses,
@@ -22,50 +22,56 @@ export function getCourseViews() { return courseViews }
 export function clearCourseViews() { courseViews.clear() }
 
 // ---------------------------------------------------------------------------
-// Projection — event handler group
+// Projection — singular event handlers (Plan 11-02 flat shape)
 // ---------------------------------------------------------------------------
 
-export const courseProjection = eventHandlers({
-  name: "course-projection",
-  handlers: [
-    on(CourseCreated, async (e, _metadata) => {
-      courseViews.set(e.courseId, {
-        courseId: e.courseId,
-        name: e.name,
-        capacity: e.capacity,
-        enrolledCount: 0,
-        students: [],
-      })
-      emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
-    }),
-    on(CourseCapacityChanged, async (e, _metadata) => {
-      const view = courseViews.get(e.courseId)
-      if (view) {
-        view.capacity = e.capacity
-        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
-      }
-    }),
-    on(StudentSubscribed, async (e, _metadata) => {
-      const view = courseViews.get(e.courseId)
-      if (view) {
-        view.enrolledCount++
-        view.students.push(e.studentId)
-        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
-      }
-    }),
-    on(StudentUnsubscribed, async (e, _metadata) => {
-      const view = courseViews.get(e.courseId)
-      if (view) {
-        view.enrolledCount--
-        view.students = view.students.filter((id) => id !== e.studentId)
-        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
-      }
-    }),
-  ],
-  onReset: async () => {
-    courseViews.clear()
-  },
+export const onCourseCreated = eventHandler(CourseCreated, async (e, _metadata) => {
+  courseViews.set(e.courseId, {
+    courseId: e.courseId,
+    name: e.name,
+    capacity: e.capacity,
+    enrolledCount: 0,
+    students: [],
+  })
+  emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
 })
+
+export const onCourseCapacityChanged = eventHandler(CourseCapacityChanged, async (e, _metadata) => {
+  const view = courseViews.get(e.courseId)
+  if (view) {
+    view.capacity = e.capacity
+    emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+  }
+})
+
+export const onStudentSubscribed = eventHandler(StudentSubscribed, async (e, _metadata) => {
+  const view = courseViews.get(e.courseId)
+  if (view) {
+    view.enrolledCount++
+    view.students.push(e.studentId)
+    emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+  }
+})
+
+export const onStudentUnsubscribed = eventHandler(StudentUnsubscribed, async (e, _metadata) => {
+  const view = courseViews.get(e.courseId)
+  if (view) {
+    view.enrolledCount--
+    view.students = view.students.filter((id) => id !== e.studentId)
+    emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+  }
+})
+
+export const courseProjectionHandlers = [
+  onCourseCreated,
+  onCourseCapacityChanged,
+  onStudentSubscribed,
+  onStudentUnsubscribed,
+]
+
+export const courseProjectionOnReset = async (): Promise<void> => {
+  courseViews.clear()
+}
 
 // ---------------------------------------------------------------------------
 // Query handlers

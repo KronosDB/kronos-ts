@@ -16,9 +16,10 @@ import {
   on,
   commandHandler,
   queryHandlers,
-  eventHandlers,
+  eventHandler,
   query,
   EventCriteria,
+  subscribingProcessor,
   type EventProcessorModule,
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
@@ -91,18 +92,17 @@ describe("native App.start() — end-to-end without configurer (Plan 03a)", () =
 
   it("Test 3: wires event handlers via subscribing processor — append triggers handler", async () => {
     let received = ""
-    const projection = eventHandlers({
-      name: "thing-projection",
-      handlers: [
-        on(ThingCreated, async (payload) => {
-          received = payload.id
-        }),
-      ],
+    const onThingCreated = eventHandler(ThingCreated, async (payload) => {
+      received = payload.id
     })
     const app = kronos({ quiet: true })
       .entities(ThingEntity)
       .commands(createThingHandler)
-      .events(projection)
+      .processors(
+        subscribingProcessor("thing-projection")
+          .eventHandlers(onThingCreated)
+          .build(),
+      )
     const running = await app.start()
     await running.commandGateway.send(
       CreateThing,
@@ -120,14 +120,9 @@ describe("native App.start() — end-to-end without configurer (Plan 03a)", () =
     const fakeProcessor: EventProcessorModule = {
       kind: "subscribing",
       name: "fake-processor",
-      handlerGroups: [
-        eventHandlers({
-          name: "fake",
-          handlers: [
-            on(ThingCreated, async () => {
-              /* no-op */
-            }),
-          ],
+      eventHandlers: [
+        eventHandler(ThingCreated, async () => {
+          /* no-op */
         }),
       ],
     }

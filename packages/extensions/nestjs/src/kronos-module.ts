@@ -54,7 +54,7 @@ export interface KronosModuleAsyncOptions {
  *           .entities(CourseEntity)
  *           .commands(createCourse)
  *           .processors(
- *             trackingProcessor("courses").registerEventHandler(projection).build(),
+ *             trackingProcessor("courses").eventHandlers(onCourseCreated).build(),
  *           )
  *       },
  *     }),

@@ -2,7 +2,7 @@ import type { App } from "@kronos-ts/core"
 import { trackingProcessor } from "@kronos-ts/messaging"
 import { CourseEntity } from "./entity.js"
 import { createCourse, changeCourseCapacity, subscribeStudent, unsubscribeStudent } from "./command-handlers.js"
-import { courseProjection, courseQueries } from "./projections.js"
+import { courseProjectionHandlers, courseProjectionOnReset, courseQueries } from "./projections.js"
 
 /**
  * Course domain slice configuration — kronos() App shape.
@@ -17,7 +17,8 @@ export function configureCourses(app: App): void {
   app.queries(courseQueries)
   app.processors(
     trackingProcessor("course-projection")
-      .registerEventHandler(courseProjection)
+      .eventHandlers(...courseProjectionHandlers)
+      .onReset(courseProjectionOnReset)
       .build(),
   )
 }

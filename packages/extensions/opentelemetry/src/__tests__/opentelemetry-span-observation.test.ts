@@ -25,7 +25,7 @@ import {
   event,
   on,
   commandHandler,
-  eventHandlers,
+  eventHandler,
   EventCriteria,
   subscribingProcessor,
 } from "@kronos-ts/messaging"
@@ -134,13 +134,8 @@ describe("openTelemetry() span observation (E2E)", () => {
   it("event handler invocation emits a child span", async () => {
     // given
     const seen: string[] = []
-    const projection = eventHandlers({
-      name: "greet-projection",
-      handlers: [
-        on(Greeted, async (e) => {
-          seen.push(e.id)
-        }),
-      ],
+    const onGreeted = eventHandler(Greeted, async (e) => {
+      seen.push(e.id)
     })
 
     running = await kronos({ quiet: true })
@@ -148,7 +143,7 @@ describe("openTelemetry() span observation (E2E)", () => {
       .commands(greet)
       .processors(
         subscribingProcessor("greet-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(onGreeted)
           .build(),
       )
       .use(openTelemetry())

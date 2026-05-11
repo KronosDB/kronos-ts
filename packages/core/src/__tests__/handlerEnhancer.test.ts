@@ -17,9 +17,10 @@ import {
   on,
   commandHandler,
   queryHandlers,
-  eventHandlers,
+  eventHandler,
   query,
   EventCriteria,
+  subscribingProcessor,
   type HandlerEnhancerDefinition,
 } from "@kronos-ts/messaging"
 import { eventSourcedEntity } from "@kronos-ts/modelling"
@@ -157,18 +158,15 @@ describe("handlerEnhancer wires through subscribing event processor", () => {
   it("composedEnhancer wraps subscribing-processor event handlers", async () => {
     const recorded: Array<any> = []
     let received = ""
-    const projection = eventHandlers({
-      name: "ping-projection",
-      handlers: [
-        on(Pinged, async (payload) => {
-          received = payload.id
-        }),
-      ],
+    const onPinged = eventHandler(Pinged, async (payload) => {
+      received = payload.id
     })
     const app = kronos({ quiet: true })
       .entities(PingEntity)
       .commands(pingHandler)
-      .events(projection)
+      .processors(
+        subscribingProcessor("ping-projection").eventHandlers(onPinged).build(),
+      )
       .handlerEnhancer(tracingEnhancer("TRACED:", recorded))
     const running = await app.start()
     try {
