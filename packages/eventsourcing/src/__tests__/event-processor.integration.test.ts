@@ -18,7 +18,7 @@ import {
   query,
   on,
   commandHandler,
-  eventHandlers,
+  eventHandler,
   queryHandlers,
   EventCriteria,
   trackingProcessor,
@@ -72,13 +72,8 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
 describe("Full flow: command -> event -> processor -> projection -> query", () => {
   it("command produces events, processor delivers to projection, query reads it", async () => {
     const view = new Map<string, { studentId: string; name: string }>()
-    const projection = eventHandlers({
-      name: "student-projection",
-      handlers: [
-        on(StudentEnrolled, async (e) => {
-          view.set(e.studentId, { studentId: e.studentId, name: e.name })
-        }),
-      ],
+    const onStudentEnrolled = eventHandler(StudentEnrolled, async (e) => {
+      view.set(e.studentId, { studentId: e.studentId, name: e.name })
     })
     const queries = queryHandlers({
       name: "student-queries",
@@ -91,7 +86,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
       .queries(queries)
       .processors(
         trackingProcessor("student-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(onStudentEnrolled)
           .build(),
       )
       .start()
@@ -115,13 +110,8 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
 
   it("multiple commands produce events that update the projection", async () => {
     const view = new Map<string, { studentId: string; name: string }>()
-    const projection = eventHandlers({
-      name: "student-projection",
-      handlers: [
-        on(StudentEnrolled, async (e) => {
-          view.set(e.studentId, { studentId: e.studentId, name: e.name })
-        }),
-      ],
+    const onStudentEnrolled = eventHandler(StudentEnrolled, async (e) => {
+      view.set(e.studentId, { studentId: e.studentId, name: e.name })
     })
 
     const running = await kronos({ quiet: true })
@@ -129,7 +119,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
       .commands(enrollStudent)
       .processors(
         trackingProcessor("student-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(onStudentEnrolled)
           .build(),
       )
       .start()
@@ -163,16 +153,11 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
 
     const enrolled: string[] = []
     const renamed: string[] = []
-    const projection = eventHandlers({
-      name: "multi-slice-projection",
-      handlers: [
-        on(StudentEnrolled, async (e) => {
-          enrolled.push(e.studentId)
-        }),
-        on(SecondEvent, async (e) => {
-          renamed.push(e.studentId)
-        }),
-      ],
+    const onStudentEnrolled = eventHandler(StudentEnrolled, async (e) => {
+      enrolled.push(e.studentId)
+    })
+    const onStudentRenamed = eventHandler(SecondEvent, async (e) => {
+      renamed.push(e.studentId)
     })
 
     const running = await kronos({ quiet: true })
@@ -180,7 +165,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
       .commands(enrollStudent, renameStudent)
       .processors(
         trackingProcessor("multi-slice-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(onStudentEnrolled, onStudentRenamed)
           .build(),
       )
       .start()

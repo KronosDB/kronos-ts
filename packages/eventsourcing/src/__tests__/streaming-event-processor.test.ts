@@ -6,7 +6,7 @@ import {
   event,
   on,
   commandHandler,
-  eventHandlers,
+  eventHandler,
   EventCriteria,
   createInMemoryTokenStore,
   globalSequenceToken,
@@ -64,18 +64,15 @@ describe("StreamingEventProcessor", () => {
       const eventStore = createInMemoryEventStore()
       const processed: string[] = []
 
-      const projection = eventHandlers({
-        name: "course-projection",
-        handlers: [
-          on(CourseCreated, async (e) => { processed.push(e.courseId) }),
-        ],
+      const onCourseCreated = eventHandler(CourseCreated, async (e) => {
+        processed.push(e.courseId)
       })
 
       // Create processor directly using the streaming API
       const processor = createStreamingEventProcessor({
         name: "course-projection",
         eventSource: eventStore as StreamableEventSource,
-        handlerGroups: [projection],
+        eventHandlers: [onCourseCreated],
       })
 
       await processor.start()
@@ -141,22 +138,17 @@ describe("StreamingEventProcessor", () => {
       // Mark processor as having processed up to position 2
       await tokenStore.store("course-projection", 0, globalSequenceToken(2n))
 
-      const projection = eventHandlers({
-        name: "course-projection",
-        handlers: [
-          on(CourseCreated, async (e) => {
-            processed.push({
-              courseId: e.courseId,
-              replayed: isReplay(),
-            })
-          }),
-        ],
+      const onCourseCreated = eventHandler(CourseCreated, async (e) => {
+        processed.push({
+          courseId: e.courseId,
+          replayed: isReplay(),
+        })
       })
 
       const processor = createStreamingEventProcessor({
         name: "course-projection",
         eventSource: eventStore as StreamableEventSource,
-        handlerGroups: [projection],
+        eventHandlers: [onCourseCreated],
         tokenStore,
       })
 
@@ -181,16 +173,13 @@ describe("StreamingEventProcessor", () => {
       const eventStore = createInMemoryEventStore()
       let resetCalled = false
 
-      const projection = eventHandlers({
-        name: "resettable",
-        handlers: [on(CourseCreated, async () => {})],
-        onReset: async () => { resetCalled = true },
-      })
+      const onCourseCreated = eventHandler(CourseCreated, async () => {})
 
       const processor = createStreamingEventProcessor({
         name: "resettable",
         eventSource: eventStore as StreamableEventSource,
-        handlerGroups: [projection],
+        eventHandlers: [onCourseCreated],
+        onReset: async () => { resetCalled = true },
       })
 
       await processor.resetTokens()
@@ -204,7 +193,7 @@ describe("StreamingEventProcessor", () => {
       const processor = createStreamingEventProcessor({
         name: "test",
         eventSource: eventStore as StreamableEventSource,
-        handlerGroups: [],
+        eventHandlers: [],
       })
 
       await processor.start()

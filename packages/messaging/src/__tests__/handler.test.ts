@@ -4,8 +4,8 @@ import { qn } from "@kronos-ts/common"
 import { event, query, command } from "../descriptor.js"
 import { on, onEvent } from "../handler.js"
 import { commandHandler } from "../command-handler.js"
-import { eventHandlers } from "../event-handler.js"
-import { queryHandlers } from "../query-handler.js"
+import { eventHandler, eventHandlers } from "../event-handler.js"
+import { queryHandler, queryHandlers } from "../query-handler.js"
 
 // -- Test fixtures --
 
@@ -151,5 +151,54 @@ describe("queryHandlers()", () => {
     expect(def.kind).toBe("query-handlers")
     expect(def.name).toBe("course-queries")
     expect(def.handlers).toHaveLength(1)
+  })
+})
+
+// ─── Plan 11-02 — singular handler factories ────────────────────────────────
+// These cases pin the singular eventHandler / queryHandler shape. The old
+// grouped describe blocks above are deleted by Plan 11-04 together with the
+// factories themselves.
+
+describe("eventHandler()", () => {
+  it("creates a singular event handler definition with the expected shape", () => {
+    const def = eventHandler(CourseCreated, async (event) => {
+      event.courseId
+      event.name
+    })
+
+    expect(def.kind).toBe("event-handler")
+    expect(def.descriptor).toBe(CourseCreated)
+    expect(typeof def.handler).toBe("function")
+  })
+
+  it("invokes the handler with payload + metadata", async () => {
+    const seen: Array<{ courseId: string; name: string }> = []
+    const def = eventHandler(CourseCreated, async (event) => {
+      seen.push(event)
+    })
+
+    await def.handler({ courseId: "cs-101", name: "Intro" }, {})
+    expect(seen).toEqual([{ courseId: "cs-101", name: "Intro" }])
+  })
+})
+
+describe("queryHandler()", () => {
+  it("creates a singular query handler definition with the expected shape", () => {
+    const def = queryHandler(GetCourse, async (query) => {
+      return { courseId: query.courseId, name: "Test" }
+    })
+
+    expect(def.kind).toBe("query-handler")
+    expect(def.descriptor).toBe(GetCourse)
+    expect(typeof def.handler).toBe("function")
+  })
+
+  it("invokes the handler and returns its result", async () => {
+    const def = queryHandler(GetCourse, async (query) => {
+      return { courseId: query.courseId, name: "Echo" }
+    })
+
+    const result = await def.handler({ courseId: "cs-999" }, {})
+    expect(result).toEqual({ courseId: "cs-999", name: "Echo" })
   })
 })

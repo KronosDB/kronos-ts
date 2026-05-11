@@ -4,6 +4,7 @@ import type {
   CommandHandlerDefinition,
   QueryHandlersDefinition,
   EventHandlersDefinition,
+  EventHandlerDefinition,
   EventProcessorModule,
   CommandGateway,
   QueryGateway,
@@ -541,11 +542,17 @@ export class AppImpl implements App {
     //     `.events(...)` groups (each event group becomes a per-name subscribing
     //     processor, mirroring the legacy bridge in app.ts pre-Plan 08-03a).
     const builtProcessors: Array<TrackingEventProcessor | SubscribingEventProcessor> = []
+    // Plan 11-02: the events()-to-subscribing shim now produces modules in the
+    // new flat shape. Each EventHandlerRegistration in the group is
+    // structurally compatible with EventHandlerDefinition (same
+    // kind: "event-handler" / descriptor / handler shape), so the group's
+    // handlers list passes through unchanged. Plan 11-04 deletes the shim and
+    // the `events()` accumulator together.
     const eventGroupModules: EventProcessorModule[] = this._state.eventHandlerGroups.map(
       (group) => ({
-        kind: "subscribing",
+        kind: "subscribing" as const,
         name: group.name,
-        handlerGroups: [group],
+        eventHandlers: group.handlers as ReadonlyArray<EventHandlerDefinition>,
       }),
     )
     const allProcessorModules: EventProcessorModule[] = [
@@ -565,7 +572,7 @@ export class AppImpl implements App {
           createSubscribingEventProcessor({
             name: proc.name,
             eventSource: subscribable,
-            handlerGroups: proc.handlerGroups,
+            eventHandlers: proc.eventHandlers,
             stateManager,
             commandBus: built.commandBus,
             queryBus: built.queryBus,
@@ -579,7 +586,7 @@ export class AppImpl implements App {
           createTrackingEventProcessor({
             name: proc.name,
             eventSource: built.eventStore as unknown as StreamableEventSource,
-            handlerGroups: proc.handlerGroups,
+            eventHandlers: proc.eventHandlers,
             stateManager,
             commandBus: built.commandBus,
             queryBus: built.queryBus,
@@ -593,6 +600,10 @@ export class AppImpl implements App {
             pollingIntervalMs: proc.pollingIntervalMs,
             errorHandler: proc.errorHandler,
             handlerEnhancer: composedHandlerEnhancer,
+            // Plan 11-02: onReset moved off the deleted EventHandlersDefinition
+            // onto the tracking processor module. Tracking processors support
+            // reset; subscribing processors don't.
+            onReset: proc.onReset,
           }),
         )
       }

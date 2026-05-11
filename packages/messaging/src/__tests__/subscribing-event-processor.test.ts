@@ -2,7 +2,6 @@ import { describe, expect, it, afterEach } from "bun:test"
 import { qn, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import type { EventMessage } from "../message.js"
 import type { EventHandlerRegistration } from "../handler.js"
-import type { EventHandlersDefinition } from "../event-handler.js"
 import type { SubscribableEventSource } from "../subscribing-event-processor.js"
 import { createSubscribingEventProcessor } from "../subscribing-event-processor.js"
 
@@ -40,13 +39,6 @@ function createInMemorySubscribableSource(): SubscribableEventSource & {
   }
 }
 
-function handlerGroup(
-  name: string,
-  handlers: EventHandlerRegistration<any>[],
-): EventHandlersDefinition {
-  return { name, handlers }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -65,7 +57,7 @@ describe("SubscribingEventProcessor", () => {
       processor = createSubscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
-        handlerGroups: [],
+        eventHandlers: [],
 
       })
 
@@ -83,7 +75,7 @@ describe("SubscribingEventProcessor", () => {
       processor = createSubscribingEventProcessor({
         name: "my-projection",
         eventSource: source,
-        handlerGroups: [],
+        eventHandlers: [],
 
       })
 
@@ -97,7 +89,7 @@ describe("SubscribingEventProcessor", () => {
       processor = createSubscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
-        handlerGroups: [],
+        eventHandlers: [],
 
       })
 
@@ -111,7 +103,7 @@ describe("SubscribingEventProcessor", () => {
       processor = createSubscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
-        handlerGroups: [],
+        eventHandlers: [],
 
       })
 
@@ -138,7 +130,7 @@ describe("SubscribingEventProcessor", () => {
       processor = createSubscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
-        handlerGroups: [handlerGroup("test-sub", [handler])],
+        eventHandlers: [handler],
 
       })
       processor.start()
@@ -164,7 +156,7 @@ describe("SubscribingEventProcessor", () => {
       processor = createSubscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
-        handlerGroups: [handlerGroup("test-sub", [handler])],
+        eventHandlers: [handler],
 
       })
       processor.start()
@@ -189,7 +181,7 @@ describe("SubscribingEventProcessor", () => {
       processor = createSubscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
-        handlerGroups: [handlerGroup("test-sub", [handler])],
+        eventHandlers: [handler],
 
       })
       processor.start()
@@ -215,7 +207,7 @@ describe("SubscribingEventProcessor", () => {
       processor = createSubscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
-        handlerGroups: [handlerGroup("test-sub", [handler])],
+        eventHandlers: [handler],
 
       })
       processor.start()
@@ -246,7 +238,7 @@ describe("SubscribingEventProcessor", () => {
       processor = createSubscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
-        handlerGroups: [handlerGroup("test-sub", [handler])],
+        eventHandlers: [handler],
 
         errorHandler: {
           handleError(error) { errors.push(error) },

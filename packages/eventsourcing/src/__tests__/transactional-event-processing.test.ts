@@ -22,7 +22,7 @@ import {
   event,
   on,
   commandHandler,
-  eventHandlers,
+  eventHandler,
   EventCriteria,
   trackingProcessor,
   createInMemoryTokenStore,
@@ -72,13 +72,8 @@ describe("Transactional event processing — typed tokenStore + transactionManag
     // Inject a probe tokenStore via the typed slot — no per-processor override.
     const probe = createInMemoryTokenStore()
     const seen: string[] = []
-    const projection = eventHandlers({
-      name: "transactional-projection",
-      handlers: [
-        on(ThingCreated, async (e) => {
-          seen.push(e.id)
-        }),
-      ],
+    const onThingCreated = eventHandler(ThingCreated, async (e) => {
+      seen.push(e.id)
     })
 
     const running = await kronos({ quiet: true })
@@ -87,7 +82,7 @@ describe("Transactional event processing — typed tokenStore + transactionManag
       .commands(createThing)
       .processors(
         trackingProcessor("transactional-projection")
-          .registerEventHandler(projection)
+          .eventHandlers(onThingCreated)
           .build(),
       )
       .start()
@@ -110,14 +105,9 @@ describe("Transactional event processing — typed tokenStore + transactionManag
     const seenFirst: string[] = []
     const seenSecond: string[] = []
 
-    function makeProjection(sink: string[]) {
-      return eventHandlers({
-        name: "transactional-projection",
-        handlers: [
-          on(ThingCreated, async (e) => {
-            sink.push(e.id)
-          }),
-        ],
+    function makeOnThingCreated(sink: string[]) {
+      return eventHandler(ThingCreated, async (e) => {
+        sink.push(e.id)
       })
     }
 
@@ -128,7 +118,7 @@ describe("Transactional event processing — typed tokenStore + transactionManag
       .commands(createThing)
       .processors(
         trackingProcessor("transactional-projection")
-          .registerEventHandler(makeProjection(seenFirst))
+          .eventHandlers(makeOnThingCreated(seenFirst))
           .build(),
       )
     const first = await firstApp.start()
@@ -154,7 +144,7 @@ describe("Transactional event processing — typed tokenStore + transactionManag
       .commands(createThing)
       .processors(
         trackingProcessor("transactional-projection")
-          .registerEventHandler(makeProjection(seenSecond))
+          .eventHandlers(makeOnThingCreated(seenSecond))
           .tokenStore(probe)
           .build(),
       )

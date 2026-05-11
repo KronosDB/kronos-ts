@@ -8,7 +8,6 @@ import {
 } from "../tracking-event-processor.js"
 import type { StreamableEventSource, SequencedEvent, MessageStream } from "../event-source.js"
 import type { EventMessage } from "../message.js"
-import type { EventHandlersDefinition } from "../event-handler.js"
 import type { EventHandlerRegistration } from "../handler.js"
 import type { TokenStore } from "../token-store.js"
 import type { TrackingToken } from "../tracking-token.js"
@@ -101,18 +100,6 @@ function createRecordingTokenStore(): TokenStore & { stored: Array<{ name: strin
 
 const TEST_EVENT_NAME = qn("test", "SomethingHappened")
 
-function makeHandlerGroup(
-  handlers: EventHandlerRegistration<any>[],
-  onReset?: () => Promise<void> | void,
-): EventHandlersDefinition {
-  return {
-    kind: "event-handlers",
-    name: "test-group",
-    handlers,
-    onReset,
-  }
-}
-
 /** Wait for the processor to advance past a position, with a timeout. */
 async function waitForPosition(
   proc: { position: bigint; running: boolean },
@@ -153,7 +140,7 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([handler])],
+        eventHandlers: [handler],
 
         pollingIntervalMs: 10,
       })
@@ -186,7 +173,7 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([handler])],
+        eventHandlers: [handler],
 
         pollingIntervalMs: 10,
       })
@@ -214,11 +201,11 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([{
+        eventHandlers: [{
           kind: "event-handler",
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
           handler: () => {},
-        }])],
+        }],
 
         pollingIntervalMs: 10,
       })
@@ -247,11 +234,11 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([{
+        eventHandlers: [{
           kind: "event-handler",
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
           handler: () => {},
-        }])],
+        }],
 
         tokenStore,
         pollingIntervalMs: 10,
@@ -287,13 +274,13 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([{
+        eventHandlers: [{
           kind: "event-handler",
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
           handler: (_payload, _metadata) => {
             delivered.push(BigInt(delivered.length))
           },
-        }])],
+        }],
 
         tokenStore,
         pollingIntervalMs: 10,
@@ -335,7 +322,7 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([handler])],
+        eventHandlers: [handler],
 
         errorHandler: loggingErrorHandler("test-processor"),
         pollingIntervalMs: 10,
@@ -372,7 +359,7 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([handler])],
+        eventHandlers: [handler],
 
         errorHandler: propagatingErrorHandler(),
         pollingIntervalMs: 10,
@@ -435,7 +422,7 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([handler])],
+        eventHandlers: [handler],
 
         pollingIntervalMs: 10,
       })
@@ -472,19 +459,15 @@ describe("TrackingEventProcessor", () => {
       const tokenStore = createRecordingTokenStore()
       const eventSource = createInMemoryEventSource(events)
 
-      const group = makeHandlerGroup(
-        [{
+      const processor = createTrackingEventProcessor({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [{
           kind: "event-handler",
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
           handler: () => {},
         }],
-        () => { resetCalled = true },
-      )
-
-      const processor = createTrackingEventProcessor({
-        name: "test-processor",
-        eventSource,
-        handlerGroups: [group],
+        onReset: () => { resetCalled = true },
 
         tokenStore,
         pollingIntervalMs: 10,
@@ -511,7 +494,7 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [],
+        eventHandlers: [],
 
         pollingIntervalMs: 10,
       })
@@ -545,7 +528,7 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([handler])],
+        eventHandlers: [handler],
 
         pollingIntervalMs: 10,
       })
@@ -579,11 +562,11 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [makeHandlerGroup([{
+        eventHandlers: [{
           kind: "event-handler",
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
           handler: () => {},
-        }])],
+        }],
 
         pollingIntervalMs: 10,
       })
@@ -616,7 +599,7 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "my-processor",
         eventSource,
-        handlerGroups: [],
+        eventHandlers: [],
 
       })
 
@@ -637,7 +620,7 @@ describe("TrackingEventProcessor", () => {
       const processor = createTrackingEventProcessor({
         name: "test-processor",
         eventSource,
-        handlerGroups: [],
+        eventHandlers: [],
 
       })
 
