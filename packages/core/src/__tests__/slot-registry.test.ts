@@ -117,3 +117,43 @@ describe("SlotRegistry — meta side table", () => {
     expect(entry!.meta!.warning).toBe("not durable")
   })
 })
+
+describe("SlotRegistry — set verb provenance", () => {
+  const warnCalls: string[] = []
+  const originalWarn = console.warn
+
+  afterEach(() => {
+    console.warn = originalWarn
+    warnCalls.length = 0
+  })
+
+  it("Test A: set() over a prior setDefault() WITH meta is SILENT (extension overriding an in-memory default)", () => {
+    const registry = new SlotRegistry()
+    registry.setDefault("eventStore", {} as KronosComponents["eventStore"], { inMemory: true, warning: "x" })
+    console.warn = (msg: string) => warnCalls.push(msg)
+    registry.set("eventStore", {} as KronosComponents["eventStore"])
+    expect(warnCalls).toHaveLength(0)
+  })
+
+  it("Test B: set() over a prior setDefault() WITHOUT meta is SILENT (stateless default — meta key present but undefined)", () => {
+    // serializer, unitOfWorkFactory, tagResolver are registered via setDefault with no meta arg.
+    // setDefault writes { factory, meta } where meta is undefined — the `meta` KEY is present.
+    // A guard of `"meta" in existing` correctly identifies this as a default override and stays silent.
+    // The task-brief's `existing.meta === undefined` guard would incorrectly warn here.
+    const registry = new SlotRegistry()
+    registry.setDefault("serializer", stubSerializer) // no meta arg
+    console.warn = (msg: string) => warnCalls.push(msg)
+    registry.set("serializer", stubSerializer)
+    expect(warnCalls).toHaveLength(0)
+  })
+
+  it("Test C: set() over a prior forceSet() WARNS (genuine collision — forceSet never writes meta key)", () => {
+    const registry = new SlotRegistry()
+    registry.forceSet("serializer", stubSerializer)
+    console.warn = (msg: string) => warnCalls.push(msg)
+    registry.set("serializer", stubSerializer)
+    expect(warnCalls).toHaveLength(1)
+    expect(warnCalls[0]).toContain("serializer")
+    expect(warnCalls[0]).toContain("override")
+  })
+})

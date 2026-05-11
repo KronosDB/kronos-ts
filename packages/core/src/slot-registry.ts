@@ -56,7 +56,13 @@ export class SlotRegistry {
     slot: K,
     factoryOrInstance: SlotFactory<K> | KronosComponents[K],
   ): void {
-    if (this.slots.has(slot)) {
+    const existing = this.slots.get(slot)
+    // Provenance check: setDefault always writes a `meta` key (even when its value
+    // is undefined for stateless defaults like serializer / unitOfWorkFactory / tagResolver);
+    // set / forceSet never write the key at all. So `"meta" in existing` identifies a prior
+    // setDefault — those overrides are the expected "extension overrides in-memory default" path
+    // and should NOT warn. Genuine collisions (two set/forceSet calls on the same slot) DO warn.
+    if (existing && !("meta" in existing)) {
       console.warn(
         `[kronos] slot "${slot}" override: already set. Use forceSet() to suppress this warning.`,
       )
