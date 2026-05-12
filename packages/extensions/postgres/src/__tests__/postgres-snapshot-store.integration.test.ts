@@ -4,18 +4,26 @@ import { startPostgresContainer, type RunningPostgres } from "./testcontainers-s
 import { bootstrapSchema, DEFAULT_TABLE_NAMES } from "../schema.js"
 import { createPostgresSnapshotStore } from "../postgres-snapshot-store.js"
 import type { Snapshot } from "@kronos-ts/eventsourcing"
+import type { Serializer, SerializedObject } from "@kronos-ts/common"
 
 let pg: RunningPostgres
 let adapter: ReturnType<typeof pgAdapter>
 let snapshotCallCounts = { serialize: 0, deserialize: 0 }
-const COUNTING_SERIALIZER = {
-  serialize(x: unknown): Uint8Array {
+const COUNTING_SERIALIZER: Serializer = {
+  serialize(x: unknown, type: string, revision: string = ""): SerializedObject {
     snapshotCallCounts.serialize++
-    return new TextEncoder().encode(JSON.stringify(x))
+    return {
+      type,
+      revision,
+      data: new TextEncoder().encode(JSON.stringify(x)),
+    }
   },
-  deserialize<T>(b: Uint8Array): T {
+  deserialize<T>(data: SerializedObject): T {
     snapshotCallCounts.deserialize++
-    return JSON.parse(new TextDecoder().decode(b)) as T
+    return JSON.parse(new TextDecoder().decode(data.data)) as T
+  },
+  canConvert(): boolean {
+    return true
   },
 }
 let store: ReturnType<typeof createPostgresSnapshotStore>
@@ -49,7 +57,7 @@ describe("createPostgresSnapshotStore", () => {
   it("stores and loads a snapshot roundtrip-stable", async () => {
     await store.store("Order", "1", sampleSnapshot(42n))
     const loaded = await store.load("Order", "1")
-    expect(loaded).not.toBeNull()
+    expect(loaded).toBeDefined()
     expect(loaded!.position).toBe(42n)
     expect(loaded!.payload).toEqual({ kind: "Order", items: [{ sku: "A", qty: 2 }] })
     expect(loaded!.timestamp).toBe(1715472000_000)
@@ -63,14 +71,14 @@ describe("createPostgresSnapshotStore", () => {
     expect(loaded!.position).toBe(2n)
   })
 
-  it("load returns null for missing entity", async () => {
-    expect(await store.load("Nope", "x")).toBeNull()
+  it("load returns undefined for missing entity", async () => {
+    expect(await store.load("Nope", "x")).toBeUndefined()
   })
 
   it("deleteSnapshots removes the snapshot", async () => {
     await store.store("Order", "1", sampleSnapshot(7n))
     await store.deleteSnapshots("Order", "1")
-    expect(await store.load("Order", "1")).toBeNull()
+    expect(await store.load("Order", "1")).toBeUndefined()
   })
 
   it("composite (entity_name, entity_id) PK keeps different entities separate", async () => {

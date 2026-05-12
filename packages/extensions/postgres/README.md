@@ -17,42 +17,61 @@ Requires Postgres 14+ (for `xid8` and `pg_snapshot_xmin`).
 ## Usage
 
 ```typescript
-import { createApp } from "@kronos-ts/core"
+import { kronos } from "@kronos-ts/core"
 import { postgres } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 
-const app = createApp()
-app.use(postgres({
-  adapter: pgAdapter({ connectionString: "postgresql://user:pass@host/db" }),
-  // Default: auto-create schema on connect. Set false to manage migrations yourself.
-  bootstrap: true,
-}))
-
-await app.start()
+const app = await kronos()
+  .use(postgres({
+    adapter: pgAdapter({ connectionString: "postgresql://user:pass@host/db" }),
+    // Default: auto-create schema on connect. Set false to manage migrations yourself.
+    bootstrap: true,
+  }))
+  .start()
 ```
 
 ### Accessing slots
 
+In normal usage you don't touch the `eventStore` directly — command handlers, `load()`, and tracking processors handle it. If you need the raw store (e.g. for tests, scripts, or low-level access), capture it via a probe decorator before `start()` — `RunningApp` doesn't expose it on its public surface:
+
 ```typescript
-// Capture slots via app.decorate() before app.start()
-let eventStore
-app.decorate("eventStore", (inner) => { eventStore = inner; return inner })
-await app.start()
+import type { App } from "@kronos-ts/core"
+import type { EventStore } from "@kronos-ts/eventsourcing"
+import { EventCriteria } from "@kronos-ts/messaging"
+import { tag } from "@kronos-ts/common"
 
-// Append events (DCB)
-const marker = await eventStore.append(events, {
-  criteria: { kind: "tags", tags: [{ key: "order", value: "123" }] },
-  marker: previousMarker,
+let eventStore: EventStore | undefined
+const capture = (a: App) => {
+  a.decorate("eventStore", (inner) => { eventStore = inner; return inner })
+}
+
+const app = await kronos()
+  .use(capture)
+  .use(postgres({ adapter: pgAdapter({ connectionString }) }))
+  .start()
+
+// 1. Source events for an entity (criteria + optional start position).
+//    Returns the matched events plus a consistency marker.
+const criteria = EventCriteria.havingTags(tag("order", "123"))
+const { events: sourced, marker } = await eventStore!.source({ criteria })
+
+// 2. Append with a DCB precondition. The marker locks in the prefix you read
+//    from source() — if anything matching `criteria` was appended in the
+//    meantime, AppendConditionError is thrown.
+const newMarker = await eventStore!.append(newEvents, { criteria, marker })
+
+// 3. Tail events. open() returns a pull-based MessageStream<SequencedEvent>,
+//    not an AsyncIterable. Pull with next() and register a callback for
+//    wake-ups when more events arrive.
+const stream = eventStore!.open({ position: 0n, criteria })
+stream.setCallback(() => {
+  while (stream.hasNextAvailable()) {
+    const seq = stream.next()
+    if (!seq) break
+    // seq.event is the EventMessage; seq.sequence is the bigint position.
+  }
 })
-
-// Source events for an entity
-const { events: sourced, marker: newMarker } = await eventStore.source({
-  criteria: { kind: "tags", tags: [{ key: "order", value: "123" }] },
-  start: 0n,
-})
-
-// Tail events (gap-free, xid8-watermarked)
-const stream = eventStore.open({ position: lastSeenPosition })
+// remember to stream.close() when you're done
 ```
 
 ## Adapters
@@ -131,20 +150,22 @@ Custom table names: `postgres({ adapter, tableNames: { events: "my_events", snap
 DCB violations raise SQLSTATE `KR001`. The adapter catches this and throws `AppendConditionError`. To detect violations from your own code:
 
 ```typescript
-import { isDcbViolation, AppendConditionError } from "@kronos-ts/postgres"
+import { AppendConditionError } from "@kronos-ts/postgres"
 
 try {
   await eventStore.append(events, condition)
 } catch (e) {
   if (e instanceof AppendConditionError) {
-    // Retry with fresh marker
+    // Re-source the entity to get a fresh marker, then retry.
   }
 }
 ```
 
+If you're working directly against the driver (bypassing the adapter), `isDcbViolation(err)` from `@kronos-ts/postgres` inspects a raw pg / postgres.js / Bun.sql error's `.code` field for the KR001 SQLSTATE.
+
 ## FAQ
 
-**Q: Can I run my own migrations?** Yes — set `bootstrap: false` and apply the DDL from `@kronos-ts/postgres/schema` yourself.
+**Q: Can I run my own migrations?** Yes — set `bootstrap: false` and apply equivalent DDL via your own migration tooling. The reference DDL lives in `packages/extensions/postgres/src/schema.ts` (`buildEventsTableDDL`, `buildEventsIndexesDDL`, `buildSnapshotsTableDDL`).
 
 **Q: PgBouncer compatibility?** Yes — the adapter uses xact-scoped advisory locks (never session-scoped), so transaction-pooling mode is safe.
 

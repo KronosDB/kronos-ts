@@ -488,7 +488,7 @@ export class AppImpl implements App {
         createEventSourcedRepository(
           module,
           built.eventStore,
-          options.snapshotStore,
+          options.snapshotStore ?? built.snapshotStore,
           options.snapshotPolicy,
         ),
       )

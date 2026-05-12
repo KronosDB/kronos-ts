@@ -576,7 +576,21 @@ function decodeEvent(row: {
   return {
     name: qn,
     tags,
-    payload: row.payload,
-    metadata: row.metadata,
+    payload: decodeJsonb(row.payload),
+    metadata: decodeJsonb(row.metadata),
   } as unknown as EventMessage
+}
+
+// Adapter-agnostic JSONB decoding: pgAdapter/postgresAdapter return parsed
+// objects, but bunSqlAdapter (Bun.SQL) returns JSONB as a raw string. Normalise
+// here so callers always see a JS object.
+function decodeJsonb(v: unknown): unknown {
+  if (typeof v === "string") {
+    try {
+      return JSON.parse(v)
+    } catch {
+      return v
+    }
+  }
+  return v
 }

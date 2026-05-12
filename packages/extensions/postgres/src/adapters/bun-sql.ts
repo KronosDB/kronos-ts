@@ -51,6 +51,30 @@ interface BunSqlInstance {
  * and `err.errno` is a non-empty string, we copy `errno` to `code` before
  * re-throwing, giving callers the SQLSTATE they expect on `.code`.
  */
+/**
+ * Bun.SQL's `.unsafe(text, params)` does not auto-encode JS arrays as Postgres
+ * array literals — single-element arrays get unwrapped to their scalar value
+ * and bound as TEXT, which fails when the column is TEXT[]. We pre-encode any
+ * plain Array param to the canonical `{"v1","v2"}` literal so it round-trips
+ * to TEXT[] / array operators (`@>`, `ANY`) correctly.
+ *
+ * Uint8Array / Buffer are not plain arrays (Array.isArray returns false), so
+ * BYTEA params remain untouched.
+ */
+function encodeArrayParam(arr: unknown[]): string {
+  const escaped = arr.map((v) => {
+    if (v === null || v === undefined) return "NULL"
+    const s = String(v)
+    return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+  })
+  return `{${escaped.join(",")}}`
+}
+
+function normalizeParams(params: unknown[] | undefined): unknown[] {
+  if (!params) return []
+  return params.map((p) => (Array.isArray(p) ? encodeArrayParam(p) : p))
+}
+
 function normalizeBunSqlError(err: unknown): never {
   if (
     typeof err === "object" &&
@@ -121,7 +145,7 @@ export function bunSqlAdapter(config: BunSqlAdapterConfig): PostgresAdapter {
 
     async query<R extends QueryRow = QueryRow>(text: string, params?: unknown[]): Promise<R[]> {
       const inst = getInstance()
-      return inst.unsafe(text, params ?? []).catch(normalizeBunSqlError) as Promise<R[]>
+      return inst.unsafe(text, normalizeParams(params)).catch(normalizeBunSqlError) as Promise<R[]>
     },
 
     async queryOne<R extends QueryRow = QueryRow>(
@@ -153,7 +177,7 @@ export function bunSqlAdapter(config: BunSqlAdapterConfig): PostgresAdapter {
             text: string,
             params?: unknown[],
           ): Promise<R[]> {
-            return txSql.unsafe(text, params ?? []).catch(normalizeBunSqlError) as Promise<R[]>
+            return txSql.unsafe(text, normalizeParams(params)).catch(normalizeBunSqlError) as Promise<R[]>
           },
         }
         return fn(tx)
