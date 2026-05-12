@@ -12,6 +12,7 @@
     "@kronos-ts/test": "workspace:*",
     "@kronos-ts/axon-server": "workspace:*",
     "@kronos-ts/kronosdb": "workspace:*",
+    "@kronos-ts/postgres": "workspace:*",
     "@kronos-ts/extensions/prisma": "workspace:*",
     "@kronos-ts/extensions/drizzle": "workspace:*",
     "@kronos-ts/extensions/knex": "workspace:*",

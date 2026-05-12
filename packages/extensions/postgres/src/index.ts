@@ -42,3 +42,15 @@ export {
 
 // Extension factory (Plan 05)
 export { postgres, type PostgresConfig } from "./postgres.js"
+
+// Schema bootstrap + DDL builders — exposed for users who want to run their
+// own migrations (set `postgres({ bootstrap: false })`) or drive the store
+// directly without going through the extension factory.
+export {
+  bootstrapSchema,
+  buildEventsTableDDL,
+  buildEventsIndexesDDL,
+  buildSnapshotsTableDDL,
+  DEFAULT_TABLE_NAMES,
+  type TableNames,
+} from "./schema.js"
