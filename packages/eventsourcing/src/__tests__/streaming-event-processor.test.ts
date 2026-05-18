@@ -14,7 +14,7 @@ import {
   type StreamableEventSource,
   isReplay,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
 import { load, append } from "../index.js"
 
@@ -33,7 +33,7 @@ const CourseCreated = event({
 
 type CourseState = { created: boolean; name: string }
 
-const CourseEntity = eventSourcedEntity({
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "" }) as CourseState,
@@ -44,7 +44,7 @@ const CourseEntity = eventSourcedEntity({
 })
 
 const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
 })

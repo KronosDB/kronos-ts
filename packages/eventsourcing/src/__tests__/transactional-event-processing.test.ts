@@ -29,7 +29,7 @@ import {
   type TokenStore,
   type TransactionManager,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { kronos } from "@kronos-ts/core"
 import { load, append } from "../index.js"
 
@@ -44,7 +44,7 @@ const ThingCreated = event({
   payload: z.object({ id: z.string() }),
   tags: (p) => [tag("id", p.id)],
 })
-const ThingEntity = eventSourcedEntity({
+const Thing = state({
   name: "TransactionalThing",
   id: { id: z.string() },
   initial: () => ({ created: false }),
@@ -52,7 +52,7 @@ const ThingEntity = eventSourcedEntity({
   evolve: [on(ThingCreated, (s) => ({ ...s, created: true }))],
 })
 const createThing = commandHandler(CreateThing, async (cmd) => {
-  await load(ThingEntity, { id: cmd.id })
+  await load(Thing, { id: cmd.id })
   append(ThingCreated, { id: cmd.id })
 })
 
@@ -78,7 +78,7 @@ describe("Transactional event processing — typed tokenStore + transactionManag
 
     const running = await kronos({ quiet: true })
       .set("tokenStore", () => probe)
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThing)
       .processors(
         trackingProcessor("transactional-projection")
@@ -114,7 +114,7 @@ describe("Transactional event processing — typed tokenStore + transactionManag
     // Boot 1: create one event, let processor advance.
     const firstApp = kronos({ quiet: true })
       .set("tokenStore", () => probe)
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThing)
       .processors(
         trackingProcessor("transactional-projection")
@@ -140,7 +140,7 @@ describe("Transactional event processing — typed tokenStore + transactionManag
     // Smoke: the per-processor builder override path also still works. Pass
     // the same probe explicitly and confirm the same store wins.
     const second = await kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThing)
       .processors(
         trackingProcessor("transactional-projection")
@@ -173,7 +173,7 @@ describe("Transactional event processing — typed tokenStore + transactionManag
 
     const running = await kronos({ quiet: true })
       .forceSet("transactionManager", () => counting as TransactionManager)
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThing)
       .start()
     try {

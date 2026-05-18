@@ -57,7 +57,7 @@ export {
 // Handler registration
 // Note: Handler context wrapper types deleted (Plan 04-02 / D-41).
 // Helper function types deleted.
-// Consumers import load/append from @kronos-ts/eventsourcing and send/emitUpdate from here directly.
+// Consumers import load/append from @kronos-ts/eventsourcing and send/dispatch/emitUpdate from here directly.
 export {
   type EventHandlerRegistration,
   type EvolverRegistration,

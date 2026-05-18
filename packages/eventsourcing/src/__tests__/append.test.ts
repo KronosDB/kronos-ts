@@ -4,7 +4,7 @@ import { qn, emptyMetadata } from "@kronos-ts/common"
 import { event } from "@kronos-ts/messaging"
 import { runInNewUoW, NoActiveUnitOfWork, WrongUoWPhase, onPrepareCommit, Phase } from "@kronos-ts/messaging"
 import { processingStateStorage } from "@kronos-ts/messaging/processing-state"
-import { append, BUFFERED_EVENTS_KEY, ENTITY_CACHE_KEY, ENTITY_MODULES_KEY } from "../append.js"
+import { append, BUFFERED_EVENTS_KEY, STATE_CACHE_KEY, STATE_MODULES_KEY } from "../append.js"
 
 // ---------------------------------------------------------------------------
 // Test descriptors
@@ -79,13 +79,13 @@ describe("append", () => {
     })
   })
 
-  it("applies matching evolver to ENTITY_CACHE_KEY when entity module has matching evolver", async () => {
+  it("applies matching evolver to STATE_CACHE_KEY when state module has matching evolver", async () => {
     await runInNewUoW(emptyMetadata(), async () => {
       const state = processingStateStorage.getStore()!
 
-      // Set up a mock entity module with an evolver for CourseCreated
+      // Set up a mock state module with an evolver for CourseCreated
       const evolverFn = mock((s: any, e: any, _id: any) => ({ ...s, name: e.name }))
-      const mockEntity = {
+      const mockModule = {
         name: "Course",
         evolvers: [
           {
@@ -96,28 +96,28 @@ describe("append", () => {
       }
 
       const initialState = { name: "", courseId: "c1" }
-      const entityCache = new Map<string, Promise<unknown>>()
-      const entityModules = new Map<string, { entity: any; id: unknown }>()
+      const stateCache = new Map<string, Promise<unknown>>()
+      const stateModules = new Map<string, { module: any; id: unknown }>()
 
       const cacheKey = "Course:c1"
-      entityCache.set(cacheKey, Promise.resolve({ state: initialState, sourcingInfo: {} }))
-      entityModules.set(cacheKey, { entity: mockEntity, id: "c1" })
+      stateCache.set(cacheKey, Promise.resolve({ state: initialState, sourcingInfo: {} }))
+      stateModules.set(cacheKey, { module: mockModule, id: "c1" })
 
-      state.resources.set(ENTITY_CACHE_KEY.symbol, entityCache)
-      state.resources.set(ENTITY_MODULES_KEY.symbol, entityModules)
+      state.resources.set(STATE_CACHE_KEY.symbol, stateCache)
+      state.resources.set(STATE_MODULES_KEY.symbol, stateModules)
 
       append(CourseCreated, { courseId: "c1", name: "Intro to TS" })
 
       // The cache should now hold an updated promise
-      const updated = await entityCache.get(cacheKey)!
+      const updated = await stateCache.get(cacheKey)!
       expect((updated as any).state).toEqual({ name: "Intro to TS", courseId: "c1" })
       expect(evolverFn).toHaveBeenCalledTimes(1)
     })
   })
 
-  it("does not update cache when no entity modules are registered", async () => {
+  it("does not update cache when no state modules are registered", async () => {
     await runInNewUoW(emptyMetadata(), async () => {
-      // No ENTITY_CACHE_KEY / ENTITY_MODULES_KEY set — should not throw
+      // No STATE_CACHE_KEY / STATE_MODULES_KEY set — should not throw
       append(CourseCreated, { courseId: "c1", name: "Intro" })
       const state = processingStateStorage.getStore()!
       const buffered = state.resources.get(BUFFERED_EVENTS_KEY.symbol) as any[]
@@ -130,7 +130,7 @@ describe("append", () => {
       const state = processingStateStorage.getStore()!
 
       const evolverFn = mock((_s: any, _e: any, _id: any) => ({}))
-      const mockEntity = {
+      const mockModule = {
         name: "Course",
         evolvers: [
           {
@@ -140,14 +140,14 @@ describe("append", () => {
         ],
       }
 
-      const entityCache = new Map<string, Promise<unknown>>()
-      const entityModules = new Map<string, { entity: any; id: unknown }>()
+      const stateCache = new Map<string, Promise<unknown>>()
+      const stateModules = new Map<string, { module: any; id: unknown }>()
       const cacheKey = "Course:c1"
-      entityCache.set(cacheKey, Promise.resolve({ state: { name: "" }, sourcingInfo: {} }))
-      entityModules.set(cacheKey, { entity: mockEntity, id: "c1" })
+      stateCache.set(cacheKey, Promise.resolve({ state: { name: "" }, sourcingInfo: {} }))
+      stateModules.set(cacheKey, { module: mockModule, id: "c1" })
 
-      state.resources.set(ENTITY_CACHE_KEY.symbol, entityCache)
-      state.resources.set(ENTITY_MODULES_KEY.symbol, entityModules)
+      state.resources.set(STATE_CACHE_KEY.symbol, stateCache)
+      state.resources.set(STATE_MODULES_KEY.symbol, stateModules)
 
       // Append CourseCreated — evolver is for CourseCapacityChanged, should not fire
       append(CourseCreated, { courseId: "c1", name: "Intro" })

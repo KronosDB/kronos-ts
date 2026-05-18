@@ -12,6 +12,6 @@
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/eventsourcing": "workspace:*",
     "@kronos-ts/modelling": "workspace:*",
-    "zod": "^3.24"
+    "zod": "^4.3.6"
   }
 }

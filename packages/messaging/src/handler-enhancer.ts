@@ -1,8 +1,6 @@
 /**
  * Metadata about a handler being enhanced. Allows enhancers to
  * selectively wrap based on handler type, message name, etc.
- *
- * Aligned with the information available on Java's `MessageHandlingMember`.
  */
 export interface HandlerMetadata {
   /** The type of message this handler processes. */
@@ -24,8 +22,6 @@ export interface HandlerMetadata {
  * - Security checks
  * - Timeout enforcement
  * - Caching
- *
- * Aligned with Kronos Framework's `HandlerEnhancerDefinition`.
  *
  * @example
  * ```ts
@@ -57,8 +53,6 @@ export interface HandlerEnhancerDefinition {
 /**
  * Combines multiple handler enhancer definitions into a single one.
  * Enhancers are applied in order — the first enhancer wraps outermost.
- *
- * Aligned with Kronos Framework's `MultiHandlerEnhancerDefinition`.
  */
 export function multiHandlerEnhancerDefinition(
   enhancers: ReadonlyArray<HandlerEnhancerDefinition>,

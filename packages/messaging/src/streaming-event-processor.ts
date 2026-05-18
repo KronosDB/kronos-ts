@@ -34,7 +34,6 @@ import { QUERY_BUS_KEY } from "./emit-update.js"
  * - Processes batches within a UnitOfWork
  * - Stores token at PREPARE_COMMIT (same transaction as handler work)
  *
- * Aligned with AF5's {@code StreamingEventProcessor}.
  */
 export interface EventProcessorStatus {
   readonly segmentId: number

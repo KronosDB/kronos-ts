@@ -72,9 +72,12 @@ test("EventHandlerRegistration.handler has (event, metadata) signature", () => {
   let capturedMetadata: Metadata | undefined
   const testMetadata: Metadata = { correlationId: "test-123" }
 
-  const reg = on(SomethingHappened, async (_event, metadata) => {
-    capturedMetadata = metadata
-  })
+  const reg: EventHandlerRegistration<typeof SomethingHappened.payload> = on(
+    SomethingHappened,
+    async (_event: { value: number }, metadata: Metadata) => {
+      capturedMetadata = metadata
+    },
+  )
 
   // Call the handler with (payload, metadata) — the new shape
   reg.handler({ value: 42 }, testMetadata)

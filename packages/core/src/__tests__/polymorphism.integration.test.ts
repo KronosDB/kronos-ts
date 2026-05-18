@@ -25,7 +25,7 @@ import {
   type SpanFactory,
 } from "@kronos-ts/messaging"
 import { qualifiedNameToString } from "@kronos-ts/common"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { load, append } from "@kronos-ts/eventsourcing"
 import { kronos } from "../kronos.js"
 import { Defaults } from "../defaults-handles.js"
@@ -43,7 +43,7 @@ const ThingCreated = event({
   tags: (p) => ({ id: p.id }),
 })
 
-const ThingEntity = eventSourcedEntity({
+const Thing = state({
   name: "ThingPoly",
   id: { id: z.string() },
   initial: () => ({ created: false }),
@@ -52,7 +52,7 @@ const ThingEntity = eventSourcedEntity({
 })
 
 const createThingHandler = commandHandler(CreateThing, async (cmd, _md) => {
-  await load(ThingEntity, { id: cmd.id })
+  await load(Thing, { id: cmd.id })
   append(ThingCreated, { id: cmd.id })
 })
 
@@ -119,7 +119,7 @@ describe("Polymorphism integration — tracing(intercepting(mockDistributedBus))
       const handlerInterceptorWitness: CommandMessage[] = []
 
       const app = kronos({ quiet: true })
-        .entities(ThingEntity)
+        .states(Thing)
         .commands(createThingHandler)
         .set("commandBus", () => mockDistributedBus)
         .commandDispatchInterceptor((m) => {
@@ -164,7 +164,7 @@ describe("removeDecorator(Defaults.commandBus.intercepting) drops the intercepti
     const interceptorWitness: CommandMessage[] = []
 
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
       .removeDecorator(Defaults.commandBus.intercepting)
       .set("commandBus", () => mockDistributedBus)

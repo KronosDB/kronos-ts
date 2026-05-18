@@ -73,8 +73,6 @@ export interface OpenTelemetrySpanFactoryOptions {
  * and internal operations (INTERNAL). Propagates trace context through
  * message metadata using W3C Trace Context standard.
  *
- * Aligned with Kronos Framework's `OpenTelemetrySpanFactory`.
- *
  * ```typescript
  * await kronos().use(openTelemetry()).start()
  * ```

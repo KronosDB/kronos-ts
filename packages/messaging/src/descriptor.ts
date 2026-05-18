@@ -12,14 +12,13 @@ export interface CommandDescriptor<
 > {
   readonly kind: "command"
   readonly name: QualifiedName
-  /** Version of the command. Default: "1.0". Aligned with `@Command(version = "...")`. */
+  /** Version of the command. Default: "1.0". */
   readonly version: string
   readonly payload: P
   /** Optional result schema — enables typed return from `commandGateway.send()`. */
   readonly result?: R
   /**
    * The payload field that contains the routing key for distributed command routing.
-   * Aligned with Java's `@Command(routingKey = "fieldName")`.
    *
    * Used by the command gateway to extract the routing key before dispatch.
    * Commands with the same routing key are routed to the same handler instance.
@@ -49,7 +48,7 @@ export interface QueryDescriptor<
 > {
   readonly kind: "query"
   readonly name: QualifiedName
-  /** Version of the query. Default: "1.0". Aligned with `@Query(version = "...")`. */
+  /** Version of the query. Default: "1.0". */
   readonly version: string
   readonly payload: P
   /** Optional result schema — enables typed return from `queryGateway.query()`. */

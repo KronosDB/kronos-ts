@@ -1,8 +1,7 @@
 /**
- * Metrics collected during entity state evolution (event sourcing).
+ * Metrics collected during state evolution (event sourcing).
  * Used by snapshot policies to decide if a new snapshot should be created.
  *
- * Aligned with Kronos Framework's `EvolutionResult`.
  */
 export interface EvolutionResult {
   /** Number of events applied to reach the current state. */
@@ -12,12 +11,11 @@ export interface EvolutionResult {
 }
 
 /**
- * Determines when snapshots should be created for an entity.
+ * Determines when snapshots should be created for a state.
  *
  * Policies are composable via `or()` — if any policy triggers,
  * a snapshot is created.
  *
- * Aligned with Kronos Framework's `SnapshotPolicy`.
  */
 export interface SnapshotPolicy {
   /**
@@ -35,7 +33,6 @@ export interface SnapshotPolicy {
 /**
  * Creates a snapshot policy that triggers after N events have been applied.
  *
- * Aligned with Kronos Framework's `SnapshotPolicy.afterEvents()`.
  */
 export function afterEvents(threshold: number): SnapshotPolicy {
   return createPolicy((result) => result.eventsApplied > threshold)
@@ -45,7 +42,6 @@ export function afterEvents(threshold: number): SnapshotPolicy {
  * Creates a snapshot policy that triggers when sourcing time exceeds
  * the given threshold in milliseconds.
  *
- * Aligned with Kronos Framework's `SnapshotPolicy.whenSourcingTimeExceeds()`.
  */
 export function whenSourcingTimeExceeds(thresholdMs: number): SnapshotPolicy {
   return createPolicy((result) => result.sourcingTimeMs >= thresholdMs)

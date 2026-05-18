@@ -4,7 +4,6 @@ import type { SubscriptionQueryResult } from "./subscription-query.js"
 /**
  * The query bus — low-level infrastructure for dispatching query messages.
  *
- * Aligned with AF5's {@code QueryBus} interface.
  */
 export interface QueryBus {
   /**
@@ -37,7 +36,6 @@ export interface QueryBus {
    * Subscribe to updates only (no initial result).
    * Returns an async iterable of update payloads.
    *
-   * Aligned with AF5's {@code QueryBus.subscribeToUpdates()}.
    */
   subscribeToUpdates(message: QueryMessage, bufferSize?: number): AsyncIterable<unknown> & { close(): void }
 

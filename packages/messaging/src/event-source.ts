@@ -13,8 +13,6 @@ export interface SequencedEvent {
 /**
  * Condition for opening a streaming event source.
  * Defines the starting position and optional event criteria filter.
- *
- * Aligned with AF5's {@code StreamingCondition}.
  */
 export interface StreamingCondition {
   /** Position to start streaming from. */
@@ -27,8 +25,6 @@ export interface StreamingCondition {
  * A push-based message stream. Events are buffered internally and
  * pulled via {@link next}. The stream notifies when events become
  * available via {@link setCallback}.
- *
- * Aligned with AF5's {@code MessageStream<M>}.
  */
 export interface MessageStream<M> {
   /** Pull the next available item (non-blocking). */
@@ -277,9 +273,6 @@ async function reduceStream<M, R>(
 
 /**
  * A source of events that can be opened as an infinite stream.
- *
- * Aligned with AF5's {@code StreamableEventSource} which extends
- * {@code TrackingTokenSource}.
  */
 export interface StreamableEventSource {
   /**
@@ -290,16 +283,12 @@ export interface StreamableEventSource {
   /**
    * Get the token representing the beginning of the event stream.
    * A processor starting from this token will read all events.
-   *
-   * Aligned with AF5's {@code TrackingTokenSource.firstToken()}.
    */
   firstToken(): Promise<TrackingToken>
 
   /**
    * Get the token representing the current tail of the event stream.
    * A processor starting from this token will only see new events.
-   *
-   * Aligned with AF5's {@code TrackingTokenSource.latestToken()}.
    */
   latestToken(): Promise<TrackingToken>
 

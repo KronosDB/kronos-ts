@@ -5,8 +5,6 @@ import type { PrismaClientLike, PrismaTransactionClient } from "./prisma-transac
 /**
  * Expected shape of the `kronos_token_entries` table in the Prisma schema.
  *
- * Aligned with Kronos Framework's `TokenEntry` table:
- *
  * ```prisma
  * model KronosTokenEntry {
  *   processorName String
@@ -62,8 +60,6 @@ function isClaimExpired(row: TokenRow, claimTimeoutMs: number): boolean {
  * Uses the `kronosTokenEntry` model from the Prisma schema. Participates
  * in the active transaction (via `getActiveTransaction()`) so token
  * updates and projection updates are atomic.
- *
- * Table schema aligned with Kronos Framework's `TokenEntry`.
  *
  * ```typescript
  * import { prismaTokenStore } from "@kronos-ts/extensions-prisma"

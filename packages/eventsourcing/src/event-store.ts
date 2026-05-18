@@ -22,8 +22,5 @@ export interface SourcingResult {
  * In an event sourcing context, the EventStore persists events durably while
  * simultaneously distributing them to subscribed event handlers, eliminating
  * the need for a separate EventBus component.
- *
- * Aligned with AF5's `EventStore` which extends `StreamableEventSource`,
- * `EventBus`, and `DescribableComponent`.
  */
 export interface EventStore extends EventStorageEngine, EventBus {}

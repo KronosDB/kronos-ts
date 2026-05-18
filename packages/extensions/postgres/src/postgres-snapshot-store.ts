@@ -3,13 +3,13 @@
  *
  * Schema (from src/schema.ts):
  *   kronos_snapshots (
- *     entity_name TEXT,
- *     entity_id   TEXT,
+ *     state_name  TEXT,
+ *     state_id    TEXT,
  *     position    BIGINT,
  *     payload     BYTEA,
  *     metadata    JSONB,
  *     recorded_at TIMESTAMPTZ,
- *     PRIMARY KEY (entity_name, entity_id)
+ *     PRIMARY KEY (state_name, state_id)
  *   )
  *
  * Payload roundtrip:
@@ -17,9 +17,9 @@
  *          .data goes to BYTEA, .type/.revision plus user metadata into JSONB.
  *   load:  BYTEA + JSONB -> reconstruct SerializedObject -> Serializer.deserialize.
  *
- * Entity id stringification matches createInMemorySnapshotStore: objects are
+ * State id stringification matches createInMemorySnapshotStore: objects are
  * JSON-stringified, everything else gets String(). The eventsourcing protocol
- * passes `unknown` ids, and the kronos_snapshots.entity_id column is TEXT.
+ * passes `unknown` ids, and the kronos_snapshots.state_id column is TEXT.
  */
 
 import type { Snapshot, SnapshotStore } from "@kronos-ts/eventsourcing"
@@ -33,7 +33,7 @@ export interface PostgresSnapshotStoreConfig {
   readonly tableNames?: TableNames
 }
 
-function entityIdToString(id: unknown): string {
+function stateIdToString(id: unknown): string {
   return typeof id === "object" && id !== null ? JSON.stringify(id) : String(id)
 }
 
@@ -50,9 +50,9 @@ export function createPostgresSnapshotStore(
   const tables = config.tableNames ?? DEFAULT_TABLE_NAMES
 
   return {
-    async store(entityName: string, id: unknown, snapshot: Snapshot): Promise<void> {
-      const entityId = entityIdToString(id)
-      const serialized = serializer.serialize(snapshot.payload, entityName, "")
+    async store(stateName: string, id: unknown, snapshot: Snapshot): Promise<void> {
+      const stateId = stateIdToString(id)
+      const serialized = serializer.serialize(snapshot.payload, stateName, "")
       const payloadBuf = Buffer.from(serialized.data)
       const metadata = {
         ...snapshot.metadata,
@@ -62,16 +62,16 @@ export function createPostgresSnapshotStore(
       // recorded_at uses to_timestamp(epoch_seconds); snapshot.timestamp is milliseconds.
       await adapter.query(
         `INSERT INTO ${tables.snapshots}
-           (entity_name, entity_id, position, payload, metadata, recorded_at)
+           (state_name, state_id, position, payload, metadata, recorded_at)
          VALUES ($1, $2, $3::bigint, $4, $5::jsonb, to_timestamp($6))
-         ON CONFLICT (entity_name, entity_id) DO UPDATE
+         ON CONFLICT (state_name, state_id) DO UPDATE
            SET position    = EXCLUDED.position,
                payload     = EXCLUDED.payload,
                metadata    = EXCLUDED.metadata,
                recorded_at = EXCLUDED.recorded_at`,
         [
-          entityName,
-          entityId,
+          stateName,
+          stateId,
           String(snapshot.position),
           payloadBuf,
           JSON.stringify(metadata),
@@ -80,8 +80,8 @@ export function createPostgresSnapshotStore(
       )
     },
 
-    async load(entityName: string, id: unknown): Promise<Snapshot | undefined> {
-      const entityId = entityIdToString(id)
+    async load(stateName: string, id: unknown): Promise<Snapshot | undefined> {
+      const stateId = stateIdToString(id)
       const row = await adapter.queryOne<{
         position: string
         payload: Buffer | Uint8Array
@@ -90,8 +90,8 @@ export function createPostgresSnapshotStore(
       }>(
         `SELECT position::text AS position, payload, metadata, recorded_at
            FROM ${tables.snapshots}
-          WHERE entity_name = $1 AND entity_id = $2`,
-        [entityName, entityId],
+          WHERE state_name = $1 AND state_id = $2`,
+        [stateName, stateId],
       )
       if (!row) return undefined
 
@@ -111,7 +111,7 @@ export function createPostgresSnapshotStore(
         typeof row.metadata === "string"
           ? (JSON.parse(row.metadata) as Record<string, string>)
           : (row.metadata ?? {})
-      const serializedType = rawMetadata[SERIALIZER_TYPE_KEY] ?? entityName
+      const serializedType = rawMetadata[SERIALIZER_TYPE_KEY] ?? stateName
       const serializedRevision = rawMetadata[SERIALIZER_REVISION_KEY] ?? ""
       const userMetadata: Record<string, string> = {}
       for (const [k, v] of Object.entries(rawMetadata)) {
@@ -142,11 +142,11 @@ export function createPostgresSnapshotStore(
       }
     },
 
-    async deleteSnapshots(entityName: string, id: unknown): Promise<void> {
-      const entityId = entityIdToString(id)
+    async deleteSnapshots(stateName: string, id: unknown): Promise<void> {
+      const stateId = stateIdToString(id)
       await adapter.query(
-        `DELETE FROM ${tables.snapshots} WHERE entity_name = $1 AND entity_id = $2`,
-        [entityName, entityId],
+        `DELETE FROM ${tables.snapshots} WHERE state_name = $1 AND state_id = $2`,
+        [stateName, stateId],
       )
     },
   }

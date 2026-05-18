@@ -16,7 +16,7 @@ describe("AppImpl — fluent API", () => {
     const dummyQueryHandler = {} as any
     const dummyProcessor = {} as any
 
-    expect(app.entities(dummyEntity)).toBe(app)
+    expect(app.states(dummyEntity)).toBe(app)
     expect(app.commands(dummyHandler)).toBe(app)
     expect(app.queries(dummyQueryHandler)).toBe(app)
     expect(app.processors(dummyProcessor)).toBe(app)
@@ -37,7 +37,7 @@ describe("AppImpl — fluent API", () => {
     // Manually mark started to simulate post-start state
     app.markStarted()
 
-    expect(() => app.entities({} as any)).toThrow(AppAlreadyStartedError)
+    expect(() => app.states({} as any)).toThrow(AppAlreadyStartedError)
     expect(() => app.commands({} as any)).toThrow(AppAlreadyStartedError)
     expect(() => app.queries({} as any)).toThrow(AppAlreadyStartedError)
     expect(() => app.processors({} as any)).toThrow(AppAlreadyStartedError)

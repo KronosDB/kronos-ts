@@ -97,9 +97,9 @@ describe("buildSnapshotsTableDDL", () => {
     expect(ddl).toMatch(/payload\s+BYTEA\s+NOT NULL/)
   })
 
-  it("declares a composite primary key on (entity_name, entity_id) for upsert semantics", () => {
+  it("declares a composite primary key on (state_name, state_id) for upsert semantics", () => {
     const ddl = buildSnapshotsTableDDL(DEFAULT_TABLE_NAMES)
-    expect(ddl).toMatch(/PRIMARY KEY \(entity_name, entity_id\)/)
+    expect(ddl).toMatch(/PRIMARY KEY \(state_name, state_id\)/)
   })
 })
 

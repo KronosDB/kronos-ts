@@ -29,7 +29,7 @@ import {
   trackingProcessor,
   EventCriteria,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { load, append, afterEvents } from "@kronos-ts/eventsourcing"
 import { kronos } from "@kronos-ts/core"
 import { postgres } from "@kronos-ts/postgres"
@@ -73,7 +73,7 @@ const StudentEnrolled = event({
 })
 
 type CourseState = { opened: boolean; capacity: number; enrolled: string[] }
-const Course = eventSourcedEntity({
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (): CourseState => ({ opened: false, capacity: 0, enrolled: [] }),
@@ -85,7 +85,7 @@ const Course = eventSourcedEntity({
 })
 
 type StudentState = { registered: boolean; maxCourses: number; courses: string[] }
-const Student = eventSourcedEntity({
+const Student = state({
   name: "Student",
   id: { studentId: z.string() },
   initial: (): StudentState => ({ registered: false, maxCourses: 0, courses: [] }),
@@ -205,7 +205,7 @@ async function main(): Promise<void> {
 
     // Write side: framework with the Bun.SQL adapter.
     const app = await kronos({ quiet: true })
-      .entities(
+      .states(
         [Course, { snapshotPolicy: afterEvents(1) }],
         [Student, { snapshotPolicy: afterEvents(1) }],
       )
@@ -293,21 +293,21 @@ async function main(): Promise<void> {
 
       console.log("\n== kronos_snapshots (framework-owned) ==")
       const snapRows = await db.execute<{
-        entity_name: string; entity_id: string; position: string; bytes: number
+        state_name: string; state_id: string; position: string; bytes: number
       }>(sql`
-        SELECT entity_name, entity_id, position::text AS position,
+        SELECT state_name, state_id, position::text AS position,
                octet_length(payload) AS bytes
           FROM kronos_snapshots
-         ORDER BY entity_name, entity_id
+         ORDER BY state_name, state_id
       `)
       if (snapRows.length === 0) {
         console.log("  (none)")
       } else {
-        console.log("  entity_name | entity_id                  | pos | payload bytes")
+        console.log("  state_name | state_id                  | pos | payload bytes")
         console.log("  ------------+----------------------------+-----+---------------")
         for (const r of snapRows) {
           console.log(
-            `  ${r.entity_name.padEnd(11)} | ${r.entity_id.padEnd(26)} | ${r.position.padStart(3)} | ${r.bytes}`,
+            `  ${r.state_name.padEnd(11)} | ${r.state_id.padEnd(26)} | ${r.position.padStart(3)} | ${r.bytes}`,
           )
         }
       }

@@ -4,7 +4,6 @@ import type { DispatchInterceptor } from "./interceptor.js"
 
 /**
  * Wraps an EventBus with dispatch interceptors for event publishing.
- * Aligned with AF5's `InterceptingEventBus`.
  */
 export function createInterceptingEventBus(
   delegate: EventBus,

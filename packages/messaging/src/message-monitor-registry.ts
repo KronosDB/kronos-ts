@@ -6,7 +6,6 @@ import { multiMessageMonitor, noOpMessageMonitor } from "./message-monitor.js"
  * Registry for message monitors. Collects monitors per message type
  * and provides combined monitors for each type.
  *
- * Aligned with AF5's `MessageMonitorRegistry`.
  */
 export interface MessageMonitorRegistry {
   /** Register a monitor for all message types. */

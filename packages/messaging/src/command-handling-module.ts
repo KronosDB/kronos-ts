@@ -1,4 +1,4 @@
-import { qualifiedNameToString } from "@kronos-ts/common"
+import { qualifiedNameToString, resourceKey } from "@kronos-ts/common"
 import type { CommandHandlerDefinition } from "./command-handler.js"
 
 /**
@@ -29,11 +29,13 @@ const COMMAND_INVOCATION_KEYS = {
   EVENT_STORE: "eventStore",
   TAG_RESOLVER: "tagResolver",
 } as const
+
+const EVENT_FLUSH_REGISTERED_KEY = resourceKey<boolean>("commandInvocationEventFlushRegistered")
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import { CORRELATION_DATA_KEY } from "./correlation-data.js"
-import { getResource, setResource, onPrepareCommit } from "./processing-state.js"
+import { getResource, setResource, onPrepareCommit, hasResource } from "./processing-state.js"
 import { COMMAND_BUS_KEY } from "./send.js"
 import { QUERY_BUS_KEY } from "./emit-update.js"
 import type { CommandMessage, EventMessage } from "./message.js"
@@ -75,57 +77,63 @@ export function createCommandInvocation(
       setResource(QUERY_BUS_KEY, config.getComponent<QueryBus>(COMMAND_INVOCATION_KEYS.QUERY_BUS))
     }
 
-    // Register event flush in PREPARE_COMMIT phase
-    onPrepareCommit(async () => {
-      const buffered = getResource(BUFFERED_EVENTS_KEY)
-      if (!buffered || buffered.length === 0) return
-      if (!config.hasComponent(COMMAND_INVOCATION_KEYS.EVENT_STORE)) return
+    // Register event flush in PREPARE_COMMIT phase once per UnitOfWork.
+    // Nested context-aware dispatch re-enters createCommandInvocation inside
+    // the same ALS state; without this guard every nested command registers an
+    // additional flush and the same buffered events are appended repeatedly.
+    if (!hasResource(EVENT_FLUSH_REGISTERED_KEY)) {
+      setResource(EVENT_FLUSH_REGISTERED_KEY, true)
+      onPrepareCommit(async () => {
+        const buffered = getResource(BUFFERED_EVENTS_KEY)
+        if (!buffered || buffered.length === 0) return
+        if (!config.hasComponent(COMMAND_INVOCATION_KEYS.EVENT_STORE)) return
 
-      const eventStore = config.getComponent<{ append: (events: ReadonlyArray<EventMessage>, condition?: any) => Promise<unknown> }>(COMMAND_INVOCATION_KEYS.EVENT_STORE)
+        const eventStore = config.getComponent<{ append: (events: ReadonlyArray<EventMessage>, condition?: any) => Promise<unknown> }>(COMMAND_INVOCATION_KEYS.EVENT_STORE)
 
-      // Enrich events with correlation data from ProcessingContext
-      // (set by the CorrelationDataHandlerInterceptor during handler execution)
-      const correlationData = getResource(CORRELATION_DATA_KEY)
-      const enrichedEvents = correlationData
-        ? buffered.map(event => ({
-            ...event,
-            metadata: { ...event.metadata, ...correlationData },
-          }))
-        : buffered
+        // Enrich events with correlation data from ProcessingContext
+        // (set by the CorrelationDataHandlerInterceptor during handler execution)
+        const correlationData = getResource(CORRELATION_DATA_KEY)
+        const enrichedEvents = correlationData
+          ? buffered.map(event => ({
+              ...event,
+              metadata: { ...event.metadata, ...correlationData },
+            }))
+          : buffered
 
-      // Resolve tags via TagResolver (if configured)
-      const tagResolver = config.getOptionalComponent<{ resolve: (event: EventMessage) => Array<{ key: string; value: string }> }>(COMMAND_INVOCATION_KEYS.TAG_RESOLVER)
-      const resolvedEvents = tagResolver
-        ? enrichedEvents.map(event => ({
-            ...event,
-            tags: [...event.tags, ...tagResolver.resolve(event)],
-          }))
-        : enrichedEvents
-      const sourcingInfos = getResource(SOURCING_INFOS_KEY) ?? []
+        // Resolve tags via TagResolver (if configured)
+        const tagResolver = config.getOptionalComponent<{ resolve: (event: EventMessage) => Array<{ key: string; value: string }> }>(COMMAND_INVOCATION_KEYS.TAG_RESOLVER)
+        const resolvedEvents = tagResolver
+          ? enrichedEvents.map(event => ({
+              ...event,
+              tags: [...event.tags, ...tagResolver.resolve(event)],
+            }))
+          : enrichedEvents
+        const sourcingInfos = getResource(SOURCING_INFOS_KEY) ?? []
 
-      let appendCondition: any = undefined
-      if (sourcingInfos.length > 0) {
-        const combinedCriteria = sourcingInfos.length === 1
-          ? sourcingInfos[0]!.criteria
-          : { kind: "either" as const, criteria: sourcingInfos.map((s) => s.criteria) }
+        let appendCondition: any = undefined
+        if (sourcingInfos.length > 0) {
+          const combinedCriteria = sourcingInfos.length === 1
+            ? sourcingInfos[0]!.criteria
+            : { kind: "either" as const, criteria: sourcingInfos.map((s) => s.criteria) }
 
-        const maxMarker = sourcingInfos.reduce(
-          (max, s) => s.markerPosition > max ? s.markerPosition : max,
-          -1n,
-        )
+          const maxMarker = sourcingInfos.reduce(
+            (max, s) => s.markerPosition > max ? s.markerPosition : max,
+            -1n,
+          )
 
-        const finalCriteria = handler.appendCondition
-          ? handler.appendCondition(message.payload, combinedCriteria)
-          : combinedCriteria
+          const finalCriteria = handler.appendCondition
+            ? handler.appendCondition(message.payload, combinedCriteria)
+            : combinedCriteria
 
-        appendCondition = {
-          criteria: finalCriteria,
-          marker: { position: maxMarker },
+          appendCondition = {
+            criteria: finalCriteria,
+            marker: { position: maxMarker },
+          }
         }
-      }
 
-      await eventStore.append(resolvedEvents, appendCondition)
-    })
+        await eventStore.append(resolvedEvents, appendCondition)
+      })
+    }
 
     return handler.handler(message.payload, message.metadata)
   }

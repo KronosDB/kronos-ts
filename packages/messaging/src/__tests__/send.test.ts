@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from "bun:test"
+import { describe, it, expect } from "bun:test"
 import { z } from "zod"
 import { qn, emptyMetadata } from "@kronos-ts/common"
 import {
@@ -8,12 +8,10 @@ import {
   onPrepareCommit,
   command,
 } from "../index.js"
-import { setResource } from "../processing-state.js"
-import { send, COMMAND_BUS_KEY } from "../send.js"
-import type { CommandBus } from "../command-bus.js"
+import { send } from "../send.js"
 
 // ---------------------------------------------------------------------------
-// Test descriptors
+// Test descriptor
 // ---------------------------------------------------------------------------
 
 const CreateCourse = command({
@@ -21,7 +19,16 @@ const CreateCourse = command({
   payload: z.object({ courseId: z.string(), name: z.string() }),
 })
 
-describe("send", () => {
+// ---------------------------------------------------------------------------
+// `send` is the handler-internal command helper. Its happy path — delegating
+// to the command bus in a fresh UnitOfWork, carrying caller metadata, stamping
+// identifier + timestamp — is exercised end-to-end by the stateful-automation
+// integration tests (an event handler that reacts by calling `send()`), where
+// it runs against a real bus and event store. These unit tests pin the two
+// things an e2e flow can't reach naturally: the UnitOfWork phase guards.
+// ---------------------------------------------------------------------------
+
+describe("send — UnitOfWork guards", () => {
   it("throws NoActiveUnitOfWork when called outside a UoW", async () => {
     await expect(send(CreateCourse, { courseId: "c1", name: "Intro" })).rejects.toThrow(NoActiveUnitOfWork)
   })
@@ -40,44 +47,12 @@ describe("send", () => {
     })
 
     expect(capturedError).toBeInstanceOf(WrongUoWPhase)
-    const err = capturedError as WrongUoWPhase
-    expect(err.message).toContain("INVOCATION")
+    expect((capturedError as WrongUoWPhase).message).toContain("INVOCATION")
   })
 
   it("throws 'No command bus configured' when COMMAND_BUS_KEY is unset", async () => {
     await runInNewUoW(emptyMetadata(), async () => {
       await expect(send(CreateCourse, { courseId: "c1", name: "Intro" })).rejects.toThrow(/command bus/)
     })
-  })
-
-  it("delegates to bus.dispatch with descriptor name + payload + UoW metadata", async () => {
-    const dispatchSpy = mock(() => Promise.resolve("ok"))
-    const bus: CommandBus = { dispatch: dispatchSpy, subscribe: mock(() => {}) }
-    const meta = { correlationId: "abc" } as any
-
-    await runInNewUoW(meta, async () => {
-      setResource(COMMAND_BUS_KEY, bus)
-      await send(CreateCourse, { courseId: "c1", name: "Intro" })
-    })
-
-    expect(dispatchSpy).toHaveBeenCalledTimes(1)
-    const arg = dispatchSpy.mock.calls[0]![0]
-    expect(arg.name).toEqual(CreateCourse.name)
-    expect(arg.payload).toEqual({ courseId: "c1", name: "Intro" })
-    expect(arg.metadata).toEqual(meta)
-  })
-
-  it("dispatched command message has identifier and timestamp", async () => {
-    const dispatchSpy = mock(() => Promise.resolve("ok"))
-    const bus: CommandBus = { dispatch: dispatchSpy, subscribe: mock(() => {}) }
-
-    await runInNewUoW(emptyMetadata(), async () => {
-      setResource(COMMAND_BUS_KEY, bus)
-      await send(CreateCourse, { courseId: "c1", name: "Intro" })
-    })
-
-    const arg = dispatchSpy.mock.calls[0]![0]
-    expect(arg.identifier).toBeDefined()
-    expect(typeof arg.timestamp).toBe("number")
   })
 })

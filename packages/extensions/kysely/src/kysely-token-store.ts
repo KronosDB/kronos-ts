@@ -19,8 +19,6 @@ import type { KyselyTransaction } from "./kysely-transaction-manager.js"
  *   }
  * }
  * ```
- *
- * Table schema aligned with Kronos Framework's `TokenEntry`.
  */
 
 function serializeToken(token: TrackingToken): { token_type: string; token: string } {

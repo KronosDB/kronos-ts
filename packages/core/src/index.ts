@@ -17,6 +17,7 @@ export {
   type Extension,
   type AppState,
   type AppImplOptions,
+  type KronosIdentity,
 } from "./app.js"
 export { registerInMemoryDefaults } from "./defaults.js"
 export { kronos, type KronosPartialConfig } from "./kronos.js"
@@ -34,4 +35,4 @@ export type { LifecycleStage, LifecycleHook } from "./lifecycle.js"
 export type { TokenStore, TransactionManager } from "@kronos-ts/messaging"
 // Plan 09-01 Task 2: handler enhancer + entities() tuple-shape types.
 export type { HandlerEnhancerDefinition } from "@kronos-ts/messaging"
-export type { EntityOptions, EntitiesArg } from "./app.js"
+export type { StateOptions, StatesArg } from "./app.js"

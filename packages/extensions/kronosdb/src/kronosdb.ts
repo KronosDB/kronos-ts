@@ -507,9 +507,9 @@ function createDistributedCommandBus(
               timestamp: Number(proto.timestamp),
             }
 
-            resultPayload = await unitOfWorkRunner(commandMessage.metadata, async () => {
-              return handler(commandMessage)
-            })
+            resultPayload = await unitOfWorkRunner(commandMessage.metadata, () =>
+              handler(commandMessage),
+            )
           } catch (err) {
             errorCode = KronosDbErrorCode.COMMAND_EXECUTION_ERROR
             errorMsg = err instanceof Error ? err.message : String(err)

@@ -50,7 +50,7 @@ const app = await kronos()
   .use(postgres({ adapter: pgAdapter({ connectionString }) }))
   .start()
 
-// 1. Source events for an entity (criteria + optional start position).
+// 1. Source events for a state (criteria + optional start position).
 //    Returns the matched events plus a consistency marker.
 const criteria = EventCriteria.havingTags(tag("order", "123"))
 const { events: sourced, marker } = await eventStore!.source({ criteria })
@@ -141,7 +141,7 @@ The `pg_snapshot_xmin` watermark hides events from in-flight transactions, preve
 
 `bootstrap: true` (default) auto-creates these tables on connect:
 - `kronos_events` — append-only event log with `xid8` watermark, BIGSERIAL position, JSONB payload, GIN index on tags
-- `kronos_snapshots` — composite-PK `(entity_name, entity_id)` with BYTEA payload
+- `kronos_snapshots` — composite-PK `(state_name, state_id)` with BYTEA payload
 
 Custom table names: `postgres({ adapter, tableNames: { events: "my_events", snapshots: "my_snaps" } })`.
 
@@ -156,7 +156,7 @@ try {
   await eventStore.append(events, condition)
 } catch (e) {
   if (e instanceof AppendConditionError) {
-    // Re-source the entity to get a fresh marker, then retry.
+    // Re-source the state to get a fresh marker, then retry.
   }
 }
 ```

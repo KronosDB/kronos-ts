@@ -1,4 +1,4 @@
-import type { EntityModule } from "@kronos-ts/modelling"
+import type { StateModule } from "@kronos-ts/modelling"
 import type {
   CommandHandlerDefinition,
   QueryHandlerDefinition,
@@ -18,16 +18,20 @@ import { Defaults } from "./defaults-handles.js"
  * Partial-config shorthand options for kronos(). APP-02.
  *
  * Domain registrations passed here are appended to the same internal accumulators
- * as fluent .entities()/.commands()/etc. calls. quiet/logger configure the warning
+ * as fluent .states()/.commands()/etc. calls. quiet/logger configure the warning
  * channel BEFORE in-memory defaults are registered.
  */
 export interface KronosPartialConfig {
-  entities?: EntityModule[]
+  states?: StateModule[]
   commands?: CommandHandlerDefinition<any, any>[]
   queries?: QueryHandlerDefinition[]
   processors?: EventProcessorModule[]
   quiet?: boolean
   logger?: WarningLogger
+  /** Stable logical service/application name. Same across replicas. */
+  serviceName?: string
+  /** Unique physical runtime instance id. Different per process/pod. */
+  instanceId?: string
   /**
    * Per-stage timeout (ms) for native lifecycle execution (D-77).
    * If a single stage exceeds this, AppImpl emits a warning and continues
@@ -43,7 +47,7 @@ export interface KronosPartialConfig {
  *
  * ```typescript
  * const app = await kronos()
- *   .entities(CourseEntity)
+ *   .states(Course)
  *   .commands(createCourseHandler)
  *   .start()
  *
@@ -53,12 +57,17 @@ export interface KronosPartialConfig {
  * Or with a partial config (APP-02):
  *
  * ```typescript
- * const app = await kronos({ entities: [CourseEntity], commands: [createCourseHandler], quiet: true }).start()
+ * const app = await kronos({ states: [Course], commands: [createCourseHandler], quiet: true }).start()
  * ```
  */
 export function kronos(partial?: KronosPartialConfig): App {
   const warningChannel = createWarningChannel({ quiet: partial?.quiet, logger: partial?.logger })
-  const app = new AppImpl({ warningChannel, stageTimeoutMs: partial?.stageTimeoutMs })
+  const app = new AppImpl({
+    warningChannel,
+    stageTimeoutMs: partial?.stageTimeoutMs,
+    serviceName: partial?.serviceName,
+    instanceId: partial?.instanceId,
+  })
 
   // Register in-memory defaults FIRST so user partial-config / fluent calls override them
   // via set/forceSet (setDefault is ifAbsent — first registration wins).
@@ -99,7 +108,7 @@ export function kronos(partial?: KronosPartialConfig): App {
     },
   )
 
-  if (partial?.entities) app.entities(...partial.entities)
+  if (partial?.states) app.states(...partial.states)
   if (partial?.commands) app.commands(...partial.commands)
   if (partial?.queries) app.queries(...partial.queries)
   if (partial?.processors) app.processors(...partial.processors)

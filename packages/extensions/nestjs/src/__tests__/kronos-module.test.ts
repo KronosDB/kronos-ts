@@ -43,7 +43,7 @@ describe("KronosModule", () => {
     expect(app).toBeDefined()
     expect(receivedApp).toBe(app) // same instance handed to configure
     // App must expose the fluent surface
-    expect(typeof app.entities).toBe("function")
+    expect(typeof app.states).toBe("function")
     expect(typeof app.commands).toBe("function")
     expect(typeof app.start).toBe("function")
   })

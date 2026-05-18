@@ -7,7 +7,6 @@ import type { SpanFactory } from "./span-factory.js"
  * Creates an internal span per handler invocation, recording the handler
  * name and message type as context. Errors are recorded on the span.
  *
- * Aligned with AF5's `TracingHandlerEnhancerDefinition`.
  */
 export function tracingHandlerEnhancerDefinition(
   spanFactory: SpanFactory,

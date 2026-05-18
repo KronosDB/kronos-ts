@@ -1,13 +1,15 @@
 /**
  * Full-stack E2E integration test for KronosDB.
  *
- * Connects to a local KronosDB instance at localhost:50051.
- * Start KronosDB before running: cargo run --release --package kronosdb-server
+ * Spins up ghcr.io/kronosdb/kronosdb:latest via testcontainers — no local
+ * server needed. The image's entrypoint runs kronosdb-server, which listens
+ * for gRPC on 50051 and admin on 9240.
  *
  * Tests the full CQRS/ES pipeline:
  *   command → event store → tracking processor → projection → query
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
+import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { z } from "zod"
 import { qn, tag } from "@kronos-ts/common"
 import {
@@ -21,8 +23,9 @@ import {
   EventCriteria,
   trackingProcessor,
   emitUpdate,
+  send,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { type EventStore, load, append } from "@kronos-ts/eventsourcing"
 import { kronos, type App, type RunningApp } from "@kronos-ts/core"
 import { kronosDb } from "@kronos-ts/kronosdb"
@@ -60,31 +63,62 @@ const StudentSubscribed = event({
   tags: (p) => [tag("courseId", p.courseId)],
 })
 
-type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[] }
+const CloseEnrollment = command({
+  name: qn("kronosdb-e2e", "CloseEnrollment"),
+  payload: z.object({ courseId: z.string() }),
+  routingKey: "courseId",
+})
 
-const CourseEntity = eventSourcedEntity({
+const EnrollmentClosed = event({
+  name: qn("kronosdb-e2e", "EnrollmentClosed"),
+  payload: z.object({ courseId: z.string() }),
+  tags: (p) => [tag("courseId", p.courseId)],
+})
+
+type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[]; closed: boolean }
+
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
-  initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [] }) as CourseState,
+  initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
     on(CourseCreated, (s: CourseState, e) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
     on(StudentSubscribed, (s: CourseState, e) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
+    on(EnrollmentClosed, (s: CourseState) => ({ ...s, closed: true })),
   ],
 })
 
 const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
 const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already enrolled")
   append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
+})
+
+// -- Stateful automation: an event handler that reacts to StudentSubscribed,
+// sources the affected Course, and — if it is now full — issues a
+// CloseEnrollment command via send(). The command runs in its own fresh
+// UnitOfWork per the AF5-aligned model.
+
+const closeEnrollment = commandHandler(CloseEnrollment, async (cmd) => {
+  const course = await load(Course, { courseId: cmd.courseId })
+  if (!course.created || course.closed) return
+  append(EnrollmentClosed, { courseId: cmd.courseId })
+})
+
+const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async (e) => {
+  const course = await load(Course, { courseId: e.courseId })
+  if (course.created && !course.closed && course.enrolled.length >= course.capacity) {
+    await send(CloseEnrollment, { courseId: e.courseId })
+  }
 })
 
 // -- Projection --
@@ -114,10 +148,10 @@ const getCourse = queryHandler(GetCourse, async (q, _metadata) => {
 // Helpers
 // ============================================================================
 
-async function waitFor(check: () => boolean, timeoutMs = 30000): Promise<void> {
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 30000): Promise<void> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
-    if (check()) return
+    if (await check()) return
     await new Promise(r => setTimeout(r, 100))
   }
   throw new Error("Timed out waiting for condition")
@@ -132,12 +166,26 @@ function id(name: string) { return `${name}-${runId}` }
 // ============================================================================
 
 describe("E2E: KronosDB full stack", () => {
+  let container: StartedTestContainer
   let app: RunningApp
   let capturedEventStore: EventStore | undefined
+  let kronosHost: string
+  let kronosPort: number
 
   beforeAll(async () => {
     courseViews.clear()
     capturedEventStore = undefined
+
+    // Spin up KronosDB. The server logs "KronosDB starting" once it binds
+    // its gRPC listener; testcontainers also waits for port 50051 to accept
+    // connections before returning.
+    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:latest")
+      .withExposedPorts(50051, 9240)
+      .withWaitStrategy(Wait.forLogMessage(/KronosDB starting/))
+      .start()
+
+    kronosHost = container.getHost()
+    kronosPort = container.getMappedPort(50051)
 
     // Plan 09-03 migration: native (app: App) => void extension shape (D-95).
     // kronosDb populates eventStore / snapshotStore / commandBus / queryBus
@@ -145,8 +193,8 @@ describe("E2E: KronosDB full stack", () => {
     // subscription-ack wait via the @kronos-ts/common resilience helper.
     const kronosDbExtension = kronosDb({
       componentName: "kronosdb-e2e-test",
-      host: "localhost",
-      port: 50051,
+      host: kronosHost,
+      port: kronosPort,
       context: "default",
     })
 
@@ -161,7 +209,7 @@ describe("E2E: KronosDB full stack", () => {
     }
 
     app = await kronos({ quiet: true })
-      .entities(CourseEntity)
+      .states(Course)
       .commands(createCourse, subscribeStudent)
       .queries(getCourse)
       .processors(
@@ -175,10 +223,11 @@ describe("E2E: KronosDB full stack", () => {
 
     // Give KronosDB time to process handler subscriptions
     await new Promise(r => setTimeout(r, 2000))
-  }, 30_000)
+  }, 120_000)
 
   afterAll(async () => {
     await app?.stop()
+    await container?.stop()
   })
 
   function eventStore(): EventStore {
@@ -285,4 +334,56 @@ describe("E2E: KronosDB full stack", () => {
     const result = await app.queryGateway.query(GetCourse, { courseId: courseA })
     expect((result as CourseView).name).toBe("Course A")
   }, 30_000)
+
+  it("stateful automation — an event handler sends a command in its own UoW", async () => {
+    // A dedicated app isolates the automation processor so it cannot perturb
+    // the event counts asserted by the tests above. It connects to the same
+    // KronosDB instance.
+    let autoEventStore: EventStore | undefined
+    const autoApp = await kronos({ quiet: true })
+      .states(Course)
+      .commands(createCourse, subscribeStudent, closeEnrollment)
+      .processors(
+        trackingProcessor("kronosdb-enrollment-automation")
+          .eventHandlers(closeEnrollmentWhenFull)
+          .build(),
+      )
+      .use((a: App) => {
+        a.decorate("eventStore", (inner) => {
+          autoEventStore = inner
+          return inner
+        })
+      })
+      .use(kronosDb({
+        componentName: "kronosdb-automation-test",
+        host: kronosHost,
+        port: kronosPort,
+        context: "default",
+      }))
+      .start()
+    await new Promise(r => setTimeout(r, 2000))
+
+    try {
+      const courseId = id("auto-cap")
+      await autoApp.commandGateway.send(CreateCourse, { courseId, name: "One Seat", capacity: 1 })
+      await autoApp.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-1" })
+
+      // The automation sources the now-full course and dispatches
+      // CloseEnrollment; its handler appends EnrollmentClosed in its own UoW.
+      const criteria = EventCriteria.havingTags(tag("courseId", courseId))
+      await waitFor(async () => {
+        const { events } = await autoEventStore!.source({ criteria })
+        return events.some((ev) => ev.name.name === "EnrollmentClosed")
+      }, 30000)
+
+      const { events } = await autoEventStore!.source({ criteria })
+      expect(events.map((ev) => ev.name.name)).toEqual([
+        "CourseCreated",
+        "StudentSubscribed",
+        "EnrollmentClosed",
+      ])
+    } finally {
+      await autoApp.stop()
+    }
+  }, 60_000)
 })

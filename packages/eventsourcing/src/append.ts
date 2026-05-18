@@ -24,12 +24,12 @@ export const BUFFERED_EVENTS_KEY: ResourceKey<EventMessage[]> = resourceKey("buf
 export const SOURCING_INFOS_KEY: ResourceKey<Array<{ criteria: EventCriteria; markerPosition: bigint }>> =
   resourceKey("sourcingInfos")
 
-/** Entity cache: prevents duplicate load() calls within same UnitOfWork. */
-export const ENTITY_CACHE_KEY: ResourceKey<Map<string, Promise<unknown>>> = resourceKey("entityCache")
+/** State cache: prevents duplicate load() calls within same UnitOfWork. */
+export const STATE_CACHE_KEY: ResourceKey<Map<string, Promise<unknown>>> = resourceKey("stateCache")
 
-/** Entity module references keyed by cache key, used to apply evolvers on append. */
-export const ENTITY_MODULES_KEY: ResourceKey<Map<string, { entity: any; id: unknown }>> =
-  resourceKey("entityModules")
+/** State module references keyed by cache key, used to apply evolvers on append. */
+export const STATE_MODULES_KEY: ResourceKey<Map<string, { module: any; id: unknown }>> =
+  resourceKey("stateModules")
 
 /**
  * Plan 04-01 (HDL-02 / D-42): module-level append.
@@ -37,7 +37,7 @@ export const ENTITY_MODULES_KEY: ResourceKey<Map<string, { entity: any; id: unkn
  * Throws NoActiveUnitOfWork outside a UoW (D-43 fail-fast on no-UoW).
  * Throws WrongUoWPhase outside INVOCATION phase (D-43 mutator guard).
  *
- * Buffers events in BUFFERED_EVENTS_KEY; updates cached entity state via
+ * Buffers events in BUFFERED_EVENTS_KEY; updates cached state via
  * matching evolvers (same logic as command-handling-module.ts appendFn).
  */
 export const append: AppendFunction = ((
@@ -59,18 +59,18 @@ export const append: AppendFunction = ((
   }
   events.push(eventMessage)
 
-  // Update cached entity state by applying matching evolvers.
+  // Update cached state by applying matching evolvers.
   // Verbatim copy of command-handling-module.ts:101-123 logic — moved here so
   // both command-handling-module (via delegation) and direct module-level callers
   // get identical behaviour.
-  const cache = getResource(ENTITY_CACHE_KEY)
-  const modules = getResource(ENTITY_MODULES_KEY)
+  const cache = getResource(STATE_CACHE_KEY)
+  const modules = getResource(STATE_MODULES_KEY)
   if (cache && modules) {
     const eventType = qualifiedNameToString(eventDescriptor.name)
-    for (const [cacheKey, { entity, id }] of modules) {
+    for (const [cacheKey, { module, id }] of modules) {
       const cachedPromise = cache.get(cacheKey)
       if (!cachedPromise) continue
-      const evolvers = (entity as any).evolvers as ReadonlyArray<{
+      const evolvers = (module as any).evolvers as ReadonlyArray<{
         descriptor: { name: any }
         evolve: (s: any, e: any, id: any) => any
       }> | undefined

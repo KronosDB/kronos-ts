@@ -10,8 +10,6 @@ import type { z } from "zod"
  * Creates a namespace-scoped factory for message descriptors.
  * Reduces repetition when defining many messages in the same bounded context.
  *
- * Inspired by Java's `package-info.java` namespace convention.
- *
  * ```typescript
  * const ns = withNamespace("university.courses")
  *

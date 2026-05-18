@@ -81,7 +81,7 @@ describe("createPostgresSnapshotStore", () => {
     expect(await store.load("Order", "1")).toBeUndefined()
   })
 
-  it("composite (entity_name, entity_id) PK keeps different entities separate", async () => {
+  it("composite (state_name, state_id) PK keeps different states separate", async () => {
     await store.store("Order", "1", sampleSnapshot(10n))
     await store.store("Order", "2", sampleSnapshot(20n))
     await store.store("Invoice", "1", sampleSnapshot(30n))

@@ -7,7 +7,6 @@ import type { ConsistencyMarker } from "./consistency-marker.js"
 /**
  * A transactional handle for an append operation.
  *
- * Aligned with AF5's {@code EventStorageEngine.AppendTransaction<R>}.
  * The two-phase pattern allows the processing lifecycle to control when
  * events become visible:
  *
@@ -35,12 +34,10 @@ export interface AppendTransaction {
  * Not intended for direct use by application code. The {@link EventStore}
  * composes an EventStorageEngine with event distribution (EventSink) and
  * tag resolution (TagResolver).
- *
- * Aligned with AF5's `EventStorageEngine` (marked `@Internal` in Java).
  */
 export interface EventStorageEngine extends StreamableEventSource {
   /**
-   * Source events matching the given condition (criteria-based, for entity state).
+   * Source events matching the given condition (criteria-based, for state sourcing).
    * Returns the matching events and a consistency marker.
    */
   source(condition: SourcingCondition): Promise<SourcingResult>

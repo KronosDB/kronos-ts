@@ -30,8 +30,9 @@ import {
   trackingProcessor,
   subscribingProcessor,
   emitUpdate,
+  send,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
   type SnapshotStore,
@@ -82,6 +83,17 @@ const StudentSubscribed = event({
   tags: (p) => [tag("courseId", p.courseId)],
 })
 
+const CloseEnrollment = command({
+  name: qn("university", "CloseEnrollment"),
+  payload: z.object({ courseId: z.string() }),
+})
+
+const EnrollmentClosed = event({
+  name: qn("university", "EnrollmentClosed"),
+  payload: z.object({ courseId: z.string() }),
+  tags: (p) => [tag("courseId", p.courseId)],
+})
+
 const GetCourseView = query({
   name: qn("university", "GetCourseView"),
   payload: z.object({ courseId: z.string() }),
@@ -97,12 +109,13 @@ type CourseState = {
   name: string
   capacity: number
   enrolled: string[]
+  closed: boolean
 }
 
-const CourseEntity = eventSourcedEntity({
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
-  initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [] }) as CourseState,
+  initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
     on(CourseCreated, (s: CourseState, e) => ({
@@ -114,29 +127,51 @@ const CourseEntity = eventSourcedEntity({
     on(StudentSubscribed, (s: CourseState, e) => ({
       ...s, enrolled: [...s.enrolled, e.studentId],
     })),
+    on(EnrollmentClosed, (s: CourseState) => ({ ...s, closed: true })),
   ],
 })
 
 // -- Command handlers --
 
 const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
 const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
 })
 
 const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already enrolled")
   append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
+})
+
+// -- Stateful automation: close enrolment once a course is full --
+//
+// AF5-style stateful event handler: this handler reacts to StudentSubscribed,
+// sources the very Course it affected, and — if the course is now at capacity —
+// issues a CloseEnrollment command via send(). Per the AF5-aligned model that
+// command is handled in its own fresh UnitOfWork, independent of the event
+// processor's UnitOfWork that ran the automation.
+
+const closeEnrollment = commandHandler(CloseEnrollment, async (cmd) => {
+  const course = await load(Course, { courseId: cmd.courseId })
+  if (!course.created || course.closed) return
+  append(EnrollmentClosed, { courseId: cmd.courseId })
+})
+
+const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async (e) => {
+  const course = await load(Course, { courseId: e.courseId })
+  if (course.created && !course.closed && course.enrolled.length >= course.capacity) {
+    await send(CloseEnrollment, { courseId: e.courseId })
+  }
 })
 
 // -- Projection (read model) --
@@ -192,10 +227,10 @@ function createProjection() {
 // Helpers
 // ============================================================================
 
-async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
-    if (check()) return
+    if (await check()) return
     await new Promise((r) => setTimeout(r, 20))
   }
   throw new Error("Timed out waiting for condition")
@@ -242,7 +277,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
 
     running = await kronos({ quiet: true })
-      .entities(CourseEntity)
+      .states(Course)
       .commands(createCourse, changeCourseCapacity, subscribeStudent)
       .queries(...queryHandlers)
       .processors(
@@ -273,7 +308,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     const { projectionHandlers, queryHandlers } = createProjection()
 
     running = await kronos({ quiet: true })
-      .entities(CourseEntity)
+      .states(Course)
       .commands(createCourse, subscribeStudent)
       .queries(...queryHandlers)
       .processors(
@@ -315,7 +350,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     const { projectionHandlers, queryHandlers } = createProjection()
 
     running = await kronos({ quiet: true })
-      .entities([CourseEntity, { snapshotPolicy: afterEvents(3), snapshotStore }])
+      .states([Course, { snapshotPolicy: afterEvents(3), snapshotStore }])
       .commands(createCourse, changeCourseCapacity)
       .queries(...queryHandlers)
       .processors(
@@ -351,7 +386,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     })
 
     running = await kronos({ quiet: true })
-      .entities(CourseEntity)
+      .states(Course)
       .commands(createCourse)
       .processors(
         subscribingProcessor("sync-projection")
@@ -376,7 +411,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     const auditOnStudentSubscribed = eventHandler(StudentSubscribed, async (e) => { auditLog.push(`enrolled:${e.studentId}`) })
 
     running = await kronos({ quiet: true })
-      .entities(CourseEntity)
+      .states(Course)
       .commands(createCourse, subscribeStudent)
       .queries(...queryHandlers)
       .processors(
@@ -410,7 +445,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     const probe = captureEventStore()
 
     running = await kronos({ quiet: true })
-      .entities(CourseEntity)
+      .states(Course)
       .commands(createCourse)
       .use(probe.extension)
       .start()
@@ -439,7 +474,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
 
     running = await kronos({ quiet: true })
-      .entities(CourseEntity)
+      .states(Course)
       .commands(createCourse)
       .queries(...queryHandlers)
       .processors(
@@ -460,5 +495,41 @@ describe("E2E: In-memory full CQRS flow", () => {
     expect(allCourses.length).toBeGreaterThanOrEqual(2)
     expect(allCourses.some(c => c.courseId === "all-1")).toBe(true)
     expect(allCourses.some(c => c.courseId === "all-2")).toBe(true)
+  })
+
+  it("stateful automation — an event handler sends a command in its own UoW", async () => {
+    // given — a "close enrolment when full" automation on its own processor
+    const probe = captureEventStore()
+
+    running = await kronos({ quiet: true })
+      .states(Course)
+      .commands(createCourse, subscribeStudent, closeEnrollment)
+      .processors(
+        trackingProcessor("enrollment-automation")
+          .eventHandlers(closeEnrollmentWhenFull)
+          .build(),
+      )
+      .use(probe.extension)
+      .start()
+
+    // when — a one-seat course is filled
+    await running.commandGateway.send(CreateCourse, { courseId: "auto-1", name: "One Seat", capacity: 1 })
+    await running.commandGateway.send(SubscribeStudent, { courseId: "auto-1", studentId: "stu-1" })
+
+    // then — the automation sources the now-full course and dispatches
+    // CloseEnrollment, whose handler appends EnrollmentClosed in its own UoW
+    const eventStore = probe.get()
+    const criteria = EventCriteria.havingTags(tag("courseId", "auto-1"))
+    await waitFor(async () => {
+      const { events } = await eventStore.source({ criteria })
+      return events.some((ev) => ev.name.name === "EnrollmentClosed")
+    })
+
+    const { events } = await eventStore.source({ criteria })
+    expect(events.map((ev) => ev.name.name)).toEqual([
+      "CourseCreated",
+      "StudentSubscribed",
+      "EnrollmentClosed",
+    ])
   })
 })

@@ -2,15 +2,15 @@ import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { tag } from "@kronos-ts/common"
 import { EventCriteria } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "../entity.js"
+import { state } from "../state.js"
 import { createStateManager } from "../state-manager.js"
-import type { EntityRepository } from "../state-manager.js"
+import type { StateRepository } from "../state-manager.js"
 
 // -- Fixtures --
 
 type CourseState = { created: boolean; name: string }
 
-const CourseEntity = eventSourcedEntity({
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "" }) as CourseState,
@@ -22,8 +22,8 @@ describe("StateManager", () => {
   it("loads state from a registered repository", async () => {
     const stateManager = createStateManager()
 
-    const stubRepo: EntityRepository<{ courseId: string }, CourseState> = {
-      entityName: "Course",
+    const stubRepo: StateRepository<{ courseId: string }, CourseState> = {
+      stateName: "Course",
       load: async (id) => ({
         state: { created: true, name: `Course ${id.courseId}` },
         sourcingInfo: {
@@ -33,18 +33,18 @@ describe("StateManager", () => {
       }),
     }
 
-    stateManager.register(CourseEntity, stubRepo)
+    stateManager.register(Course, stubRepo)
 
-    const result = await stateManager.load(CourseEntity, { courseId: "cs-101" })
+    const result = await stateManager.load(Course, { courseId: "cs-101" })
 
     expect(result.state).toEqual({ created: true, name: "Course cs-101" })
   })
 
-  it("throws when no repository is registered for entity", async () => {
+  it("throws when no repository is registered for state", async () => {
     const stateManager = createStateManager()
 
-    expect(stateManager.load(CourseEntity, { courseId: "cs-101" })).rejects.toThrow(
-      'No repository registered for entity "Course"',
+    expect(stateManager.load(Course, { courseId: "cs-101" })).rejects.toThrow(
+      'No repository registered for state "Course"',
     )
   })
 })

@@ -38,7 +38,7 @@ interface ExpressApp {
  * })
  *
  * await kronos()
- *   .entities(CourseEntity)
+ *   .states(Course)
  *   .commands(createCourse)
  *   .use(withExpress(app, { port: 3000 }))
  *   .start()

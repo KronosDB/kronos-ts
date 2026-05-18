@@ -11,7 +11,6 @@ import type { EventMessage } from "./message.js"
  * - The EventStore (which persists AND publishes)
  * - A simple EventBus (which only distributes to subscribers)
  *
- * Aligned with AF5's `EventSink`.
  */
 export interface EventSink {
   /**

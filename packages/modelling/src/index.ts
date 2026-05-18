@@ -1,15 +1,15 @@
 export {
-  type EntityModule,
-  type EntityLifecycle,
+  type StateModule,
+  type StateLifecycle,
   type IdSchema,
   type InferIdFromSchema,
-  eventSourcedEntity,
-} from "./entity.js"
+  state,
+} from "./state.js"
 
 export {
   type SourcingInfo,
   type LoadResult,
-  type EntityRepository,
+  type StateRepository,
   type StateManager,
   createStateManager,
 } from "./state-manager.js"

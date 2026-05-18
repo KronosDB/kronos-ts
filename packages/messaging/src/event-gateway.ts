@@ -8,7 +8,6 @@ import type { z } from "zod"
  * User-facing gateway for publishing events directly (without going through
  * command handlers).
  *
- * Aligned with AF5's `EventGateway`.
  */
 export interface EventGateway {
   /**

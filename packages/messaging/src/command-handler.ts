@@ -29,7 +29,7 @@ export interface CommandHandlerDefinition<
  * Void command (no result on descriptor):
  * ```
  * commandHandler(ChangeCourseCapacity, async (command, metadata) => {
- *   const course = await load(CourseEntity, command.courseId)
+ *   const course = await load(Course, command.courseId)
  *   append(CourseCapacityChanged, { courseId: command.courseId, capacity: command.capacity })
  * })
  * ```

@@ -1,12 +1,11 @@
 /**
- * A point-in-time capture of an entity's state.
+ * A point-in-time capture of a state value.
  *
- * Aligned with Kronos Framework's `Snapshot`.
  */
 export interface Snapshot {
   /** The global position in the event stream at snapshot time. */
   readonly position: bigint
-  /** The serialized entity state. */
+  /** The serialized state. */
   readonly payload: unknown
   /** When the snapshot was created (epoch ms). */
   readonly timestamp: number
@@ -15,55 +14,54 @@ export interface Snapshot {
 }
 
 /**
- * Stores and retrieves entity snapshots.
+ * Stores and retrieves state snapshots.
  *
  * Separate from the event store — snapshots are an optimization, not
  * part of the event stream.
  *
- * Aligned with Kronos Framework's `SnapshotStore`.
  */
 export interface SnapshotStore {
   /**
-   * Store a snapshot for an entity.
-   * Replaces any existing snapshot for the same entity.
+   * Store a snapshot for a state value.
+   * Replaces any existing snapshot for the same state and id.
    */
-  store(entityName: string, id: unknown, snapshot: Snapshot): Promise<void>
+  store(stateName: string, id: unknown, snapshot: Snapshot): Promise<void>
 
   /**
-   * Load the most recent snapshot for an entity.
+   * Load the most recent snapshot for a state value.
    * Returns undefined if no snapshot exists.
    */
-  load(entityName: string, id: unknown): Promise<Snapshot | undefined>
+  load(stateName: string, id: unknown): Promise<Snapshot | undefined>
 
   /**
-   * Delete all snapshots for an entity.
+   * Delete all snapshots for a state value.
    */
-  deleteSnapshots(entityName: string, id: unknown): Promise<void>
+  deleteSnapshots(stateName: string, id: unknown): Promise<void>
 }
 
 /**
  * In-memory snapshot store for testing and standalone usage.
  */
 export function createInMemorySnapshotStore(): SnapshotStore {
-  // Key: "entityName:id"
+  // Key: "stateName:id"
   const snapshots = new Map<string, Snapshot>()
 
-  function key(entityName: string, id: unknown): string {
+  function key(stateName: string, id: unknown): string {
     const idStr = typeof id === "object" && id !== null ? JSON.stringify(id) : String(id)
-    return `${entityName}:${idStr}`
+    return `${stateName}:${idStr}`
   }
 
   return {
-    async store(entityName, id, snapshot) {
-      snapshots.set(key(entityName, id), snapshot)
+    async store(stateName, id, snapshot) {
+      snapshots.set(key(stateName, id), snapshot)
     },
 
-    async load(entityName, id) {
-      return snapshots.get(key(entityName, id))
+    async load(stateName, id) {
+      return snapshots.get(key(stateName, id))
     },
 
-    async deleteSnapshots(entityName, id) {
-      snapshots.delete(key(entityName, id))
+    async deleteSnapshots(stateName, id) {
+      snapshots.delete(key(stateName, id))
     },
   }
 }

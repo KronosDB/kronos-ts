@@ -42,7 +42,7 @@ interface HonoApp {
  * })
  *
  * await kronos()
- *   .entities(CourseEntity)
+ *   .states(Course)
  *   .commands(createCourse)
  *   .use(withHono(app))
  *   .start()

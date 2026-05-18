@@ -8,7 +8,7 @@ import {
   commandHandler,
   EventCriteria,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { load, append } from "@kronos-ts/eventsourcing"
 import { createTestFixture, type TestFixture, FixtureAssertionError } from "../fixture.js"
 
@@ -40,7 +40,7 @@ const StudentSubscribed = event({
 
 type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[] }
 
-const CourseEntity = eventSourcedEntity({
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [] }) as CourseState,
@@ -52,13 +52,13 @@ const CourseEntity = eventSourcedEntity({
 })
 
 const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
 const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already subscribed")
@@ -78,7 +78,7 @@ describe("Test Fixture", () => {
 
   it("creates a course and verifies the event", async () => {
     fixture = await createTestFixture((app) => {
-      app.entities(CourseEntity)
+      app.states(Course)
       app.commands(createCourse, subscribeStudent)
     })
 
@@ -96,7 +96,7 @@ describe("Test Fixture", () => {
 
   it("rejects duplicate course creation", async () => {
     fixture = await createTestFixture((app) => {
-      app.entities(CourseEntity)
+      app.states(Course)
       app.commands(createCourse, subscribeStudent)
     })
 
@@ -112,7 +112,7 @@ describe("Test Fixture", () => {
 
   it("subscribes a student to a course", async () => {
     fixture = await createTestFixture((app) => {
-      app.entities(CourseEntity)
+      app.states(Course)
       app.commands(createCourse, subscribeStudent)
     })
 
@@ -130,7 +130,7 @@ describe("Test Fixture", () => {
 
   it("rejects subscription when course is full", async () => {
     fixture = await createTestFixture((app) => {
-      app.entities(CourseEntity)
+      app.states(Course)
       app.commands(createCourse, subscribeStudent)
     })
 
@@ -149,7 +149,7 @@ describe("Test Fixture", () => {
 
   it("supports given with commands", async () => {
     fixture = await createTestFixture((app) => {
-      app.entities(CourseEntity)
+      app.states(Course)
       app.commands(createCourse, subscribeStudent)
     })
 
@@ -167,7 +167,7 @@ describe("Test Fixture", () => {
 
   it("supports chained scenarios with and()", async () => {
     fixture = await createTestFixture((app) => {
-      app.entities(CourseEntity)
+      app.states(Course)
       app.commands(createCourse, subscribeStudent)
     })
 
@@ -193,7 +193,7 @@ describe("Test Fixture", () => {
 
   it("provides custom event assertion via expectEventsSatisfying", async () => {
     fixture = await createTestFixture((app) => {
-      app.entities(CourseEntity)
+      app.states(Course)
       app.commands(createCourse)
     })
 

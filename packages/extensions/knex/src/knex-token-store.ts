@@ -31,7 +31,6 @@ export interface KnexQueryable {
  * Creates a TokenStore backed by Knex.
  *
  * Participates in the active transaction via `getActiveTransaction()`.
- * Table schema aligned with Kronos Framework's `TokenEntry`.
  *
  * ```typescript
  * import { knexTokenStore } from "@kronos-ts/extensions/knex"

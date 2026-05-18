@@ -14,7 +14,7 @@ const CONFIG_KEYS = {
   EVENT_STORE: "eventStore",
 } as const
 import { commandHandler } from "../command-handler.js"
-import { command, event } from "../descriptor.js"
+import { command, event, type CommandDescriptor } from "../descriptor.js"
 import type { CommandBus } from "../command-bus.js"
 import type { CommandMessage } from "../message.js"
 import type { EventCriteria } from "../event-criteria.js"
@@ -34,6 +34,16 @@ const CreateCourse = command({
 const ChangeCourseCapacity = command({
   name: qn("university", "ChangeCourseCapacity"),
   payload: z.object({ courseId: z.string(), capacity: z.number() }),
+})
+
+const OuterCommand = command({
+  name: qn("university", "OuterCommand"),
+  payload: z.object({ courseId: z.string() }),
+})
+
+const InnerCommand = command({
+  name: qn("university", "InnerCommand"),
+  payload: z.object({ courseId: z.string() }),
 })
 
 const CourseCreated = event({
@@ -95,7 +105,7 @@ function createStubConfiguration(overrides: {
   }
 }
 
-function makeCommandMessage(descriptor: typeof CreateCourse | typeof ChangeCourseCapacity, payload: any): CommandMessage {
+function makeCommandMessage(descriptor: CommandDescriptor, payload: any): CommandMessage {
   return {
     identifier: `cmd-${Date.now()}`,
     name: descriptor.name,
@@ -456,6 +466,49 @@ describe("registerCommandHandlersNatively", () => {
         expect(capturedCondition.criteria.kind).toBe("either")
         expect(capturedCondition.criteria.criteria).toHaveLength(2)
         expect(capturedCondition.marker.position).toBe(8n) // max of 5n and 8n
+      })
+    })
+  })
+
+  describe("nested dispatch", () => {
+    it("registers only one prepare-commit flush per UnitOfWork", async () => {
+      await runInNewUoW(emptyMetadata(), async () => {
+        const appendedBatches: any[][] = []
+        let innerHandler!: SubscribedHandler
+        const bus: CommandBus & { subscriptions: Map<string, SubscribedHandler> } = {
+          subscriptions: new Map(),
+          async dispatch(message) {
+            if (`${message.name.namespace}.${message.name.name}` === "university.InnerCommand") {
+              return innerHandler(message)
+            }
+            throw new Error("unexpected dispatch")
+          },
+          subscribe(commandName, handler) {
+            this.subscriptions.set(commandName, handler)
+            if (commandName === "university.InnerCommand") innerHandler = handler
+          },
+        }
+        const eventStore = {
+          async append(events: ReadonlyArray<any>) {
+            appendedBatches.push([...events])
+          },
+        }
+        const config = createStubConfiguration({ commandBus: bus, eventStore })
+
+        const outer = commandHandler(OuterCommand, async (cmd) => {
+          await bus.dispatch(makeCommandMessage(InnerCommand, { courseId: cmd.courseId }))
+        })
+        const inner = commandHandler(InnerCommand, async (cmd) => {
+          append(CourseCreated, { courseId: cmd.courseId, name: "Nested" })
+        })
+
+        registerCommandHandlersNatively([outer, inner], { commandBus: bus, config, moduleName: "course-commands" })
+
+        await bus.subscriptions.get("university.OuterCommand")!(makeCommandMessage(OuterCommand, { courseId: "cs-101" }))
+        await runPrepareCommit()
+
+        expect(appendedBatches).toHaveLength(1)
+        expect(appendedBatches[0]).toHaveLength(1)
       })
     })
   })

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach } from "bun:test"
 import { z } from "zod"
 import { qn, emptyMetadata } from "@kronos-ts/common"
 import { command, event, on, commandHandler, EventCriteria } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { load, append } from "@kronos-ts/eventsourcing"
 import { kronos, type RunningApp, AppAlreadyStartedError } from "../index.js"
 
@@ -21,7 +21,7 @@ const ThingCreated = event({
   tags: (p) => ({ id: p.id }),
 })
 
-const ThingEntity = eventSourcedEntity({
+const Thing = state({
   name: "Thing",
   id: { id: z.string() },
   initial: () => ({ created: false }),
@@ -30,7 +30,7 @@ const ThingEntity = eventSourcedEntity({
 })
 
 const createThingHandler = commandHandler(CreateThing, async (cmd, _md) => {
-  await load(ThingEntity, { id: cmd.id })
+  await load(Thing, { id: cmd.id })
   append(ThingCreated, { id: cmd.id })
 })
 
@@ -58,7 +58,7 @@ describe("kronos() e2e — in-memory defaults", () => {
   })
 
   it("dispatches a command end-to-end via in-memory defaults (success criterion #4)", async () => {
-    app = await kronos({ quiet: true }).entities(ThingEntity).commands(createThingHandler).start()
+    app = await kronos({ quiet: true }).states(Thing).commands(createThingHandler).start()
     // The command dispatches successfully if no error is thrown
     await app.commandGateway.send(CreateThing, { id: "t-1" }, emptyMetadata())
     expect(true).toBe(true) // dispatch completed without throw
@@ -66,7 +66,7 @@ describe("kronos() e2e — in-memory defaults", () => {
 
   it("partial-config form merges into same state (APP-02)", async () => {
     app = await kronos({
-      entities: [ThingEntity],
+      states: [Thing],
       commands: [createThingHandler],
       quiet: true,
     }).start()
@@ -75,7 +75,7 @@ describe("kronos() e2e — in-memory defaults", () => {
   })
 
   it("emits startup warnings for in-memory defaults when not quiet (SLT-04)", async () => {
-    app = await kronos().entities(ThingEntity).commands(createThingHandler).start()
+    app = await kronos().states(Thing).commands(createThingHandler).start()
     expect(warnSpy.length).toBeGreaterThanOrEqual(5)
     const warningText = warnSpy.join("\n")
     for (const slot of ["eventStore", "snapshotStore", "commandBus", "queryBus", "eventBus"]) {
@@ -84,14 +84,14 @@ describe("kronos() e2e — in-memory defaults", () => {
   })
 
   it("quiet:true suppresses all startup warnings (SLT-04)", async () => {
-    app = await kronos({ quiet: true }).entities(ThingEntity).commands(createThingHandler).start()
+    app = await kronos({ quiet: true }).states(Thing).commands(createThingHandler).start()
     expect(warnSpy.length).toBe(0)
   })
 
   it("runs .use() extensions before slot resolution (D-50)", async () => {
     let extensionCalled = false
     app = await kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
       .use((a) => {
         extensionCalled = true
@@ -103,8 +103,8 @@ describe("kronos() e2e — in-memory defaults", () => {
   })
 
   it("throws AppAlreadyStartedError on post-start mutation (APP-03)", async () => {
-    const builder = kronos({ quiet: true }).entities(ThingEntity).commands(createThingHandler)
+    const builder = kronos({ quiet: true }).states(Thing).commands(createThingHandler)
     app = await builder.start()
-    expect(() => builder.entities(ThingEntity)).toThrow(AppAlreadyStartedError)
+    expect(() => builder.states(Thing)).toThrow(AppAlreadyStartedError)
   })
 })

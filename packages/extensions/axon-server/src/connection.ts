@@ -101,7 +101,7 @@ export interface AxonServerConnection {
   readonly queries: Client<typeof QueryServiceDefinition>
   /** Event store — event sourcing with Dynamic Consistency Boundaries. */
   readonly eventStore: Client<typeof DcbEventStoreDefinition>
-  /** Snapshot store — entity state snapshots. */
+  /** Snapshot store — state snapshots. */
   readonly snapshotStore: Client<typeof DcbSnapshotStoreDefinition>
   /** The resolved configuration. */
   readonly config: Required<Omit<AxonServerConnectionConfig, "reconnectIntervalMs" | "maxReconnectAttempts">> & {

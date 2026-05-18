@@ -22,7 +22,7 @@ import {
   subscribingProcessor,
   type EventProcessorModule,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { load, append } from "@kronos-ts/eventsourcing"
 import { kronos } from "../kronos.js"
 
@@ -45,7 +45,7 @@ const GetThing = query({
   result: z.object({ id: z.string(), created: z.boolean() }),
 })
 
-const ThingEntity = eventSourcedEntity({
+const Thing = state({
   name: "ThingNative",
   id: { id: z.string() },
   initial: () => ({ created: false }),
@@ -54,7 +54,7 @@ const ThingEntity = eventSourcedEntity({
 })
 
 const createThingHandler = commandHandler(CreateThing, async (cmd) => {
-  await load(ThingEntity, { id: cmd.id })
+  await load(Thing, { id: cmd.id })
   append(ThingCreated, { id: cmd.id })
 })
 
@@ -63,7 +63,7 @@ const createThingHandler = commandHandler(CreateThing, async (cmd) => {
 describe("native App.start() — end-to-end without configurer (Plan 03a)", () => {
   it("Test 1: subscribes command handlers natively and dispatches via gateway", async () => {
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
     const running = await app.start()
     // No throw == handler subscribed and ALS-set up; D-82 path is wired.
@@ -91,7 +91,7 @@ describe("native App.start() — end-to-end without configurer (Plan 03a)", () =
       received = payload.id
     })
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
       .processors(
         subscribingProcessor("thing-projection")
@@ -137,7 +137,7 @@ describe("native App.start() — end-to-end without configurer (Plan 03a)", () =
   it("Test 5: lifecycle hooks fire in stage order in fully-built native app", async () => {
     const order: string[] = []
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
       .onStart("serve", () => {
         order.push("serve")

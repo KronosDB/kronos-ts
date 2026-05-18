@@ -51,7 +51,7 @@ export interface KronosModuleAsyncOptions {
  *     KronosModule.forRoot({
  *       configure: (app) => {
  *         app
- *           .entities(CourseEntity)
+ *           .states(Course)
  *           .commands(createCourse)
  *           .processors(
  *             trackingProcessor("courses").eventHandlers(onCourseCreated).build(),

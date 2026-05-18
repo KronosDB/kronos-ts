@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn, tag, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import { event, on, EventCriteria, type EventMessage } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
 import { createEventSourcedRepository } from "../event-sourced-repository.js"
 
@@ -32,7 +32,7 @@ type CourseState = {
   capacity: number
 }
 
-const CourseEntity = eventSourcedEntity({
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
@@ -63,7 +63,7 @@ function eventMsg(descriptor: { name: { namespace: string; name: string }; versi
 describe("EventSourcedRepository", () => {
   it("returns initial state when no events exist", async () => {
     const store = createInMemoryEventStore()
-    const repo = createEventSourcedRepository(CourseEntity, store)
+    const repo = createEventSourcedRepository(Course, store)
 
     // when
     const { state } = await repo.load({ courseId: "cs-101" })
@@ -74,7 +74,7 @@ describe("EventSourcedRepository", () => {
 
   it("folds events into state through evolvers", async () => {
     const store = createInMemoryEventStore()
-    const repo = createEventSourcedRepository(CourseEntity, store)
+    const repo = createEventSourcedRepository(Course, store)
 
     // given
     await store.append([
@@ -90,7 +90,7 @@ describe("EventSourcedRepository", () => {
 
   it("applies multiple events in order", async () => {
     const store = createInMemoryEventStore()
-    const repo = createEventSourcedRepository(CourseEntity, store)
+    const repo = createEventSourcedRepository(Course, store)
 
     // given
     await store.append([
@@ -107,7 +107,7 @@ describe("EventSourcedRepository", () => {
 
   it("ignores events for other entities", async () => {
     const store = createInMemoryEventStore()
-    const repo = createEventSourcedRepository(CourseEntity, store)
+    const repo = createEventSourcedRepository(Course, store)
 
     // given
     await store.append([
@@ -124,9 +124,9 @@ describe("EventSourcedRepository", () => {
 
   it("ignores events with no matching evolver", async () => {
     const store = createInMemoryEventStore()
-    const repo = createEventSourcedRepository(CourseEntity, store)
+    const repo = createEventSourcedRepository(Course, store)
 
-    // given — StudentSubscribedToCourse has courseId tag but no evolver on CourseEntity
+    // given — StudentSubscribedToCourse has courseId tag but no evolver on Course
     await store.append([
       eventMsg(CourseCreated, { courseId: "cs-101", name: "Intro to CS", capacity: 30 }),
       eventMsg(StudentSubscribedToCourse, { courseId: "cs-101", studentId: "stu-001" }),
@@ -153,9 +153,9 @@ describe("EventSourcedRepository", () => {
       tags: (p) => [tag("studentId", p.studentId)],
     })
 
-    const SubscriptionEntity = eventSourcedEntity({
+    const Subscription = state({
       name: "CourseSubscription",
-      id: z.object({ courseId: z.string(), studentId: z.string() }),
+      id: { courseId: z.string(), studentId: z.string() },
       initial: (): SubscriptionState => ({
         courseExists: false,
         courseCapacity: 0,
@@ -175,10 +175,10 @@ describe("EventSourcedRepository", () => {
           ...state, studentEnrolled: true,
         })),
         on(StudentSubscribedToCourse, (state: SubscriptionState, e, id) => {
-          const entityId = id as { courseId: string; studentId: string }
+          const stateId = id as { courseId: string; studentId: string }
           return {
             ...state,
-            studentsInCourse: e.courseId === entityId.courseId
+            studentsInCourse: e.courseId === stateId.courseId
               ? state.studentsInCourse + 1 : state.studentsInCourse,
           }
         }),
@@ -187,7 +187,7 @@ describe("EventSourcedRepository", () => {
 
     it("sources state from multiple event streams", async () => {
       const store = createInMemoryEventStore()
-      const repo = createEventSourcedRepository(SubscriptionEntity, store)
+      const repo = createEventSourcedRepository(Subscription, store)
 
       // given — events across two streams
       await store.append([

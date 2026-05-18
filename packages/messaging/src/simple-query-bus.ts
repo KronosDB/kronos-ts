@@ -16,8 +16,7 @@ import { qualifiedNameToString } from "@kronos-ts/common"
  * parameter and branch are gone. `runInUoW` is the only codepath.
  *
  * Interceptor support is provided by wrapping with
- * {@link createInterceptingQueryBus}, following Java's pattern of
- * separating concerns (SimpleQueryBus vs InterceptingQueryBus).
+ * {@link createInterceptingQueryBus}.
  */
 export function createSimpleQueryBus(): QueryBus {
   const handlers = new Map<string, (message: QueryMessage) => Promise<unknown>>()

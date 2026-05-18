@@ -7,11 +7,11 @@ const encoder = new TextEncoder()
 
 /**
  * Encode a snapshot key as binary.
- * Format: entityName + NUL + id (matching the Java connector's key format).
+ * Format: stateName + NUL + id.
  */
-function encodeKey(entityName: string, id: unknown): Uint8Array {
+function encodeKey(stateName: string, id: unknown): Uint8Array {
   const idStr = typeof id === "object" && id !== null ? JSON.stringify(id) : String(id)
-  return encoder.encode(`${entityName}\0${idStr}`)
+  return encoder.encode(`${stateName}\0${idStr}`)
 }
 
 function createSnapshotConverters(serializer: Serializer) {
@@ -45,7 +45,7 @@ function createSnapshotConverters(serializer: Serializer) {
 /**
  * Creates a SnapshotStore backed by KronosDB's gRPC snapshot service.
  *
- * Uses NUL-separated keys (entityName\0id) matching the Java connector's format.
+ * Uses NUL-separated keys (stateName\0id).
  */
 export function createKronosDbSnapshotStore(
   connection: KronosDbConnection,
@@ -58,10 +58,10 @@ export function createKronosDbSnapshotStore(
   }
 
   return {
-    async store(entityName: string, id: unknown, snapshot: Snapshot): Promise<void> {
+    async store(stateName: string, id: unknown, snapshot: Snapshot): Promise<void> {
       await connection.snapshotStore.add(
         {
-          key: encodeKey(entityName, id),
+          key: encodeKey(stateName, id),
           sequence: snapshot.position,
           prune: true,
           snapshot: snapshotToProto(snapshot),
@@ -70,10 +70,10 @@ export function createKronosDbSnapshotStore(
       )
     },
 
-    async load(entityName: string, id: unknown): Promise<Snapshot | undefined> {
+    async load(stateName: string, id: unknown): Promise<Snapshot | undefined> {
       try {
         const response = await connection.snapshotStore.getLast(
-          { key: encodeKey(entityName, id) },
+          { key: encodeKey(stateName, id) },
           { metadata: getMetadata() },
         )
 
@@ -91,10 +91,10 @@ export function createKronosDbSnapshotStore(
       }
     },
 
-    async deleteSnapshots(entityName: string, id: unknown): Promise<void> {
+    async deleteSnapshots(stateName: string, id: unknown): Promise<void> {
       await connection.snapshotStore.delete(
         {
-          key: encodeKey(entityName, id),
+          key: encodeKey(stateName, id),
           toSequence: BigInt(Number.MAX_SAFE_INTEGER),
         },
         { metadata: getMetadata() },

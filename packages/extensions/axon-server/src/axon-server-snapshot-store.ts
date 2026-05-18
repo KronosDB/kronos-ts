@@ -40,9 +40,9 @@ function createSnapshotConverters(serializer: Serializer) {
   }
 }
 
-function encodeKey(entityName: string, id: unknown): Uint8Array {
+function encodeKey(stateName: string, id: unknown): Uint8Array {
   const idStr = typeof id === "object" && id !== null ? JSON.stringify(id) : String(id)
-  return encoder.encode(`${entityName}:${idStr}`)
+  return encoder.encode(`${stateName}:${idStr}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ function encodeKey(entityName: string, id: unknown): Uint8Array {
  * Creates a SnapshotStore backed by Axon Server's gRPC snapshot service.
  *
  * Uses the `DcbSnapshotStore` gRPC service to store and retrieve
- * entity state snapshots. Payload serialization uses the configured
+ * state snapshots. Payload serialization uses the configured
  * Serializer (defaults to JSON).
  */
 export function createAxonServerSnapshotStore(
@@ -72,10 +72,10 @@ export function createAxonServerSnapshotStore(
   }
 
   return {
-    async store(entityName: string, id: unknown, snapshot: Snapshot): Promise<void> {
+    async store(stateName: string, id: unknown, snapshot: Snapshot): Promise<void> {
       await connection.snapshotStore.add(
         {
-          key: encodeKey(entityName, id),
+          key: encodeKey(stateName, id),
           sequence: snapshot.position,
           prune: true,
           snapshot: snapshotToProto(snapshot),
@@ -84,10 +84,10 @@ export function createAxonServerSnapshotStore(
       )
     },
 
-    async load(entityName: string, id: unknown): Promise<Snapshot | undefined> {
+    async load(stateName: string, id: unknown): Promise<Snapshot | undefined> {
       try {
         const response = await connection.snapshotStore.getLast(
-          { key: encodeKey(entityName, id) },
+          { key: encodeKey(stateName, id) },
           { metadata: createAxonMetadata() },
         )
 
@@ -105,10 +105,10 @@ export function createAxonServerSnapshotStore(
       }
     },
 
-    async deleteSnapshots(entityName: string, id: unknown): Promise<void> {
+    async deleteSnapshots(stateName: string, id: unknown): Promise<void> {
       await connection.snapshotStore.delete(
         {
-          key: encodeKey(entityName, id),
+          key: encodeKey(stateName, id),
           toSequence: BigInt(Number.MAX_SAFE_INTEGER),
         },
         { metadata: createAxonMetadata() },

@@ -1,23 +1,27 @@
 import type { CommandBus } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
-import { runInUoW } from "./unit-of-work.js"
+import { runInNewUoW } from "./unit-of-work.js"
 import { qualifiedNameToString } from "@kronos-ts/common"
 
 /**
  * Simple in-process command bus.
  *
  * Maintains a local handler map and dispatches commands directly,
- * wrapping each dispatch in a UnitOfWork via `runInUoW`.
+ * wrapping each dispatch in a fresh UnitOfWork via `runInNewUoW`.
  *
- * Plan 03-04 (CTX-04 / D-34): the explicit `unitOfWorkFactory`
- * parameter and branch are gone. `runInUoW` is the only codepath —
- * transactional wiring composes at the runner level via
- * `transactionalUnitOfWorkFactory(runInUoW, txManager)` and is consumed
+ * AF5 parity: like `SimpleCommandBus`, every command — primary OR nested
+ * (dispatched from inside another handler via `send()`) — is handled in
+ * its own independent UnitOfWork with its own commit boundary. A command
+ * handler is the atomic unit; commands compose by independent commit, not
+ * by sharing a transaction. DCB read-set / append-condition merging
+ * happens only WITHIN a single handler's UnitOfWork.
+ *
+ * Transactional wiring composes at the runner level via
+ * `transactionalUnitOfWorkFactory(runInNewUoW, txManager)` and is consumed
  * by extensions / processors directly, not by the bus.
  *
  * Interceptor support is provided by wrapping with
- * {@link createInterceptingCommandBus}, following Java's pattern of
- * separating concerns (SimpleCommandBus vs InterceptingCommandBus).
+ * {@link createInterceptingCommandBus}.
  */
 export function createSimpleCommandBus(): CommandBus {
   const handlers = new Map<string, (message: CommandMessage) => Promise<unknown>>()
@@ -30,10 +34,12 @@ export function createSimpleCommandBus(): CommandBus {
         throw new Error(`No handler registered for command "${key}"`)
       }
 
-      // Plan 03-01 (D-32) / Plan 03-04 (CTX-04): nested dispatch detects
-      // the active UoW via ALS and reuses it; primary dispatch creates a
-      // new one. UoW detection is purely ALS-based.
-      return runInUoW(message.metadata, () => handler(message))
+      // AF5 parity: every command gets its own fresh UnitOfWork, even when
+      // dispatched from inside another handler. Dispatch interceptors have
+      // already run in the caller's context (the intercepting bus wraps
+      // this one), so correlation data is carried on `message.metadata`
+      // before we cross into the new UoW.
+      return runInNewUoW(message.metadata, () => handler(message))
     },
 
     subscribe(

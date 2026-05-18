@@ -1,4 +1,4 @@
-import type { EntityModule } from "@kronos-ts/modelling"
+import type { StateModule } from "@kronos-ts/modelling"
 import { createStateManager, type StateManager } from "@kronos-ts/modelling"
 import type {
   CommandHandlerDefinition,
@@ -52,24 +52,32 @@ export class AppAlreadyStartedError extends Error {
 export type Extension = (app: App) => void | Promise<void>
 
 /**
- * Plan 09-01 (D-88): per-entity options accepted in App.entities() tuple form.
+ * Plan 09-01 (D-88): per-state options accepted in App.states() tuple form.
  * Both fields optional — extensions or user code that wants snapshotting on a
- * particular entity passes one or both, and the value flows through into
+ * particular state passes one or both, and the value flows through into
  * createEventSourcedRepository at start-time Step 5a.
  */
-export interface EntityOptions {
+export interface StateOptions {
   readonly snapshotPolicy?: SnapshotPolicy
   readonly snapshotStore?: SnapshotStore
 }
 
 /**
- * Plan 09-01 (D-88): argument shape accepted by App.entities() — either a bare
- * EntityModule or a [module, options] tuple. Mixed lists are fine.
+ * Plan 09-01 (D-88): argument shape accepted by App.states() — either a bare
+ * StateModule or a [module, options] tuple. Mixed lists are fine.
  */
-export type EntitiesArg = EntityModule | readonly [EntityModule, EntityOptions]
+export type StatesArg = StateModule | readonly [StateModule, StateOptions]
+
+export interface KronosIdentity {
+  /** Stable logical service/application name. Same across replicas. */
+  readonly serviceName: string
+  /** Unique physical runtime instance id. Different per process/pod. */
+  readonly instanceId: string
+}
 
 export interface App {
-  entities(...args: EntitiesArg[]): App
+  readonly identity: KronosIdentity
+  states(...args: StatesArg[]): App
   commands(...handlers: CommandHandlerDefinition<any, any>[]): App
   queries(...handlers: QueryHandlerDefinition[]): App
   /**
@@ -154,6 +162,7 @@ export interface App {
 }
 
 export interface RunningApp {
+  readonly identity: KronosIdentity
   readonly commandGateway: CommandGateway
   readonly queryGateway: QueryGateway
   stop(): Promise<void>
@@ -162,8 +171,8 @@ export interface RunningApp {
 /** Internal accumulators populated by fluent methods; consumed by .start(). */
 export interface AppState {
   readonly slotRegistry: SlotRegistry
-  /** Plan 09-01 (D-88): replaces flat `entities: EntityModule[]` to carry per-entity options. */
-  readonly entityEntries: Array<{ module: EntityModule; options: EntityOptions }>
+  /** Plan 09-01 (D-88): replaces flat `states: StateModule[]` to carry per-state options. */
+  readonly stateEntries: Array<{ module: StateModule; options: StateOptions }>
   readonly commandHandlers: CommandHandlerDefinition<any, any>[]
   readonly queryHandlers: QueryHandlerDefinition[]
   readonly processors: EventProcessorModule[]
@@ -182,6 +191,10 @@ export interface AppState {
 
 export interface AppImplOptions {
   warningChannel: WarningChannel
+  /** Stable logical service/application name. Same across replicas. */
+  serviceName?: string
+  /** Unique physical runtime instance id. Different per process/pod. */
+  instanceId?: string
   /** Per-stage timeout (ms) for native lifecycle execution (D-77). Default: 5000. */
   stageTimeoutMs?: number
 }
@@ -189,6 +202,7 @@ export interface AppImplOptions {
 export class AppImpl implements App {
   readonly _state: AppState
   private _started = false
+  readonly identity: KronosIdentity
   private _commandGateway: CommandGateway | undefined = undefined
   private _queryGateway: QueryGateway | undefined = undefined
   /** D-77: per-stage timeout for native lifecycle execution. */
@@ -214,9 +228,13 @@ export class AppImpl implements App {
 
   constructor(options: AppImplOptions) {
     this._stageTimeoutMs = options.stageTimeoutMs ?? 5000
+    this.identity = {
+      serviceName: options.serviceName ?? "kronos-app",
+      instanceId: options.instanceId ?? createDefaultInstanceId(),
+    }
     this._state = {
       slotRegistry: new SlotRegistry(),
-      entityEntries: [],
+      stateEntries: [],
       commandHandlers: [],
       queryHandlers: [],
       processors: [],
@@ -252,14 +270,14 @@ export class AppImpl implements App {
     if (this._started) throw new AppAlreadyStartedError()
   }
 
-  entities(...args: EntitiesArg[]): App {
+  states(...args: StatesArg[]): App {
     this.guard()
     for (const arg of args) {
       if (Array.isArray(arg)) {
-        const [module, options] = arg as readonly [EntityModule, EntityOptions]
-        this._state.entityEntries.push({ module, options })
+        const [module, options] = arg as readonly [StateModule, StateOptions]
+        this._state.stateEntries.push({ module, options })
       } else {
-        this._state.entityEntries.push({ module: arg as EntityModule, options: {} })
+        this._state.stateEntries.push({ module: arg as StateModule, options: {} })
       }
     }
     return this
@@ -477,12 +495,12 @@ export class AppImpl implements App {
 
     // 5a. Construct StateManager from registered entities (mirrors the configurer's
     //     registerDefaults() pattern at eventsourcing-configurer.ts ~line 755).
-    //     EntityModule has no .initialize() — entities are wired purely via repository
-    //     registration on the StateManager.
-    //     Plan 09-01 (D-88): per-entity tuple options (snapshotPolicy, snapshotStore)
+    //     StateModule has no .initialize() — state modules are wired purely via
+    //     repository registration on the StateManager.
+    //     Plan 09-01 (D-88): per-state tuple options (snapshotPolicy, snapshotStore)
     //     thread through into createEventSourcedRepository.
     const stateManager: StateManager = createStateManager()
-    for (const { module, options } of this._state.entityEntries) {
+    for (const { module, options } of this._state.stateEntries) {
       stateManager.register(
         module,
         createEventSourcedRepository(
@@ -619,7 +637,11 @@ export class AppImpl implements App {
     const runStageWithTimeout = this._runStageWithTimeout.bind(this)
     const stageTimeoutMs = this._stageTimeoutMs
     const stopHooks = this._state.stopHooks
+    const identity = this.identity
     return {
+      get identity(): KronosIdentity {
+        return identity
+      },
       get commandGateway(): CommandGateway {
         return commandGateway
       },
@@ -685,6 +707,12 @@ export class AppImpl implements App {
 // ---------------------------------------------------------------------------
 // Module-private helpers (Plan 08-03a native execution)
 // ---------------------------------------------------------------------------
+
+function createDefaultInstanceId(): string {
+  const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto)
+  if (randomUUID) return randomUUID()
+  return `instance-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
 
 /** Forward typed-stage order for `.start()` execution (D-77, LIF-01). */
 const FORWARD_STAGES: ReadonlyArray<LifecycleStage> = [

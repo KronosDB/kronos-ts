@@ -6,11 +6,8 @@ import type { EventMessage } from "@kronos-ts/messaging"
  * to events for filtering, categorization, and criteria-based sourcing.
  *
  * By default, tags are derived from the event descriptor's `tags` function
- * at event creation time (TS equivalent of Java's `@EventTag` annotations).
- * The TagResolver runs before storage and can enrich events with additional
- * tags from metadata, context, etc.
- *
- * Aligned with AF5's `TagResolver`.
+ * at event creation time. The TagResolver runs before storage and can enrich
+ * events with additional tags from metadata, context, etc.
  */
 export interface TagResolver {
   resolve(event: EventMessage): Tag[]
@@ -19,9 +16,8 @@ export interface TagResolver {
 /**
  * Default tag resolver — passes through tags already on the event.
  *
- * Events are created with descriptor-derived tags (the TS equivalent of
- * Java's annotation-based tag resolution via reflection). This resolver
- * simply returns those existing tags unchanged.
+ * Events are created with descriptor-derived tags. This resolver simply
+ * returns those existing tags unchanged.
  */
 export function descriptorBasedTagResolver(): TagResolver {
   return {
@@ -34,8 +30,6 @@ export function descriptorBasedTagResolver(): TagResolver {
 /**
  * Resolves additional tags from event metadata. For each configured key,
  * if the metadata contains that key, a tag is created.
- *
- * Aligned with AF5's `MetadataBasedTagResolver`.
  */
 export function metadataBasedTagResolver(...metadataKeys: string[]): TagResolver {
   return {
@@ -54,8 +48,6 @@ export function metadataBasedTagResolver(...metadataKeys: string[]): TagResolver
 
 /**
  * Combines multiple tag resolvers. Tags from all resolvers are merged.
- *
- * Aligned with AF5's `MultiTagResolver`.
  */
 export function multiTagResolver(...resolvers: TagResolver[]): TagResolver {
   return {

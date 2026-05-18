@@ -23,7 +23,7 @@ import {
   EventCriteria,
   trackingProcessor,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { kronos } from "@kronos-ts/core"
 import { load, append } from "../index.js"
 
@@ -44,7 +44,7 @@ const GetStudent = query({
   result: z.object({ studentId: z.string(), name: z.string() }).optional(),
 })
 
-const StudentEntity = eventSourcedEntity({
+const Student = state({
   name: "Student",
   id: { studentId: z.string() },
   initial: () => ({ enrolled: false, name: "" }),
@@ -53,7 +53,7 @@ const StudentEntity = eventSourcedEntity({
 })
 
 const enrollStudent = commandHandler(EnrollStudent, async (cmd) => {
-  const s = await load(StudentEntity, { studentId: cmd.studentId })
+  const s = await load(Student, { studentId: cmd.studentId })
   if (s.enrolled) throw new Error("Already enrolled")
   append(StudentEnrolled, { studentId: cmd.studentId, name: cmd.name })
 })
@@ -78,7 +78,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
     const getStudent = queryHandler(GetStudent, async (p, _metadata) => view.get(p.studentId))
 
     const running = await kronos({ quiet: true })
-      .entities(StudentEntity)
+      .states(Student)
       .commands(enrollStudent)
       .queries(getStudent)
       .processors(
@@ -112,7 +112,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
     })
 
     const running = await kronos({ quiet: true })
-      .entities(StudentEntity)
+      .states(Student)
       .commands(enrollStudent)
       .processors(
         trackingProcessor("student-projection")
@@ -158,7 +158,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
     })
 
     const running = await kronos({ quiet: true })
-      .entities(StudentEntity)
+      .states(Student)
       .commands(enrollStudent, renameStudent)
       .processors(
         trackingProcessor("multi-slice-projection")

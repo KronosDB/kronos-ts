@@ -5,15 +5,12 @@ import { processingStateStorage, setResource } from "./processing-state.js"
 
 /**
  * Resource key for storing correlation data in a ProcessingContext.
- * Aligned with Java's `CorrelationDataInterceptor.CORRELATION_DATA`.
  */
 export const CORRELATION_DATA_KEY: ResourceKey<Record<string, string>> = resourceKey("correlationData")
 
 /**
  * Provides correlation data to attach to outgoing messages based on the
  * incoming message being processed.
- *
- * Aligned with Kronos Framework's `CorrelationDataProvider`.
  *
  * @see messageOriginProvider
  * @see simpleCorrelationDataProvider
@@ -52,7 +49,6 @@ export function getActiveCorrelationData(): Record<string, string> | undefined {
 /**
  * Default correlation data provider that tracks message lineage.
  *
- * Aligned with Kronos Framework's `MessageOriginProvider`:
  * - `correlationId`: preserved from the incoming message's metadata, or falls
  *   back to the message's own identifier (starts a new correlation chain).
  * - `causationId`: always set to the incoming message's identifier (direct cause).
@@ -80,7 +76,6 @@ export function messageOriginProvider(
 /**
  * Copies specific metadata keys from the incoming message to outgoing messages.
  *
- * Aligned with Kronos Framework's `SimpleCorrelationDataProvider`.
  * Silently ignores missing keys.
  */
 export function simpleCorrelationDataProvider(...metadataKeys: string[]): CorrelationDataProvider {
@@ -105,8 +100,7 @@ export function simpleCorrelationDataProvider(...metadataKeys: string[]): Correl
  * Creates a handler interceptor that extracts correlation data from the
  * incoming message and stores it in the ProcessingContext.
  *
- * This is the "extract" phase of the dual-interceptor pattern, aligned
- * with the handler-side of Java's `CorrelationDataInterceptor`.
+ * This is the "extract" phase of the dual-interceptor pattern.
  *
  * Each provider is called with the message. Exceptions are caught and
  * logged (they don't break message processing). Results are merged —
@@ -133,7 +127,7 @@ export function correlationDataHandlerInterceptor(
       }
     }
 
-    // Store in ALS-backed processing state (aligned with Java's context.withResource).
+    // Store in ALS-backed processing state.
     // CTX-01 / Plan 03-03: HandlerInterceptor no longer threads ProcessingContext;
     // resource writes go directly through the module-level ALS accessor.
     setResource(CORRELATION_DATA_KEY, correlationData)
@@ -147,8 +141,7 @@ export function correlationDataHandlerInterceptor(
  * active ProcessingContext and merges it into the outgoing message's
  * metadata.
  *
- * This is the "apply" phase of the dual-interceptor pattern, aligned
- * with the dispatch-side of Java's `CorrelationDataInterceptor`.
+ * This is the "apply" phase of the dual-interceptor pattern.
  *
  * When a ProcessingContext is available (nested dispatch from a handler),
  * the interceptor reads correlation data stored by the handler interceptor

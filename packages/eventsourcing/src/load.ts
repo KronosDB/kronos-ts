@@ -5,7 +5,7 @@ import {
   NoActiveUnitOfWork,
 } from "@kronos-ts/messaging/processing-state"
 import type { LoadFunction, EventCriteria } from "@kronos-ts/messaging"
-import { ENTITY_CACHE_KEY, ENTITY_MODULES_KEY, SOURCING_INFOS_KEY } from "./append.js"
+import { STATE_CACHE_KEY, STATE_MODULES_KEY, SOURCING_INFOS_KEY } from "./append.js"
 
 // ---------------------------------------------------------------------------
 // State manager interface — minimal shape needed by load
@@ -13,7 +13,7 @@ import { ENTITY_CACHE_KEY, ENTITY_MODULES_KEY, SOURCING_INFOS_KEY } from "./appe
 
 type StateManagerLike = {
   load: (
-    entity: any,
+    module: any,
     id: any,
   ) => Promise<{
     state: any
@@ -31,21 +31,21 @@ export const STATE_MANAGER_KEY: ResourceKey<StateManagerLike> = resourceKey("sta
  * Plan 04-01 (HDL-02 / D-42): module-level load.
  *
  * Read-only — NOT phase-guarded per D-43. Throws NoActiveUnitOfWork outside
- * a UoW. Caches entity state within the UoW (duplicate load() calls for the
- * same entity-id pair return the cached promise without re-querying the store).
+ * a UoW. Caches state within the UoW (duplicate load() calls for the
+ * same module-id pair return the cached promise without re-querying the store).
  */
-export const load: LoadFunction = (async <S>(entity: { name: string }, id: unknown): Promise<S> => {
+export const load: LoadFunction = (async <S>(module: { name: string }, id: unknown): Promise<S> => {
   const state = processingStateStorage.getStore()
   if (state === undefined) throw new NoActiveUnitOfWork()
   const stateManager = state.resources.get(STATE_MANAGER_KEY.symbol) as StateManagerLike | undefined
   if (!stateManager) throw new Error("No state manager configured")
 
-  const cache = computeIfAbsent(ENTITY_CACHE_KEY, () => new Map())
-  const cacheKey = `${entity.name}:${String(id)}`
+  const cache = computeIfAbsent(STATE_CACHE_KEY, () => new Map())
+  const cacheKey = `${module.name}:${String(id)}`
   if (!cache.has(cacheKey)) {
-    cache.set(cacheKey, stateManager.load(entity, id))
-    const modules = computeIfAbsent(ENTITY_MODULES_KEY, () => new Map())
-    modules.set(cacheKey, { entity, id })
+    cache.set(cacheKey, stateManager.load(module, id))
+    const modules = computeIfAbsent(STATE_MODULES_KEY, () => new Map())
+    modules.set(cacheKey, { module, id })
   }
   const result = await cache.get(cacheKey)!
   const loadResult = result as {

@@ -6,11 +6,8 @@ import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
  * A command bus decorator that adds dispatch and handler interceptor chains
  * to any {@link CommandBus} implementation.
  *
- * This follows Java's pattern of separating interceptor support from the
- * base bus. {@link createSimpleCommandBus} handles dispatch + subscribe only;
+ * {@link createSimpleCommandBus} handles dispatch + subscribe only;
  * this decorator layers interceptor support on top.
- *
- * Aligned with AF5's `InterceptingCommandBus`.
  */
 export function createInterceptingCommandBus(
   delegate: CommandBus,

@@ -6,8 +6,6 @@ import type { CommandMessage } from "./message.js"
  * Used by the distributed command bus to route commands to the correct
  * handler instance via consistent hashing. Commands with the same routing
  * key are routed to the same handler.
- *
- * Aligned with Kronos Framework's `RoutingStrategy`.
  */
 export interface RoutingStrategy {
   /**
@@ -20,8 +18,6 @@ export interface RoutingStrategy {
 
 /**
  * Extracts the routing key from a command message's metadata.
- *
- * Aligned with Kronos Framework's `MetadataRoutingStrategy`.
  *
  * @param metadataKey The metadata key to extract the routing key from.
  */
@@ -42,10 +38,7 @@ export function metadataRoutingStrategy(metadataKey: string): RoutingStrategy {
 
 /**
  * Extracts the routing key from a field of the command payload.
- *
- * This is the TypeScript equivalent of Java's `AnnotationRoutingStrategy`,
- * adapted for function-based descriptors. Instead of annotations on the
- * payload class, the field name is specified explicitly.
+ * The field name is specified explicitly on the descriptor/configuration.
  *
  * @param field The payload field to extract the routing key from.
  */

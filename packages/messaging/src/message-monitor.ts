@@ -19,7 +19,6 @@ export interface MonitorCallback {
  * Monitors are registered via the kronos() App messageMonitorRegistry slot
  * (Phase 8 reshape — was previously the MessagingConfigurer surface).
  *
- * Aligned with AF5's `MessageMonitor`.
  */
 export interface MessageMonitor<M extends Message = Message> {
   /**

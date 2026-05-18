@@ -1,54 +1,54 @@
 import { qualifiedNameToString } from "@kronos-ts/common"
 import type { EventMessage } from "@kronos-ts/messaging"
-import type { EntityModule, EntityRepository, LoadResult } from "@kronos-ts/modelling"
+import type { StateModule, StateRepository, LoadResult } from "@kronos-ts/modelling"
 import type { EventStore } from "./event-store.js"
 import { sourcingCondition } from "./sourcing-condition.js"
 import type { SnapshotStore, Snapshot } from "./snapshot-store.js"
 import type { SnapshotPolicy, EvolutionResult } from "./snapshot-policy.js"
 
 export interface EventSourcedRepositoryOptions<Id, S> {
-  entity: EntityModule<Id, S>
+  state: StateModule<Id, S>
   eventStore: EventStore
   snapshotStore?: SnapshotStore
   snapshotPolicy?: SnapshotPolicy
 }
 
 /**
- * Creates a repository for an event-sourced entity.
+ * Creates a repository for a state module sourced from events.
  *
  * When `load(id)` is called, the repository:
  * 1. Checks the snapshot store for a cached state (if configured)
- * 2. Resolves the sourcing criteria from the entity definition + id
+ * 2. Resolves the sourcing criteria from the state module + id
  * 3. Sources matching events from the event store (from snapshot position if available)
  * 4. Starts from snapshot state (or `create()`) and folds events through matching evolvers
  * 5. Optionally creates a new snapshot if the policy triggers
  * 6. Returns the state AND sourcing info (criteria + marker)
  */
 export function createEventSourcedRepository<Id, S>(
-  entity: EntityModule<Id, S>,
+  module: StateModule<Id, S>,
   eventStore: EventStore,
   snapshotStore?: SnapshotStore,
   snapshotPolicy?: SnapshotPolicy,
-): EntityRepository<Id, S> {
+): StateRepository<Id, S> {
   async function doLoad(id: Id): Promise<LoadResult<S>> {
     const startTime = performance.now()
-    const criteria = entity.criteria(id)
+    const criteria = module.criteria(id)
 
     // Try to load snapshot
-    let state = entity.create(id)
+    let state = module.create(id)
     let startPosition: bigint | undefined
     let snapshot: Snapshot | undefined
 
     if (snapshotStore) {
       try {
-        snapshot = await snapshotStore.load(entity.name, id)
+        snapshot = await snapshotStore.load(module.name, id)
         if (snapshot) {
           state = snapshot.payload as S
           // Source events AFTER the snapshot position
           startPosition = snapshot.position + 1n
         }
       } catch (err) {
-        console.warn(`Failed to load snapshot for ${entity.name}:${String(id)}, falling back to full replay:`, err)
+        console.warn(`Failed to load snapshot for ${module.name}:${String(id)}, falling back to full replay:`, err)
         // Fall back to full replay from the beginning
       }
     }
@@ -56,15 +56,14 @@ export function createEventSourcedRepository<Id, S>(
     const condition = sourcingCondition(criteria, startPosition)
     const { events, marker } = await eventStore.source(condition)
 
-    const lifecycle = entity.lifecycle
-    const initialState = state
+    const lifecycle = module.lifecycle
     let isFirstEvent = !snapshot // first event only if no snapshot
     let wasDeleted = lifecycle?.isDeleted?.(state) ?? false
 
     let eventsApplied = 0
     for (const event of events) {
       const previousState = state
-      state = await applyEvent(entity, state, event, id)
+      state = await applyEvent(module, state, event, id)
       eventsApplied++
 
       // Lifecycle hooks
@@ -95,14 +94,14 @@ export function createEventSourcedRepository<Id, S>(
       const result: EvolutionResult = { eventsApplied, sourcingTimeMs }
       if (snapshotPolicy.shouldSnapshot(result)) {
         snapshotStore
-          .store(entity.name, id, {
+          .store(module.name, id, {
             position: marker.position,
             payload: state,
             timestamp: Date.now(),
             metadata: {},
           })
           .catch((err) => {
-            console.warn(`Failed to store snapshot for ${entity.name}:${String(id)}:`, err)
+            console.warn(`Failed to store snapshot for ${module.name}:${String(id)}:`, err)
           })
       }
     }
@@ -117,21 +116,21 @@ export function createEventSourcedRepository<Id, S>(
   }
 
   return {
-    entityName: entity.name,
+    stateName: module.name,
     load: doLoad,
     loadOrCreate: doLoad, // Same implementation — create() always provides initial state
   }
 }
 
 async function applyEvent<Id, S>(
-  entity: EntityModule<Id, S>,
+  module: StateModule<Id, S>,
   state: S,
   event: EventMessage,
   id: Id,
 ): Promise<S> {
   const eventType = qualifiedNameToString(event.name)
 
-  for (const evolver of entity.evolvers) {
+  for (const evolver of module.evolvers) {
     const evolverType = qualifiedNameToString(evolver.descriptor.name)
     if (evolverType === eventType) {
       return await evolver.evolve(state, event.payload, id)

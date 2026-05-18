@@ -40,7 +40,7 @@ type CommandPair = [CommandDescriptor<any>, unknown]
  *
  * ```typescript
  * const fixture = await createTestFixture((app) => {
- *   app.entities(CourseEntity)
+ *   app.states(Course)
  *   app.commands(createCourse, subscribeStudent)
  *   app.queries(getCourseView, getAllCourses)
  * })

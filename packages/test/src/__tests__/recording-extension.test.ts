@@ -8,7 +8,7 @@ import {
   commandHandler,
   EventCriteria,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { load, append } from "@kronos-ts/eventsourcing"
 import { kronos } from "@kronos-ts/core"
 import {
@@ -34,7 +34,7 @@ const TestThingHappened = event({
 
 type ThingState = { exists: boolean }
 
-const ThingEntity = eventSourcedEntity({
+const Thing = state({
   name: "RecExtThing",
   id: { id: z.string() },
   initial: (_id) => ({ exists: false }) as ThingState,
@@ -43,7 +43,7 @@ const ThingEntity = eventSourcedEntity({
 })
 
 const doTestThingHandler = commandHandler(DoTestThing, async (cmd, _md) => {
-  await load(ThingEntity, { id: cmd.id })
+  await load(Thing, { id: cmd.id })
   append(TestThingHappened, { id: cmd.id })
 })
 
@@ -62,7 +62,7 @@ describe("testRecordingExtension", () => {
   it("starts with empty recordings", async () => {
     const recordings = createRecordings()
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(doTestThingHandler)
     app.use(testRecordingExtension(recordings))
     const running = await app.start()
@@ -77,7 +77,7 @@ describe("testRecordingExtension", () => {
   it("records events appended via the event store after a command dispatch", async () => {
     const recordings = createRecordings()
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(doTestThingHandler)
     app.use(testRecordingExtension(recordings))
     const running = await app.start()
@@ -96,7 +96,7 @@ describe("testRecordingExtension", () => {
   it("records dispatched commands", async () => {
     const recordings = createRecordings()
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(doTestThingHandler)
     app.use(testRecordingExtension(recordings))
     const running = await app.start()
@@ -115,7 +115,7 @@ describe("testRecordingExtension", () => {
   it("reset() clears both events and commands", async () => {
     const recordings = createRecordings()
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(doTestThingHandler)
     app.use(testRecordingExtension(recordings))
     const running = await app.start()
@@ -142,7 +142,7 @@ describe("testRecordingExtension", () => {
     let observedInnerHasRecordingMarker = false
 
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(doTestThingHandler)
 
     // Apply recording extension SYNCHRONOUSLY first so its decorators land in

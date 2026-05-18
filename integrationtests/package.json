@@ -19,7 +19,7 @@
     "@kronos-ts/extensions/kysely": "workspace:*",
     "@kronos-ts/extensions/express": "workspace:*",
     "@kronos-ts/extensions/opentelemetry": "workspace:*",
-    "zod": "^3.24"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "testcontainers": "^11.13.0",

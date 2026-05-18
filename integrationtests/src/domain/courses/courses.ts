@@ -11,7 +11,7 @@ import {
   trackingProcessor,
   emitUpdate,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { load, append } from "@kronos-ts/eventsourcing"
 
 // ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ type CourseState = {
   enrolled: string[]
 }
 
-const CourseEntity = eventSourcedEntity({
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: () => ({ created: false, name: "", capacity: 0, enrolled: [] }),
@@ -101,13 +101,13 @@ const CourseEntity = eventSourcedEntity({
 // ---------------------------------------------------------------------------
 
 const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
 const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (cmd.capacity === course.capacity) return
   if (cmd.capacity < course.enrolled.length) throw new Error("Cannot reduce capacity below enrolled count")
@@ -115,7 +115,7 @@ const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _m
 })
 
 const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Student already subscribed")
@@ -123,7 +123,7 @@ const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata)
 })
 
 const unsubscribeStudent = commandHandler(UnsubscribeStudent, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (!course.enrolled.includes(cmd.studentId)) throw new Error("Student not subscribed")
   append(StudentUnsubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
@@ -214,7 +214,7 @@ const getAllCourses = queryHandler(GetAllCourses, async (_q, _metadata) => {
  * `.planning/phases/11-.../CONTEXT.md`.
  */
 export function configureCourses(app: App): void {
-  app.entities(CourseEntity)
+  app.states(Course)
   app.commands(createCourse, changeCourseCapacity, subscribeStudent, unsubscribeStudent)
   app.queries(getCourseView, getAllCourses)
   app.processors(
@@ -256,7 +256,7 @@ export {
   StudentUnsubscribed,
   GetCourseView,
   GetAllCourses,
-  CourseEntity,
+  Course,
 }
 
 export type { CourseView, CourseState }

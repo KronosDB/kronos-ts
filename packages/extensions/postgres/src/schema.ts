@@ -6,7 +6,7 @@
  *   - the streaming query (Plan 05) — WHERE (transaction_id, sequence_position) > $bookmark
  *                                       AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
  *   - the sourcing query (Plan 04) — WHERE tags @> $required AND type IN (...)
- *   - the snapshot store (Plan 05) — INSERT … ON CONFLICT (entity_name, entity_id) DO UPDATE
+ *   - the snapshot store (Plan 05) — INSERT … ON CONFLICT (state_name, state_id) DO UPDATE
  *
  * Minimum Postgres version: 14 (xid8 + pg_snapshot_xmin require PG14, per D-12.13).
  * Tag storage: `text[]` with GIN(fastupdate=off) — `@>` contains-all semantics in SQL.
@@ -66,13 +66,13 @@ CREATE INDEX IF NOT EXISTS ${tables.events}_tags_gin
 
 export function buildSnapshotsTableDDL(tables: TableNames): string {
   return `CREATE TABLE IF NOT EXISTS ${tables.snapshots} (
-  entity_name  TEXT COLLATE "C" NOT NULL,
-  entity_id    TEXT NOT NULL,
+  state_name   TEXT COLLATE "C" NOT NULL,
+  state_id     TEXT NOT NULL,
   position     BIGINT NOT NULL,
   payload      BYTEA NOT NULL,
   metadata     JSONB NOT NULL DEFAULT '{}',
   recorded_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (entity_name, entity_id)
+  PRIMARY KEY (state_name, state_id)
 );`
 }
 

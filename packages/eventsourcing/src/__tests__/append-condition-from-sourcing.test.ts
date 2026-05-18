@@ -21,7 +21,7 @@ import {
   EventCriteria,
   type EventMessage,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { kronos } from "@kronos-ts/core"
 import { load, append } from "../index.js"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
@@ -39,7 +39,7 @@ const ThingTouched = event({
   payload: z.object({ id: z.string() }),
   tags: (p) => [tag("id", p.id)],
 })
-const ThingEntity = eventSourcedEntity({
+const Thing = state({
   name: "AcThing",
   id: { id: z.string() },
   initial: () => ({ touched: false }),
@@ -47,7 +47,7 @@ const ThingEntity = eventSourcedEntity({
   evolve: [on(ThingTouched, (s) => ({ ...s, touched: true }))],
 })
 const touchThing = commandHandler(TouchThing, async (cmd) => {
-  await load(ThingEntity, { id: cmd.id })
+  await load(Thing, { id: cmd.id })
   append(ThingTouched, { id: cmd.id })
 })
 
@@ -83,7 +83,7 @@ describe("Append condition derived from sourced state — eventStore override vi
     const probe = probeEventStore()
     const running = await kronos({ quiet: true })
       .set("eventStore", () => probe)
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(touchThing)
       .start()
     try {
@@ -110,7 +110,7 @@ describe("Append condition derived from sourced state — eventStore override vi
     const probe = probeEventStore()
     const running = await kronos({ quiet: true })
       .set("eventStore", () => probe)
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(touchThing)
       .start()
     try {

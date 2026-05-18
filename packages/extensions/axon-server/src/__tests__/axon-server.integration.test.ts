@@ -32,7 +32,7 @@ import {
   EventCriteria,
   jsonSerializer,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
   type Snapshot,
@@ -77,7 +77,7 @@ const StudentEnrolled = event({
 
 type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[] }
 
-const CourseEntity = eventSourcedEntity({
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [] }) as CourseState,
@@ -89,13 +89,13 @@ const CourseEntity = eventSourcedEntity({
 })
 
 const handleCreateCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
 const handleEnrollStudent = commandHandler(EnrollStudent, async (cmd, _metadata) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already enrolled")
@@ -157,7 +157,7 @@ describe("Axon Server integration — native axonServer() extension", () => {
     }
 
     app = await kronos({ quiet: true })
-      .entities(CourseEntity)
+      .states(Course)
       .commands(handleCreateCourse, handleEnrollStudent)
       .use(captureExtension)
       .use(

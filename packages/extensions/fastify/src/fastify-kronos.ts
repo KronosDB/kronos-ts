@@ -37,7 +37,7 @@ interface FastifyInstance {
  * })
  *
  * await kronos()
- *   .entities(CourseEntity)
+ *   .states(Course)
  *   .commands(createCourse)
  *   .use(withFastify(fastify))
  *   .start()

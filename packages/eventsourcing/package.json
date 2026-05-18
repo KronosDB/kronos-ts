@@ -8,7 +8,7 @@
     "@kronos-ts/common": "workspace:*",
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/modelling": "workspace:*",
-    "zod": "^3.24"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@kronos-ts/core": "workspace:*"

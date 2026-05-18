@@ -70,11 +70,10 @@ export type EventProcessorModule = TrackingProcessorModule | SubscribingProcesso
  *   .build()
  * ```
  *
- * NOTE: The "AF5 pooled streaming processor" alignment comment that used to
- * live here is deferred to a follow-up RESEARCH phase exploring whether the
- * Axon-Java-ported processor model fits Node/Bun runtime semantics (worker
- * threads are not reservable the same way as JVM threads). See
- * `.planning/phases/11-.../CONTEXT.md` "Out of scope" section.
+ * NOTE: Pooled streaming processor support is deferred to a follow-up
+ * research phase exploring how that model should fit Node/Bun runtime
+ * semantics, where worker threads are not reservable the same way as JVM
+ * threads.
  */
 export function trackingProcessor(name: string): TrackingProcessorBuilder {
   return new TrackingProcessorBuilder(name)

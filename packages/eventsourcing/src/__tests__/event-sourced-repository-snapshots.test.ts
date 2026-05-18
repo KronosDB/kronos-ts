@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn, tag, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import { event, on, EventCriteria, type EventMessage } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
 import { createEventSourcedRepository } from "../event-sourced-repository.js"
 import { createInMemorySnapshotStore } from "../snapshot-store.js"
@@ -24,7 +24,7 @@ const CourseCapacityChanged = event({
 
 type CourseState = { created: boolean; name: string; capacity: number }
 
-const CourseEntity = eventSourcedEntity({
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
@@ -80,7 +80,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         metadata: {},
       })
 
-      const repo = createEventSourcedRepository(CourseEntity, eventStore, snapshotStore)
+      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore)
 
       // when
       const result = await repo.load({ courseId: "cs-101" })
@@ -100,7 +100,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         eventMsg(CourseCreated, { courseId: "cs-101", name: "CS 101", capacity: 30 }),
       ])
 
-      const repo = createEventSourcedRepository(CourseEntity, eventStore)
+      const repo = createEventSourcedRepository(Course, eventStore)
 
       // when
       const result = await repo.load({ courseId: "cs-101" })
@@ -121,7 +121,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         eventMsg(CourseCapacityChanged, { courseId: "cs-101", capacity: 50 }),
       ])
 
-      const repo = createEventSourcedRepository(CourseEntity, eventStore, snapshotStore)
+      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore)
 
       // when
       const result = await repo.load({ courseId: "cs-101" })
@@ -148,7 +148,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         eventMsg(CourseCapacityChanged, { courseId: "cs-101", capacity: 60 }),
       ])
 
-      const repo = createEventSourcedRepository(CourseEntity, eventStore, snapshotStore, policy)
+      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore, policy)
 
       // when
       await repo.load({ courseId: "cs-101" })
@@ -175,7 +175,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         eventMsg(CourseCreated, { courseId: "cs-101", name: "CS 101", capacity: 30 }),
       ])
 
-      const repo = createEventSourcedRepository(CourseEntity, eventStore, snapshotStore, policy)
+      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore, policy)
 
       // when
       await repo.load({ courseId: "cs-101" })
@@ -196,7 +196,7 @@ describe("EventSourcedRepository with Snapshots", () => {
       ])
 
       const repo = createEventSourcedRepository(
-        CourseEntity, eventStore, snapshotStore, noSnapshotPolicy(),
+        Course, eventStore, snapshotStore, noSnapshotPolicy(),
       )
 
       // when
@@ -226,7 +226,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         metadata: {},
       })
 
-      const repo = createEventSourcedRepository(CourseEntity, eventStore, snapshotStore, policy)
+      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore, policy)
 
       // when — load with no new events since snapshot
       const result = await repo.load({ courseId: "cs-101" })
@@ -259,7 +259,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         metadata: {},
       })
 
-      const repo = createEventSourcedRepository(CourseEntity, eventStore, snapshotStore, policy)
+      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore, policy)
 
       // when
       const result = await repo.load({ courseId: "cs-101" })

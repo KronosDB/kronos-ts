@@ -64,7 +64,6 @@ function nowIso(): string {
  * Creates a TokenStore backed by Drizzle ORM.
  *
  * Participates in the active transaction via `getActiveTransaction()`.
- * Table schema aligned with Kronos Framework's `TokenEntry`.
  *
  * ```typescript
  * import { eq, and, or, lt, isNull } from "drizzle-orm"

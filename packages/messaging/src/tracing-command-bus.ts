@@ -9,7 +9,6 @@ import type { SpanFactory } from "./span-factory.js"
  * Dispatch creates a "dispatch" span and propagates trace context into the
  * message metadata. Subscribe wraps each handler with a "handle" span.
  *
- * Aligned with AF5's `TracingCommandBus`.
  *
  * @param delegate  The underlying command bus to decorate.
  * @param spanFactory  The span factory for creating tracing spans.

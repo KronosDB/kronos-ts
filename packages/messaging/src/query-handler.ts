@@ -22,7 +22,7 @@ export interface QueryHandlerDefinition<
   R = unknown,
 > {
   readonly kind: "query-handler"
-  readonly descriptor: QueryDescriptor<Q>
+  readonly descriptor: QueryDescriptor<Q, z.ZodType | undefined>
   readonly handler: (query: z.infer<Q>, metadata: Metadata) => Promise<R> | R
 }
 
@@ -42,7 +42,7 @@ export interface QueryHandlerDefinition<
  * {@link import("./event-handler.js").eventHandler}.
  */
 export function queryHandler<Q extends z.ZodType, R>(
-  descriptor: QueryDescriptor<Q>,
+  descriptor: QueryDescriptor<Q, z.ZodType | undefined>,
   handler: (query: z.infer<Q>, metadata: Metadata) => Promise<R> | R,
 ): QueryHandlerDefinition<Q, R> {
   return { kind: "query-handler", descriptor, handler }

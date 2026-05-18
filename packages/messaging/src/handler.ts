@@ -11,7 +11,7 @@ import type {
 // CommandHandlerContext / EventHandlerContext / QueryHandlerContext removed.
 // LoadFunction / AppendFunction / SendFunction / EmitUpdateFunction removed.
 // Consumers import load/append from @kronos-ts/eventsourcing and
-// send/emitUpdate from @kronos-ts/messaging directly.
+// send/dispatch/emitUpdate from @kronos-ts/messaging directly.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -33,9 +33,6 @@ export interface EventHandlerRegistration<P extends z.ZodType = z.ZodType> {
  *
  * Evolvers can be sync or async. Async evolvers don't block the event loop
  * during state reconstruction.
- *
- * Aligned with AF5's {@code @EventSourcingHandler} which goes through the
- * same handler pipeline as {@code @EventHandler}.
  */
 export interface EvolverRegistration<
   S = unknown,

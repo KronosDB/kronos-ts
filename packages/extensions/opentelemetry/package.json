@@ -15,6 +15,6 @@
     "@kronos-ts/modelling": "workspace:*",
     "@opentelemetry/sdk-trace-base": "^1.30.0",
     "@opentelemetry/sdk-trace-node": "^1.30.0",
-    "zod": "^3.23.0"
+    "zod": "^4.3.6"
   }
 }

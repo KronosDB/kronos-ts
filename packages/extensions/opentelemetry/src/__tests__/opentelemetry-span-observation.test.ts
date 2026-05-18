@@ -29,7 +29,7 @@ import {
   EventCriteria,
   subscribingProcessor,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { append, load } from "@kronos-ts/eventsourcing"
 import { kronos, type RunningApp } from "@kronos-ts/core"
 import { openTelemetry } from "../opentelemetry.js"
@@ -76,7 +76,7 @@ const Greeted = event({
 
 type GreetState = { greeted: boolean }
 
-const GreetingEntity = eventSourcedEntity({
+const Greeting = state({
   name: "Greeting",
   id: { id: z.string() },
   initial: () => ({ greeted: false }) as GreetState,
@@ -85,7 +85,7 @@ const GreetingEntity = eventSourcedEntity({
 })
 
 const greet = commandHandler(Greet, async (cmd, _metadata) => {
-  const g = await load(GreetingEntity, { id: cmd.id })
+  const g = await load(Greeting, { id: cmd.id })
   if (g.greeted) throw new Error("already greeted")
   append(Greeted, { id: cmd.id, who: cmd.who })
 })
@@ -111,7 +111,7 @@ describe("openTelemetry() span observation (E2E)", () => {
   it("command dispatch emits a span", async () => {
     // given
     running = await kronos({ quiet: true })
-      .entities(GreetingEntity)
+      .states(Greeting)
       .commands(greet)
       .use(openTelemetry())
       .start()
@@ -139,7 +139,7 @@ describe("openTelemetry() span observation (E2E)", () => {
     })
 
     running = await kronos({ quiet: true })
-      .entities(GreetingEntity)
+      .states(Greeting)
       .commands(greet)
       .processors(
         subscribingProcessor("greet-projection")
@@ -173,7 +173,7 @@ describe("openTelemetry() span observation (E2E)", () => {
   it("emits no spans when openTelemetry() extension is not installed", async () => {
     // given — identical app WITHOUT .use(openTelemetry())
     running = await kronos({ quiet: true })
-      .entities(GreetingEntity)
+      .states(Greeting)
       .commands(greet)
       .start()
 

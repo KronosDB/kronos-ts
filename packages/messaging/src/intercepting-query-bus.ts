@@ -7,11 +7,8 @@ import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
  * A query bus decorator that adds dispatch and handler interceptor chains
  * to any {@link QueryBus} implementation.
  *
- * This follows Java's pattern of separating interceptor support from the
- * base bus. {@link createSimpleQueryBus} handles dispatch + subscribe only;
+ * {@link createSimpleQueryBus} handles dispatch + subscribe only;
  * this decorator layers interceptor support on top.
- *
- * Aligned with AF5's `InterceptingQueryBus`.
  */
 export function createInterceptingQueryBus(
   delegate: QueryBus,

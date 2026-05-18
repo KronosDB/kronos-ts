@@ -4,10 +4,8 @@ import type { EventMessage } from "@kronos-ts/messaging"
  * A transaction scope for event store operations within a UnitOfWork.
  *
  * Events are buffered during the transaction and only persisted when
- * the UnitOfWork commits. The `onAppend` hook enables entity cache
+ * the UnitOfWork commits. The `onAppend` hook enables state cache
  * updates as events are buffered (before persistence).
- *
- * This is the TypeScript equivalent of AF5's EventStoreTransaction.
  */
 export interface EventStoreTransaction {
   /**
@@ -18,7 +16,7 @@ export interface EventStoreTransaction {
 
   /**
    * Register a callback invoked each time an event is buffered via `appendEvent`.
-   * Used by the entity cache to apply events to cached entities immediately,
+   * Used by the state cache to apply events to cached state immediately,
    * keeping the cache consistent within the same UnitOfWork.
    */
   onAppend(callback: (event: EventMessage) => void): void

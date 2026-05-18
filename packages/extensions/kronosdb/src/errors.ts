@@ -1,5 +1,5 @@
 /**
- * KronosDB error codes — mapped from the Java connector's ErrorCode enum.
+ * KronosDB error codes.
  *
  * Error codes follow the KRONOS-XXXX pattern where the first digit
  * indicates the category:

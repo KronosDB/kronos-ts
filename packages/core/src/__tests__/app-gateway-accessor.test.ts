@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "bun:test"
 import { z } from "zod"
 import { qn } from "@kronos-ts/common"
 import { command, commandHandler, EventCriteria, event, on } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { append, load } from "@kronos-ts/eventsourcing"
 import { kronos, type RunningApp } from "../index.js"
 import { AppNotStartedError } from "../errors.js"
@@ -17,7 +17,7 @@ const Pinged = event({
   payload: z.object({ id: z.string() }),
   tags: (p) => ({ id: p.id }),
 })
-const PingEntity = eventSourcedEntity({
+const PingState = state({
   name: "Ping",
   id: { id: z.string() },
   initial: () => ({ pinged: false }),
@@ -25,12 +25,12 @@ const PingEntity = eventSourcedEntity({
   evolve: [on(Pinged, (s) => ({ ...s, pinged: true }))],
 })
 const pingHandler = commandHandler(Ping, async (cmd, _md) => {
-  await load(PingEntity, { id: cmd.id })
+  await load(PingState, { id: cmd.id })
   append(Pinged, { id: cmd.id })
 })
 
 function makeApp() {
-  return kronos({ quiet: true }).entities(PingEntity).commands(pingHandler)
+  return kronos({ quiet: true }).states(PingState).commands(pingHandler)
 }
 
 describe("App.commandGateway / App.queryGateway accessors", () => {

@@ -3,7 +3,6 @@ import type { EventSink } from "./event-sink.js"
 
 /**
  * Subscribable source of events — push-based delivery.
- * Aligned with AF5's `SubscribableEventSource`.
  */
 export interface SubscribableEventSource {
   /**
@@ -21,16 +20,12 @@ export interface SubscribableEventSource {
  *
  * In event sourcing setups, the EventStore serves as the EventBus.
  * In non-event-sourcing setups, SimpleEventBus provides in-memory distribution.
- *
- * Aligned with AF5's `EventBus` interface.
  */
 export interface EventBus extends SubscribableEventSource, EventSink {}
 
 /**
  * In-memory event bus for non-event-sourcing scenarios.
  * Publishes events directly to all subscribers.
- *
- * Aligned with AF5's `SimpleEventBus`.
  */
 export function createSimpleEventBus(): EventBus {
   const subscribers = new Set<(events: ReadonlyArray<EventMessage>) => Promise<void>>()

@@ -673,10 +673,10 @@ function createDistributedCommandBus(
               timestamp: Number(proto.timestamp),
             }
 
-            // Execute inbound command within a UnitOfWork
-            resultPayload = await unitOfWorkRunner(commandMessage.metadata, async () => {
-              return handler(commandMessage)
-            })
+            // Execute inbound command within its own UnitOfWork (AF5 parity)
+            resultPayload = await unitOfWorkRunner(commandMessage.metadata, () =>
+              handler(commandMessage),
+            )
           } catch (err) {
             errorCode = AxonServerErrorCode.COMMAND_EXECUTION_ERROR
             errorMsg = err instanceof Error ? err.message : String(err)

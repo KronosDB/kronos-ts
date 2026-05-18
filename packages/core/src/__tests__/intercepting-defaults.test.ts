@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "bun:test"
 import { z } from "zod"
 import { qn, emptyMetadata } from "@kronos-ts/common"
 import { command, event, on, commandHandler, EventCriteria } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { load, append } from "@kronos-ts/eventsourcing"
 import { AppImpl, AppAlreadyStartedError, type RunningApp } from "../app.js"
 import { createWarningChannel } from "../warnings.js"
@@ -34,7 +34,7 @@ const ThingCreated = event({
   tags: (p) => ({ id: p.id }),
 })
 
-const ThingEntity = eventSourcedEntity({
+const Thing = state({
   name: "Thing6",
   id: { id: z.string() },
   initial: () => ({ created: false }),
@@ -43,7 +43,7 @@ const ThingEntity = eventSourcedEntity({
 })
 
 const createThingHandler = commandHandler(CreateThing, async (cmd, _md) => {
-  await load(ThingEntity, { id: cmd.id })
+  await load(Thing, { id: cmd.id })
   append(ThingCreated, { id: cmd.id })
 })
 
@@ -157,7 +157,7 @@ describe("kronos() + start() — framework intercepting default wraps the bus", 
   it("Test 3: resolved commandBus is the intercepting bus (has registerDispatchInterceptor)", async () => {
     let capturedInner: any
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
     app.decorate("commandBus", (inner) => {
       capturedInner = inner
@@ -173,7 +173,7 @@ describe("kronos() + start() — framework intercepting default wraps the bus", 
   it("Test 4: commandDispatchInterceptor(fn) registered before start — fn is invoked when a command dispatches", async () => {
     const witness: CommandMessage[] = []
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
       .commandDispatchInterceptor((m) => { witness.push(m as CommandMessage); return m })
     running = await app.start()
@@ -184,7 +184,7 @@ describe("kronos() + start() — framework intercepting default wraps the bus", 
   it("Test 5: removeDecorator(Defaults.commandBus.intercepting) removes the framework default — bare simple bus", async () => {
     let capturedInner: any
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
       .removeDecorator(Defaults.commandBus.intercepting)
     app.decorate("commandBus", (inner) => {
@@ -199,7 +199,7 @@ describe("kronos() + start() — framework intercepting default wraps the bus", 
   it("Test 6a: removeDecorator(Defaults.queryBus.intercepting) removes queryBus intercepting default", async () => {
     let capturedInner: any
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
       .removeDecorator(Defaults.queryBus.intercepting)
     app.decorate("queryBus", (inner) => {
@@ -213,7 +213,7 @@ describe("kronos() + start() — framework intercepting default wraps the bus", 
   it("Test 6b: removeDecorator(Defaults.eventBus.intercepting) removes eventBus intercepting default", async () => {
     let capturedInner: any
     const app = kronos({ quiet: true })
-      .entities(ThingEntity)
+      .states(Thing)
       .commands(createThingHandler)
       .removeDecorator(Defaults.eventBus.intercepting)
     app.decorate("eventBus", (inner) => {

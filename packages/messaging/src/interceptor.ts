@@ -16,9 +16,9 @@ import type { Message } from "./message.js"
  * from ALS via module-level accessors (`getResource` / `setResource`) — no
  * `ProcessingContext` parameter is threaded.
  *
- * **Known limitation:** Unlike Java's dispatch interceptor which receives a
- * `proceed()` function and can choose not to call it (returning an alternative
- * result), this TypeScript model uses a simpler transform-or-throw approach.
+ * **Known limitation:** Dispatch interceptors use a simple transform-or-throw
+ * approach. They do not receive a `proceed()` function that can be skipped to
+ * return an alternative result.
  * A dispatch interceptor cannot halt the chain and return an alternative result
  * — it can only transform the message or throw to reject it. This covers ~95%
  * of use cases. Full chain semantics (with `proceed()`) would require the
@@ -34,8 +34,7 @@ export interface DispatchInterceptor<M extends Message = Message> {
  * Intercepts a handler invocation. Wraps the actual handler call,
  * enabling before/after logic (transactions, tracing, metrics, etc.)
  *
- * Aligned with AF5's `MessageHandlerInterceptor` which receives
- * `(message, chain)`. UoW-scoped state is read/written via module-level ALS
+ * UoW-scoped state is read/written via module-level ALS
  * accessors (`getResource` / `setResource`) — no `ProcessingContext`
  * parameter is threaded.
  *

@@ -33,8 +33,9 @@ import {
   EventCriteria,
   trackingProcessor,
   emitUpdate,
+  send,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { type EventStore, load, append, afterEvents } from "@kronos-ts/eventsourcing"
 import { kronos, type App, type RunningApp } from "@kronos-ts/core"
 import { postgres, AppendConditionError } from "@kronos-ts/postgres"
@@ -73,31 +74,62 @@ const StudentSubscribed = event({
   tags: (p) => [tag("courseId", p.courseId)],
 })
 
-type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[] }
+const CloseEnrollment = command({
+  name: qn("postgres-e2e", "CloseEnrollment"),
+  payload: z.object({ courseId: z.string() }),
+  routingKey: "courseId",
+})
 
-const CourseEntity = eventSourcedEntity({
+const EnrollmentClosed = event({
+  name: qn("postgres-e2e", "EnrollmentClosed"),
+  payload: z.object({ courseId: z.string() }),
+  tags: (p) => [tag("courseId", p.courseId)],
+})
+
+type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[]; closed: boolean }
+
+const Course = state({
   name: "Course",
   id: { courseId: z.string() },
-  initial: () => ({ created: false, name: "", capacity: 0, enrolled: [] }) as CourseState,
+  initial: () => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
     on(CourseCreated, (s, e) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
     on(StudentSubscribed, (s, e) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
+    on(EnrollmentClosed, (s) => ({ ...s, closed: true })),
   ],
 })
 
 const createCourse = commandHandler(CreateCourse, async (cmd) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
 const subscribeStudent = commandHandler(SubscribeStudent, async (cmd) => {
-  const course = await load(CourseEntity, { courseId: cmd.courseId })
+  const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already enrolled")
   append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
+})
+
+// -- Stateful automation: an event handler that reacts to StudentSubscribed,
+// sources the affected Course, and — if it is now full — issues a
+// CloseEnrollment command via send(). The command runs in its own fresh
+// UnitOfWork per the AF5-aligned model.
+
+const closeEnrollment = commandHandler(CloseEnrollment, async (cmd) => {
+  const course = await load(Course, { courseId: cmd.courseId })
+  if (!course.created || course.closed) return
+  append(EnrollmentClosed, { courseId: cmd.courseId })
+})
+
+const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async (e) => {
+  const course = await load(Course, { courseId: e.courseId })
+  if (course.created && !course.closed && course.enrolled.length >= course.capacity) {
+    await send(CloseEnrollment, { courseId: e.courseId })
+  }
 })
 
 // -- Projection (read model fed by the tracking processor) --
@@ -181,7 +213,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     // 3. Wire postgres() — bootstraps schema on connect, populates eventStore +
     //    snapshotStore slots.
     app = await kronos({ quiet: true })
-      .entities([CourseEntity, { snapshotPolicy: afterEvents(1) }])
+      .states([Course, { snapshotPolicy: afterEvents(1) }])
       .commands(createCourse, subscribeStudent)
       .queries(getCourse)
       .processors(
@@ -321,13 +353,13 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     const client = new Client({ connectionString })
     await client.connect()
     try {
-      let match: { entity_id: string; position: string } | undefined
+      let match: { state_id: string; position: string } | undefined
       await waitFor(async () => {
-        const res = await client.query<{ entity_id: string; position: string }>(
-          "SELECT entity_id, position FROM kronos_snapshots WHERE entity_name = $1",
+        const res = await client.query<{ state_id: string; position: string }>(
+          "SELECT state_id, position FROM kronos_snapshots WHERE state_name = $1",
           ["Course"],
         )
-        match = res.rows.find((r) => r.entity_id.includes(courseId))
+        match = res.rows.find((r) => r.state_id.includes(courseId))
         return match !== undefined
       })
       expect(match).toBeDefined()
@@ -353,6 +385,51 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       expect(tables).toContain("kronos_snapshots")
     } finally {
       await client.end()
+    }
+  })
+
+  it("stateful automation — an event handler sends a command in its own UoW", async () => {
+    // A dedicated app isolates the automation processor from the shared app's
+    // assertions; it connects to the same Postgres database.
+    let autoEventStore: EventStore | undefined
+    const autoApp = await kronos({ quiet: true })
+      .states(Course)
+      .commands(createCourse, subscribeStudent, closeEnrollment)
+      .processors(
+        trackingProcessor("postgres-enrollment-automation")
+          .eventHandlers(closeEnrollmentWhenFull)
+          .build(),
+      )
+      .use((a: App) => {
+        a.decorate("eventStore", (inner) => {
+          autoEventStore = inner
+          return inner
+        })
+      })
+      .use(postgres({ adapter: pgAdapter({ connectionString }) }))
+      .start()
+
+    try {
+      const courseId = id("auto-cap")
+      await autoApp.commandGateway.send(CreateCourse, { courseId, name: "One Seat", capacity: 1 })
+      await autoApp.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-1" })
+
+      // The automation sources the now-full course and dispatches
+      // CloseEnrollment; its handler appends EnrollmentClosed in its own UoW.
+      const criteria = EventCriteria.havingTags(tag("courseId", courseId))
+      await waitFor(async () => {
+        const { events } = await autoEventStore!.source({ criteria })
+        return events.some((ev) => ev.name.name === "EnrollmentClosed")
+      })
+
+      const { events } = await autoEventStore!.source({ criteria })
+      expect(events.map((ev) => ev.name.name)).toEqual([
+        "CourseCreated",
+        "StudentSubscribed",
+        "EnrollmentClosed",
+      ])
+    } finally {
+      await autoApp.stop()
     }
   })
 })

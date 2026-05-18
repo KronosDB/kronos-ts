@@ -12,7 +12,7 @@ export interface SerializedObject {
  * Core serializer interface — converts values between their in-memory
  * representation and serialized form (Uint8Array).
  *
- * The framework uses three serializer slots, following AF5:
+ * The framework uses three serializer slots:
  * - **Default serializer** — fallback for all serialization
  * - **Message serializer** — for command and query message payloads
  * - **Event serializer** — for event payloads stored in the event store

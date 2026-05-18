@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn } from "@kronos-ts/common"
 import { command, commandHandler, EventCriteria, event, on } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { append, load } from "@kronos-ts/eventsourcing"
 import { kronos } from "@kronos-ts/core"
 import { withFastify, type KronosDecorator } from "../fastify-kronos.js"
@@ -16,7 +16,7 @@ const Pinged = event({
   payload: z.object({ id: z.string() }),
   tags: (p) => ({ id: p.id }),
 })
-const PingEntity = eventSourcedEntity({
+const PingState = state({
   name: "Ping",
   id: { id: z.string() },
   initial: () => ({ pinged: false }),
@@ -24,7 +24,7 @@ const PingEntity = eventSourcedEntity({
   evolve: [on(Pinged, (s) => ({ ...s, pinged: true }))],
 })
 const pingHandler = commandHandler(Ping, async (cmd, _md) => {
-  await load(PingEntity, { id: cmd.id })
+  await load(PingState, { id: cmd.id })
   append(Pinged, { id: cmd.id })
 })
 
@@ -58,7 +58,7 @@ describe("withFastify (native Extension shape)", () => {
   it("after kronos().use(withFastify(...)).start(), fastify.decorate('kronos', { gateways }) was called", async () => {
     const mock = makeMockFastify()
     const app = await kronos({ quiet: true })
-      .entities(PingEntity)
+      .states(PingState)
       .commands(pingHandler)
       .use(withFastify(mock as any))
       .start()

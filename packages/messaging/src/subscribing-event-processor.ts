@@ -27,7 +27,6 @@ export type { SubscribableEventSource } from "./event-bus.js"
  * - Processes events synchronously with the publisher
  * - Is suitable for in-memory projections that don't need persistence
  *
- * Aligned with Kronos Framework's `SubscribingEventProcessor`.
  */
 export interface SubscribingEventProcessor {
   readonly name: string

@@ -4,7 +4,6 @@ import type { Message } from "./message.js"
  * A span representing a unit of tracing work.
  * Start the span, do work, then end it.
  *
- * Aligned with AF5's `Span`.
  */
 export interface Span {
   /** Start the span. Returns the span for chaining. */
@@ -18,7 +17,6 @@ export interface Span {
 /**
  * Provides custom attributes to add to spans.
  *
- * Aligned with AF5's `SpanAttributesProvider`.
  */
 export interface SpanAttributesProvider {
   provideAttributes(message: Message): Record<string, string>
@@ -32,7 +30,6 @@ export interface SpanAttributesProvider {
  * propagation. The framework calls these methods during dispatch and
  * handling.
  *
- * Aligned with AF5's `SpanFactory`.
  */
 export interface SpanFactory {
   /** Create a root trace span (no parent). */

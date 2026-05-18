@@ -25,8 +25,8 @@ export type UoWRunner = <R>(
  * if one is already active on the ALS stack.
  *
  * Used by gateways (D-32): `commandGateway.send`, `queryGateway.query`,
- * and any external entry point. Mirrors AF5's CommandGateway "always-new"
- * semantics vs an injected dispatcher which reuses the active UoW.
+ * and any external entry point. This keeps gateway calls isolated from
+ * an injected dispatcher that reuses the active UoW.
  */
 export function runInNewUoW<R>(
   metadata: Metadata | undefined,
@@ -49,9 +49,12 @@ export function runInNewUoW<R>(
  * - If no state is active, behaves identically to `runInNewUoW` —
  *   creates a fresh UoW and drives the full phase lifecycle.
  *
- * Used by buses (D-32): `commandBus.dispatch` and `queryBus.query` route
- * through this so handler-internal dispatches auto-nest, while primary
- * dispatch (no active UoW) starts a new one.
+ * Used by `queryBus.query` so handler-internal queries auto-nest, while
+ * a primary query (no active UoW) starts a new one.
+ *
+ * NOTE: `commandBus.dispatch` deliberately does NOT use this — for AF5
+ * parity every command gets its own fresh UnitOfWork via `runInNewUoW`,
+ * nested or not. See `createSimpleCommandBus`.
  */
 export function runInUoW<R>(
   metadata: Metadata | undefined,

@@ -53,7 +53,6 @@ const UPDATE_TASKS_KEY: ResourceKey<Array<() => void>> = resourceKey("subscripti
  * Defers a task to AFTER_COMMIT if a UnitOfWork is active, otherwise runs
  * it immediately.
  *
- * This is the core pattern from AF5's `runAfterCommitOrImmediately`.
  * Ensures subscription query updates are only emitted after the
  * transaction commits successfully.
  *

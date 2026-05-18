@@ -1,8 +1,8 @@
 /**
- * Plan 09-01 Task 2 — App.entities() tuple-shape options (D-88).
+ * Plan 09-01 Task 2 — App.states() tuple-shape options (D-88).
  *
  * Asserts:
- *  T1. Bare-module form pushes { module, options: {} } into entityEntries.
+ *  T1. Bare-module form pushes { module, options: {} } into stateEntries.
  *  T2. Tuple form [Module, { snapshotStore, snapshotPolicy }] pushes the
  *      provided options through.
  *  T3. Mixed list (bare + tuple) preserves order and per-entity options.
@@ -20,7 +20,7 @@ import {
   commandHandler,
   EventCriteria,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import {
   load,
   append,
@@ -44,42 +44,42 @@ const Tapped = event({
   payload: z.object({ id: z.string() }),
   tags: (p) => ({ id: p.id }),
 })
-const TupleEntity = eventSourcedEntity({
-  name: "TupleEntity",
+const Tuple = state({
+  name: "Tuple",
   id: { id: z.string() },
   initial: () => ({ tapped: false }),
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
   evolve: [on(Tapped, (s) => ({ ...s, tapped: true }))],
 })
 const tapHandler = commandHandler(Tap, async (cmd) => {
-  await load(TupleEntity, { id: cmd.id })
+  await load(Tuple, { id: cmd.id })
   append(Tapped, { id: cmd.id })
 })
 
-// Probe snapshot store: counts load() calls and records the (entityName, id) keys.
-function probeSnapshotStore(): SnapshotStore & { loadCalls: Array<{ entityName: string; id: unknown }> } {
-  const loadCalls: Array<{ entityName: string; id: unknown }> = []
+// Probe snapshot store: counts load() calls and records the (stateName, id) keys.
+function probeSnapshotStore(): SnapshotStore & { loadCalls: Array<{ stateName: string; id: unknown }> } {
+  const loadCalls: Array<{ stateName: string; id: unknown }> = []
   return {
     loadCalls,
-    async load(entityName, id) {
-      loadCalls.push({ entityName, id })
+    async load(stateName, id) {
+      loadCalls.push({ stateName, id })
       return undefined
     },
-    async store(_entityName, _id, _snapshot) {},
-    async deleteSnapshots(_entityName, _id) {},
+    async store(_stateName, _id, _snapshot) {},
+    async deleteSnapshots(_stateName, _id) {},
   }
 }
 
-// ─── T1+T2+T3 — entityEntries shape ─────────────────────────────────────────
+// ─── T1+T2+T3 — stateEntries shape ─────────────────────────────────────────
 
-describe("App.entities() tuple-shape — Plan 09-01 (D-88)", () => {
-  it("bare module form pushes options:{} into entityEntries", () => {
+describe("App.states() tuple-shape — Plan 09-01 (D-88)", () => {
+  it("bare module form pushes options:{} into stateEntries", () => {
     const app = new AppImpl({ warningChannel: createWarningChannel({ quiet: true }) })
     registerInMemoryDefaults(app)
-    app.entities(TupleEntity)
-    expect(app._state.entityEntries).toHaveLength(1)
-    expect(app._state.entityEntries[0]!.module).toBe(TupleEntity)
-    expect(app._state.entityEntries[0]!.options).toEqual({})
+    app.states(Tuple)
+    expect(app._state.stateEntries).toHaveLength(1)
+    expect(app._state.stateEntries[0]!.module).toBe(Tuple)
+    expect(app._state.stateEntries[0]!.options).toEqual({})
   })
 
   it("tuple form [module, options] pushes the provided options through", () => {
@@ -87,37 +87,37 @@ describe("App.entities() tuple-shape — Plan 09-01 (D-88)", () => {
     registerInMemoryDefaults(app)
     const store = probeSnapshotStore()
     const policy: SnapshotPolicy = afterEvents(5)
-    app.entities([TupleEntity, { snapshotStore: store, snapshotPolicy: policy }])
-    expect(app._state.entityEntries).toHaveLength(1)
-    expect(app._state.entityEntries[0]!.options.snapshotStore).toBe(store)
-    expect(app._state.entityEntries[0]!.options.snapshotPolicy).toBe(policy)
+    app.states([Tuple, { snapshotStore: store, snapshotPolicy: policy }])
+    expect(app._state.stateEntries).toHaveLength(1)
+    expect(app._state.stateEntries[0]!.options.snapshotStore).toBe(store)
+    expect(app._state.stateEntries[0]!.options.snapshotPolicy).toBe(policy)
   })
 
   it("mixed list preserves registration order and per-entity options", () => {
     const app = new AppImpl({ warningChannel: createWarningChannel({ quiet: true }) })
     registerInMemoryDefaults(app)
     const store = probeSnapshotStore()
-    app.entities(TupleEntity, [TupleEntity, { snapshotStore: store }])
-    expect(app._state.entityEntries).toHaveLength(2)
-    expect(app._state.entityEntries[0]!.options).toEqual({})
-    expect(app._state.entityEntries[1]!.options.snapshotStore).toBe(store)
+    app.states(Tuple, [Tuple, { snapshotStore: store }])
+    expect(app._state.stateEntries).toHaveLength(2)
+    expect(app._state.stateEntries[0]!.options).toEqual({})
+    expect(app._state.stateEntries[1]!.options.snapshotStore).toBe(store)
   })
 })
 
 // ─── T4 — runtime threading verified via snapshotStore.load() observation ──
 
-describe("App.entities() tuple options — runtime threading at start()", () => {
+describe("App.states() tuple options — runtime threading at start()", () => {
   it("tuple-form snapshotStore is consulted during load() at command dispatch", async () => {
     const store = probeSnapshotStore()
     const app = kronos({ quiet: true })
-      .entities([TupleEntity, { snapshotStore: store, snapshotPolicy: afterEvents(100) }])
+      .states([Tuple, { snapshotStore: store, snapshotPolicy: afterEvents(100) }])
       .commands(tapHandler)
     const running = await app.start()
     try {
       await running.commandGateway.send(Tap, { id: "t1" }, emptyMetadata())
-      // load() consulted the snapshot store at least once for entity "TupleEntity".
+      // load() consulted the snapshot store at least once for entity "Tuple".
       expect(store.loadCalls.length).toBeGreaterThan(0)
-      expect(store.loadCalls.some((c) => c.entityName === "TupleEntity")).toBe(true)
+      expect(store.loadCalls.some((c) => c.stateName === "Tuple")).toBe(true)
     } finally {
       await running.stop()
     }
@@ -127,7 +127,7 @@ describe("App.entities() tuple options — runtime threading at start()", () => 
     const store = probeSnapshotStore()
     const app = kronos({ quiet: true })
       // Bare form — store is constructed but never passed to this entity.
-      .entities(TupleEntity)
+      .states(Tuple)
       .commands(tapHandler)
     const running = await app.start()
     try {

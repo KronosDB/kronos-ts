@@ -23,7 +23,7 @@ import {
   subscribingProcessor,
   type HandlerEnhancerDefinition,
 } from "@kronos-ts/messaging"
-import { eventSourcedEntity } from "@kronos-ts/modelling"
+import { state } from "@kronos-ts/modelling"
 import { append, load } from "@kronos-ts/eventsourcing"
 import { kronos } from "../kronos.js"
 import { AppImpl, AppAlreadyStartedError } from "../app.js"
@@ -46,7 +46,7 @@ const Echo = query({
   payload: z.object({ id: z.string() }),
   result: z.string(),
 })
-const PingEntity = eventSourcedEntity({
+const PingState = state({
   name: "EnhancerPing",
   id: { id: z.string() },
   initial: () => ({ pinged: false }),
@@ -54,7 +54,7 @@ const PingEntity = eventSourcedEntity({
   evolve: [on(Pinged, (s) => ({ ...s, pinged: true }))],
 })
 const pingHandler = commandHandler(Ping, async (cmd) => {
-  await load(PingEntity, { id: cmd.id })
+  await load(PingState, { id: cmd.id })
   append(Pinged, { id: cmd.id })
   return `OK:${cmd.id}` as const
 })
@@ -100,7 +100,7 @@ describe("handlerEnhancer wires through command handler registration", () => {
   it("composedEnhancer wraps command handlers — TRACED: marker visible on return", async () => {
     const recorded: Array<any> = []
     const app = kronos({ quiet: true })
-      .entities(PingEntity)
+      .states(PingState)
       .commands(pingHandler)
       .handlerEnhancer(tracingEnhancer("TRACED:", recorded))
     const running = await app.start()
@@ -159,7 +159,7 @@ describe("handlerEnhancer wires through subscribing event processor", () => {
       received = payload.id
     })
     const app = kronos({ quiet: true })
-      .entities(PingEntity)
+      .states(PingState)
       .commands(pingHandler)
       .processors(
         subscribingProcessor("ping-projection").eventHandlers(onPinged).build(),
