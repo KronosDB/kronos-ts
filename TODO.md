@@ -33,14 +33,12 @@ Lifecycle callbacks on entities: creation, deletion, state transitions. Integrat
 ### @axonframework/extensions/opentelemetry
 Span creation around command dispatch, query dispatch, and event processing. `SpanFactory` interface for pluggable tracing backends. OpenTelemetry integration as the default. Handler-level span attributes. Trace context propagation across message boundaries.
 
-### @axonframework/extensions/fastify
-Fastify plugin using `onReady`/`onClose` hooks for lifecycle management. Decorators for type-safe gateway access on the Fastify instance. Thin wrapper — the core configuration API stays the same.
-
-### @axonframework/extensions/express
-Express middleware and `startWithAxon()` lifecycle helper. Gateway injection via `app.locals` and per-request middleware. Graceful shutdown via process signals.
-
-### @axonframework/extensions/hono
-Hono middleware for multi-runtime support (Node, Bun, Deno, Cloudflare Workers, edge). Lifecycle management via Hono's middleware chain. Gateway access via context variables.
+> **Web framework extensions (fastify / express / hono) — dropped by design.**
+> Kronos composability is decoupled from the HTTP layer. The framework
+> extensions saved ~1 line over plain wiring while adding a deferred-decorator
+> footgun. Recommended pattern: start the app, then register routes against the
+> `RunningApp` gateways, co-located with each domain slice. See
+> `integrationtests/src/__tests__/e2e-axonserver-http.integration.test.ts`.
 
 ### @axonframework/extensions/nestjs
 NestJS module with `AxonModule.forRoot()` / `forRootAsync()` registration. Injectable gateways via NestJS DI. Lifecycle integration via `OnModuleInit` / `OnModuleDestroy`. Decorator support for handler registration from NestJS services.

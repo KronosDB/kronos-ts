@@ -16,9 +16,9 @@
  *   6. snapshot store roundtrip via createAxonServerSnapshotStore
  *
  * Reconnect / failover scenarios are covered by the integrationtests-suite
- * e2e (e2e-express-axonserver-drizzle.integration.test.ts) where the
- * full HTTP stack is exercised — kept out of this per-package test to
- * avoid duplicating the testcontainers boot cost.
+ * e2e (e2e-axonserver-http.integration.test.ts) where the full HTTP stack
+ * is exercised — kept out of this per-package test to avoid duplicating the
+ * testcontainers boot cost.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"

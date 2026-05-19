@@ -17,7 +17,6 @@
     "@kronos-ts/extensions/drizzle": "workspace:*",
     "@kronos-ts/extensions/knex": "workspace:*",
     "@kronos-ts/extensions/kysely": "workspace:*",
-    "@kronos-ts/extensions/express": "workspace:*",
     "@kronos-ts/extensions/opentelemetry": "workspace:*",
     "zod": "^4.3.6"
   },

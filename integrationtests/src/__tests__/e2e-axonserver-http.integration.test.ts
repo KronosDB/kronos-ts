@@ -1,14 +1,22 @@
 /**
  * Full-stack E2E integration test:
  * Axon Server (event store + command/query distribution)
- * + In-memory projections via subscribing processor
+ * + In-memory projections via a tracking processor
+ * + HTTP layer via plain Express (no framework extension)
  * + Full CQRS flow validation
+ *
+ * Demonstrates the decoupled HTTP wiring: Kronos has no knowledge of the web
+ * framework. The app is started first, then HTTP routes are registered against
+ * the resulting RunningApp gateways and the server begins listening. Routes are
+ * defined alongside their domain slice (registerCourseHttp) so a slice bundles
+ * both its Kronos handlers and its HTTP surface.
  *
  * Uses testcontainers for Axon Server.
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
-import express from "express"
+import express, { type Express } from "express"
+import type { Server } from "node:http"
 import { z } from "zod"
 import { qn, tag } from "@kronos-ts/common"
 import {
@@ -27,7 +35,6 @@ import {
 import { state } from "@kronos-ts/modelling"
 import { type EventStore, load, append } from "@kronos-ts/eventsourcing"
 import { kronos, type App, type RunningApp } from "@kronos-ts/core"
-import { withExpress } from "@kronos-ts/extensions/express"
 import { axonServer } from "@kronos-ts/axon-server"
 
 // ============================================================================
@@ -144,6 +151,30 @@ const getCourse = queryHandler(GetCourse, async (q, _metadata) => {
   return view
 })
 
+// -- HTTP surface for the Course slice --
+// Co-located with the slice's domain. Plain Express: no framework extension,
+// no deferred decorator. Receives the already-started RunningApp and closes
+// over its gateways. Composes the same way Kronos slices do — call it for each
+// slice on the shared Express instance before listen().
+function registerCourseHttp(http: Express, k: RunningApp): void {
+  http.post("/courses", async (req, res) => {
+    try {
+      await k.commandGateway.send(CreateCourse, req.body)
+      res.status(201).end()
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message })
+    }
+  })
+  http.get("/courses/:courseId", async (req, res) => {
+    try {
+      const view = await k.queryGateway.query(GetCourse, { courseId: req.params.courseId })
+      res.status(200).json(view)
+    } catch {
+      res.status(404).end()
+    }
+  })
+}
+
 // ============================================================================
 // Axon Server helpers
 // ============================================================================
@@ -166,20 +197,23 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 // Tests
 // ============================================================================
 
-// Plan 09-04 — wired against the native Axon Server extension (D-95):
+// Wired against the native Axon Server extension (D-95):
 //   .states(...).commands(...).queries(...).processors(...)
-//   .use(withExpress(...))   // Plan 01 native HTTP Extension
-//   .use(axonServer({...}))  // Plan 09-04 native (app: App) => void
-// Express extension validates Plan 01's HTTP-extension shape end-to-end
-// alongside the native Axon Server extension. axonServer() populates
-// eventStore / snapshotStore / commandBus / queryBus typed slots via app.set(...)
-// and runs connect/processors/stop hooks under the @kronos-ts/common
-// resilience helper.
+//   .use(axonServer({...}))  // native (app: App) => void
+// axonServer() populates eventStore / snapshotStore / commandBus / queryBus
+// typed slots via app.set(...) and runs connect/processors/stop hooks under the
+// @kronos-ts/common resilience helper.
+//
+// The HTTP layer is plain Express, wired AFTER start(): no framework extension.
+// Kronos starts, then registerCourseHttp() binds routes to the RunningApp
+// gateways, then the server listens. This is the decoupled replacement for the
+// removed withExpress/withFastify/withHono extensions.
 describe("E2E: Axon Server full stack", () => {
   let container: StartedTestContainer
   let app: RunningApp
   let capturedEventStore: EventStore | undefined
-  let httpServerPort: number
+  let httpServer: Server
+  let baseUrl: string
   let axonHost: string
   let axonGrpcPort: number
 
@@ -203,11 +237,6 @@ describe("E2E: Axon Server full stack", () => {
     // Extra delay for DCB event store stream endpoint initialization
     await new Promise(r => setTimeout(r, 3000))
 
-    // Express + withExpress (Plan 01 native shape)
-    const expressApp = express()
-    // Random ephemeral port to avoid collisions with other tests in the file
-    httpServerPort = 30_000 + Math.floor(Math.random() * 5000)
-
     // Capture eventStore via probe decorator (native RunningApp has no eventStore field).
     const captureExtension = (kronosApp: App) => {
       kronosApp.decorate("eventStore", (inner) => {
@@ -226,8 +255,7 @@ describe("E2E: Axon Server full stack", () => {
           .build(),
       )
       .use(captureExtension)
-      .use(withExpress(expressApp, { port: httpServerPort })) // Plan 01 HTTP wiring
-      .use(axonServer({                                         // Plan 09-04 native shape
+      .use(axonServer({                                         // native (app: App) => void
         componentName: "e2e-full-stack",
         host,
         port: grpcPort,
@@ -235,10 +263,25 @@ describe("E2E: Axon Server full stack", () => {
       }))
       .start()
 
+    // HTTP layer: plain Express, wired after start() against the RunningApp.
+    const expressApp: Express = express()
+    expressApp.use(express.json())
+    registerCourseHttp(expressApp, app)
+    // Random ephemeral port to avoid collisions with other tests in the file.
+    const httpServerPort = 30_000 + Math.floor(Math.random() * 5000)
+    httpServer = await new Promise<Server>((resolve) => {
+      const server = expressApp.listen(httpServerPort, () => resolve(server))
+    })
+    baseUrl = `http://127.0.0.1:${httpServerPort}`
+
     await new Promise(r => setTimeout(r, 2000))
   }, 120_000)
 
   afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      if (!httpServer) return resolve()
+      httpServer.close(() => resolve())
+    })
     await app?.stop()
     await container?.stop()
   })
@@ -402,4 +445,36 @@ describe("E2E: Axon Server full stack", () => {
       await autoApp.stop()
     }
   }, 90_000)
+
+  it("HTTP POST → command → event → Axon Server, HTTP GET → projection", async () => {
+    // when — create a course over HTTP (plain Express → commandGateway)
+    const created = await fetch(`${baseUrl}/courses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ courseId: "e2e-http", name: "HTTP Course", capacity: 12 }),
+    })
+    expect(created.status).toBe(201)
+
+    // then — event persisted in Axon Server
+    const { events } = await eventStore().source({
+      criteria: EventCriteria.havingTags(tag("courseId", "e2e-http")),
+    })
+    expect(events.length).toBe(1)
+
+    // and — projection reachable over HTTP GET once the tracking processor catches up
+    await waitFor(() => courseViews.has("e2e-http"), 30000)
+    const fetched = await fetch(`${baseUrl}/courses/e2e-http`)
+    expect(fetched.status).toBe(200)
+    expect((await fetched.json() as CourseView).name).toBe("HTTP Course")
+  }, 60_000)
+
+  it("HTTP surfaces a rejected command as 400", async () => {
+    // duplicate create — handler throws, route maps it to 400
+    const res = await fetch(`${baseUrl}/courses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ courseId: "e2e-http", name: "Duplicate", capacity: 1 }),
+    })
+    expect(res.status).toBe(400)
+  }, 60_000)
 })
