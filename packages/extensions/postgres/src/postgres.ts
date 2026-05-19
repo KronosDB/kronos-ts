@@ -15,7 +15,7 @@
  * transactionManager (D-12.01 — out of scope for this extension).
  */
 
-import type { App } from "@kronos-ts/core"
+import type { App } from "@kronos-ts/app"
 import type { ResilienceConfig } from "@kronos-ts/common"
 import { withRetry } from "@kronos-ts/common"
 import type { PostgresAdapter } from "./adapter.js"

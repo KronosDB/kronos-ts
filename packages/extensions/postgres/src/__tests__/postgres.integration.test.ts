@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
-import { kronos } from "@kronos-ts/core"
+import { kronos } from "@kronos-ts/app"
 import { pgAdapter } from "../adapters/pg.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
 import { postgres } from "../postgres.js"

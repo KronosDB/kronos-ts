@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, beforeEach } from "bun:test"
-import { kronos, type RunningApp } from "@kronos-ts/core"
+import { kronos, type RunningApp } from "@kronos-ts/app"
 import { createTestFixture, type TestFixture } from "@kronos-ts/test"
 import {
   configureCourses,

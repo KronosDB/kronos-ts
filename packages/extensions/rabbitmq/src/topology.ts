@@ -1,5 +1,5 @@
 import type { QualifiedName } from "@kronos-ts/common"
-import type { KronosIdentity } from "@kronos-ts/core"
+import type { KronosIdentity } from "@kronos-ts/app"
 
 export interface RabbitMqTopologyConfig {
   readonly prefix?: string

@@ -16,7 +16,7 @@
  *     (busLatches → platform.stop → connection.close — D-101.b).
  */
 import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer, withRetry, healthCheck, type ResilienceConfig } from "@kronos-ts/common"
-import type { App } from "@kronos-ts/core"
+import type { App } from "@kronos-ts/app"
 import type { CommandBus, CommandMessage, EventProcessorModule, QueryBus, QueryMessage, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
 import { createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
 import type { KronosDbConnectionConfig } from "./connection.js"
@@ -111,7 +111,7 @@ export function kronosDb(serverConfig: KronosDbExtensionConfig): (app: App) => v
 
     // ---- Slot population (D-95) ------------------------------------------
     //
-    // AppImpl.start() in @kronos-ts/core eagerly resolves all 8 slots and
+    // AppImpl.start() in @kronos-ts/app eagerly resolves all 8 slots and
     // runs `commandBus.subscribe(...)` for every registered handler BEFORE
     // any onStart('connect') hook fires (see app.ts §3 / §5c). The KronosDB
     // bus factories open real gRPC streams against the live channel during

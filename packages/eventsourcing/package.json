@@ -11,6 +11,6 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@kronos-ts/core": "workspace:*"
+    "@kronos-ts/app": "workspace:*"
   }
 }

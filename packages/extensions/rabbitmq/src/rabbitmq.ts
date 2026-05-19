@@ -1,4 +1,4 @@
-import type { App, KronosIdentity } from "@kronos-ts/core"
+import type { App, KronosIdentity } from "@kronos-ts/app"
 import { createRabbitMqTopologyNames, type RabbitMqTopologyConfig } from "./topology.js"
 import { createRabbitMqCommandBus } from "./command-bus.js"
 import { AmqpRabbitMqCommandTransport } from "./amqp-command-transport.js"

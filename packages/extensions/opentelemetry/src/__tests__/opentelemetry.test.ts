@@ -14,7 +14,7 @@
  * surface the extension touches. Casting through `unknown` is intentional.
  */
 import { describe, expect, it, mock } from "bun:test"
-import type { App } from "@kronos-ts/core"
+import type { App } from "@kronos-ts/app"
 import type { CommandBus, SpanFactory } from "@kronos-ts/messaging"
 import { openTelemetry } from "../opentelemetry.js"
 

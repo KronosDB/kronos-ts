@@ -1,4 +1,4 @@
-import type { App } from "@kronos-ts/core"
+import type { App } from "@kronos-ts/app"
 import { z } from "zod"
 import { tag } from "@kronos-ts/common"
 import {

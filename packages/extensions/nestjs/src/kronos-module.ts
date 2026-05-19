@@ -1,5 +1,5 @@
-import type { App, RunningApp } from "@kronos-ts/core"
-import { kronos } from "@kronos-ts/core"
+import type { App, RunningApp } from "@kronos-ts/app"
+import { kronos } from "@kronos-ts/app"
 import type { CommandGateway, QueryGateway } from "@kronos-ts/messaging"
 
 /**

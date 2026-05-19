@@ -22,7 +22,7 @@ import {
   type EventMessage,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { kronos } from "@kronos-ts/core"
+import { kronos } from "@kronos-ts/app"
 import { load, append } from "../index.js"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
 import type { EventStore } from "../event-store.js"

@@ -11,7 +11,7 @@ import type {
   CommandMessage,
 } from "@kronos-ts/messaging"
 import { runInNewUoW } from "@kronos-ts/messaging"
-import { kronos, type App, type RunningApp } from "@kronos-ts/core"
+import { kronos, type App, type RunningApp } from "@kronos-ts/app"
 import type { EventStore } from "@kronos-ts/eventsourcing"
 import type { z } from "zod"
 import {

@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@kronos-ts/common": "workspace:*",
-    "@kronos-ts/core": "workspace:*",
+    "@kronos-ts/app": "workspace:*",
     "@kronos-ts/eventsourcing": "workspace:*",
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/modelling": "workspace:*",

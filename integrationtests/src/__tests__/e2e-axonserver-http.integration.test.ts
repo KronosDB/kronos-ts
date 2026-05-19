@@ -34,7 +34,7 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { type EventStore, load, append } from "@kronos-ts/eventsourcing"
-import { kronos, type App, type RunningApp } from "@kronos-ts/core"
+import { kronos, type App, type RunningApp } from "@kronos-ts/app"
 import { axonServer } from "@kronos-ts/axon-server"
 
 // ============================================================================

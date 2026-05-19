@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn, tag } from "@kronos-ts/common"
-import { kronos } from "@kronos-ts/core"
-import type { App } from "@kronos-ts/core"
+import { kronos } from "@kronos-ts/app"
+import type { App } from "@kronos-ts/app"
 import {
   command,
   event,

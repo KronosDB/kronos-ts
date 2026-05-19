@@ -41,7 +41,7 @@ import {
   load,
   append,
 } from "@kronos-ts/eventsourcing"
-import { kronos, type RunningApp, type App } from "@kronos-ts/core"
+import { kronos, type RunningApp, type App } from "@kronos-ts/app"
 
 // ============================================================================
 // Domain: University Course Management

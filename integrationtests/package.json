@@ -5,7 +5,7 @@
   "type": "module",
   "dependencies": {
     "@kronos-ts/common": "workspace:*",
-    "@kronos-ts/core": "workspace:*",
+    "@kronos-ts/app": "workspace:*",
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/modelling": "workspace:*",
     "@kronos-ts/eventsourcing": "workspace:*",

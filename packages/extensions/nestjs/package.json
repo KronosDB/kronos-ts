@@ -6,7 +6,7 @@
   "types": "src/index.ts",
   "dependencies": {
     "@kronos-ts/common": "workspace:*",
-    "@kronos-ts/core": "workspace:*",
+    "@kronos-ts/app": "workspace:*",
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/eventsourcing": "workspace:*"
   },

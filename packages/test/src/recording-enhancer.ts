@@ -1,4 +1,4 @@
-import type { Extension, App } from "@kronos-ts/core"
+import type { Extension, App } from "@kronos-ts/app"
 import type { CommandBus, CommandMessage, EventMessage } from "@kronos-ts/messaging"
 
 /**

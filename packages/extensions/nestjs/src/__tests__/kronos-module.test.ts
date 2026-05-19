@@ -52,7 +52,7 @@ describe("KronosModule", () => {
     const module = KronosModule.forRootAsync({
       inject: ["ConfigService"],
       useFactory: async (_config: any) => {
-        const { kronos } = await import("@kronos-ts/core")
+        const { kronos } = await import("@kronos-ts/app")
         return kronos()
       },
     })

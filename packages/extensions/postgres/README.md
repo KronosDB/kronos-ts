@@ -17,7 +17,7 @@ Requires Postgres 14+ (for `xid8` and `pg_snapshot_xmin`).
 ## Usage
 
 ```typescript
-import { kronos } from "@kronos-ts/core"
+import { kronos } from "@kronos-ts/app"
 import { postgres } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 
@@ -35,7 +35,7 @@ const app = await kronos()
 In normal usage you don't touch the `eventStore` directly — command handlers, `load()`, and tracking processors handle it. If you need the raw store (e.g. for tests, scripts, or low-level access), capture it via a probe decorator before `start()` — `RunningApp` doesn't expose it on its public surface:
 
 ```typescript
-import type { App } from "@kronos-ts/core"
+import type { App } from "@kronos-ts/app"
 import type { EventStore } from "@kronos-ts/eventsourcing"
 import { EventCriteria } from "@kronos-ts/messaging"
 import { tag } from "@kronos-ts/common"

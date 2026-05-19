@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn, tag } from "@kronos-ts/common"
-import { kronos, type RunningApp } from "@kronos-ts/core"
+import { kronos, type RunningApp } from "@kronos-ts/app"
 import {
   command,
   commandHandler,

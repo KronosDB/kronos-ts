@@ -39,7 +39,7 @@ import {
   healthCheck,
   type ResilienceConfig,
 } from "@kronos-ts/common"
-import type { App } from "@kronos-ts/core"
+import type { App } from "@kronos-ts/app"
 import type {
   CommandBus,
   CommandMessage,
@@ -223,7 +223,7 @@ export function axonServer(serverConfig: AxonServerExtensionConfig): (app: App) 
 
     // ---- Slot population (D-95) -----------------------------------------
     //
-    // AppImpl.start() in @kronos-ts/core eagerly resolves all 8 slots and
+    // AppImpl.start() in @kronos-ts/app eagerly resolves all 8 slots and
     // runs `commandBus.subscribe(...)` for every registered handler BEFORE
     // any onStart('connect') hook fires (see app.ts §3 / §5c). The Axon
     // bus factories open real gRPC streams against the live channel during

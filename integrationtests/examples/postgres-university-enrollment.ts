@@ -31,7 +31,7 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { load, append, afterEvents } from "@kronos-ts/eventsourcing"
-import { kronos } from "@kronos-ts/core"
+import { kronos } from "@kronos-ts/app"
 import { postgres } from "@kronos-ts/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
 import { drizzle } from "drizzle-orm/bun-sql"

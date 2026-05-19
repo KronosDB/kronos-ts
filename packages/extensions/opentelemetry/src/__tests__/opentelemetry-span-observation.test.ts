@@ -31,7 +31,7 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { append, load } from "@kronos-ts/eventsourcing"
-import { kronos, type RunningApp } from "@kronos-ts/core"
+import { kronos, type RunningApp } from "@kronos-ts/app"
 import { openTelemetry } from "../opentelemetry.js"
 
 // ---------------------------------------------------------------------------

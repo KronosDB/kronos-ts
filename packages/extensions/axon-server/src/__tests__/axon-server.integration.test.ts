@@ -39,7 +39,7 @@ import {
   load,
   append,
 } from "@kronos-ts/eventsourcing"
-import { kronos, type App, type RunningApp } from "@kronos-ts/core"
+import { kronos, type App, type RunningApp } from "@kronos-ts/app"
 import { axonServer } from "../axon-server.js"
 import {
   connectToAxonServer,

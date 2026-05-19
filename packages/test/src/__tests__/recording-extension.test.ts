@@ -10,7 +10,7 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { load, append } from "@kronos-ts/eventsourcing"
-import { kronos } from "@kronos-ts/core"
+import { kronos } from "@kronos-ts/app"
 import {
   testRecordingExtension,
   createRecordings,
