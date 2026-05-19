@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/rabbitmq",
-  "version": "0.1.0",
-  "description": "RabbitMQ extension for Kronos — distributed event and command transport.",
+  "version": "0.1.1",
+  "description": "RabbitMQ extension for Kronos — distributed command and query transport.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",
