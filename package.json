@@ -1,9 +1,26 @@
 {
   "name": "kronos-ts",
   "private": true,
+  "type": "module",
   "workspaces": [
     "packages/*",
     "packages/extensions/*",
     "integrationtests"
-  ]
+  ],
+  "scripts": {
+    "build": "bun run --filter '@kronos-ts/*' build",
+    "clean": "bun run --filter '@kronos-ts/*' clean",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun test",
+    "test:unit": "bun test $(find packages -path '*/src/*' -name '*.test.ts' -not -name '*.integration.test.ts')",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "bun run build && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "2.31.0",
+    "@types/node": "^25.9.0",
+    "bun-types": "^1.3.14",
+    "typescript": "6.0.3"
+  }
 }

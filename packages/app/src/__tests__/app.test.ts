@@ -64,7 +64,7 @@ describe("AppImpl — fluent API", () => {
     expect(registry.getEntry("tagResolver")?.meta?.inMemory).toBeUndefined()
   })
 
-  it("app.set() on an already-defaulted slot emits console.warn; forceSet() does NOT", () => {
+  it("app.set() over a setDefault default is silent; a genuine set/set collision warns; forceSet() never warns", () => {
     let warnCalled = false
     const originalWarn = console.warn
     console.warn = () => { warnCalled = true }
@@ -74,9 +74,18 @@ describe("AppImpl — fluent API", () => {
       registerInMemoryDefaults(app)
 
       const stubBus = {} as unknown as CommandBus
+
+      // Overriding a setDefault-provided in-memory default is the expected
+      // "extension overrides default" path — it must NOT warn (provenance
+      // check in SlotRegistry.set: entries with a `meta` key came from setDefault).
+      app.set("commandBus", () => stubBus)
+      expect(warnCalled).toBe(false)
+
+      // A second set() on the same slot is a genuine collision — it warns.
       app.set("commandBus", () => stubBus)
       expect(warnCalled).toBe(true)
 
+      // forceSet() overwrites silently regardless of prior provenance.
       warnCalled = false
       app.forceSet("commandBus", () => stubBus)
       expect(warnCalled).toBe(false)

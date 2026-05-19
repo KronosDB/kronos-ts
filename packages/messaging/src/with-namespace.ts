@@ -28,11 +28,37 @@ import type { z } from "zod"
  * ```
  */
 export function withNamespace(namespace: string) {
+  function command<P extends z.ZodType>(name: string, def: {
+    payload: P
+    version?: string
+    routingKey?: string
+  }): ReturnType<typeof createCommand<P>>
+  function command<P extends z.ZodType, R extends z.ZodType>(name: string, def: {
+    payload: P
+    result: R
+    version?: string
+    routingKey?: string
+  }): ReturnType<typeof createCommand<P, R>>
+  function command(name: string, def: { payload: z.ZodType }) {
+    return createCommand({ name: qn(namespace, name), ...def } as never)
+  }
+
+  function query<P extends z.ZodType>(name: string, def: {
+    payload: P
+    version?: string
+  }): ReturnType<typeof createQuery<P>>
+  function query<P extends z.ZodType, R extends z.ZodType>(name: string, def: {
+    payload: P
+    result: R
+    version?: string
+  }): ReturnType<typeof createQuery<P, R>>
+  function query(name: string, def: { payload: z.ZodType }) {
+    return createQuery({ name: qn(namespace, name), ...def } as never)
+  }
+
   return {
     /** Create a command descriptor in this namespace. */
-    command(name: string, def: any) {
-      return createCommand({ name: qn(namespace, name), ...def })
-    },
+    command,
 
     /** Create an event descriptor in this namespace. */
     event<P extends z.ZodType>(name: string, def: {
@@ -44,8 +70,6 @@ export function withNamespace(namespace: string) {
     },
 
     /** Create a query descriptor in this namespace. */
-    query(name: string, def: any) {
-      return createQuery({ name: qn(namespace, name), ...def })
-    },
+    query,
   }
 }

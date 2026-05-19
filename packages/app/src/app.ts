@@ -66,7 +66,12 @@ export interface StateOptions {
  * Plan 09-01 (D-88): argument shape accepted by App.states() — either a bare
  * StateModule or a [module, options] tuple. Mixed lists are fine.
  */
-export type StatesArg = StateModule | readonly [StateModule, StateOptions]
+// StateModule<any, any>: the Id parameter sits in a contravariant position
+// (`create`/`criteria` accept it), so a concrete StateModule<{courseId:string},…>
+// is NOT assignable to StateModule<unknown,unknown>. `any` accepts any module.
+export type StatesArg =
+  | StateModule<any, any>
+  | readonly [StateModule<any, any>, StateOptions]
 
 export interface KronosIdentity {
   /** Stable logical service/application name. Same across replicas. */
@@ -352,7 +357,7 @@ export class AppImpl implements App {
     }) as DecoratorHandle<K>
     this._state.decoratorRegistrations.push({
       handle: handle as DecoratorHandle<SlotName>,
-      factory: factory as DecoratorFactory<SlotName>,
+      factory: factory as unknown as DecoratorFactory<SlotName>,
       frameworkDefault: false,
     })
     return handle
@@ -428,7 +433,7 @@ export class AppImpl implements App {
   ): void {
     this._state.decoratorRegistrations.push({
       handle: handle as DecoratorHandle<SlotName>,
-      factory: factory as DecoratorFactory<SlotName>,
+      factory: factory as unknown as DecoratorFactory<SlotName>,
       frameworkDefault: true,
     })
   }
@@ -471,8 +476,9 @@ export class AppImpl implements App {
     //       [user decorators in registration order, last=outermost]
     //         [framework defaults in registration order, last=outermost]
     //           [base = resolved[K]]
+    const writableBuilt = built as Record<SlotName, unknown>
     for (const slot of ALL_SLOTS) {
-      built[slot] = applyDecorators(slot, built[slot], this._state.decoratorRegistrations, resolved)
+      writableBuilt[slot] = applyDecorators(slot, built[slot], this._state.decoratorRegistrations, resolved)
     }
 
     // 4. Emit startup warnings for any slot still using a flagged in-memory default (SLT-04).

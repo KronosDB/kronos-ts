@@ -160,6 +160,20 @@ export function createAxonServerEventStore(connection: AxonServerConnection, ser
     return axonMetadata
   }
 
+  // Push-based subscriber registry (EventBus.subscribe contract). Axon Server's
+  // own distribution is the server-side Stream RPC (see open()); these in-process
+  // subscribers are notified best-effort on every successful local append.
+  const subscribers = new Set<(events: ReadonlyArray<EventMessage>) => Promise<void>>()
+  async function notifySubscribers(events: ReadonlyArray<EventMessage>): Promise<void> {
+    for (const sub of subscribers) {
+      try {
+        await sub(events)
+      } catch {
+        /* ignore subscriber errors */
+      }
+    }
+  }
+
   return {
     async source(condition: SourcingCondition): Promise<SourcingResult> {
       const criterions = criteriaToCriterions(condition.criteria)
@@ -178,7 +192,10 @@ export function createAxonServerEventStore(connection: AxonServerConnection, ser
           const taggedEvent = response.event
           const protoEvent = taggedEvent.event
           if (protoEvent) {
-            events.push(eventFromProto(protoEvent, taggedEvent.tag ?? []))
+            // DCB source/stream responses carry no tags — the server indexes
+            // them write-side but does not echo them back (SequencedEvent has
+            // only sequence + event). Reconstructed events get empty tags.
+            events.push(eventFromProto(protoEvent, []))
           }
         }
         if (response.consistencyMarker !== undefined) {
@@ -213,6 +230,7 @@ export function createAxonServerEventStore(connection: AxonServerConnection, ser
           }
           const response = await connection.eventStore.append(requestStream(), { metadata: createAxonMetadata() })
           responseMarker = response.consistencyMarker
+          await notifySubscribers(newEvents)
         },
         async afterCommit() {
           return markerAt(responseMarker ?? 0n)
@@ -260,7 +278,7 @@ export function createAxonServerEventStore(connection: AxonServerConnection, ser
             if (taggedEvent?.event) {
               buffer.push({
                 sequence: taggedEvent.sequence,
-                event: eventFromProto(taggedEvent.event, taggedEvent.tag ?? []),
+                event: eventFromProto(taggedEvent.event, []),
               })
               availableCallback?.()
             }
@@ -322,6 +340,19 @@ export function createAxonServerEventStore(connection: AxonServerConnection, ser
     async latestToken(): Promise<TrackingToken> {
       const response = await connection.eventStore.getHead({}, { metadata: createAxonMetadata() })
       return globalSequenceToken(response.sequence)
+    },
+
+    // EventBus contract — publish = append without condition, then notify
+    // in-process subscribers.
+    async publish(events: ReadonlyArray<EventMessage>): Promise<void> {
+      await this.append(events)
+    },
+
+    subscribe(handler: (events: ReadonlyArray<EventMessage>) => Promise<void>): () => void {
+      subscribers.add(handler)
+      return () => {
+        subscribers.delete(handler)
+      }
     },
   }
 }

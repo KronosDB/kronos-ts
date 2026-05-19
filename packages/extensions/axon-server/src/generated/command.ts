@@ -14,7 +14,7 @@ import {
   MetaDataValue,
   ProcessingInstruction,
   SerializedObject,
-} from "./common";
+} from "./common.js";
 
 export const protobufPackage = "io.axoniq.axonserver.grpc.command";
 

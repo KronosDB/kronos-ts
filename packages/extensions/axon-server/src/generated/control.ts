@@ -7,7 +7,7 @@
 /* eslint-disable */
 import { BinaryReader, BinaryWriter } from "@bufbuild/protobuf/wire";
 import type { CallContext, CallOptions } from "nice-grpc-common";
-import { InstructionAck, InstructionResult } from "./common";
+import { InstructionAck, InstructionResult } from "./common.js";
 
 export const protobufPackage = "io.axoniq.axonserver.grpc.control";
 

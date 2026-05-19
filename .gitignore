@@ -2,6 +2,8 @@ node_modules
 .DS_Store
 .planning/
 .claude/
+dist/
+*.tsbuildinfo
 # Project uses bun (bun.lock); reject stray lockfiles from other package managers
 pnpm-lock.yaml
 package-lock.json

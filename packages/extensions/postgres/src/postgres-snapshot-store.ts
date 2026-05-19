@@ -84,7 +84,7 @@ export function createPostgresSnapshotStore(
       const stateId = stateIdToString(id)
       const row = await adapter.queryOne<{
         position: string
-        payload: Buffer | Uint8Array
+        payload: unknown
         metadata: Record<string, string>
         recorded_at: Date | string | number
       }>(

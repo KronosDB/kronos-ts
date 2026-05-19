@@ -10,7 +10,14 @@ import {
   computeIfAbsent,
   requireInvocationPhase,
 } from "@kronos-ts/messaging/processing-state"
-import type { EventDescriptor, EventMessage, EventCriteria, AppendFunction } from "@kronos-ts/messaging"
+import type { z } from "zod"
+import type { EventDescriptor, EventMessage, EventCriteria } from "@kronos-ts/messaging"
+
+/** Append events to the active unit of work, buffered until commit. */
+export interface AppendFunction {
+  <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>): void
+  <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>, metadata: Metadata): void
+}
 
 // ---------------------------------------------------------------------------
 // Resource keys (owned by append — open-question #1 resolved: keys live with

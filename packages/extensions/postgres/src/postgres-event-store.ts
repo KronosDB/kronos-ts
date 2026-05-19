@@ -51,6 +51,8 @@ import type {
 } from "@kronos-ts/messaging"
 import { createMessageStream, globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/messaging"
 import { qualifiedNameToString, qualifiedNameFromString } from "@kronos-ts/common"
+import type { Serializer } from "@kronos-ts/common"
+export type { Serializer } from "@kronos-ts/common"
 import type { PostgresAdapter, PostgresAdapterTransaction } from "./adapter.js"
 import { IsolationLevel } from "./adapter.js"
 import { acquireWriteLocks, type LockTarget } from "./advisory-locks.js"
@@ -58,13 +60,8 @@ import { buildCriteriaWhere, encodeTag } from "./criteria-sql.js"
 import { AppendConditionError, isDcbViolation, KRONOS_DCB_VIOLATION_SQLSTATE } from "./errors.js"
 import { type TableNames, DEFAULT_TABLE_NAMES } from "./schema.js"
 
-// Minimal Serializer / TagResolver structural shapes — the real slots are
-// declared in the core; we accept anything compatible.
-export interface Serializer {
-  serialize(value: unknown): Uint8Array
-  deserialize<T = unknown>(bytes: Uint8Array): T
-}
-
+// Minimal TagResolver structural shape — the real slot is declared in the
+// core; we accept anything compatible. Serializer uses the canonical type.
 export interface TagResolver {
   resolve(event: EventMessage): ReadonlyArray<{ key: string; value: string }>
 }

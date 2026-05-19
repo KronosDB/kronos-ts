@@ -7,7 +7,7 @@
 /* eslint-disable */
 import { BinaryReader, BinaryWriter } from "@bufbuild/protobuf/wire";
 import type { CallContext, CallOptions } from "nice-grpc-common";
-import { ErrorMessage, InstructionAck } from "./common";
+import { ErrorMessage, InstructionAck } from "./common.js";
 
 export const protobufPackage = "kronosdb.platform";
 

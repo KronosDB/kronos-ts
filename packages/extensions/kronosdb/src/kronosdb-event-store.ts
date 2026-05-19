@@ -145,6 +145,20 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
     return createKronosMetadata(connection.config)
   }
 
+  // Push-based subscriber registry (EventBus.subscribe contract). KronosDB's
+  // own distribution is the server-side stream RPC (see open()); these
+  // in-process subscribers are notified best-effort on every local append.
+  const subscribers = new Set<(events: ReadonlyArray<EventMessage>) => Promise<void>>()
+  async function notifySubscribers(events: ReadonlyArray<EventMessage>): Promise<void> {
+    for (const sub of subscribers) {
+      try {
+        await sub(events)
+      } catch {
+        /* ignore subscriber errors */
+      }
+    }
+  }
+
   return {
     async source(condition: SourcingCondition): Promise<SourcingResult> {
       const criterions = criteriaToCriterions(condition.criteria)
@@ -204,6 +218,7 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
           }
           const response = await connection.eventStore.append(requestStream(), { metadata: getMetadata() })
           responseMarker = response.consistencyMarker
+          await notifySubscribers(newEvents)
         },
         async afterCommit() {
           return markerAt(responseMarker ?? 0n)
@@ -368,6 +383,19 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
     async latestToken(): Promise<TrackingToken> {
       const response = await connection.eventStore.getHead({}, { metadata: getMetadata() })
       return globalSequenceToken(response.sequence)
+    },
+
+    // EventBus contract — publish = append without condition, then notify
+    // in-process subscribers.
+    async publish(events: ReadonlyArray<EventMessage>): Promise<void> {
+      await this.append(events)
+    },
+
+    subscribe(handler: (events: ReadonlyArray<EventMessage>) => Promise<void>): () => void {
+      subscribers.add(handler)
+      return () => {
+        subscribers.delete(handler)
+      }
     },
   }
 }

@@ -121,17 +121,20 @@ export function event<P extends z.ZodType>(def: {
   payload: P
   tags?: (payload: z.infer<P>) => Tag[] | Record<string, string>
 }): EventDescriptor<P> {
-  const normalized = def.tags
-    ? {
-        ...def,
-        tags: (payload: z.infer<P>): Tag[] => {
-          const result = def.tags!(payload)
-          if (Array.isArray(result)) return result
-          return tagsFromRecord(result)
-        },
+  const rawTags = def.tags
+  const tags: ((payload: z.infer<P>) => Tag[]) | undefined = rawTags
+    ? (payload: z.infer<P>): Tag[] => {
+        const result = rawTags(payload)
+        return Array.isArray(result) ? result : tagsFromRecord(result)
       }
-    : def
-  return { kind: "event" as const, version: normalized.version ?? "1.0", ...normalized }
+    : undefined
+  return {
+    kind: "event" as const,
+    name: def.name,
+    version: def.version ?? "1.0",
+    payload: def.payload,
+    ...(tags ? { tags } : {}),
+  }
 }
 
 /**

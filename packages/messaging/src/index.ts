@@ -20,7 +20,6 @@ export {
 
 // Event criteria
 export {
-  type EventCriteria,
   type TagCriteria,
   type TypeRestrictedCriteria,
   type EitherCriteria,

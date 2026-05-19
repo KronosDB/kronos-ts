@@ -863,24 +863,26 @@ function createDistributedQueryBus(
 
       const responseStream = connection.queries.subscription(outboundSub.iterable, { metadata })
 
-      let initialResultResolve: ((value: unknown) => void) | null = null
-      let initialResultReject: ((error: Error) => void) | null = null
+      let resolveInitial!: (value: unknown) => void
+      let rejectInitial!: (error: Error) => void
       const initialResult = new Promise<unknown>((resolve, reject) => {
-        initialResultResolve = resolve
-        initialResultReject = reject
+        resolveInitial = resolve
+        rejectInitial = reject
       })
+      let initialSettled = false
 
       ;(async () => {
         try {
           for await (const response of responseStream) {
             if (response.initialResult) {
-              if (response.initialResult.errorCode && response.initialResult.errorCode !== "") {
-                initialResultReject?.(mapErrorCode(response.initialResult.errorCode, response.initialResult.errorMessage?.message ?? "Unknown error"))
-              } else {
-                initialResultResolve?.(deserializePayload(response.initialResult.payload?.data as Uint8Array | undefined, response.initialResult.payload?.type, response.initialResult.payload?.revision))
+              if (!initialSettled) {
+                if (response.initialResult.errorCode && response.initialResult.errorCode !== "") {
+                  rejectInitial(mapErrorCode(response.initialResult.errorCode, response.initialResult.errorMessage?.message ?? "Unknown error"))
+                } else {
+                  resolveInitial(deserializePayload(response.initialResult.payload?.data as Uint8Array | undefined, response.initialResult.payload?.type, response.initialResult.payload?.revision))
+                }
+                initialSettled = true
               }
-              initialResultResolve = null
-              initialResultReject = null
             } else if (response.update) {
               const update = deserializePayload(response.update.payload?.data as Uint8Array | undefined, response.update.payload?.type, response.update.payload?.revision)
               updateHandler.offer(update)
@@ -896,10 +898,9 @@ function createDistributedQueryBus(
           }
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err))
-          if (initialResultReject) {
-            initialResultReject(error)
-            initialResultResolve = null
-            initialResultReject = null
+          if (!initialSettled) {
+            rejectInitial(error)
+            initialSettled = true
           }
           updateHandler.completeExceptionally(error)
         } finally {

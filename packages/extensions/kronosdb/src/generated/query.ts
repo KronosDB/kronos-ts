@@ -14,7 +14,7 @@ import {
   MetadataValue,
   ProcessingInstruction,
   SerializedObject,
-} from "./common";
+} from "./common.js";
 
 export const protobufPackage = "kronosdb.query";
 

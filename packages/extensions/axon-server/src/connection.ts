@@ -103,10 +103,10 @@ export interface AxonServerConnection {
   readonly eventStore: Client<typeof DcbEventStoreDefinition>
   /** Snapshot store — state snapshots. */
   readonly snapshotStore: Client<typeof DcbSnapshotStoreDefinition>
-  /** The resolved configuration. */
-  readonly config: Required<Omit<AxonServerConnectionConfig, "reconnectIntervalMs" | "maxReconnectAttempts">> & {
-    reconnectIntervalMs: number
-    maxReconnectAttempts: number
+  /** The resolved configuration. `servers` and `ssl` stay optional — they have no defaults. */
+  readonly config: Omit<Required<AxonServerConnectionConfig>, "servers" | "ssl"> & {
+    servers?: AxonServerConnectionConfig["servers"]
+    ssl?: AxonServerConnectionConfig["ssl"]
   }
   /** Current connection state. */
   readonly state: ConnectionState
@@ -144,6 +144,11 @@ export function connectToAxonServer(config: AxonServerConnectionConfig): AxonSer
     token: config.token ?? "",
     reconnectIntervalMs: config.reconnectIntervalMs ?? 2000,
     maxReconnectAttempts: config.maxReconnectAttempts ?? 0,
+    keepAliveTimeMs: config.keepAliveTimeMs ?? 30000,
+    keepAliveTimeoutMs: config.keepAliveTimeoutMs ?? 10000,
+    keepAlivePermitWithoutCalls: config.keepAlivePermitWithoutCalls ?? true,
+    servers: config.servers,
+    ssl: config.ssl,
   }
 
   // Build gRPC channel credentials

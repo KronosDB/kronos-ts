@@ -73,7 +73,7 @@ export function postgresAdapter(config: PostgresAdapterConfig): PostgresAdapter 
 
     async query<R extends QueryRow = QueryRow>(text: string, params?: unknown[]): Promise<R[]> {
       const c = getSql()
-      const rows = (await c.unsafe(text, (params as unknown[]) ?? [])) as unknown as R[]
+      const rows = (await c.unsafe(text, ((params as unknown[]) ?? []) as never[])) as unknown as R[]
       return rows
     },
 
@@ -105,7 +105,7 @@ export function postgresAdapter(config: PostgresAdapterConfig): PostgresAdapter 
             text: string,
             params?: unknown[],
           ): Promise<R[]> {
-            const rows = (await txSql.unsafe(text, (params as unknown[]) ?? [])) as unknown as R[]
+            const rows = (await txSql.unsafe(text, ((params as unknown[]) ?? []) as never[])) as unknown as R[]
             return rows
           },
         }

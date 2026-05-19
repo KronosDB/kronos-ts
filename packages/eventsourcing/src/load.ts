@@ -4,8 +4,20 @@ import {
   computeIfAbsent,
   NoActiveUnitOfWork,
 } from "@kronos-ts/messaging/processing-state"
-import type { LoadFunction, EventCriteria } from "@kronos-ts/messaging"
+import type { EventCriteria } from "@kronos-ts/messaging"
 import { STATE_CACHE_KEY, STATE_MODULES_KEY, SOURCING_INFOS_KEY } from "./append.js"
+
+/**
+ * Load event-sourced state for a module within the active unit of work.
+ *
+ * The first signature matches a `StateModule`-shaped object structurally
+ * (without importing `@kronos-ts/modelling`, which would invert the
+ * dependency direction) so both the id and state types are inferred.
+ */
+export interface LoadFunction {
+  <Id, S>(module: { kind: "state-module"; name: string; create: (id: Id) => S }, id: Id): Promise<S>
+  <S>(module: { name: string }, id: unknown): Promise<S>
+}
 
 // ---------------------------------------------------------------------------
 // State manager interface — minimal shape needed by load

@@ -1,7 +1,17 @@
+import type { z } from "zod"
 import { resourceKey, qualifiedNameToString, type ResourceKey } from "@kronos-ts/common"
 import { requireInvocationPhase } from "./processing-state.js"
 import type { QueryBus } from "./query-bus.js"
-import type { EmitUpdateFunction } from "./handler.js"
+import type { QueryDescriptor } from "./descriptor.js"
+
+/** Emit a subscription-query update from within the current processing context. */
+export interface EmitUpdateFunction {
+  <Q extends z.ZodType>(
+    query: QueryDescriptor<Q>,
+    filter: (query: z.infer<Q>) => boolean,
+    update: unknown,
+  ): void
+}
 
 /**
  * Resource key for the query bus component.

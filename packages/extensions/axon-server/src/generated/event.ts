@@ -7,8 +7,8 @@
 /* eslint-disable */
 import { BinaryReader, BinaryWriter } from "@bufbuild/protobuf/wire";
 import type { CallContext, CallOptions } from "nice-grpc-common";
-import { InstructionAck, MetaDataValue, SerializedObject } from "./common";
-import { Empty } from "./google/protobuf/empty";
+import { InstructionAck, MetaDataValue, SerializedObject } from "./common.js";
+import { Empty } from "./google/protobuf/empty.js";
 
 export const protobufPackage = "io.axoniq.axonserver.grpc.event";
 

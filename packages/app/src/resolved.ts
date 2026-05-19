@@ -49,6 +49,6 @@ export function buildResolved(registry: SlotRegistry): Resolved {
     },
   }
 
-  const proxy = new Proxy({} as Resolved, handler)
+  const proxy = new Proxy({}, handler) as Resolved
   return proxy
 }

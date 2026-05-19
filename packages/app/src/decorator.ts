@@ -77,12 +77,12 @@ export function applyDecorators<K extends SlotName>(
   // Pass 1: framework defaults (innermost)
   for (const reg of registrations) {
     if (reg.handle.__slot !== slot || !reg.frameworkDefault) continue
-    current = (reg.factory as DecoratorFactory<K>)(current, resolved)
+    current = (reg.factory as unknown as DecoratorFactory<K>)(current, resolved)
   }
   // Pass 2: user decorators (outer)
   for (const reg of registrations) {
     if (reg.handle.__slot !== slot || reg.frameworkDefault) continue
-    current = (reg.factory as DecoratorFactory<K>)(current, resolved)
+    current = (reg.factory as unknown as DecoratorFactory<K>)(current, resolved)
   }
   return current
 }

@@ -2,7 +2,14 @@ import { createChannel, createClient, type Channel, type Client, type ChannelCre
 import { ChannelCredentials as GrpcChannelCredentials } from "@grpc/grpc-js"
 import { Metadata } from "nice-grpc"
 import { readFileSync } from "node:fs"
-import { kronosDbServiceDefinitions } from "./service-definitions.js"
+import {
+  kronosDbServiceDefinitions,
+  PlatformServiceDefinition,
+  CommandServiceDefinition,
+  QueryServiceDefinition,
+  EventStoreDefinition,
+  SnapshotStoreDefinition,
+} from "./service-definitions.js"
 
 /**
  * Configuration for connecting to KronosDB.
@@ -56,19 +63,19 @@ export type ConnectionState = "disconnected" | "connecting" | "connected" | "rec
 export interface KronosDbConnection {
   readonly channel: Channel
   /** Platform service client. */
-  readonly platform: Client<any>
+  readonly platform: Client<typeof PlatformServiceDefinition>
   /** Command service client. */
-  readonly commands: Client<any>
+  readonly commands: Client<typeof CommandServiceDefinition>
   /** Query service client. */
-  readonly queries: Client<any>
+  readonly queries: Client<typeof QueryServiceDefinition>
   /** Event store client. */
-  readonly eventStore: Client<any>
+  readonly eventStore: Client<typeof EventStoreDefinition>
   /** Snapshot store client. */
-  readonly snapshotStore: Client<any>
-  /** The resolved configuration. */
-  readonly config: Required<Omit<KronosDbConnectionConfig, "reconnectIntervalMs" | "maxReconnectAttempts">> & {
-    reconnectIntervalMs: number
-    maxReconnectAttempts: number
+  readonly snapshotStore: Client<typeof SnapshotStoreDefinition>
+  /** The resolved configuration. `servers` and `ssl` stay optional — they have no defaults. */
+  readonly config: Omit<Required<KronosDbConnectionConfig>, "servers" | "ssl"> & {
+    servers?: KronosDbConnectionConfig["servers"]
+    ssl?: KronosDbConnectionConfig["ssl"]
   }
   readonly state: ConnectionState
   onReconnect(callback: () => void): void
@@ -106,6 +113,11 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
     token: config.token ?? "",
     reconnectIntervalMs: config.reconnectIntervalMs ?? 2000,
     maxReconnectAttempts: config.maxReconnectAttempts ?? 0,
+    keepAliveTimeMs: config.keepAliveTimeMs ?? 30000,
+    keepAliveTimeoutMs: config.keepAliveTimeoutMs ?? 10000,
+    keepAlivePermitWithoutCalls: config.keepAlivePermitWithoutCalls ?? true,
+    servers: config.servers,
+    ssl: config.ssl,
   }
 
   const sslConfig = config.ssl
