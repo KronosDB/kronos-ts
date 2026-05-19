@@ -1,5 +1,5 @@
 {
-  "name": "@kronos-ts/extensions/opentelemetry",
+  "name": "@kronos-ts/opentelemetry",
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",

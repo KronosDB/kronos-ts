@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
 import Knex from "knex"
-import { knexTokenStore } from "@kronos-ts/extensions/knex"
+import { knexTokenStore } from "@kronos-ts/knex"
 import { globalSequenceToken, UnableToClaimTokenError } from "@kronos-ts/messaging"
 import { TOKEN_TABLE_DDL } from "./shared-token-table.js"
 

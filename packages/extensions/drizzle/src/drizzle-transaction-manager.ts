@@ -25,7 +25,7 @@ export type DrizzleTransaction = any
  *
  * ```typescript
  * import { drizzle } from "drizzle-orm/postgres-js"
- * import { drizzleTransactionManager } from "@kronos-ts/extensions/drizzle"
+ * import { drizzleTransactionManager } from "@kronos-ts/drizzle"
  *
  * const db = drizzle(sql)
  *

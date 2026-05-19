@@ -20,7 +20,7 @@ export type KyselyTransaction = any
  *
  * ```typescript
  * import { Kysely } from "kysely"
- * import { kyselyTransactionManager } from "@kronos-ts/extensions/kysely"
+ * import { kyselyTransactionManager } from "@kronos-ts/kysely"
  *
  * // transactionManager wiring to a kronos() App is pending a typed
  * // `transactionManager` slot (Phase 9). For now, construct the manager

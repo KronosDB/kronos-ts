@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll, afterAll, beforeEach } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
 import { Kysely, PostgresDialect, sql } from "kysely"
 import pg from "pg"
-import { kyselyTokenStore } from "@kronos-ts/extensions/kysely"
+import { kyselyTokenStore } from "@kronos-ts/kysely"
 import { globalSequenceToken, UnableToClaimTokenError } from "@kronos-ts/messaging"
 import { TOKEN_TABLE_DDL, DROP_TOKEN_TABLE } from "./shared-token-table.js"
 

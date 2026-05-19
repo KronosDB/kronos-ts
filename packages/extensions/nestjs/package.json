@@ -1,5 +1,5 @@
 {
-  "name": "@kronos-ts/extensions/nestjs",
+  "name": "@kronos-ts/nestjs",
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",

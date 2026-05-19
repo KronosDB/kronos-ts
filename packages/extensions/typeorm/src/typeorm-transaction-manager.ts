@@ -19,7 +19,7 @@ export type TypeOrmTransaction = any
  * framework's `begin/commit/rollback` lifecycle.
  *
  * ```typescript
- * import { typeormTransactionManager } from "@kronos-ts/extensions/typeorm"
+ * import { typeormTransactionManager } from "@kronos-ts/typeorm"
  *
  * // transactionManager wiring to a kronos() App is pending a typed
  * // `transactionManager` slot (Phase 9). For now, construct the manager

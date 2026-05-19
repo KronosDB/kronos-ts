@@ -1,5 +1,5 @@
 {
-  "name": "@kronos-ts/extensions/typeorm",
+  "name": "@kronos-ts/typeorm",
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",

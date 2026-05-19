@@ -50,7 +50,7 @@ export interface TypeOrmManagerLike {
  * Participates in the active transaction via `getActiveTransaction()`.
  *
  * ```typescript
- * import { typeormTokenStore } from "@kronos-ts/extensions/typeorm"
+ * import { typeormTokenStore } from "@kronos-ts/typeorm"
  *
  * // tokenStore wiring to a kronos() App is pending a typed `tokenStore` slot
  * // (Phase 9). For now, construct the store and pass it directly to the

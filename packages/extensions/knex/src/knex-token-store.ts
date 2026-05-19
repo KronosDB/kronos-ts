@@ -33,7 +33,7 @@ export interface KnexQueryable {
  * Participates in the active transaction via `getActiveTransaction()`.
  *
  * ```typescript
- * import { knexTokenStore } from "@kronos-ts/extensions/knex"
+ * import { knexTokenStore } from "@kronos-ts/knex"
  *
  * // tokenStore wiring to a kronos() App is pending a typed `tokenStore` slot
  * // (Phase 9). For now, construct the store and pass it directly to the

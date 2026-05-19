@@ -13,11 +13,11 @@
     "@kronos-ts/axon-server": "workspace:*",
     "@kronos-ts/kronosdb": "workspace:*",
     "@kronos-ts/postgres": "workspace:*",
-    "@kronos-ts/extensions/prisma": "workspace:*",
-    "@kronos-ts/extensions/drizzle": "workspace:*",
-    "@kronos-ts/extensions/knex": "workspace:*",
-    "@kronos-ts/extensions/kysely": "workspace:*",
-    "@kronos-ts/extensions/opentelemetry": "workspace:*",
+    "@kronos-ts/prisma": "workspace:*",
+    "@kronos-ts/drizzle": "workspace:*",
+    "@kronos-ts/knex": "workspace:*",
+    "@kronos-ts/kysely": "workspace:*",
+    "@kronos-ts/opentelemetry": "workspace:*",
     "zod": "^4.3.6"
   },
   "devDependencies": {

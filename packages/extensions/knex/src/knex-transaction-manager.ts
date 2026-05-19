@@ -20,7 +20,7 @@ export type KnexTransaction = any
  *
  * ```typescript
  * import Knex from "knex"
- * import { knexTransactionManager } from "@kronos-ts/extensions/knex"
+ * import { knexTransactionManager } from "@kronos-ts/knex"
  *
  * const knex = Knex({ client: "pg", connection: "..." })
  *

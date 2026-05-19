@@ -12,16 +12,16 @@
         "@kronos-ts/app": "workspace:*",
         "@kronos-ts/axon-server": "workspace:*",
         "@kronos-ts/common": "workspace:*",
+        "@kronos-ts/drizzle": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
-        "@kronos-ts/extensions/drizzle": "workspace:*",
-        "@kronos-ts/extensions/knex": "workspace:*",
-        "@kronos-ts/extensions/kysely": "workspace:*",
-        "@kronos-ts/extensions/opentelemetry": "workspace:*",
-        "@kronos-ts/extensions/prisma": "workspace:*",
+        "@kronos-ts/knex": "workspace:*",
         "@kronos-ts/kronosdb": "workspace:*",
+        "@kronos-ts/kysely": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
         "@kronos-ts/modelling": "workspace:*",
+        "@kronos-ts/opentelemetry": "workspace:*",
         "@kronos-ts/postgres": "workspace:*",
+        "@kronos-ts/prisma": "workspace:*",
         "@kronos-ts/test": "workspace:*",
         "zod": "^4.3.6",
       },
@@ -93,7 +93,7 @@
       },
     },
     "packages/extensions/drizzle": {
-      "name": "@kronos-ts/extensions/drizzle",
+      "name": "@kronos-ts/drizzle",
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
@@ -104,7 +104,7 @@
       },
     },
     "packages/extensions/knex": {
-      "name": "@kronos-ts/extensions/knex",
+      "name": "@kronos-ts/knex",
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
@@ -137,7 +137,7 @@
       },
     },
     "packages/extensions/kysely": {
-      "name": "@kronos-ts/extensions/kysely",
+      "name": "@kronos-ts/kysely",
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
@@ -148,7 +148,7 @@
       },
     },
     "packages/extensions/nestjs": {
-      "name": "@kronos-ts/extensions/nestjs",
+      "name": "@kronos-ts/nestjs",
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/app": "workspace:*",
@@ -161,7 +161,7 @@
       },
     },
     "packages/extensions/opentelemetry": {
-      "name": "@kronos-ts/extensions/opentelemetry",
+      "name": "@kronos-ts/opentelemetry",
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/app": "workspace:*",
@@ -202,7 +202,7 @@
       ],
     },
     "packages/extensions/prisma": {
-      "name": "@kronos-ts/extensions/prisma",
+      "name": "@kronos-ts/prisma",
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
@@ -236,7 +236,7 @@
       ],
     },
     "packages/extensions/typeorm": {
-      "name": "@kronos-ts/extensions/typeorm",
+      "name": "@kronos-ts/typeorm",
       "version": "0.1.0",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
@@ -303,35 +303,35 @@
 
     "@kronos-ts/common": ["@kronos-ts/common@workspace:packages/common"],
 
+    "@kronos-ts/drizzle": ["@kronos-ts/drizzle@workspace:packages/extensions/drizzle"],
+
     "@kronos-ts/eventsourcing": ["@kronos-ts/eventsourcing@workspace:packages/eventsourcing"],
-
-    "@kronos-ts/extensions/drizzle": ["@kronos-ts/extensions/drizzle@workspace:packages/extensions/drizzle"],
-
-    "@kronos-ts/extensions/knex": ["@kronos-ts/extensions/knex@workspace:packages/extensions/knex"],
-
-    "@kronos-ts/extensions/kysely": ["@kronos-ts/extensions/kysely@workspace:packages/extensions/kysely"],
-
-    "@kronos-ts/extensions/nestjs": ["@kronos-ts/extensions/nestjs@workspace:packages/extensions/nestjs"],
-
-    "@kronos-ts/extensions/opentelemetry": ["@kronos-ts/extensions/opentelemetry@workspace:packages/extensions/opentelemetry"],
-
-    "@kronos-ts/extensions/prisma": ["@kronos-ts/extensions/prisma@workspace:packages/extensions/prisma"],
-
-    "@kronos-ts/extensions/typeorm": ["@kronos-ts/extensions/typeorm@workspace:packages/extensions/typeorm"],
 
     "@kronos-ts/integrationtests": ["@kronos-ts/integrationtests@workspace:integrationtests"],
 
+    "@kronos-ts/knex": ["@kronos-ts/knex@workspace:packages/extensions/knex"],
+
     "@kronos-ts/kronosdb": ["@kronos-ts/kronosdb@workspace:packages/extensions/kronosdb"],
+
+    "@kronos-ts/kysely": ["@kronos-ts/kysely@workspace:packages/extensions/kysely"],
 
     "@kronos-ts/messaging": ["@kronos-ts/messaging@workspace:packages/messaging"],
 
     "@kronos-ts/modelling": ["@kronos-ts/modelling@workspace:packages/modelling"],
 
+    "@kronos-ts/nestjs": ["@kronos-ts/nestjs@workspace:packages/extensions/nestjs"],
+
+    "@kronos-ts/opentelemetry": ["@kronos-ts/opentelemetry@workspace:packages/extensions/opentelemetry"],
+
     "@kronos-ts/postgres": ["@kronos-ts/postgres@workspace:packages/extensions/postgres"],
+
+    "@kronos-ts/prisma": ["@kronos-ts/prisma@workspace:packages/extensions/prisma"],
 
     "@kronos-ts/rabbitmq": ["@kronos-ts/rabbitmq@workspace:packages/extensions/rabbitmq"],
 
     "@kronos-ts/test": ["@kronos-ts/test@workspace:packages/test"],
+
+    "@kronos-ts/typeorm": ["@kronos-ts/typeorm@workspace:packages/extensions/typeorm"],
 
     "@kwsites/file-exists": ["@kwsites/file-exists@1.1.1", "", { "dependencies": { "debug": "^4.1.1" } }, "sha512-m9/5YGR18lIwxSFDwfE3oA7bWuq9kdau6ugN4H2rJeyhFQZcG9AgSHkQtSD15a8WvTgfz9aikZMrKPHvbpqFiw=="],
 
@@ -685,7 +685,7 @@
 
     "knex": ["knex@3.2.9", "", { "dependencies": { "colorette": "2.0.19", "commander": "^10.0.0", "debug": "4.3.4", "escalade": "^3.1.1", "esm": "^3.2.25", "get-package-type": "^0.1.0", "getopts": "2.3.0", "interpret": "^2.2.0", "lodash": "^4.17.21", "pg-connection-string": "2.6.2", "rechoir": "^0.8.0", "resolve-from": "^5.0.0", "tarn": "^3.0.2", "tildify": "2.0.0" }, "peerDependencies": { "pg-query-stream": "^4.14.0" }, "optionalPeers": ["pg-query-stream"], "bin": { "knex": "bin/cli.js" } }, "sha512-dtAILTjBMaG8YloP5oBxohDIKyIsdQ/TkcVvSjhsksvsjeH63Y0PADyuMDfNZKbVT3Rlx3vEYVBlecbPT/KerA=="],
 
-    "kysely": ["kysely@0.28.15", "", {}, "sha512-r2clcf7HLWvDXaVUEvQymXJY4i3bSOIV3xsL/Upy3ZfSv5HeKsk9tsqbBptLvth5qHEIhxeHTA2jNLyQABkLBA=="],
+    "kysely": ["kysely@0.27.6", "", {}, "sha512-FIyV/64EkKhJmjgC0g2hygpBv5RNWVPyNCqSAD7eTCv6eFWNIi4PN1UvdSJGicN/o35bnevgis4Y0UDC0qi8jQ=="],
 
     "lazystream": ["lazystream@1.0.1", "", { "dependencies": { "readable-stream": "^2.0.5" } }, "sha512-b94GiNHQNy6JNTrt5w6zNyffMrNkXZb3KTkCZJb2V1xaEGCk093vkZ2jk3tpaeP33/OiXC+WvK9AxUebnf5nbw=="],
 
@@ -996,8 +996,6 @@
     "@isaacs/cliui/wrap-ansi": ["wrap-ansi@8.1.0", "", { "dependencies": { "ansi-styles": "^6.1.0", "string-width": "^5.0.1", "strip-ansi": "^7.0.1" } }, "sha512-si7QWI6zUMq56bESFvagtmzMdGOtoxfR+Sez11Mobfc7tm+VkUckk9bW2UeffTGVUbOksxmSw0AA2gs8g71NCQ=="],
 
     "@kronos-ts/integrationtests/drizzle-orm": ["drizzle-orm@0.44.7", "", { "peerDependencies": { "@aws-sdk/client-rds-data": ">=3", "@cloudflare/workers-types": ">=4", "@electric-sql/pglite": ">=0.2.0", "@libsql/client": ">=0.10.0", "@libsql/client-wasm": ">=0.10.0", "@neondatabase/serverless": ">=0.10.0", "@op-engineering/op-sqlite": ">=2", "@opentelemetry/api": "^1.4.1", "@planetscale/database": ">=1.13", "@prisma/client": "*", "@tidbcloud/serverless": "*", "@types/better-sqlite3": "*", "@types/pg": "*", "@types/sql.js": "*", "@upstash/redis": ">=1.34.7", "@vercel/postgres": ">=0.8.0", "@xata.io/client": "*", "better-sqlite3": ">=7", "bun-types": "*", "expo-sqlite": ">=14.0.0", "gel": ">=2", "knex": "*", "kysely": "*", "mysql2": ">=2", "pg": ">=8", "postgres": ">=3", "sql.js": ">=1", "sqlite3": ">=5" }, "optionalPeers": ["@aws-sdk/client-rds-data", "@cloudflare/workers-types", "@electric-sql/pglite", "@libsql/client", "@libsql/client-wasm", "@neondatabase/serverless", "@op-engineering/op-sqlite", "@opentelemetry/api", "@planetscale/database", "@prisma/client", "@tidbcloud/serverless", "@types/better-sqlite3", "@types/pg", "@types/sql.js", "@upstash/redis", "@vercel/postgres", "@xata.io/client", "better-sqlite3", "bun-types", "expo-sqlite", "gel", "knex", "kysely", "mysql2", "pg", "postgres", "sql.js", "sqlite3"] }, "sha512-quIpnYznjU9lHshEOAYLoZ9s3jweleHlZIAWR/jX9gAWNg/JhQ1wj0KGRf7/Zm+obRrYd9GjPVJg790QY9N5AQ=="],
-
-    "@kronos-ts/integrationtests/kysely": ["kysely@0.27.6", "", {}, "sha512-FIyV/64EkKhJmjgC0g2hygpBv5RNWVPyNCqSAD7eTCv6eFWNIi4PN1UvdSJGicN/o35bnevgis4Y0UDC0qi8jQ=="],
 
     "@testcontainers/postgresql/testcontainers": ["testcontainers@11.13.0", "", { "dependencies": { "@balena/dockerignore": "^1.0.2", "@types/dockerode": "^4.0.1", "archiver": "^7.0.1", "async-lock": "^1.4.1", "byline": "^5.0.0", "debug": "^4.4.3", "docker-compose": "^1.3.2", "dockerode": "^4.0.9", "get-port": "^7.1.0", "proper-lockfile": "^4.1.2", "properties-reader": "^3.0.1", "ssh-remote-port-forward": "^1.0.4", "tar-fs": "^3.1.2", "tmp": "^0.2.5", "undici": "^7.24.3" } }, "sha512-fzTvgOtd6U/esOzgmDatJh79OSK0tU6vjDOJ3B6ICrrJf0dqCWtFdpOr6f/g/KixMxKDTDbszmZYjSORJXsVCQ=="],
 

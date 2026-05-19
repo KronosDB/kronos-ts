@@ -67,7 +67,7 @@ function nowIso(): string {
  *
  * ```typescript
  * import { eq, and, or, lt, isNull } from "drizzle-orm"
- * import { drizzleTokenStore } from "@kronos-ts/extensions/drizzle"
+ * import { drizzleTokenStore } from "@kronos-ts/drizzle"
  * import { kronosTokenEntries } from "./schema"
  *
  * // tokenStore wiring to a kronos() App is pending a typed `tokenStore` slot

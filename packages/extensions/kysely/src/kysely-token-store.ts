@@ -55,7 +55,7 @@ export interface KyselyDbLike {
  * Uses the `kronos_token_entries` table with snake_case column names.
  *
  * ```typescript
- * import { kyselyTokenStore } from "@kronos-ts/extensions/kysely"
+ * import { kyselyTokenStore } from "@kronos-ts/kysely"
  *
  * // tokenStore wiring to a kronos() App is pending a typed `tokenStore` slot
  * // (Phase 9). For now, construct the store and pass it directly to the

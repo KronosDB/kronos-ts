@@ -4,7 +4,7 @@ import { drizzle } from "drizzle-orm/postgres-js"
 import postgres from "postgres"
 import { pgTable, varchar, integer, primaryKey } from "drizzle-orm/pg-core"
 import { eq, and, or, lt, isNull } from "drizzle-orm"
-import { drizzleTokenStore } from "@kronos-ts/extensions/drizzle"
+import { drizzleTokenStore } from "@kronos-ts/drizzle"
 import { globalSequenceToken, UnableToClaimTokenError } from "@kronos-ts/messaging"
 import { TOKEN_TABLE_DDL, DROP_TOKEN_TABLE } from "./shared-token-table.js"
 
