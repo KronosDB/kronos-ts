@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import { qn } from "@kronos-ts/common"
-import { AmqpRabbitMqCommandTransport } from "../amqp-command-transport.js"
+import { AmqpRabbitMqQueryTransport } from "../amqp-query-transport.js"
 import { createAmqpConnection } from "../connection.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
-import type { RabbitMqCommandEnvelope } from "../command-bus.js"
+import type { RabbitMqQueryEnvelope } from "../query-bus.js"
 
 function fakeAmqp() {
   const consumers = new Map<string, (msg: any) => void>()
@@ -71,15 +71,14 @@ function config() {
   )
 }
 
-function envelope(): RabbitMqCommandEnvelope {
+function envelope(): RabbitMqQueryEnvelope {
   return {
-    kind: "command",
-    requestId: "cmd-1",
-    expectsReply: true,
+    kind: "query",
+    requestId: "qry-1",
     timeoutMs: 1000,
     message: {
-      identifier: "cmd-1",
-      name: qn("faculty", "DoThing"),
+      identifier: "qry-1",
+      name: qn("faculty", "GetThing"),
       payload: { id: "1" },
       metadata: {},
       timestamp: Date.now(),
@@ -87,14 +86,14 @@ function envelope(): RabbitMqCommandEnvelope {
   }
 }
 
-describe("AMQP RabbitMQ command transport", () => {
-  it("declares command and dead-letter exchanges", async () => {
+describe("AMQP RabbitMQ query transport", () => {
+  it("declares the queries and dead-letter exchanges", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    const transport = new AmqpRabbitMqQueryTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
     await transport.connect()
 
     expect(fake.exchanges).toContainEqual({
-      name: "kronos.commands",
+      name: "kronos.queries",
       type: "topic",
       options: { durable: true },
     })
@@ -105,35 +104,30 @@ describe("AMQP RabbitMQ command transport", () => {
     })
   })
 
-  it("publishes commands and resolves correlated replies", async () => {
+  it("publishes queries and resolves correlated replies", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    const transport = new AmqpRabbitMqQueryTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
     await transport.connect()
 
     const resultPromise = transport.dispatch(envelope())
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(fake.published).toHaveLength(1)
-    expect(fake.published[0]!.routingKey).toBe("faculty.DoThing")
-    expect(fake.published[0]!.options.replyTo).toBe("kronos.replies.faculty-service.pod-1")
+    expect(fake.published[0]!.exchange).toBe("kronos.queries")
+    expect(fake.published[0]!.routingKey).toBe("faculty.GetThing")
+    expect(fake.published[0]!.options.replyTo).toBe("kronos.query-replies.faculty-service.pod-1")
 
     fake.deliver(
-      "kronos.replies.faculty-service.pod-1",
-      { requestId: "cmd-1", ok: true, result: "ok" },
-      { correlationId: "cmd-1" },
+      "kronos.query-replies.faculty-service.pod-1",
+      { requestId: "qry-1", ok: true, result: "ok" },
+      { correlationId: "qry-1" },
     )
 
-    await expect(resultPromise).resolves.toEqual({ requestId: "cmd-1", ok: true, result: "ok" })
+    await expect(resultPromise).resolves.toEqual({ requestId: "qry-1", ok: true, result: "ok" })
   })
 
-  it("times out pending command dispatches", async () => {
+  it("times out pending query dispatches", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(
-      resolveRabbitMqConfig(
-        { identity: { serviceName: "faculty-service", instanceId: "pod-1" } } as any,
-        { url: "amqp://test", commands: { defaultTimeoutMs: 1 } },
-      ),
-      createAmqpConnection("amqp://test", async () => fake.connection),
-    )
+    const transport = new AmqpRabbitMqQueryTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
     await transport.connect()
 
     const resultPromise = transport.dispatch({ ...envelope(), timeoutMs: 1 })
@@ -141,10 +135,10 @@ describe("AMQP RabbitMQ command transport", () => {
     await expect(resultPromise).rejects.toThrow(/timed out/)
   })
 
-  it("declares command queues and sends replies for consumed commands", async () => {
+  it("declares query queues and sends replies for consumed queries", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
-    transport.subscribe("faculty.DoThing", async (incoming) => ({
+    const transport = new AmqpRabbitMqQueryTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    transport.subscribe("faculty.GetThing", async (incoming) => ({
       requestId: incoming.requestId,
       ok: true,
       result: incoming.message.payload,
@@ -152,58 +146,57 @@ describe("AMQP RabbitMQ command transport", () => {
     await transport.connect()
 
     expect(fake.bindings).toContainEqual({
-      queue: "kronos.commands.faculty-service.faculty.DoThing",
-      exchange: "kronos.commands",
-      routingKey: "faculty.DoThing",
+      queue: "kronos.queries.faculty-service.faculty.GetThing",
+      exchange: "kronos.queries",
+      routingKey: "faculty.GetThing",
     })
     expect(fake.queues).toContainEqual({
-      name: "kronos.commands.faculty-service.faculty.DoThing",
+      name: "kronos.queries.faculty-service.faculty.GetThing",
       options: {
         durable: true,
         exclusive: false,
         autoDelete: false,
         arguments: {
           "x-dead-letter-exchange": "kronos.dlx",
-          "x-dead-letter-routing-key": "faculty.DoThing",
+          "x-dead-letter-routing-key": "faculty.GetThing",
         },
       },
     })
 
     fake.deliver(
-      "kronos.commands.faculty-service.faculty.DoThing",
+      "kronos.queries.faculty-service.faculty.GetThing",
       envelope(),
-      { replyTo: "reply-q", correlationId: "cmd-1" },
+      { replyTo: "reply-q", correlationId: "qry-1" },
     )
 
-    // handler is async; allow promise continuation to run
     await Promise.resolve()
     expect(fake.sentReplies).toHaveLength(1)
     expect(JSON.parse(fake.sentReplies[0]!.body.toString("utf8"))).toEqual({
-      requestId: "cmd-1",
+      requestId: "qry-1",
       ok: true,
       result: { id: "1" },
     })
     expect(fake.acks).toHaveLength(1)
   })
 
-  it("sends an error reply and nacks when consumed command handling fails", async () => {
+  it("sends an error reply and nacks when consumed query handling fails", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
-    transport.subscribe("faculty.DoThing", async () => {
+    const transport = new AmqpRabbitMqQueryTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    transport.subscribe("faculty.GetThing", async () => {
       throw new Error("boom")
     })
     await transport.connect()
 
     fake.deliver(
-      "kronos.commands.faculty-service.faculty.DoThing",
+      "kronos.queries.faculty-service.faculty.GetThing",
       envelope(),
-      { replyTo: "reply-q", correlationId: "cmd-1" },
+      { replyTo: "reply-q", correlationId: "qry-1" },
     )
 
     await Promise.resolve()
     expect(fake.sentReplies).toHaveLength(1)
     expect(JSON.parse(fake.sentReplies[0]!.body.toString("utf8"))).toMatchObject({
-      requestId: "cmd-1",
+      requestId: "qry-1",
       ok: false,
       error: { name: "Error", message: "boom" },
     })
@@ -211,14 +204,14 @@ describe("AMQP RabbitMQ command transport", () => {
     expect(fake.nacks[0]!.requeue).toBe(false)
   })
 
-  it("does not bind the same command handler more than once", async () => {
+  it("does not bind the same query handler more than once", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
-    transport.subscribe("faculty.DoThing", async (incoming) => ({ requestId: incoming.requestId, ok: true }))
+    const transport = new AmqpRabbitMqQueryTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    transport.subscribe("faculty.GetThing", async (incoming) => ({ requestId: incoming.requestId, ok: true }))
     await transport.connect()
-    transport.subscribe("faculty.DoThing", async (incoming) => ({ requestId: incoming.requestId, ok: true }))
+    transport.subscribe("faculty.GetThing", async (incoming) => ({ requestId: incoming.requestId, ok: true }))
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(fake.bindings.filter((b) => b.routingKey === "faculty.DoThing")).toHaveLength(1)
+    expect(fake.bindings.filter((b) => b.routingKey === "faculty.GetThing")).toHaveLength(1)
   })
 })

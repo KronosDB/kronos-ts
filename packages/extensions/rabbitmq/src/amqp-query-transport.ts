@@ -1,22 +1,30 @@
 import type { Channel, ConsumeMessage } from "amqplib"
 import type {
-  RabbitMqCommandEnvelope,
-  RabbitMqCommandReplyEnvelope,
-  RabbitMqCommandTransport,
-} from "./command-bus.js"
+  RabbitMqQueryEnvelope,
+  RabbitMqQueryReplyEnvelope,
+  RabbitMqQueryTransport,
+} from "./query-bus.js"
 import type { AmqpConnection } from "./connection.js"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
 
 interface PendingRequest {
-  resolve(reply: RabbitMqCommandReplyEnvelope): void
+  resolve(reply: RabbitMqQueryReplyEnvelope): void
   reject(error: Error): void
   timer: ReturnType<typeof setTimeout>
 }
 
-export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
+/**
+ * AMQP request/reply transport for distributed queries.
+ *
+ * Mirrors {@link AmqpRabbitMqCommandTransport}: a per-process exclusive reply
+ * queue, durable per-query handler queues bound to the shared queries exchange,
+ * and correlation-id matched replies. Takes its own channel off the shared
+ * {@link AmqpConnection}.
+ */
+export class AmqpRabbitMqQueryTransport implements RabbitMqQueryTransport {
   private channel: Channel | undefined
   private replyQueue: string | undefined
-  private readonly handlers = new Map<string, (envelope: RabbitMqCommandEnvelope) => Promise<RabbitMqCommandReplyEnvelope>>()
+  private readonly handlers = new Map<string, (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>>()
   private readonly boundHandlers = new Set<string>()
   private readonly pending = new Map<string, PendingRequest>()
   private connectPromise: Promise<void> | undefined
@@ -36,12 +44,12 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
   private async doConnect(): Promise<void> {
     this.channel = await this.connection.channel()
 
-    await this.channel.assertExchange(this.config.topology.commandsExchange, "topic", { durable: true })
+    await this.channel.assertExchange(this.config.topology.queriesExchange, "topic", { durable: true })
     if (this.config.retry.deadLetter) {
       await this.channel.assertExchange(this.config.retry.deadLetterExchange, "topic", { durable: true })
     }
 
-    const reply = await this.channel.assertQueue(this.config.topology.commandReplyQueue(), {
+    const reply = await this.channel.assertQueue(this.config.topology.queryReplyQueue(), {
       durable: false,
       exclusive: true,
       autoDelete: true,
@@ -50,8 +58,8 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
     await this.channel.consume(reply.queue, (msg) => this.handleReply(msg), { noAck: true })
 
     this.boundHandlers.clear()
-    for (const [commandName, handler] of this.handlers) {
-      await this.bindCommandHandler(commandName, handler)
+    for (const [queryName, handler] of this.handlers) {
+      await this.bindQueryHandler(queryName, handler)
     }
   }
 
@@ -64,31 +72,31 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
     this.closed = true
     for (const [requestId, pending] of this.pending) {
       clearTimeout(pending.timer)
-      pending.reject(new Error(`RabbitMQ command transport closed before reply for ${requestId}`))
+      pending.reject(new Error(`RabbitMQ query transport closed before reply for ${requestId}`))
     }
     this.pending.clear()
     await this.channel?.close().catch(() => {})
   }
 
-  async dispatch(envelope: RabbitMqCommandEnvelope): Promise<RabbitMqCommandReplyEnvelope> {
+  async dispatch(envelope: RabbitMqQueryEnvelope): Promise<RabbitMqQueryReplyEnvelope> {
     await this.connect()
-    if (this.closed) throw new Error("RabbitMQ command transport is closed")
+    if (this.closed) throw new Error("RabbitMQ query transport is closed")
     const channel = this.requireChannel()
     const replyQueue = this.replyQueue
     if (!replyQueue) throw new Error("RabbitMQ reply queue is not initialized")
 
     const body = Buffer.from(JSON.stringify(envelope))
-    const routingKey = this.config.topology.commandRoutingKey(envelope.message.name)
+    const routingKey = this.config.topology.queryRoutingKey(envelope.message.name)
 
-    return new Promise<RabbitMqCommandReplyEnvelope>((resolve, reject) => {
+    return new Promise<RabbitMqQueryReplyEnvelope>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(envelope.requestId)
-        reject(new Error(`Command ${routingKey} timed out after ${envelope.timeoutMs}ms`))
+        reject(new Error(`Query ${routingKey} timed out after ${envelope.timeoutMs}ms`))
       }, envelope.timeoutMs)
       this.pending.set(envelope.requestId, { resolve, reject, timer })
 
-      const published = channel.publish(
-        this.config.topology.commandsExchange,
+      channel.publish(
+        this.config.topology.queriesExchange,
         routingKey,
         body,
         {
@@ -98,32 +106,27 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
           persistent: true,
         },
       )
-
-      if (!published) {
-        // Backpressure is acceptable here; amqplib queued the write. Publisher
-        // confirms are a later hardening step.
-      }
     })
   }
 
   subscribe(
-    commandName: string,
-    handler: (envelope: RabbitMqCommandEnvelope) => Promise<RabbitMqCommandReplyEnvelope>,
+    queryName: string,
+    handler: (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>,
   ): void {
-    this.handlers.set(commandName, handler)
+    this.handlers.set(queryName, handler)
     if (this.channel) {
-      void this.bindCommandHandler(commandName, handler)
+      void this.bindQueryHandler(queryName, handler)
     }
   }
 
-  private async bindCommandHandler(
-    commandName: string,
-    handler: (envelope: RabbitMqCommandEnvelope) => Promise<RabbitMqCommandReplyEnvelope>,
+  private async bindQueryHandler(
+    queryName: string,
+    handler: (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>,
   ): Promise<void> {
-    if (this.boundHandlers.has(commandName)) return
+    if (this.boundHandlers.has(queryName)) return
     const channel = this.requireChannel()
-    const queue = this.config.topology.commandQueue(commandName)
-    const routingKey = this.config.topology.commandRoutingKey(commandName)
+    const queue = this.config.topology.queryQueue(queryName)
+    const routingKey = this.config.topology.queryRoutingKey(queryName)
 
     await channel.assertQueue(queue, {
       durable: true,
@@ -136,20 +139,20 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
           }
         : undefined,
     })
-    await channel.bindQueue(queue, this.config.topology.commandsExchange, routingKey)
+    await channel.bindQueue(queue, this.config.topology.queriesExchange, routingKey)
     await channel.prefetch(1)
-    await channel.consume(queue, (msg) => this.handleCommand(msg, handler), { noAck: false })
-    this.boundHandlers.add(commandName)
+    await channel.consume(queue, (msg) => this.handleQuery(msg, handler), { noAck: false })
+    this.boundHandlers.add(queryName)
   }
 
-  private async handleCommand(
+  private async handleQuery(
     msg: ConsumeMessage | null,
-    handler: (envelope: RabbitMqCommandEnvelope) => Promise<RabbitMqCommandReplyEnvelope>,
+    handler: (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>,
   ): Promise<void> {
     if (!msg) return
     const channel = this.requireChannel()
     try {
-      const envelope = JSON.parse(msg.content.toString("utf8")) as RabbitMqCommandEnvelope
+      const envelope = JSON.parse(msg.content.toString("utf8")) as RabbitMqQueryEnvelope
       const reply = await handler(envelope)
       if (msg.properties.replyTo) {
         channel.sendToQueue(
@@ -165,7 +168,7 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
     } catch (error) {
       const requestId = msg.properties.correlationId
       if (msg.properties.replyTo && requestId) {
-        const reply: RabbitMqCommandReplyEnvelope = {
+        const reply: RabbitMqQueryReplyEnvelope = {
           requestId,
           ok: false,
           error: serializeError(error),
@@ -192,19 +195,19 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
     this.pending.delete(requestId)
     clearTimeout(pending.timer)
     try {
-      pending.resolve(JSON.parse(msg.content.toString("utf8")) as RabbitMqCommandReplyEnvelope)
+      pending.resolve(JSON.parse(msg.content.toString("utf8")) as RabbitMqQueryReplyEnvelope)
     } catch (error) {
       pending.reject(error instanceof Error ? error : new Error(String(error)))
     }
   }
 
   private requireChannel(): Channel {
-    if (!this.channel) throw new Error("RabbitMQ command transport is not connected")
+    if (!this.channel) throw new Error("RabbitMQ query transport is not connected")
     return this.channel
   }
 }
 
-function serializeError(error: unknown): RabbitMqCommandReplyEnvelope["error"] {
+function serializeError(error: unknown): RabbitMqQueryReplyEnvelope["error"] {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack }
   }

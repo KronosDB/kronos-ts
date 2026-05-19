@@ -4,14 +4,19 @@ import type { KronosIdentity } from "@kronos-ts/app"
 export interface RabbitMqTopologyConfig {
   readonly prefix?: string
   readonly commandsExchange?: string
+  readonly queriesExchange?: string
   readonly durableQueues?: boolean
 }
 
 export interface RabbitMqTopologyNames {
   readonly commandsExchange: string
+  readonly queriesExchange: string
   commandRoutingKey(commandName: QualifiedName | string): string
   commandQueue(commandName: QualifiedName | string): string
-  replyQueue(): string
+  queryRoutingKey(queryName: QualifiedName | string): string
+  queryQueue(queryName: QualifiedName | string): string
+  commandReplyQueue(): string
+  queryReplyQueue(): string
 }
 
 export function createRabbitMqTopologyNames(
@@ -22,17 +27,28 @@ export function createRabbitMqTopologyNames(
   const service = sanitizeSegment(identity.serviceName)
   const instance = sanitizeSegment(identity.instanceId)
   const commandsExchange = config.commandsExchange ?? `${prefix}.commands`
+  const queriesExchange = config.queriesExchange ?? `${prefix}.queries`
 
   return {
     commandsExchange,
+    queriesExchange,
     commandRoutingKey(commandName) {
       return messageName(commandName)
     },
     commandQueue(commandName) {
       return `${prefix}.commands.${service}.${sanitizeMessageName(messageName(commandName))}`
     },
-    replyQueue() {
+    queryRoutingKey(queryName) {
+      return messageName(queryName)
+    },
+    queryQueue(queryName) {
+      return `${prefix}.queries.${service}.${sanitizeMessageName(messageName(queryName))}`
+    },
+    commandReplyQueue() {
       return `${prefix}.replies.${service}.${instance}`
+    },
+    queryReplyQueue() {
+      return `${prefix}.query-replies.${service}.${instance}`
     },
   }
 }

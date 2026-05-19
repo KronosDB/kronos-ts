@@ -13,7 +13,13 @@ describe("RabbitMQ topology names", () => {
     expect(topology.commandQueue("faculty.SendNotification")).toBe(
       "kronos.commands.faculty-service.faculty.SendNotification",
     )
-    expect(topology.replyQueue()).toBe("kronos.replies.faculty-service.pod-1")
+    expect(topology.queriesExchange).toBe("kronos.queries")
+    expect(topology.queryRoutingKey("faculty.GetSchedule")).toBe("faculty.GetSchedule")
+    expect(topology.queryQueue("faculty.GetSchedule")).toBe(
+      "kronos.queries.faculty-service.faculty.GetSchedule",
+    )
+    expect(topology.commandReplyQueue()).toBe("kronos.replies.faculty-service.pod-1")
+    expect(topology.queryReplyQueue()).toBe("kronos.query-replies.faculty-service.pod-1")
   })
 
   it("sanitizes queue segments", () => {
@@ -25,6 +31,10 @@ describe("RabbitMQ topology names", () => {
     expect(topology.commandQueue("faculty.Send Notification")).toBe(
       "kronos.commands.faculty_service.faculty.Send_Notification",
     )
-    expect(topology.replyQueue()).toBe("kronos.replies.faculty_service.pod_1")
+    expect(topology.commandReplyQueue()).toBe("kronos.replies.faculty_service.pod_1")
+    expect(topology.queryReplyQueue()).toBe("kronos.query-replies.faculty_service.pod_1")
+    expect(topology.queryQueue("faculty.Get Schedule")).toBe(
+      "kronos.queries.faculty_service.faculty.Get_Schedule",
+    )
   })
 })
