@@ -3,12 +3,13 @@ import { resourceKey, qualifiedNameToString, type ResourceKey } from "@kronos-ts
 import { requireInvocationPhase } from "./processing-state.js"
 import type { QueryBus } from "./query-bus.js"
 import type { QueryDescriptor } from "./descriptor.js"
+import type { SubscriptionFilter } from "./subscription-filter.js"
 
 /** Emit a subscription-query update from within the current processing context. */
 export interface EmitUpdateFunction {
   <Q extends z.ZodType>(
     query: QueryDescriptor<Q>,
-    filter: (query: z.infer<Q>) => boolean,
+    filter: SubscriptionFilter<z.infer<Q>>,
     update: unknown,
   ): void
 }
@@ -31,5 +32,5 @@ export const emitUpdate: EmitUpdateFunction = (queryDescriptor, filter, update) 
   const bus = state.resources.get(QUERY_BUS_KEY.symbol) as QueryBus | undefined
   if (!bus) throw new Error("No query bus configured")
   const queryName = qualifiedNameToString(queryDescriptor.name)
-  bus.emitUpdate(queryName, filter as (q: unknown) => boolean, update)
+  bus.emitUpdate(queryName, filter as SubscriptionFilter, update)
 }

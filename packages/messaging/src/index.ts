@@ -145,6 +145,14 @@ export {
   runAfterCommitOrImmediately,
 } from "./subscription-query.js"
 
+export {
+  type SubscriptionFilter,
+  payloadEquals,
+  applySubscriptionFilter,
+  extractStructuredFilter,
+  matchesPayloadEquals,
+} from "./subscription-filter.js"
+
 // Event sink (publish-only)
 export { type EventSink } from "./event-sink.js"
 

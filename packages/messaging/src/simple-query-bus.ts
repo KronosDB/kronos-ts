@@ -2,6 +2,8 @@ import type { QueryBus } from "./query-bus.js"
 import type { QueryMessage } from "./message.js"
 import type { SubscriptionQueryResult, UpdateHandler } from "./subscription-query.js"
 import { createUpdateHandler, runAfterCommitOrImmediately } from "./subscription-query.js"
+import type { SubscriptionFilter } from "./subscription-filter.js"
+import { applySubscriptionFilter } from "./subscription-filter.js"
 import { runInUoW } from "./unit-of-work.js"
 import { qualifiedNameToString } from "@kronos-ts/common"
 
@@ -95,7 +97,7 @@ export function createSimpleQueryBus(): QueryBus {
 
     async emitUpdate(
       queryName: string,
-      filter: (queryPayload: unknown) => boolean,
+      filter: SubscriptionFilter,
       update: unknown,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
@@ -107,7 +109,7 @@ export function createSimpleQueryBus(): QueryBus {
 
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue
-          if (!filter(handler.query.payload)) continue
+          if (!applySubscriptionFilter(filter, handler.query.payload)) continue
 
           const accepted = handler.offer(update)
           if (!accepted) {
@@ -122,13 +124,13 @@ export function createSimpleQueryBus(): QueryBus {
 
     async completeSubscription(
       queryName: string,
-      filter?: (queryPayload: unknown) => boolean,
+      filter?: SubscriptionFilter,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
         for (const [id, handler] of subscriptions) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue
-          if (filter && !filter(handler.query.payload)) continue
+          if (filter && !applySubscriptionFilter(filter, handler.query.payload)) continue
 
           handler.complete()
           subscriptions.delete(id)
@@ -139,13 +141,13 @@ export function createSimpleQueryBus(): QueryBus {
     async completeSubscriptionExceptionally(
       queryName: string,
       error: Error,
-      filter?: (queryPayload: unknown) => boolean,
+      filter?: SubscriptionFilter,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
         for (const [id, handler] of subscriptions) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue
-          if (filter && !filter(handler.query.payload)) continue
+          if (filter && !applySubscriptionFilter(filter, handler.query.payload)) continue
 
           handler.completeExceptionally(error)
           subscriptions.delete(id)

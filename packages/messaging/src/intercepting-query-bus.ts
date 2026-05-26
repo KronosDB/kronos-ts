@@ -1,6 +1,7 @@
 import type { QueryBus } from "./query-bus.js"
 import type { QueryMessage } from "./message.js"
 import type { SubscriptionQueryResult } from "./subscription-query.js"
+import type { SubscriptionFilter } from "./subscription-filter.js"
 import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
 
 /**
@@ -64,7 +65,7 @@ export function createInterceptingQueryBus(
 
     emitUpdate(
       queryName: string,
-      filter: (queryPayload: unknown) => boolean,
+      filter: SubscriptionFilter,
       update: unknown,
     ): Promise<void> {
       return delegate.emitUpdate(queryName, filter, update)
@@ -72,7 +73,7 @@ export function createInterceptingQueryBus(
 
     completeSubscription(
       queryName: string,
-      filter?: (queryPayload: unknown) => boolean,
+      filter?: SubscriptionFilter,
     ): Promise<void> {
       return delegate.completeSubscription(queryName, filter)
     },
@@ -80,7 +81,7 @@ export function createInterceptingQueryBus(
     completeSubscriptionExceptionally(
       queryName: string,
       error: Error,
-      filter?: (queryPayload: unknown) => boolean,
+      filter?: SubscriptionFilter,
     ): Promise<void> {
       return delegate.completeSubscriptionExceptionally(queryName, error, filter)
     },

@@ -1,5 +1,6 @@
 import type { QueryMessage } from "./message.js"
 import type { SubscriptionQueryResult } from "./subscription-query.js"
+import type { SubscriptionFilter } from "./subscription-filter.js"
 
 /**
  * The query bus — low-level infrastructure for dispatching query messages.
@@ -43,10 +44,14 @@ export interface QueryBus {
    * Emit an update to all active subscription queries matching the filter.
    * When called within an active UnitOfWork (detected via ALS), the update is
    * deferred to AFTER_COMMIT.
+   *
+   * The filter can be either a function (local-only when a distributed bus is
+   * in use) or a structured `payloadEquals` predicate (crosses transports).
+   * See {@link SubscriptionFilter}.
    */
   emitUpdate(
     queryName: string,
-    filter: (queryPayload: unknown) => boolean,
+    filter: SubscriptionFilter,
     update: unknown,
   ): Promise<void>
 
@@ -55,7 +60,7 @@ export interface QueryBus {
    */
   completeSubscription(
     queryName: string,
-    filter?: (queryPayload: unknown) => boolean,
+    filter?: SubscriptionFilter,
   ): Promise<void>
 
   /**
@@ -64,6 +69,6 @@ export interface QueryBus {
   completeSubscriptionExceptionally(
     queryName: string,
     error: Error,
-    filter?: (queryPayload: unknown) => boolean,
+    filter?: SubscriptionFilter,
   ): Promise<void>
 }
