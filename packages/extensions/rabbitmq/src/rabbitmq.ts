@@ -4,6 +4,7 @@ import { createRabbitMqCommandBus } from "./command-bus.js"
 import { createRabbitMqQueryBus } from "./query-bus.js"
 import { AmqpRabbitMqCommandTransport } from "./amqp-command-transport.js"
 import { AmqpRabbitMqQueryTransport } from "./amqp-query-transport.js"
+import { AmqpRabbitMqQueryUpdatesTransport } from "./amqp-query-updates-transport.js"
 import { createAmqpConnection } from "./connection.js"
 
 export interface RabbitMqCommandDispatchConfig {
@@ -73,10 +74,11 @@ export function resolveRabbitMqConfig(app: App, config: RabbitMqExtensionConfig)
 /**
  * RabbitMQ distributed messaging extension.
  *
- * Wraps the command and query buses with RabbitMQ-backed request/reply
- * transports. Both transports share a single broker connection, each taking
- * its own channel. Subscription queries remain process-local — distributing
- * their update streams is out of scope for this version.
+ * Wraps the command and query buses with RabbitMQ-backed transports.
+ * Direct request/reply commands and queries share one channel each; a third
+ * channel hosts the subscription-query update broadcast (topic exchange plus
+ * an exclusive per-instance queue). All three share a single broker
+ * connection.
  */
 export function rabbitMq(config: RabbitMqExtensionConfig): (app: App) => void {
   return (app) => {
@@ -84,6 +86,7 @@ export function rabbitMq(config: RabbitMqExtensionConfig): (app: App) => void {
     const connection = createAmqpConnection(resolved.url)
     const commandTransport = new AmqpRabbitMqCommandTransport(resolved, connection)
     const queryTransport = new AmqpRabbitMqQueryTransport(resolved, connection)
+    const queryUpdatesTransport = new AmqpRabbitMqQueryUpdatesTransport(resolved, connection)
 
     app.decorate("commandBus", (localSegment) =>
       createRabbitMqCommandBus({
@@ -97,14 +100,17 @@ export function rabbitMq(config: RabbitMqExtensionConfig): (app: App) => void {
       createRabbitMqQueryBus({
         localSegment,
         transport: queryTransport,
+        updatesTransport: queryUpdatesTransport,
         config: resolved,
       }),
     )
 
     app.onStart("connect", () => commandTransport.connect())
     app.onStart("connect", () => queryTransport.connect())
+    app.onStart("connect", () => queryUpdatesTransport.connect())
     app.onStop("connect", () => commandTransport.close())
     app.onStop("connect", () => queryTransport.close())
+    app.onStop("connect", () => queryUpdatesTransport.close())
     app.onStop("connect", () => connection.close())
   }
 }

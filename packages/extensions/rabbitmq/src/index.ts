@@ -30,6 +30,12 @@ export {
   type RabbitMqQueryBusOptions,
 } from "./query-bus.js"
 
+export {
+  AmqpRabbitMqQueryUpdatesTransport,
+  type RabbitMqQueryUpdateEnvelope,
+  type RabbitMqQueryUpdatesTransport,
+} from "./amqp-query-updates-transport.js"
+
 export { AmqpRabbitMqCommandTransport } from "./amqp-command-transport.js"
 export { AmqpRabbitMqQueryTransport } from "./amqp-query-transport.js"
 

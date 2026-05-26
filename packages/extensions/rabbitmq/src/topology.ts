@@ -5,16 +5,20 @@ export interface RabbitMqTopologyConfig {
   readonly prefix?: string
   readonly commandsExchange?: string
   readonly queriesExchange?: string
+  readonly queryUpdatesExchange?: string
   readonly durableQueues?: boolean
 }
 
 export interface RabbitMqTopologyNames {
   readonly commandsExchange: string
   readonly queriesExchange: string
+  readonly queryUpdatesExchange: string
   commandRoutingKey(commandName: QualifiedName | string): string
   commandQueue(commandName: QualifiedName | string): string
   queryRoutingKey(queryName: QualifiedName | string): string
   queryQueue(queryName: QualifiedName | string): string
+  queryUpdatesRoutingKey(queryName: QualifiedName | string): string
+  queryUpdatesQueue(): string
   commandReplyQueue(): string
   queryReplyQueue(): string
 }
@@ -28,10 +32,12 @@ export function createRabbitMqTopologyNames(
   const instance = sanitizeSegment(identity.instanceId)
   const commandsExchange = config.commandsExchange ?? `${prefix}.commands`
   const queriesExchange = config.queriesExchange ?? `${prefix}.queries`
+  const queryUpdatesExchange = config.queryUpdatesExchange ?? `${prefix}.query-updates`
 
   return {
     commandsExchange,
     queriesExchange,
+    queryUpdatesExchange,
     commandRoutingKey(commandName) {
       return messageName(commandName)
     },
@@ -43,6 +49,12 @@ export function createRabbitMqTopologyNames(
     },
     queryQueue(queryName) {
       return `${prefix}.queries.${service}.${sanitizeMessageName(messageName(queryName))}`
+    },
+    queryUpdatesRoutingKey(queryName) {
+      return messageName(queryName)
+    },
+    queryUpdatesQueue() {
+      return `${prefix}.query-updates.${service}.${instance}`
     },
     commandReplyQueue() {
       return `${prefix}.replies.${service}.${instance}`
