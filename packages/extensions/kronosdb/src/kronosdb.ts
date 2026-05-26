@@ -17,8 +17,8 @@
  */
 import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer, withRetry, healthCheck, type ResilienceConfig } from "@kronos-ts/common"
 import type { App } from "@kronos-ts/app"
-import type { CommandBus, CommandMessage, EventProcessorModule, QueryBus, QueryMessage, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
-import { createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import type { CommandBus, CommandMessage, EventProcessorModule, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
+import { applySubscriptionFilter, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
 import type { KronosDbConnectionConfig } from "./connection.js"
 import { connectToKronosDb, createKronosMetadata, type KronosDbConnection } from "./connection.js"
 import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
@@ -611,7 +611,7 @@ function createDistributedCommandBus(
 // Distributed Query Bus
 // ---------------------------------------------------------------------------
 
-function createDistributedQueryBus(
+export function createDistributedQueryBus(
   connection: KronosDbConnection,
   unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
@@ -628,6 +628,12 @@ function createDistributedQueryBus(
 
   const localSegment = new Map<string, (message: QueryMessage) => Promise<unknown>>()
   const subscriptions = new Map<string, UpdateHandler>()
+  // Subscriptions the SERVER has routed to this instance as the handler. Each
+  // entry was opened by some subscriber (possibly remote) for a query name we
+  // registered as a handler for. emitUpdate / completeSubscription apply the
+  // caller-supplied filter against these to decide which subscriber IDs to
+  // target. The server then routes each response back to that exact subscriber.
+  const handlerSubscriptions = new Map<string, { queryName: string; payload: unknown }>()
 
   let outbound = createOutboundStream<any>()
   let streamStarted = false
@@ -686,9 +692,84 @@ function createDistributedQueryBus(
     }
   })
 
+  async function handleSubscriptionQueryRequest(req: any): Promise<void> {
+    if (req.subscribe) {
+      const sub = req.subscribe
+      const subId: string = sub.subscriptionIdentifier
+      const proto = sub.queryRequest
+      if (!subId || !proto) return
+
+      const queryName: string = proto.query
+      const payload = deserializePayload(
+        proto.payload?.data as Uint8Array | undefined,
+        proto.payload?.type,
+        proto.payload?.revision,
+      )
+      handlerSubscriptions.set(subId, { queryName, payload })
+
+      const handler = localSegment.get(queryName)
+      let resultPayload: unknown
+      let errorCode = ""
+      let errorMsg = ""
+
+      if (handler) {
+        try {
+          const queryMessage: QueryMessage = {
+            identifier: proto.messageIdentifier,
+            name: qualifiedNameFromString(queryName),
+            payload,
+            metadata: metadataFromProto(proto.metadata ?? {}),
+            timestamp: Number(proto.timestamp),
+          }
+          resultPayload = await unitOfWorkRunner(queryMessage.metadata, async () => {
+            return handler(queryMessage)
+          })
+        } catch (err) {
+          errorCode = KronosDbErrorCode.QUERY_EXECUTION_ERROR
+          errorMsg = err instanceof Error ? err.message : String(err)
+        }
+      } else {
+        errorCode = KronosDbErrorCode.NO_HANDLER_FOR_QUERY
+        errorMsg = `No local handler for query "${queryName}"`
+      }
+
+      const responseSerialized = resultPayload !== undefined
+        ? serializePayload("result", resultPayload)
+        : undefined
+
+      outbound.send({
+        subscriptionQueryResponse: {
+          messageIdentifier: generateIdentifier(),
+          subscriptionIdentifier: subId,
+          initialResult: {
+            messageIdentifier: generateIdentifier(),
+            requestIdentifier: proto.messageIdentifier,
+            errorCode,
+            errorMessage: errorCode
+              ? { message: errorMsg, location: connection.config.componentName, details: [], errorCode }
+              : undefined,
+            payload: responseSerialized,
+            metadata: {},
+            processingInstructions: [],
+          },
+        },
+        instructionId: "",
+      })
+      return
+    }
+    if (req.unsubscribe) {
+      handlerSubscriptions.delete(req.unsubscribe.subscriptionIdentifier)
+    }
+    // flowControl is silently ignored; the bus doesn't track per-sub permits today.
+  }
+
   async function processInboundQueries(inbound: AsyncIterable<any>) {
     try {
       for await (const message of inbound) {
+        if (message.subscriptionQueryRequest) {
+          await handleSubscriptionQueryRequest(message.subscriptionQueryRequest)
+          continue
+        }
         if (!message.query) continue
 
         permits--
@@ -944,39 +1025,56 @@ function createDistributedQueryBus(
 
     async emitUpdate(
       queryName: string,
-      filter: (queryPayload: unknown) => boolean,
+      filter: SubscriptionFilter,
       update: unknown,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
-        for (const [id, handler] of subscriptions) {
-          if (!handler.active) {
-            subscriptions.delete(id)
-            continue
-          }
-          const handlerQueryName = qualifiedNameToString(handler.query.name)
-          if (handlerQueryName !== queryName) continue
-          if (!filter(handler.query.payload)) continue
+        for (const [subId, sub] of handlerSubscriptions) {
+          if (sub.queryName !== queryName) continue
+          if (!applySubscriptionFilter(filter, sub.payload)) continue
 
-          const accepted = handler.offer(update)
-          if (!accepted) {
-            handler.completeExceptionally(new Error("Subscription query update buffer overflow"))
-            subscriptions.delete(id)
-          }
+          const serialized = serializePayload(queryName, update)
+          outbound.send({
+            subscriptionQueryResponse: {
+              messageIdentifier: generateIdentifier(),
+              subscriptionIdentifier: subId,
+              update: {
+                messageIdentifier: generateIdentifier(),
+                payload: serialized,
+                metadata: {},
+                clientId: connection.config.clientId,
+                componentName: connection.config.componentName,
+                errorCode: "",
+                errorMessage: undefined,
+              },
+            },
+            instructionId: "",
+          })
         }
       })
     },
 
     async completeSubscription(
       queryName: string,
-      filter?: (queryPayload: unknown) => boolean,
+      filter?: SubscriptionFilter,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
-        for (const [id, handler] of subscriptions) {
-          const handlerQueryName = qualifiedNameToString(handler.query.name)
-          if (handlerQueryName !== queryName) continue
-          if (filter && !filter(handler.query.payload)) continue
-          handler.complete()
-          subscriptions.delete(id)
+        for (const [subId, sub] of handlerSubscriptions) {
+          if (sub.queryName !== queryName) continue
+          if (filter && !applySubscriptionFilter(filter, sub.payload)) continue
+
+          outbound.send({
+            subscriptionQueryResponse: {
+              messageIdentifier: generateIdentifier(),
+              subscriptionIdentifier: subId,
+              complete: {
+                clientId: connection.config.clientId,
+                componentName: connection.config.componentName,
+              },
+            },
+            instructionId: "",
+          })
+          handlerSubscriptions.delete(subId)
         }
       })
     },
@@ -984,15 +1082,32 @@ function createDistributedQueryBus(
     async completeSubscriptionExceptionally(
       queryName: string,
       error: Error,
-      filter?: (queryPayload: unknown) => boolean,
+      filter?: SubscriptionFilter,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
-        for (const [id, handler] of subscriptions) {
-          const handlerQueryName = qualifiedNameToString(handler.query.name)
-          if (handlerQueryName !== queryName) continue
-          if (filter && !filter(handler.query.payload)) continue
-          handler.completeExceptionally(error)
-          subscriptions.delete(id)
+        for (const [subId, sub] of handlerSubscriptions) {
+          if (sub.queryName !== queryName) continue
+          if (filter && !applySubscriptionFilter(filter, sub.payload)) continue
+
+          outbound.send({
+            subscriptionQueryResponse: {
+              messageIdentifier: generateIdentifier(),
+              subscriptionIdentifier: subId,
+              completeExceptionally: {
+                clientId: connection.config.clientId,
+                componentName: connection.config.componentName,
+                errorCode: KronosDbErrorCode.QUERY_EXECUTION_ERROR,
+                errorMessage: {
+                  message: error.message,
+                  location: connection.config.componentName,
+                  details: [],
+                  errorCode: KronosDbErrorCode.QUERY_EXECUTION_ERROR,
+                },
+              },
+            },
+            instructionId: "",
+          })
+          handlerSubscriptions.delete(subId)
         }
       })
     },
