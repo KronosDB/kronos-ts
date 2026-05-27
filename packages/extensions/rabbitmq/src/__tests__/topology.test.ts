@@ -18,10 +18,13 @@ describe("RabbitMQ topology names", () => {
     expect(topology.queryQueue("faculty.GetSchedule")).toBe(
       "kronos.queries.faculty-service.faculty.GetSchedule",
     )
-    expect(topology.queryUpdatesExchange).toBe("kronos.query-updates")
-    expect(topology.queryUpdatesRoutingKey("faculty.GetSchedule")).toBe("faculty.GetSchedule")
-    expect(topology.queryUpdatesQueue()).toBe(
-      "kronos.query-updates.faculty-service.pod-1",
+    expect(topology.subscribersGossipExchange).toBe("kronos.subscribers.gossip")
+    expect(topology.subscribersDirectExchange).toBe("kronos.subscribers.direct")
+    expect(topology.subscribersGossipQueue()).toBe(
+      "kronos.subscribers.gossip.faculty-service.pod-1",
+    )
+    expect(topology.subscribersDirectQueue()).toBe(
+      "kronos.subscribers.direct.faculty-service.pod-1",
     )
     expect(topology.commandReplyQueue()).toBe("kronos.replies.faculty-service.pod-1")
     expect(topology.queryReplyQueue()).toBe("kronos.query-replies.faculty-service.pod-1")
@@ -41,8 +44,11 @@ describe("RabbitMQ topology names", () => {
     expect(topology.queryQueue("faculty.Get Schedule")).toBe(
       "kronos.queries.faculty_service.faculty.Get_Schedule",
     )
-    expect(topology.queryUpdatesQueue()).toBe(
-      "kronos.query-updates.faculty_service.pod_1",
+    expect(topology.subscribersGossipQueue()).toBe(
+      "kronos.subscribers.gossip.faculty_service.pod_1",
+    )
+    expect(topology.subscribersDirectQueue()).toBe(
+      "kronos.subscribers.direct.faculty_service.pod_1",
     )
   })
 })

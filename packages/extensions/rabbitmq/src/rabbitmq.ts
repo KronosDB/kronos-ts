@@ -4,7 +4,7 @@ import { createRabbitMqCommandBus } from "./command-bus.js"
 import { createRabbitMqQueryBus } from "./query-bus.js"
 import { AmqpRabbitMqCommandTransport } from "./amqp-command-transport.js"
 import { AmqpRabbitMqQueryTransport } from "./amqp-query-transport.js"
-import { AmqpRabbitMqQueryUpdatesTransport } from "./amqp-query-updates-transport.js"
+import { AmqpDistributedSubscriberRegistry } from "./distributed-subscriber-registry.js"
 import { createAmqpConnection } from "./connection.js"
 
 export interface RabbitMqCommandDispatchConfig {
@@ -86,7 +86,7 @@ export function rabbitMq(config: RabbitMqExtensionConfig): (app: App) => void {
     const connection = createAmqpConnection(resolved.url)
     const commandTransport = new AmqpRabbitMqCommandTransport(resolved, connection)
     const queryTransport = new AmqpRabbitMqQueryTransport(resolved, connection)
-    const queryUpdatesTransport = new AmqpRabbitMqQueryUpdatesTransport(resolved, connection)
+    const subscriberRegistry = new AmqpDistributedSubscriberRegistry(resolved, connection)
 
     app.decorate("commandBus", (localSegment) =>
       createRabbitMqCommandBus({
@@ -100,17 +100,17 @@ export function rabbitMq(config: RabbitMqExtensionConfig): (app: App) => void {
       createRabbitMqQueryBus({
         localSegment,
         transport: queryTransport,
-        updatesTransport: queryUpdatesTransport,
+        subscriberRegistry,
         config: resolved,
       }),
     )
 
     app.onStart("connect", () => commandTransport.connect())
     app.onStart("connect", () => queryTransport.connect())
-    app.onStart("connect", () => queryUpdatesTransport.connect())
+    app.onStart("connect", () => subscriberRegistry.connect())
     app.onStop("connect", () => commandTransport.close())
     app.onStop("connect", () => queryTransport.close())
-    app.onStop("connect", () => queryUpdatesTransport.close())
+    app.onStop("connect", () => subscriberRegistry.close())
     app.onStop("connect", () => connection.close())
   }
 }

@@ -8,17 +8,15 @@ import type {
 import {
   applySubscriptionFilter,
   createUpdateHandler,
-  extractStructuredFilter,
-  matchesPayloadEquals,
   runAfterCommitOrImmediately,
   runInNewUoW,
 } from "@kronos-ts/messaging"
 import { qualifiedNameToString } from "@kronos-ts/common"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
 import type {
-  RabbitMqQueryUpdateEnvelope,
-  RabbitMqQueryUpdatesTransport,
-} from "./amqp-query-updates-transport.js"
+  DeliverEnvelope,
+  DistributedSubscriberRegistry,
+} from "./distributed-subscriber-registry.js"
 
 export interface RabbitMqQueryEnvelope {
   readonly kind: "query"
@@ -49,7 +47,7 @@ export interface RabbitMqQueryTransport {
 export interface RabbitMqQueryBusOptions {
   readonly localSegment: QueryBus
   readonly transport: RabbitMqQueryTransport
-  readonly updatesTransport?: RabbitMqQueryUpdatesTransport
+  readonly subscriberRegistry?: DistributedSubscriberRegistry
   readonly config: RabbitMqResolvedConfig
 }
 
@@ -59,135 +57,91 @@ export interface RabbitMqQueryBusOptions {
  * Direct request/reply queries (`query` + `subscribe`) route over the
  * request/reply transport.
  *
- * Subscription queries combine two patterns:
+ * Subscription queries use a distributed-mirror model. Every subscribe
+ * publishes a `claim` over the gossip fanout exchange so every instance
+ * learns about it; every unsubscribe publishes a `release`. Each instance
+ * keeps a cluster-wide `Map<subId, SubscriberRecord>` mirror.
  *
- *   1. **Initial result** travels over the existing request/reply transport
- *      via `bus.query`. Exactly one handler instance answers (competing
- *      consumer semantics).
- *   2. **Updates** are broadcast over a topic exchange via the updates
- *      transport. Every instance with active subscribers for the query name
- *      binds to the routing key and receives every emit, then routes to its
- *      local subscribers.
+ * `emitUpdate` walks the mirror locally (it holds every cluster-wide
+ * subscriber's payload), applies the filter — function predicates work
+ * because evaluation happens colocated with the payload, not over the wire —
+ * and routes per-subscriber delivery via the registry. Local subs are
+ * dispatched in-process; remote subs receive a `DeliverEnvelope` on the
+ * owner's direct queue.
  *
- * Filter handling — function filters are local-only (cannot serialize JS
- * functions); structured `payloadEquals` filters serialize into the broadcast
- * envelope and apply on every receiver against each subscriber's stored
- * query payload. See {@link SubscriptionFilter}.
+ * The same model handles `completeSubscription` and
+ * `completeSubscriptionExceptionally`.
  *
- * Falls back to local-only behaviour when no `updatesTransport` is supplied.
+ * Falls back to local-only behaviour when no `subscriberRegistry` is supplied.
  */
 export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryBus {
   const localHandlers = new Set<string>()
-  const { localSegment, transport, updatesTransport, config } = options
+  const { localSegment, transport, subscriberRegistry, config } = options
 
-  // Subscriptions registered on THIS instance. Mirrors the simple-query-bus
-  // local segment; the local segment is still used for the initial-result
-  // dispatch, but we keep our own map so we can apply incoming broadcast
-  // updates without re-entering the local bus.
-  const subscriptions = new Map<string, UpdateHandler>()
-  const queryNameRefcount = new Map<string, number>()
+  // UpdateHandlers for subs owned BY this instance, keyed by subId.
+  const localOwnedHandlers = new Map<string, UpdateHandler>()
 
-  function incrementBinding(queryName: string): boolean {
-    const next = (queryNameRefcount.get(queryName) ?? 0) + 1
-    queryNameRefcount.set(queryName, next)
-    return next === 1
-  }
+  function applyDelivery(envelope: DeliverEnvelope): void {
+    const handler = localOwnedHandlers.get(envelope.subId)
+    if (!handler) return
 
-  function decrementBinding(queryName: string): boolean {
-    const current = queryNameRefcount.get(queryName) ?? 0
-    if (current <= 1) {
-      queryNameRefcount.delete(queryName)
-      return true
-    }
-    queryNameRefcount.set(queryName, current - 1)
-    return false
-  }
-
-  function deliverToLocalSubs(
-    queryName: string,
-    update: unknown,
-    filterEquals: Record<string, unknown> | undefined,
-  ): void {
-    for (const [id, handler] of subscriptions) {
+    if (envelope.kind === "update") {
       if (!handler.active) {
-        subscriptions.delete(id)
-        continue
+        localOwnedHandlers.delete(envelope.subId)
+        return
       }
-      const handlerQueryName = qualifiedNameToString(handler.query.name)
-      if (handlerQueryName !== queryName) continue
-      if (filterEquals && !matchesPayloadEquals(handler.query.payload, filterEquals)) continue
-
-      const accepted = handler.offer(update)
+      const accepted = handler.offer(envelope.update)
       if (!accepted) {
         handler.completeExceptionally(new Error("Subscription query update buffer overflow"))
-        subscriptions.delete(id)
+        localOwnedHandlers.delete(envelope.subId)
       }
+    } else if (envelope.kind === "complete") {
+      handler.complete()
+      localOwnedHandlers.delete(envelope.subId)
+    } else if (envelope.kind === "completeExceptionally") {
+      const error = Object.assign(new Error(envelope.error.message), {
+        name: envelope.error.name ?? "RemoteSubscriptionError",
+      })
+      handler.completeExceptionally(error)
+      localOwnedHandlers.delete(envelope.subId)
     }
   }
 
-  function completeLocalSubs(
-    queryName: string,
-    filterEquals: Record<string, unknown> | undefined,
-    error?: Error,
-  ): void {
-    for (const [id, handler] of subscriptions) {
-      const handlerQueryName = qualifiedNameToString(handler.query.name)
-      if (handlerQueryName !== queryName) continue
-      if (filterEquals && !matchesPayloadEquals(handler.query.payload, filterEquals)) continue
-
-      if (error) handler.completeExceptionally(error)
-      else handler.complete()
-      subscriptions.delete(id)
-    }
-  }
-
-  if (updatesTransport) {
-    updatesTransport.setHandler((envelope) => {
-      // Loopback dedup — local fan-out already happened on this instance.
-      if (envelope.senderId === updatesTransport.senderId) return
-
-      if (envelope.kind === "update") {
-        deliverToLocalSubs(envelope.queryName, envelope.update, envelope.payloadEquals)
-      } else if (envelope.kind === "complete") {
-        completeLocalSubs(envelope.queryName, envelope.payloadEquals)
-      } else if (envelope.kind === "completeExceptionally") {
-        const remoteError = envelope.error
-          ? Object.assign(new Error(envelope.error.message), {
-              name: envelope.error.name ?? "RemoteSubscriptionError",
-            })
-          : new Error("Remote subscription failed")
-        completeLocalSubs(envelope.queryName, envelope.payloadEquals, remoteError)
-      }
-    })
+  if (subscriberRegistry) {
+    subscriberRegistry.setDeliverHandler(applyDelivery)
   }
 
   function registerSubscription(
     message: QueryMessage,
     bufferSize?: number,
   ): UpdateHandler & { iterable: AsyncIterable<unknown> } {
-    const queryId = message.identifier
-    if (subscriptions.has(queryId)) {
-      throw new Error(`Subscription query already registered for identifier "${queryId}"`)
+    const subId = message.identifier
+    if (localOwnedHandlers.has(subId)) {
+      throw new Error(`Subscription query already registered for identifier "${subId}"`)
     }
     const handler = createUpdateHandler(message, bufferSize)
-    subscriptions.set(queryId, handler)
+    localOwnedHandlers.set(subId, handler)
 
-    const queryName = qualifiedNameToString(message.name)
-    if (incrementBinding(queryName) && updatesTransport) {
-      void updatesTransport.bindQueryName(queryName).catch(() => {})
+    if (subscriberRegistry) {
+      void subscriberRegistry
+        .claim({
+          subId,
+          queryName: qualifiedNameToString(message.name),
+          payload: message.payload,
+        })
+        .catch(() => {})
     }
     return handler
   }
 
   function unregisterSubscription(message: QueryMessage): void {
-    const queryId = message.identifier
-    const existing = subscriptions.get(queryId)
+    const subId = message.identifier
+    const existing = localOwnedHandlers.get(subId)
     if (!existing) return
-    subscriptions.delete(queryId)
+    localOwnedHandlers.delete(subId)
     existing.complete()
-    const queryName = qualifiedNameToString(message.name)
-    if (decrementBinding(queryName) && updatesTransport) {
-      void updatesTransport.unbindQueryName(queryName).catch(() => {})
+    if (subscriberRegistry) {
+      void subscriberRegistry.release(subId).catch(() => {})
     }
   }
 
@@ -254,15 +208,22 @@ export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryB
       filter: SubscriptionFilter,
       update: unknown,
     ): Promise<void> {
-      const structured = extractStructuredFilter(filter)
-      const filterEquals = structured?.payloadEquals as Record<string, unknown> | undefined
-
       runAfterCommitOrImmediately(() => {
-        // Local fan-out — applies the full (possibly function) filter against
-        // local subscribers.
-        for (const [id, handler] of subscriptions) {
+        if (subscriberRegistry) {
+          for (const record of subscriberRegistry.records()) {
+            if (record.queryName !== queryName) continue
+            if (!applySubscriptionFilter(filter, record.payload)) continue
+            void subscriberRegistry
+              .deliver({ kind: "update", subId: record.subId, update })
+              .catch(() => {})
+          }
+          return
+        }
+
+        // Local-only mode: filter and offer against the local subscriber set.
+        for (const [id, handler] of localOwnedHandlers) {
           if (!handler.active) {
-            subscriptions.delete(id)
+            localOwnedHandlers.delete(id)
             continue
           }
           const handlerQueryName = qualifiedNameToString(handler.query.name)
@@ -274,30 +235,8 @@ export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryB
             handler.completeExceptionally(
               new Error("Subscription query update buffer overflow"),
             )
-            subscriptions.delete(id)
+            localOwnedHandlers.delete(id)
           }
-        }
-
-        // Distributed broadcast. We send the structured predicate when present
-        // so remote receivers can re-apply it; function filters cannot cross
-        // the wire and degrade to "deliver to all remote subscribers of this
-        // query name" — discouraged for new code, see SubscriptionFilter docs.
-        if (updatesTransport) {
-          const envelope: RabbitMqQueryUpdateEnvelope = filterEquals
-            ? {
-                kind: "update",
-                senderId: updatesTransport.senderId,
-                queryName,
-                update,
-                payloadEquals: filterEquals,
-              }
-            : {
-                kind: "update",
-                senderId: updatesTransport.senderId,
-                queryName,
-                update,
-              }
-          void updatesTransport.publish(envelope).catch(() => {})
         }
       })
     },
@@ -306,35 +245,24 @@ export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryB
       queryName: string,
       filter?: SubscriptionFilter,
     ): Promise<void> {
-      const structured = filter ? extractStructuredFilter(filter) : undefined
-      const filterEquals = structured?.payloadEquals as Record<string, unknown> | undefined
-
       runAfterCommitOrImmediately(() => {
-        for (const [id, handler] of subscriptions) {
+        if (subscriberRegistry) {
+          for (const record of subscriberRegistry.records()) {
+            if (record.queryName !== queryName) continue
+            if (filter && !applySubscriptionFilter(filter, record.payload)) continue
+            void subscriberRegistry
+              .deliver({ kind: "complete", subId: record.subId })
+              .catch(() => {})
+          }
+          return
+        }
+
+        for (const [id, handler] of localOwnedHandlers) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue
           if (filter && !applySubscriptionFilter(filter, handler.query.payload)) continue
           handler.complete()
-          subscriptions.delete(id)
-        }
-
-        if (updatesTransport) {
-          void updatesTransport
-            .publish(
-              filterEquals
-                ? {
-                    kind: "complete",
-                    senderId: updatesTransport.senderId,
-                    queryName,
-                    payloadEquals: filterEquals,
-                  }
-                : {
-                    kind: "complete",
-                    senderId: updatesTransport.senderId,
-                    queryName,
-                  },
-            )
-            .catch(() => {})
+          localOwnedHandlers.delete(id)
         }
       })
     },
@@ -344,37 +272,29 @@ export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryB
       error: Error,
       filter?: SubscriptionFilter,
     ): Promise<void> {
-      const structured = filter ? extractStructuredFilter(filter) : undefined
-      const filterEquals = structured?.payloadEquals as Record<string, unknown> | undefined
-
       runAfterCommitOrImmediately(() => {
-        for (const [id, handler] of subscriptions) {
+        if (subscriberRegistry) {
+          const serialized = serializeError(error) ?? { message: String(error) }
+          for (const record of subscriberRegistry.records()) {
+            if (record.queryName !== queryName) continue
+            if (filter && !applySubscriptionFilter(filter, record.payload)) continue
+            void subscriberRegistry
+              .deliver({
+                kind: "completeExceptionally",
+                subId: record.subId,
+                error: serialized,
+              })
+              .catch(() => {})
+          }
+          return
+        }
+
+        for (const [id, handler] of localOwnedHandlers) {
           const handlerQueryName = qualifiedNameToString(handler.query.name)
           if (handlerQueryName !== queryName) continue
           if (filter && !applySubscriptionFilter(filter, handler.query.payload)) continue
           handler.completeExceptionally(error)
-          subscriptions.delete(id)
-        }
-
-        if (updatesTransport) {
-          void updatesTransport
-            .publish(
-              filterEquals
-                ? {
-                    kind: "completeExceptionally",
-                    senderId: updatesTransport.senderId,
-                    queryName,
-                    error: serializeError(error),
-                    payloadEquals: filterEquals,
-                  }
-                : {
-                    kind: "completeExceptionally",
-                    senderId: updatesTransport.senderId,
-                    queryName,
-                    error: serializeError(error),
-                  },
-            )
-            .catch(() => {})
+          localOwnedHandlers.delete(id)
         }
       })
     },

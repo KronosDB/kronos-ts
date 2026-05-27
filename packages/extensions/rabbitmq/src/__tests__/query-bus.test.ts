@@ -3,8 +3,16 @@ import { z } from "zod"
 import { emptyMetadata, qn } from "@kronos-ts/common"
 import { query, payloadEquals } from "@kronos-ts/messaging"
 import { createSimpleQueryBus } from "@kronos-ts/messaging"
-import { createRabbitMqQueryBus, type RabbitMqQueryEnvelope, type RabbitMqQueryTransport } from "../query-bus.js"
-import type { RabbitMqQueryUpdateEnvelope, RabbitMqQueryUpdatesTransport } from "../amqp-query-updates-transport.js"
+import {
+  createRabbitMqQueryBus,
+  type RabbitMqQueryEnvelope,
+  type RabbitMqQueryTransport,
+} from "../query-bus.js"
+import type {
+  DeliverEnvelope,
+  DistributedSubscriberRegistry,
+  SubscriberRecord,
+} from "../distributed-subscriber-registry.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
 
 const GetThing = query({
@@ -196,15 +204,14 @@ describe("RabbitMQ query bus", () => {
     sub.close()
   })
 
-  it("delivers an emit to local subscribers AND broadcasts it across the updates transport", async () => {
-    const broker = createInProcessUpdatesBroker()
+  it("delivers a local emit to a local subscriber via the registry mirror", async () => {
+    const mesh = createInProcessRegistryMesh()
     const local = createSimpleQueryBus()
     const { transport } = recordingTransport()
-    const updatesTransport = broker.connect("svc.inst-A")
     const bus = createRabbitMqQueryBus({
       localSegment: local,
       transport,
-      updatesTransport,
+      subscriberRegistry: mesh.join("inst-A"),
       config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
     })
 
@@ -216,88 +223,182 @@ describe("RabbitMQ query bus", () => {
       metadata: emptyMetadata(),
       timestamp: Date.now(),
     })
-
     await sub.initialResult
 
     void bus.emitUpdate("test.GetThing", payloadEquals({ id: "1" }), { value: "v1" })
 
-    // Local fan-out is synchronous via runAfterCommitOrImmediately (no UoW
-    // here), so the next iteration tick will surface the update.
-    const updates = readN(sub.updates, 1)
-    expect(await updates).toEqual([{ value: "v1" }])
-
-    // Broadcast was sent to the broker
-    expect(broker.published).toHaveLength(1)
-    expect(broker.published[0]!.kind).toBe("update")
-    expect(broker.published[0]!.queryName).toBe("test.GetThing")
-    expect(broker.published[0]!.payloadEquals).toEqual({ id: "1" })
+    const updates = await readN(sub.updates, 1)
+    expect(updates).toEqual([{ value: "v1" }])
 
     sub.close()
   })
 
-  it("delivers a remote broadcast to a local subscriber, matching payloadEquals", async () => {
-    const broker = createInProcessUpdatesBroker()
-    const local = createSimpleQueryBus()
-    const { transport } = recordingTransport()
-    const updatesTransport = broker.connect("svc.inst-B")
-    const bus = createRabbitMqQueryBus({
-      localSegment: local,
-      transport,
-      updatesTransport,
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
-    })
+  it("delivers across instances — emitUpdate on one instance routes to the subscriber on another", async () => {
+    const mesh = createInProcessRegistryMesh()
 
-    bus.subscribe("test.GetThing", async () => "initial")
-    const matching = bus.subscriptionQuery({
-      identifier: "sub-match",
+    // Instance B owns the subscriber.
+    const localB = createSimpleQueryBus()
+    const transportB = recordingTransport().transport
+    const registryB = mesh.join("inst-B")
+    const busB = createRabbitMqQueryBus({
+      localSegment: localB,
+      transport: transportB,
+      subscriberRegistry: registryB,
+      config: resolveRabbitMqConfig(
+        appStub({ identity: { serviceName: "svc", instanceId: "inst-B" } }),
+        { url: "amqp://test" },
+      ),
+    })
+    busB.subscribe("test.GetThing", async () => "initial-B")
+    const sub = busB.subscriptionQuery({
+      identifier: "sub-cross",
       name: GetThing.name,
-      payload: { id: "1" },
+      payload: { id: "x" },
       metadata: emptyMetadata(),
       timestamp: Date.now(),
     })
-    const nonMatching = bus.subscriptionQuery({
-      identifier: "sub-nomatch",
-      name: GetThing.name,
-      payload: { id: "2" },
-      metadata: emptyMetadata(),
-      timestamp: Date.now(),
+    await sub.initialResult
+
+    // Instance C emits — it has no local subscriber but should route to B.
+    const localC = createSimpleQueryBus()
+    const transportC = recordingTransport().transport
+    const registryC = mesh.join("inst-C")
+    const busC = createRabbitMqQueryBus({
+      localSegment: localC,
+      transport: transportC,
+      subscriberRegistry: registryC,
+      config: resolveRabbitMqConfig(
+        appStub({ identity: { serviceName: "svc", instanceId: "inst-C" } }),
+        { url: "amqp://test" },
+      ),
     })
 
-    await Promise.all([matching.initialResult, nonMatching.initialResult])
+    void busC.emitUpdate("test.GetThing", payloadEquals({ id: "x" }), "from-C")
 
-    // Simulate a remote process emitting — broker injects the envelope as if
-    // it came over the wire from a different instance.
-    broker.injectFromRemote("other-instance", {
-      kind: "update",
-      senderId: "other-instance",
-      queryName: "test.GetThing",
-      update: { value: "remote-v" },
-      payloadEquals: { id: "1" },
-    })
+    const updates = await readN(sub.updates, 1)
+    expect(updates).toEqual(["from-C"])
 
-    const matched = await readN(matching.updates, 1)
-    expect(matched).toEqual([{ value: "remote-v" }])
-
-    // Non-matching subscriber sees nothing — close it and confirm no buffered updates.
-    nonMatching.close()
-    matching.close()
+    sub.close()
   })
 
-  it("ignores its own loopback updates (senderId === own)", async () => {
-    const broker = createInProcessUpdatesBroker()
-    const local = createSimpleQueryBus()
-    const { transport } = recordingTransport()
-    const updatesTransport = broker.connect("svc.inst-C")
-    const bus = createRabbitMqQueryBus({
-      localSegment: local,
-      transport,
-      updatesTransport,
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
+  it("function predicates work across instances because they execute on the emitter's mirror", async () => {
+    const mesh = createInProcessRegistryMesh()
+
+    // Two subscribers on instance B with different payloads.
+    const localB = createSimpleQueryBus()
+    const registryB = mesh.join("inst-B")
+    const busB = createRabbitMqQueryBus({
+      localSegment: localB,
+      transport: recordingTransport().transport,
+      subscriberRegistry: registryB,
+      config: resolveRabbitMqConfig(
+        appStub({ identity: { serviceName: "svc", instanceId: "inst-B" } }),
+        { url: "amqp://test" },
+      ),
+    })
+    busB.subscribe("test.GetThing", async () => "initial")
+    const sub1 = busB.subscriptionQuery({
+      identifier: "sub-lo",
+      name: GetThing.name,
+      payload: { id: "1" } as any,
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    })
+    const sub2 = busB.subscriptionQuery({
+      identifier: "sub-hi",
+      name: GetThing.name,
+      payload: { id: "9" } as any,
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    })
+    await Promise.all([sub1.initialResult, sub2.initialResult])
+
+    // Emit from C with a function filter — only "9" matches.
+    const localC = createSimpleQueryBus()
+    const registryC = mesh.join("inst-C")
+    const busC = createRabbitMqQueryBus({
+      localSegment: localC,
+      transport: recordingTransport().transport,
+      subscriberRegistry: registryC,
+      config: resolveRabbitMqConfig(
+        appStub({ identity: { serviceName: "svc", instanceId: "inst-C" } }),
+        { url: "amqp://test" },
+      ),
     })
 
-    bus.subscribe("test.GetThing", async () => "initial")
-    const sub = bus.subscriptionQuery({
-      identifier: "sub-loopback",
+    void busC.emitUpdate(
+      "test.GetThing",
+      (payload) => (payload as { id: string }).id === "9",
+      "match-hi",
+    )
+
+    // sub2 receives; sub1 closes without receiving.
+    const matched = await readN(sub2.updates, 1)
+    expect(matched).toEqual(["match-hi"])
+
+    sub1.close()
+    sub2.close()
+  })
+
+  it("a late-joining instance learns existing claims via syncRequest", async () => {
+    const mesh = createInProcessRegistryMesh()
+
+    // B subscribes first.
+    const registryB = mesh.join("inst-B")
+    const busB = createRabbitMqQueryBus({
+      localSegment: createSimpleQueryBus(),
+      transport: recordingTransport().transport,
+      subscriberRegistry: registryB,
+      config: resolveRabbitMqConfig(
+        appStub({ identity: { serviceName: "svc", instanceId: "inst-B" } }),
+        { url: "amqp://test" },
+      ),
+    })
+    busB.subscribe("test.GetThing", async () => "initial")
+    const sub = busB.subscriptionQuery({
+      identifier: "sub-late",
+      name: GetThing.name,
+      payload: { id: "z" } as any,
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    })
+    await sub.initialResult
+
+    // C joins later — its mirror starts empty, then fills via sync reply.
+    const registryC = mesh.join("inst-C")
+    const busC = createRabbitMqQueryBus({
+      localSegment: createSimpleQueryBus(),
+      transport: recordingTransport().transport,
+      subscriberRegistry: registryC,
+      config: resolveRabbitMqConfig(
+        appStub({ identity: { serviceName: "svc", instanceId: "inst-C" } }),
+        { url: "amqp://test" },
+      ),
+    })
+
+    void busC.emitUpdate("test.GetThing", payloadEquals({ id: "z" }), "late-update")
+
+    const updates = await readN(sub.updates, 1)
+    expect(updates).toEqual(["late-update"])
+
+    sub.close()
+  })
+
+  it("release on unsubscribe removes the record from peer mirrors", async () => {
+    const mesh = createInProcessRegistryMesh()
+    const registryB = mesh.join("inst-B")
+    const busB = createRabbitMqQueryBus({
+      localSegment: createSimpleQueryBus(),
+      transport: recordingTransport().transport,
+      subscriberRegistry: registryB,
+      config: resolveRabbitMqConfig(
+        appStub({ identity: { serviceName: "svc", instanceId: "inst-B" } }),
+        { url: "amqp://test" },
+      ),
+    })
+    busB.subscribe("test.GetThing", async () => "initial")
+    const sub = busB.subscriptionQuery({
+      identifier: "sub-rm",
       name: GetThing.name,
       payload: { id: "1" },
       metadata: emptyMetadata(),
@@ -305,74 +406,127 @@ describe("RabbitMQ query bus", () => {
     })
     await sub.initialResult
 
-    // emit once — local fan-out delivers update #1; loopback from broker
-    // should NOT redeliver because senderId === own.
-    void bus.emitUpdate("test.GetThing", payloadEquals({ id: "1" }), "u1")
-
-    // Force a second emit so we can readN(2) and confirm only one "u1".
-    void bus.emitUpdate("test.GetThing", payloadEquals({ id: "1" }), "u2")
-
-    const updates = await readN(sub.updates, 2)
-    expect(updates).toEqual(["u1", "u2"])
+    const registryC = mesh.join("inst-C")
+    expect([...registryC.records()].some((r) => r.subId === "sub-rm")).toBe(true)
 
     sub.close()
+    expect([...registryC.records()].some((r) => r.subId === "sub-rm")).toBe(false)
   })
 })
 
 // ---------------------------------------------------------------------------
-// In-process broker for unit-testing the updates transport.
+// In-process registry mesh — wires N AmqpDistributedSubscriberRegistry stand-
+// ins together over a synchronous in-memory bus that mimics the gossip-fanout +
+// direct-routed topology.
 // ---------------------------------------------------------------------------
 
-interface TestUpdatesTransport extends RabbitMqQueryUpdatesTransport {
-  readonly senderId: string
-  inboundHandler?: (envelope: RabbitMqQueryUpdateEnvelope) => void
-  boundKeys: Set<string>
+interface MeshRegistry extends DistributedSubscriberRegistry {
+  readonly instanceId: string
 }
 
-interface InProcessBroker {
-  connect(senderId: string): TestUpdatesTransport
-  injectFromRemote(senderId: string, envelope: RabbitMqQueryUpdateEnvelope): void
-  readonly published: RabbitMqQueryUpdateEnvelope[]
+interface InProcessMesh {
+  join(instanceId: string): MeshRegistry
 }
 
-function createInProcessUpdatesBroker(): InProcessBroker {
-  const transports: TestUpdatesTransport[] = []
-  const published: RabbitMqQueryUpdateEnvelope[] = []
+function createInProcessRegistryMesh(): InProcessMesh {
+  const registries: MeshRegistry[] = []
 
-  function fanOut(envelope: RabbitMqQueryUpdateEnvelope) {
-    for (const t of transports) {
-      if (!t.boundKeys.has(envelope.queryName)) continue
-      t.inboundHandler?.(envelope)
-    }
+  function broadcast(envelope:
+    | { kind: "claim"; ownerInstanceId: string; subId: string; queryName: string; payload: unknown }
+    | { kind: "release"; ownerInstanceId: string; subId: string }
+    | { kind: "syncRequest"; requesterId: string },
+  ) {
+    for (const r of registries) (r as any).__handleGossip(envelope)
+  }
+
+  function deliverDirect(targetInstanceId: string, envelope: DeliverEnvelope) {
+    const target = registries.find((r) => r.instanceId === targetInstanceId)
+    if (!target) return
+    ;(target as any).__handleDirect(envelope)
   }
 
   return {
-    published,
-    connect(senderId) {
-      const t: TestUpdatesTransport = {
-        senderId,
-        boundKeys: new Set<string>(),
-        async publish(envelope) {
-          published.push(envelope)
-          fanOut(envelope)
+    join(instanceId) {
+      const mirror = new Map<string, SubscriberRecord>()
+      const locallyOwned = new Set<string>()
+      let deliverHandler: ((envelope: DeliverEnvelope) => void) | undefined
+
+      const reg: MeshRegistry = {
+        instanceId,
+        async claim(record) {
+          const full: SubscriberRecord = { ...record, ownerInstanceId: instanceId }
+          mirror.set(full.subId, full)
+          locallyOwned.add(full.subId)
+          broadcast({
+            kind: "claim",
+            ownerInstanceId: instanceId,
+            subId: full.subId,
+            queryName: full.queryName,
+            payload: full.payload,
+          })
         },
-        async bindQueryName(name) {
-          t.boundKeys.add(name)
+        async release(subId) {
+          mirror.delete(subId)
+          locallyOwned.delete(subId)
+          broadcast({ kind: "release", ownerInstanceId: instanceId, subId })
         },
-        async unbindQueryName(name) {
-          t.boundKeys.delete(name)
+        *records() {
+          for (const r of mirror.values()) yield r
         },
-        setHandler(handler) {
-          t.inboundHandler = handler
+        async deliver(envelope) {
+          const record = mirror.get(envelope.subId)
+          if (!record) return
+          if (record.ownerInstanceId === instanceId) {
+            deliverHandler?.(envelope)
+            return
+          }
+          deliverDirect(record.ownerInstanceId, envelope)
         },
+        setDeliverHandler(handler) {
+          deliverHandler = handler
+        },
+        async connect() {},
+        async close() {},
       }
-      transports.push(t)
-      return t
-    },
-    injectFromRemote(senderId, envelope) {
-      // Inject as if a remote producer published it — bypasses publish() so it
-      // doesn't appear in `published`.
-      fanOut({ ...envelope, senderId })
+
+      // Backdoor hooks for the mesh — intentionally not part of the public
+      // interface; the in-process mesh stands in for the AMQP transport.
+      ;(reg as any).__handleGossip = (env: any) => {
+        if (env.kind === "claim") {
+          if (env.ownerInstanceId === instanceId) return
+          mirror.set(env.subId, {
+            subId: env.subId,
+            queryName: env.queryName,
+            payload: env.payload,
+            ownerInstanceId: env.ownerInstanceId,
+          })
+        } else if (env.kind === "release") {
+          if (env.ownerInstanceId === instanceId) return
+          mirror.delete(env.subId)
+        } else if (env.kind === "syncRequest") {
+          if (env.requesterId === instanceId) return
+          for (const subId of locallyOwned) {
+            const record = mirror.get(subId)
+            if (!record) continue
+            broadcast({
+              kind: "claim",
+              ownerInstanceId: instanceId,
+              subId: record.subId,
+              queryName: record.queryName,
+              payload: record.payload,
+            })
+          }
+        }
+      }
+      ;(reg as any).__handleDirect = (env: DeliverEnvelope) => {
+        deliverHandler?.(env)
+      }
+
+      registries.push(reg)
+      // Joiner publishes its own syncRequest so existing peers re-broadcast
+      // their owned claims into the new mirror.
+      broadcast({ kind: "syncRequest", requesterId: instanceId })
+      return reg
     },
   }
 }

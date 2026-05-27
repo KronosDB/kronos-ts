@@ -31,10 +31,12 @@ export {
 } from "./query-bus.js"
 
 export {
-  AmqpRabbitMqQueryUpdatesTransport,
-  type RabbitMqQueryUpdateEnvelope,
-  type RabbitMqQueryUpdatesTransport,
-} from "./amqp-query-updates-transport.js"
+  AmqpDistributedSubscriberRegistry,
+  type DistributedSubscriberRegistry,
+  type SubscriberRecord,
+  type DeliverEnvelope,
+  type GossipEnvelope,
+} from "./distributed-subscriber-registry.js"
 
 export { AmqpRabbitMqCommandTransport } from "./amqp-command-transport.js"
 export { AmqpRabbitMqQueryTransport } from "./amqp-query-transport.js"
