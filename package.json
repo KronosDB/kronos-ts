@@ -15,7 +15,7 @@
     "test:unit": "bun test $(find packages -path '*/src/*' -name '*.test.ts' -not -name '*.integration.test.ts')",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "bun run build && changeset publish"
+    "release": "bun run build && bash scripts/publish.sh"
   },
   "devDependencies": {
     "@changesets/cli": "2.31.0",
