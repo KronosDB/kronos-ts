@@ -12,6 +12,8 @@ import {
   runInNewUoW,
   createInMemoryTokenStore,
   noTransactionManager,
+  createInMemoryEventScheduler,
+  type InMemoryEventScheduler,
 } from "@kronos-ts/messaging"
 
 /**
@@ -60,5 +62,26 @@ export function registerInMemoryDefaults(app: App): void {
   app.setDefault("transactionManager", () => noTransactionManager(), {
     inMemory: true,
     warning: "[kronos] transactionManager: in-memory — pass-through, configure a transactional extension for production",
+  })
+
+  // In-memory EventScheduler: setTimeout-backed, fires into the resolved
+  // eventBus. Closure captures the instance so onStop can clear armed timers —
+  // without this cleanup, scheduled-but-unfired events keep the process alive
+  // past app.stop().
+  let inMemoryScheduler: InMemoryEventScheduler | undefined
+  app.setDefault(
+    "eventScheduler",
+    ({ eventBus }) => {
+      inMemoryScheduler = createInMemoryEventScheduler({ eventSink: eventBus })
+      return inMemoryScheduler
+    },
+    {
+      inMemory: true,
+      warning:
+        "[kronos] eventScheduler: in-memory — not durable, configure a persistence extension for production",
+    },
+  )
+  app.onStop("connect", async () => {
+    if (inMemoryScheduler) await inMemoryScheduler.stop()
   })
 }

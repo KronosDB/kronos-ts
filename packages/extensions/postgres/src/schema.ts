@@ -17,11 +17,13 @@
 export interface TableNames {
   readonly events: string
   readonly snapshots: string
+  readonly scheduled: string
 }
 
 export const DEFAULT_TABLE_NAMES: TableNames = {
   events: "kronos_events",
   snapshots: "kronos_snapshots",
+  scheduled: "kronos_scheduled_events",
 }
 
 /**
@@ -74,6 +76,72 @@ export function buildSnapshotsTableDDL(tables: TableNames): string {
   recorded_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (state_name, state_id)
 );`
+}
+
+/**
+ * Scheduled-events table — holds events parked for future append.
+ *
+ * # Row lifecycle (tombstone model)
+ *
+ *   INSERT (status='pending')   ← schedule() inside a UoW
+ *      ├── UPDATE → 'appended'  ← worker fires the schedule; row stays as tombstone
+ *      └── UPDATE → 'cancelled' ← cancel(token) succeeds; row stays as tombstone
+ *
+ * Tombstones (rather than DELETE-on-fire) give cancel() three distinct
+ * outcomes — `cancelled` / `already-appended` / `not-found` — by inspecting
+ * the row's terminal status. The events table already grows unboundedly,
+ * so a parallel tombstone table is no worse from a retention perspective.
+ *
+ * # Schedule id = event id
+ *
+ * `schedule_id` is the same UUID as the eventual `event_id` written to the
+ * events table at fire-time. One UUID identifies the schedule pre-fire and
+ * the event post-fire, so callers tracking the materialised event can
+ * correlate back to the original schedule without an extra column.
+ *
+ * # Payload columns
+ *
+ * The whole EventMessage shape is captured inline (event_id, type, tags,
+ * payload, metadata, version, message_timestamp) so the fire-time worker
+ * can reconstruct it from a single row read. `message_timestamp` is the
+ * EventMessage's authored timestamp (epoch ms) — distinct from
+ * `created_at` (when the row was inserted) and `fire_at` (when it should
+ * fire). At append-time, the worker MAY overwrite message_timestamp with
+ * `now()` so consumers see the actual append time; that is an
+ * implementation decision left to the scheduler.
+ */
+export function buildScheduledEventsTableDDL(tables: TableNames): string {
+  return `CREATE TABLE IF NOT EXISTS ${tables.scheduled} (
+  schedule_id        UUID PRIMARY KEY,
+  fire_at            TIMESTAMPTZ NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'appended', 'cancelled')),
+  type               TEXT COLLATE "C" NOT NULL,
+  tags               TEXT[] NOT NULL DEFAULT '{}',
+  payload            JSONB NOT NULL,
+  metadata           JSONB NOT NULL DEFAULT '{}',
+  version            TEXT NOT NULL,
+  message_timestamp  BIGINT NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);`
+}
+
+/**
+ * Indexes for the scheduled-events table.
+ *
+ * The single critical index is the partial btree on `fire_at WHERE status =
+ * 'pending'`. The worker's hot query — `SELECT … WHERE status = 'pending'
+ * AND fire_at <= now() ORDER BY fire_at LIMIT n FOR UPDATE SKIP LOCKED` —
+ * scans only pending rows, so a partial index keeps the hot path B-tree
+ * tiny regardless of how many appended/cancelled tombstones accumulate.
+ *
+ * No index on `status` alone — every status query also filters by either
+ * schedule_id (PK lookup) or fire_at (the partial index above).
+ */
+export function buildScheduledEventsIndexesDDL(tables: TableNames): string {
+  return `CREATE INDEX IF NOT EXISTS ${tables.scheduled}_pending_fire_at_idx
+  ON ${tables.scheduled} (fire_at)
+  WHERE status = 'pending';`
 }
 
 /**
@@ -195,6 +263,8 @@ export async function bootstrapSchema(
     await adapter.query(buildEventsTableDDL(tables))
     await adapter.query(buildEventsIndexesDDL(tables))
     await adapter.query(buildSnapshotsTableDDL(tables))
+    await adapter.query(buildScheduledEventsTableDDL(tables))
+    await adapter.query(buildScheduledEventsIndexesDDL(tables))
     await adapter.query(buildAppendStoredProcedureDDL(tables))
   } finally {
     // Release even on partial-DDL failure. The error (if any) propagates

@@ -49,7 +49,13 @@ import type {
   StreamingCondition,
   TrackingToken,
 } from "@kronos-ts/messaging"
-import { createMessageStream, globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/messaging"
+import {
+  createMessageStream,
+  globalSequenceToken,
+  FIRST_TOKEN,
+  getOrBeginActiveTransaction,
+  onAfterCommit,
+} from "@kronos-ts/messaging"
 import { qualifiedNameToString, qualifiedNameFromString } from "@kronos-ts/common"
 import type { Serializer } from "@kronos-ts/common"
 export type { Serializer } from "@kronos-ts/common"
@@ -325,31 +331,54 @@ export function createPostgresEventStore(
       events: ReadonlyArray<EventMessage>,
       condition?: AppendCondition,
     ): Promise<ConsistencyMarker> {
-      // Convenience: appendEvents + commit + afterCommit in one shot.
+      // Two paths: join an active UoW tx (writes commit atomically with
+      // everything else in the UoW — scheduler inserts, future outbox, etc.),
+      // or open our own short-lived tx when no UoW is active. The shared
+      // path defers NOTIFY + subscriber dispatch to AFTER_COMMIT because the
+      // tx hasn't actually committed yet when checkAndInsert returns.
       const targets = lockTargetsForCondition(condition)
-      let marker: ConsistencyMarker
-      try {
-        marker = await adapter.transaction(IsolationLevel.READ_COMMITTED, async (tx) => {
-          await acquireWriteLocks(tx, targets)
-          const captured = await checkAndInsert(tx, events, condition)
-          return markerAt(captured.position)
-        })
-      } catch (err) {
-        if (isDcbViolation(err)) {
-          // Re-throw AppendConditionError directly (already has correct type)
-          throw err
+      const shared = await getOrBeginActiveTransaction<PostgresAdapterTransaction>()
+
+      const notifyAndFanout = async () => {
+        await adapter.query(`NOTIFY ${notifyChannel}`)
+        for (const sub of eventSubscribers) {
+          try { await sub(events) } catch { /* ignore subscriber errors */ }
         }
+      }
+
+      const runAppend = async (tx: PostgresAdapterTransaction): Promise<ConsistencyMarker> => {
+        await acquireWriteLocks(tx, targets)
+        const captured = await checkAndInsert(tx, events, condition)
+        return markerAt(captured.position)
+      }
+
+      const translateError = (err: unknown): never => {
+        if (isDcbViolation(err)) throw err
         if ((err as { code?: string }).code === "23505") {
           throw AppendConditionError.fromConflictCount(0, condition?.marker.position ?? -1n)
         }
         throw err
       }
-      // Wake up tailing streams + notify push-based subscribers
-      await adapter.query(`NOTIFY ${notifyChannel}`)
-      for (const sub of eventSubscribers) {
-        try { await sub(events) } catch { /* ignore subscriber errors */ }
+
+      if (shared !== undefined) {
+        let marker: ConsistencyMarker
+        try {
+          marker = await runAppend(shared)
+        } catch (err) {
+          translateError(err)
+        }
+        onAfterCommit(notifyAndFanout)
+        return marker!
       }
-      return marker
+
+      let marker: ConsistencyMarker
+      try {
+        marker = await adapter.transaction(IsolationLevel.READ_COMMITTED, runAppend)
+      } catch (err) {
+        translateError(err)
+      }
+      await notifyAndFanout()
+      return marker!
     },
 
     async getHeadPosition(): Promise<bigint> {
@@ -372,26 +401,44 @@ export function createPostgresEventStore(
     },
 
     async publish(events: ReadonlyArray<EventMessage>): Promise<void> {
-      // publish = append without condition; also notifies subscribers + streams
+      // publish = append without condition; same shared/own tx split as append().
       const targets: LockTarget[] = []
-      let marker: ConsistencyMarker
+      const shared = await getOrBeginActiveTransaction<PostgresAdapterTransaction>()
+
+      const notifyAndFanout = async () => {
+        await adapter.query(`NOTIFY ${notifyChannel}`)
+        for (const sub of eventSubscribers) {
+          try { await sub(events) } catch { /* ignore subscriber errors */ }
+        }
+      }
+
+      const runPublish = async (tx: PostgresAdapterTransaction): Promise<void> => {
+        await acquireWriteLocks(tx, targets)
+        await checkAndInsert(tx, events, undefined)
+      }
+
+      if (shared !== undefined) {
+        try {
+          await runPublish(shared)
+        } catch (err) {
+          if ((err as { code?: string }).code === "23505") {
+            throw AppendConditionError.fromConflictCount(0, -1n)
+          }
+          throw err
+        }
+        onAfterCommit(notifyAndFanout)
+        return
+      }
+
       try {
-        marker = await adapter.transaction(IsolationLevel.READ_COMMITTED, async (tx) => {
-          await acquireWriteLocks(tx, targets)
-          const captured = await checkAndInsert(tx, events, undefined)
-          return markerAt(captured.position)
-        })
+        await adapter.transaction(IsolationLevel.READ_COMMITTED, runPublish)
       } catch (err) {
         if ((err as { code?: string }).code === "23505") {
           throw AppendConditionError.fromConflictCount(0, -1n)
         }
         throw err
       }
-      void marker
-      await adapter.query(`NOTIFY ${notifyChannel}`)
-      for (const sub of eventSubscribers) {
-        try { await sub(events) } catch { /* ignore subscriber errors */ }
-      }
+      await notifyAndFanout()
     },
 
     subscribe(

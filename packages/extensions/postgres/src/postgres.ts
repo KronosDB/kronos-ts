@@ -1,9 +1,21 @@
 /**
  * postgres(config) — Extension factory for @kronos-ts/postgres.
  *
- * Populates two slots (D-12.01):
- *   - eventStore     : EventStorageEngine via createPostgresEventStore
- *   - snapshotStore  : SnapshotStore via createPostgresSnapshotStore
+ * Populates five slots:
+ *   - eventStore           : EventStorageEngine via createPostgresEventStore
+ *   - snapshotStore        : SnapshotStore via createPostgresSnapshotStore
+ *   - transactionManager   : postgresTransactionManager(adapter)
+ *   - unitOfWorkFactory    : lazyTransactionalUnitOfWorkFactory(runInNewUoW, tm)
+ *   - eventScheduler       : createPostgresEventScheduler(...) (durable,
+ *                            background worker started in "processors" stage)
+ *
+ * Setting the last two together is what gives `append() + schedule()` (and
+ * any future postgres-extension writer) a SHARED UoW transaction —
+ * everything that writes inside one UoW commits or rolls back atomically.
+ * Lazy variant chosen so pure-read UoWs (queries, projections that don't
+ * write) never claim a pool connection. Users who need different
+ * composition (e.g., eager for benchmarking, custom UoW wrapping) can
+ * override with `app.forceSet(...)`.
  *
  * Lifecycle (mirrors @kronos-ts/kronosdb extension shape):
  *   - app.onStart("connect", ...) — adapter.connect() with withRetry; then
@@ -11,16 +23,26 @@
  *     their own migration tooling are not surprised)
  *   - app.onStop("connect", ...)  — adapter.disconnect()
  *
- * Does NOT populate eventBus, commandBus, queryBus, tokenStore, or
- * transactionManager (D-12.01 — out of scope for this extension).
+ * Does NOT populate eventBus, commandBus, queryBus, or tokenStore (out of
+ * scope for this extension — postgres token store is a separate package).
  */
 
-import type { App } from "@kronos-ts/app"
+import type { App, KronosComponents } from "@kronos-ts/app"
 import type { ResilienceConfig } from "@kronos-ts/common"
 import { withRetry } from "@kronos-ts/common"
+import {
+  lazyTransactionalUnitOfWorkFactory,
+  runInNewUoW,
+  type TransactionManager,
+} from "@kronos-ts/messaging"
 import type { PostgresAdapter } from "./adapter.js"
 import { createPostgresEventStore } from "./postgres-event-store.js"
 import { createPostgresSnapshotStore } from "./postgres-snapshot-store.js"
+import { postgresTransactionManager } from "./postgres-transaction-manager.js"
+import {
+  createPostgresEventScheduler,
+  type PostgresEventScheduler,
+} from "./postgres-event-scheduler.js"
 import { bootstrapSchema, DEFAULT_TABLE_NAMES, type TableNames } from "./schema.js"
 
 export interface PostgresConfig {
@@ -34,6 +56,11 @@ export interface PostgresConfig {
   /** Retry policy for the initial connect + bootstrap. Defaults to
    *  framework defaults via withRetry. */
   readonly resilience?: Partial<ResilienceConfig>
+  /** Tuning for the durable scheduler's polling worker. */
+  readonly scheduler?: {
+    readonly pollIntervalMs?: number
+    readonly batchSize?: number
+  }
 }
 
 export function postgres(config: PostgresConfig): (app: App) => void {
@@ -48,6 +75,29 @@ export function postgres(config: PostgresConfig): (app: App) => void {
     app.set("snapshotStore", ({ serializer }) =>
       createPostgresSnapshotStore({ adapter, serializer, tableNames: tables }),
     )
+    app.set("transactionManager", () => postgresTransactionManager(adapter))
+    app.set("unitOfWorkFactory", (resolved: KronosComponents) =>
+      lazyTransactionalUnitOfWorkFactory(
+        runInNewUoW,
+        resolved.transactionManager as TransactionManager<unknown>,
+      ),
+    )
+
+    // Durable scheduler — closure captures the instance so the worker can be
+    // start()'d in "processors" and stop()'d in "connect" symmetric to other
+    // background workers.
+    let scheduler: PostgresEventScheduler | undefined
+    app.set("eventScheduler", ({ eventStore, unitOfWorkFactory, tagResolver }) => {
+      scheduler = createPostgresEventScheduler({
+        adapter,
+        eventStore,
+        uowFactory: unitOfWorkFactory,
+        tagResolver,
+        tableNames: tables,
+        ...config.scheduler,
+      })
+      return scheduler
+    })
 
     app.onStart("connect", async () => {
       await withRetry(() => adapter.connect(), { event: "initial-connect", ...resilience })
@@ -59,7 +109,15 @@ export function postgres(config: PostgresConfig): (app: App) => void {
       }
     })
 
+    // Worker spins up after registration/warmup so all slots are resolved and
+    // any user-supplied processors are in place before due schedules start
+    // firing into the event store.
+    app.onStart("processors", async () => {
+      if (scheduler) await scheduler.start()
+    })
+
     app.onStop("connect", async () => {
+      if (scheduler) await scheduler.stop()
       await adapter.disconnect()
     })
   }

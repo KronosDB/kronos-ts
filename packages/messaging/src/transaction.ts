@@ -9,6 +9,18 @@ import {
 import type { UoWRunner } from "./unit-of-work.js"
 
 /**
+ * Resource key holding a deferred-begin factory installed by
+ * {@link lazyTransactionalUnitOfWorkFactory}. The factory begins the tx on
+ * first call, registers commit/rollback hooks on the UoW, caches the
+ * resulting tx in {@link TRANSACTION_KEY}, and returns it. Subsequent calls
+ * return the cached tx without a re-begin.
+ *
+ * NOT exported from the package barrel — components reach the lazily-begun
+ * tx through {@link getOrBeginActiveTransaction}.
+ */
+const LAZY_TX_FACTORY_KEY: ResourceKey<() => Promise<unknown>> = resourceKey("lazyTxFactory")
+
+/**
  * Manages transaction lifecycle. Users provide an implementation
  * for their specific database/ORM.
  *
@@ -95,4 +107,76 @@ export function transactionalUnitOfWorkFactory<T>(
       return action()
     })
   }
+}
+
+/**
+ * Lazy variant of {@link transactionalUnitOfWorkFactory}.
+ *
+ * Unlike the eager factory, no transaction is begun on UoW entry. Instead,
+ * a factory is installed in the UoW that opens the tx on the first call to
+ * {@link getOrBeginActiveTransaction}. Pure-read UoWs that never request a
+ * tx pay zero begin/commit cost and never claim a connection from the pool.
+ *
+ * On first request: the tx is begun, stored in {@link TRANSACTION_KEY},
+ * and commit/rollback hooks are registered. Subsequent requests within
+ * the same UoW return the cached tx — there is exactly one tx per UoW.
+ *
+ * Components that may write to the underlying store (event stores,
+ * schedulers, ORM integrations) reach the tx via
+ * {@link getOrBeginActiveTransaction}; read-only paths use
+ * {@link getActiveTransaction} so they observe an existing tx but do not
+ * provoke one to open.
+ */
+export function lazyTransactionalUnitOfWorkFactory<T>(
+  delegate: UoWRunner,
+  txManager: TransactionManager<T>,
+): UoWRunner {
+  return async (metadata, action) => {
+    return delegate(metadata, async () => {
+      let tx: T | undefined
+      let committed = false
+
+      const factory = async (): Promise<T> => {
+        if (tx !== undefined) return tx
+        tx = await txManager.begin()
+        setResource(TRANSACTION_KEY, tx)
+        on(Phase.COMMIT, async () => {
+          if (tx === undefined) return
+          await txManager.commit(tx)
+          committed = true
+        })
+        onError(async () => {
+          if (tx === undefined || committed) return
+          await txManager.rollback(tx)
+        })
+        return tx
+      }
+
+      setResource(LAZY_TX_FACTORY_KEY, factory as () => Promise<unknown>)
+      return action()
+    })
+  }
+}
+
+/**
+ * Return the active UoW transaction, opening it if a lazy factory is
+ * installed and no tx has been begun yet. Returns the cached tx on
+ * subsequent calls within the same UoW.
+ *
+ * Returns `undefined` when no UoW is active OR when an active UoW has
+ * neither an existing tx nor a lazy factory installed (e.g., the app
+ * doesn't compose a TransactionManager). Callers that need a tx must
+ * decide what to do with `undefined` — typically fall back to opening
+ * an ad-hoc tx on their own driver.
+ */
+export async function getOrBeginActiveTransaction<T = unknown>(): Promise<T | undefined> {
+  const state = processingStateStorage.getStore()
+  if (!state) return undefined
+  const existing = state.resources.get(TRANSACTION_KEY.symbol) as T | undefined
+  if (existing !== undefined) return existing
+  const factory = state.resources.get(LAZY_TX_FACTORY_KEY.symbol) as
+    | (() => Promise<T>)
+    | undefined
+  if (factory === undefined) return undefined
+  return await factory()
 }

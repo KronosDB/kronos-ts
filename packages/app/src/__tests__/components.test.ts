@@ -3,8 +3,8 @@ import { ALL_SLOTS, type KronosComponents, type SlotName } from "../components.j
 import { CircularSlotDependencyError, SlotNotRegisteredError } from "../errors.js"
 
 describe("KronosComponents interface", () => {
-  it("ALL_SLOTS contains exactly 10 slot names (Plan 09-01: tokenStore + transactionManager)", () => {
-    expect(ALL_SLOTS).toHaveLength(10)
+  it("ALL_SLOTS contains exactly 11 slot names", () => {
+    expect(ALL_SLOTS).toHaveLength(11)
     expect(ALL_SLOTS).toContain("eventStore")
     expect(ALL_SLOTS).toContain("snapshotStore")
     expect(ALL_SLOTS).toContain("commandBus")
@@ -15,6 +15,7 @@ describe("KronosComponents interface", () => {
     expect(ALL_SLOTS).toContain("tagResolver")
     expect(ALL_SLOTS).toContain("tokenStore")
     expect(ALL_SLOTS).toContain("transactionManager")
+    expect(ALL_SLOTS).toContain("eventScheduler")
   })
 })
 

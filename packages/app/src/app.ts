@@ -467,6 +467,7 @@ export class AppImpl implements App {
       // application + processor wiring see the same instance.
       tokenStore: resolved.tokenStore,
       transactionManager: resolved.transactionManager,
+      eventScheduler: resolved.eventScheduler,
     }
 
     // 3b. Apply decorators in two passes per slot (D-62, D-64, DESIGN.md §8):

@@ -245,7 +245,9 @@ export {
   type TransactionManager,
   noTransactionManager,
   getActiveTransaction,
+  getOrBeginActiveTransaction,
   transactionalUnitOfWorkFactory,
+  lazyTransactionalUnitOfWorkFactory,
   TRANSACTION_KEY,
 } from "./transaction.js"
 
@@ -259,6 +261,18 @@ export {
 // Module-level handler helpers (Plan 04-01 / HDL-02 / D-42)
 export { send, COMMAND_BUS_KEY } from "./send.js"
 export { emitUpdate, QUERY_BUS_KEY } from "./emit-update.js"
+
+// Event scheduling
+export {
+  type EventScheduler,
+  type ScheduleToken,
+  type CancelResult,
+} from "./event-scheduler.js"
+export {
+  type InMemoryEventScheduler,
+  type InMemoryEventSchedulerOptions,
+  createInMemoryEventScheduler,
+} from "./in-memory-event-scheduler.js"
 
 // Modules — Plan 08-03a (D-82): function-style helpers replace Module-shape factories
 export {

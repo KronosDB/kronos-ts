@@ -43,6 +43,22 @@ export {
 // Extension factory (Plan 05)
 export { postgres, type PostgresConfig } from "./postgres.js"
 
+// Transaction manager — bridges the framework's TransactionManager lifecycle
+// to adapter.transaction(). Users typically get this wired automatically via
+// `postgres(config)`; exported for direct use when composing UoW runners by
+// hand.
+export { postgresTransactionManager } from "./postgres-transaction-manager.js"
+
+// Postgres event scheduler — durable schedule() + cancel() + polling worker
+// that fires due schedules into the event store. Wired into postgres()
+// automatically when a uowFactory with the lazy postgres tx is in place;
+// exported here so users who compose their own wiring can construct one.
+export {
+  createPostgresEventScheduler,
+  type PostgresEventScheduler,
+  type PostgresEventSchedulerConfig,
+} from "./postgres-event-scheduler.js"
+
 // Schema bootstrap + DDL builders — exposed for users who want to run their
 // own migrations (set `postgres({ bootstrap: false })`) or drive the store
 // directly without going through the extension factory.
@@ -51,6 +67,8 @@ export {
   buildEventsTableDDL,
   buildEventsIndexesDDL,
   buildSnapshotsTableDDL,
+  buildScheduledEventsTableDDL,
+  buildScheduledEventsIndexesDDL,
   DEFAULT_TABLE_NAMES,
   type TableNames,
 } from "./schema.js"

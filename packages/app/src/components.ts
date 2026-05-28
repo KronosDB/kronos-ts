@@ -6,6 +6,7 @@ import type {
   UoWRunner,
   TokenStore,
   TransactionManager,
+  EventScheduler,
 } from "@kronos-ts/messaging"
 import type { Serializer } from "@kronos-ts/common"
 
@@ -28,6 +29,7 @@ export interface KronosComponents {
   tagResolver: TagResolver
   tokenStore: TokenStore
   transactionManager: TransactionManager
+  eventScheduler: EventScheduler
 }
 
 /** Type-level: keyof KronosComponents — for verb signatures. */
@@ -45,4 +47,5 @@ export const ALL_SLOTS: readonly SlotName[] = [
   "tagResolver",
   "tokenStore",
   "transactionManager",
+  "eventScheduler",
 ] as const

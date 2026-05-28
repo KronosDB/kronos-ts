@@ -5,15 +5,18 @@ import {
   buildEventsTableDDL,
   buildEventsIndexesDDL,
   buildSnapshotsTableDDL,
+  buildScheduledEventsTableDDL,
+  buildScheduledEventsIndexesDDL,
   buildAppendStoredProcedureDDL,
   bootstrapSchema,
   type SchemaBootstrapAdapter,
 } from "../schema.js"
 
 describe("DEFAULT_TABLE_NAMES", () => {
-  it("uses the kronos_events / kronos_snapshots defaults", () => {
+  it("uses the kronos_events / kronos_snapshots / kronos_scheduled_events defaults", () => {
     expect(DEFAULT_TABLE_NAMES.events).toBe("kronos_events")
     expect(DEFAULT_TABLE_NAMES.snapshots).toBe("kronos_snapshots")
+    expect(DEFAULT_TABLE_NAMES.scheduled).toBe("kronos_scheduled_events")
   })
 })
 
@@ -61,7 +64,7 @@ describe("buildEventsTableDDL", () => {
   })
 
   it("substitutes the events table name parameter", () => {
-    const ddl = buildEventsTableDDL({ events: "my_events", snapshots: "ignored" })
+    const ddl = buildEventsTableDDL({ events: "my_events", snapshots: "ignored", scheduled: "ignored" })
     expect(ddl).toContain("CREATE TABLE IF NOT EXISTS my_events")
     expect(ddl).not.toContain("kronos_events")
   })
@@ -86,7 +89,7 @@ describe("buildEventsIndexesDDL", () => {
   })
 
   it("substitutes the events table name", () => {
-    const ddl = buildEventsIndexesDDL({ events: "my_events", snapshots: "ignored" })
+    const ddl = buildEventsIndexesDDL({ events: "my_events", snapshots: "ignored", scheduled: "ignored" })
     expect(ddl).toMatch(/ON my_events/)
   })
 })
@@ -100,6 +103,57 @@ describe("buildSnapshotsTableDDL", () => {
   it("declares a composite primary key on (state_name, state_id) for upsert semantics", () => {
     const ddl = buildSnapshotsTableDDL(DEFAULT_TABLE_NAMES)
     expect(ddl).toMatch(/PRIMARY KEY \(state_name, state_id\)/)
+  })
+})
+
+describe("buildScheduledEventsTableDDL", () => {
+  it("uses schedule_id UUID as the primary key (same UUID as the eventual event_id)", () => {
+    const ddl = buildScheduledEventsTableDDL(DEFAULT_TABLE_NAMES)
+    expect(ddl).toMatch(/schedule_id\s+UUID\s+PRIMARY KEY/)
+  })
+
+  it("declares fire_at TIMESTAMPTZ — wall-clock target for the worker", () => {
+    const ddl = buildScheduledEventsTableDDL(DEFAULT_TABLE_NAMES)
+    expect(ddl).toMatch(/fire_at\s+TIMESTAMPTZ\s+NOT NULL/)
+  })
+
+  it("declares a CHECK constraint enumerating the three valid statuses", () => {
+    // pending / appended / cancelled — tombstone model. CHECK keeps the column
+    // honest at the DB level so an out-of-spec UPDATE can't silently corrupt state.
+    const ddl = buildScheduledEventsTableDDL(DEFAULT_TABLE_NAMES)
+    expect(ddl).toMatch(/status\s+TEXT\s+NOT NULL\s+DEFAULT 'pending'/)
+    expect(ddl).toMatch(/CHECK \(status IN \('pending', 'appended', 'cancelled'\)\)/)
+  })
+
+  it("captures the full EventMessage shape (type, tags, payload, metadata, version, message_timestamp)", () => {
+    const ddl = buildScheduledEventsTableDDL(DEFAULT_TABLE_NAMES)
+    expect(ddl).toMatch(/type\s+TEXT/)
+    expect(ddl).toMatch(/tags\s+TEXT\[\]/)
+    expect(ddl).toMatch(/payload\s+JSONB/)
+    expect(ddl).toMatch(/metadata\s+JSONB/)
+    expect(ddl).toMatch(/version\s+TEXT/)
+    expect(ddl).toMatch(/message_timestamp\s+BIGINT/)
+  })
+
+  it("substitutes the scheduled table name parameter", () => {
+    const ddl = buildScheduledEventsTableDDL({
+      events: "ignored",
+      snapshots: "ignored",
+      scheduled: "my_sched",
+    })
+    expect(ddl).toContain("CREATE TABLE IF NOT EXISTS my_sched")
+    expect(ddl).not.toContain("kronos_scheduled_events")
+  })
+})
+
+describe("buildScheduledEventsIndexesDDL", () => {
+  it("creates a partial btree on fire_at WHERE status = 'pending' for the hot polling path", () => {
+    // The worker's hot query scans only pending rows; a partial index keeps
+    // the B-tree tiny no matter how many appended/cancelled tombstones pile up.
+    const ddl = buildScheduledEventsIndexesDDL(DEFAULT_TABLE_NAMES)
+    expect(ddl).toMatch(/CREATE INDEX IF NOT EXISTS kronos_scheduled_events_pending_fire_at_idx/)
+    expect(ddl).toMatch(/ON kronos_scheduled_events \(fire_at\)/)
+    expect(ddl).toMatch(/WHERE status = 'pending'/)
   })
 })
 
@@ -173,11 +227,15 @@ describe("bootstrapSchema", () => {
 
   it("substitutes both table names", async () => {
     const mock = makeMockAdapter()
-    await bootstrapSchema(mock.adapter, { tableNames: { events: "my_evt", snapshots: "my_snap" } })
+    await bootstrapSchema(mock.adapter, {
+      tableNames: { events: "my_evt", snapshots: "my_snap", scheduled: "my_sched" },
+    })
     expect(mock.calls.some((c) => c.includes("CREATE TABLE IF NOT EXISTS my_evt"))).toBe(true)
     expect(mock.calls.some((c) => c.includes("CREATE TABLE IF NOT EXISTS my_snap"))).toBe(true)
+    expect(mock.calls.some((c) => c.includes("CREATE TABLE IF NOT EXISTS my_sched"))).toBe(true)
     expect(mock.calls.some((c) => c.includes("kronos_events"))).toBe(false)
     expect(mock.calls.some((c) => c.includes("kronos_snapshots"))).toBe(false)
+    expect(mock.calls.some((c) => c.includes("kronos_scheduled_events"))).toBe(false)
   })
 
   it("releases the lock even when a DDL statement throws", async () => {
@@ -201,6 +259,6 @@ describe("bootstrapSchema", () => {
     // CREATE TABLE IF NOT EXISTS is idempotent at the SQL layer; this asserts
     // no client-side guard prevents re-execution.
     const tableCreates = mock.calls.filter((c) => c.includes("CREATE TABLE IF NOT EXISTS")).length
-    expect(tableCreates).toBe(4) // 2 tables × 2 runs
+    expect(tableCreates).toBe(6) // 3 tables (events / snapshots / scheduled) × 2 runs
   })
 })
