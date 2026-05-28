@@ -1,5 +1,30 @@
 # @kronos-ts/rabbitmq
 
+## 0.3.0
+
+### Minor Changes
+
+- Add distributed subscription queries via a gossip-mirror subscriber registry.
+  Every `subscribe` publishes a claim over a fanout gossip exchange; each
+  instance maintains a cluster-wide `Map<subId, SubscriberRecord>` mirror.
+  `emitUpdate` walks the local mirror (where every subscriber's payload lives),
+  applies the `SubscriptionFilter`, and routes per-subscriber delivery over a
+  direct exchange keyed by the owner's instanceId — so function-form filters
+  work across instances by executing colocated with their payloads. A joiner
+  publishes a syncRequest on connect and peers re-broadcast owned claims to fill
+  its mirror. Topology: `kronos.subscribers.gossip` (fanout) +
+  `kronos.subscribers.direct` (direct). Instance-death failover and owner
+  election are out of scope.
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @kronos-ts/messaging@0.2.0
+  - @kronos-ts/app@0.2.0
+  - @kronos-ts/eventsourcing@0.1.2
+  - @kronos-ts/modelling@0.1.2
+
 ## 0.2.1
 
 ### Patch Changes

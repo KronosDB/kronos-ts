@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/axon-server",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Axon Server extension for Kronos — event store and command bus over Axon Server.",
   "license": "Apache-2.0",
   "type": "module",

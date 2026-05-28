@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/messaging",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Messaging primitives for Kronos — commands, events, handlers, and event processors.",
   "license": "Apache-2.0",
   "type": "module",
