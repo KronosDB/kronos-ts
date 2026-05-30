@@ -4,6 +4,7 @@ export {
   type CommandMessage,
   type CommandResultMessage,
   type EventMessage,
+  type SequencedEventMessage,
   type QueryMessage,
 } from "./message.js"
 
@@ -375,4 +376,3 @@ export {
 
 // Namespace factory
 export { withNamespace } from "./with-namespace.js"
-

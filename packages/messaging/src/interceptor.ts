@@ -1,4 +1,3 @@
-import type { Metadata } from "@kronos-ts/common"
 import type { Message } from "./message.js"
 
 /**
@@ -38,11 +37,29 @@ export interface DispatchInterceptor<M extends Message = Message> {
  * accessors (`getResource` / `setResource`) — no `ProcessingContext`
  * parameter is threaded.
  *
+ * The first argument is the full message object. Prefer keeping it as
+ * `message` when transforming or inspecting broad message details:
+ *
+ * ```
+ * app.handlerInterceptor(async (message, next) => {
+ *   const { payload, metadata, timestamp } = message
+ *   return next({
+ *     ...message,
+ *     metadata: { ...metadata, tenantId: "tenant-1" },
+ *   })
+ * })
+ * ```
+ *
  * The `next` function calls the next interceptor in the chain, or the
- * actual handler if this is the last interceptor.
+ * actual handler if this is the last interceptor. Call `next()` to proceed
+ * with the current message, or `next(replacementMessage)` to proceed with a
+ * transformed message.
  *
  * To skip handling entirely, don't call `next()` and return a result directly.
  */
-export interface HandlerInterceptor<R = unknown> {
-  (message: Message, next: () => Promise<R>): Promise<R>
+export interface HandlerInterceptor<
+  M extends Message = Message,
+  R = unknown,
+> {
+  (message: M, next: (message?: M) => Promise<R>): Promise<R>
 }

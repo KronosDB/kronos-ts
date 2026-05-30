@@ -122,7 +122,7 @@ export function createCommandInvocation(
           )
 
           const finalCriteria = handler.appendCondition
-            ? handler.appendCondition(message.payload, combinedCriteria)
+            ? handler.appendCondition(message, combinedCriteria)
             : combinedCriteria
 
           appendCondition = {
@@ -135,7 +135,7 @@ export function createCommandInvocation(
       })
     }
 
-    return handler.handler(message.payload, message.metadata)
+    return handler.handler(message)
   }
 }
 

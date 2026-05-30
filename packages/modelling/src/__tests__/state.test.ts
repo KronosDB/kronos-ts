@@ -32,13 +32,13 @@ describe("state()", () => {
       initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
       criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
       evolve: [
-        on(CourseCreated, (state: CourseState, event) => ({
+        on(CourseCreated, (state: CourseState, { payload: event }) => ({
           ...state,
           created: true,
           name: event.name,
           capacity: event.capacity,
         })),
-        on(CourseCapacityChanged, (state: CourseState, event) => ({
+        on(CourseCapacityChanged, (state: CourseState, { payload: event }) => ({
           ...state,
           capacity: event.capacity,
         })),
@@ -88,13 +88,13 @@ describe("state()", () => {
       initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
       criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
       evolve: [
-        on(CourseCreated, (state: CourseState, event) => ({
+        on(CourseCreated, (state: CourseState, { payload: event }) => ({
           ...state,
           created: true,
           name: event.name,
           capacity: event.capacity,
         })),
-        on(CourseCapacityChanged, (state: CourseState, event) => ({
+        on(CourseCapacityChanged, (state: CourseState, { payload: event }) => ({
           ...state,
           capacity: event.capacity,
         })),
@@ -107,16 +107,30 @@ describe("state()", () => {
     const createEvolver = Course.evolvers[0]!
     current = createEvolver.evolve(
       current,
-      { courseId: "cs-101", name: "Intro to CS", capacity: 30 },
-      { courseId: "cs-101" },
+      {
+        identifier: "evt-1",
+        name: CourseCreated.name,
+        version: CourseCreated.version,
+        payload: { courseId: "cs-101", name: "Intro to CS", capacity: 30 },
+        metadata: {},
+        timestamp: Date.now(),
+        tags: [],
+      },
     )
     expect(current).toEqual({ created: true, name: "Intro to CS", capacity: 30 })
 
     const capacityEvolver = Course.evolvers[1]!
     current = capacityEvolver.evolve(
       current,
-      { courseId: "cs-101", capacity: 50 },
-      { courseId: "cs-101" },
+      {
+        identifier: "evt-2",
+        name: CourseCapacityChanged.name,
+        version: CourseCapacityChanged.version,
+        payload: { courseId: "cs-101", capacity: 50 },
+        metadata: {},
+        timestamp: Date.now(),
+        tags: [],
+      },
     )
     expect(current).toEqual({ created: true, name: "Intro to CS", capacity: 50 })
   })

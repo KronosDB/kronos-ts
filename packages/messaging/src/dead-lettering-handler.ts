@@ -74,7 +74,7 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
       // Try to deliver to all handlers
       for (const reg of handlers) {
         try {
-          await reg.handler(event.payload, event.metadata)
+          await reg.handler({ ...event, sequence: sequencedEvent.sequence })
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err))
           const letter = createDeadLetter(event, error, seqId, {

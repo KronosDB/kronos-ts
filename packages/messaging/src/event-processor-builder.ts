@@ -60,8 +60,8 @@ export type EventProcessorModule = TrackingProcessorModule | SubscribingProcesso
  * position via a token store, and support replay/reset.
  *
  * ```typescript
- * const onCreated = eventHandler(CourseCreated, async (e) => { ... })
- * const onCapChanged = eventHandler(CourseCapacityChanged, async (e) => { ... })
+ * const onCreated = eventHandler(CourseCreated, async ({ payload: e }) => { ... })
+ * const onCapChanged = eventHandler(CourseCapacityChanged, async ({ payload: e }) => { ... })
  *
  * trackingProcessor("course-projection")
  *   .eventHandlers(onCreated, onCapChanged)
@@ -186,7 +186,7 @@ export class TrackingProcessorBuilder {
  * as they are appended. No token store, no position tracking, no replay.
  *
  * ```typescript
- * const onNotification = eventHandler(NotificationRaised, async (e) => { ... })
+ * const onNotification = eventHandler(NotificationRaised, async ({ payload: e }) => { ... })
  *
  * subscribingProcessor("notifications")
  *   .eventHandlers(onNotification)

@@ -2,8 +2,9 @@
  * Type-level tests for the collapsed handler signatures (Plan 04-02, Task 1).
  *
  * These tests assert the POST-COLLAPSE shape where:
- * - Event/query handlers receive (payload, metadata) — no context object
- * - Evolvers remain unchanged: (state, event, id) per D-41
+ * - Event handlers receive EventMessage
+ * - Evolvers receive EventMessage
+ * - Query handlers receive QueryMessage
  * - CommandHandlerContext / EventHandlerContext / QueryHandlerContext are DELETED
  */
 import { describe, test, expect } from "bun:test"
@@ -24,13 +25,12 @@ const GetSomething = query({
   payload: z.object({ id: z.string() }),
 })
 
-// Test 1: on(EventDescriptor, (event, metadata) => ...) typechecks and returns EventHandlerRegistration
-test("on() with EventDescriptor and (event, metadata) returns EventHandlerRegistration", () => {
+// Test 1: on(EventDescriptor, (message) => ...) typechecks and returns EventHandlerRegistration
+test("on() with EventDescriptor and message handler returns EventHandlerRegistration", () => {
   const reg: EventHandlerRegistration<typeof SomethingHappened.payload> = on(
     SomethingHappened,
-    async (event: { value: number }, metadata: Metadata) => {
-      // metadata is Metadata, not EventHandlerContext
-      void event
+    async ({ payload, metadata }) => {
+      void payload.value
       void metadata
     },
   )
@@ -38,12 +38,12 @@ test("on() with EventDescriptor and (event, metadata) returns EventHandlerRegist
   expect(reg.descriptor).toBe(SomethingHappened)
 })
 
-// Test 2: on(QueryDescriptor, (query, metadata) => ...) typechecks and returns QueryHandlerRegistration
-test("on() with QueryDescriptor and (query, metadata) returns QueryHandlerRegistration", () => {
+// Test 2: on(QueryDescriptor, (message) => ...) typechecks and returns QueryHandlerRegistration
+test("on() with QueryDescriptor and message handler returns QueryHandlerRegistration", () => {
   const reg: QueryHandlerRegistration<typeof GetSomething.payload, { result: string }> = on(
     GetSomething,
-    async (query: { id: string }, metadata: Metadata): Promise<{ result: string }> => {
-      void query
+    async ({ payload, metadata }): Promise<{ result: string }> => {
+      void payload.id
       void metadata
       return { result: "ok" }
     },
@@ -52,52 +52,80 @@ test("on() with QueryDescriptor and (query, metadata) returns QueryHandlerRegist
   expect(reg.descriptor).toBe(GetSomething)
 })
 
-// Test 3: on(EventDescriptor, (state, event, id) => ...) (evolver) typechecks — D-41 evolver-unchanged
-test("on() evolver overload still typechecks with (state, event, id) — D-41 preserved", () => {
+// Test 3: on(EventDescriptor, (state, message) => ...) evolver typechecks
+test("on() evolver overload typechecks with state and message", () => {
   type State = { count: number }
   const reg: EvolverRegistration<State, typeof SomethingHappened.payload> = on(
     SomethingHappened,
-    (state: State, event: { value: number }, _id: unknown): State => ({
-      count: state.count + event.value,
+    (state: State, { payload }): State => ({
+      count: state.count + payload.value,
     }),
   )
   expect(reg.descriptor).toBe(SomethingHappened)
   // Verify evolver actually works
-  const result = reg.evolve({ count: 0 }, { value: 5 }, "some-id")
+  const result = reg.evolve({ count: 0 }, {
+    identifier: "evt-1",
+    name: SomethingHappened.name,
+    version: SomethingHappened.version,
+    payload: { value: 5 },
+    metadata: {},
+    timestamp: 1234,
+    tags: [],
+  })
   expect(result).toEqual({ count: 5 })
 })
 
-// Test 4: EventHandlerRegistration.handler signature uses (event, metadata) — no context arg
-test("EventHandlerRegistration.handler has (event, metadata) signature", () => {
+// Test 4: EventHandlerRegistration.handler supports message details
+test("EventHandlerRegistration.handler supports message details", () => {
   let capturedMetadata: Metadata | undefined
+  let capturedTimestamp: number | undefined
   const testMetadata: Metadata = { correlationId: "test-123" }
+  const message = {
+    identifier: "evt-1",
+    name: SomethingHappened.name,
+    version: SomethingHappened.version,
+    payload: { value: 42 },
+    metadata: testMetadata,
+    timestamp: 1234,
+    tags: [],
+  }
 
   const reg: EventHandlerRegistration<typeof SomethingHappened.payload> = on(
     SomethingHappened,
-    async (_event: { value: number }, metadata: Metadata) => {
+    async ({ metadata, timestamp }) => {
       capturedMetadata = metadata
+      capturedTimestamp = timestamp
     },
   )
 
-  // Call the handler with (payload, metadata) — the new shape
-  reg.handler({ value: 42 }, testMetadata)
+  reg.handler(message)
 
   expect(capturedMetadata).toEqual(testMetadata)
+  expect(capturedTimestamp).toBe(1234)
 })
 
 // Test 5: no regressions — existing handler.test.ts tests still pass
 // (this test file runs alongside handler.test.ts; the describe block is included for clarity)
 describe("handler-signature: evolver shape preserved", () => {
-  test("evolver registration evolve function receives (state, event, id)", () => {
+  test("evolver registration evolve function receives event message", () => {
     type S = { name: string }
+    const message = {
+      identifier: "evt-1",
+      name: SomethingHappened.name,
+      version: SomethingHappened.version,
+      payload: { value: 7 },
+      metadata: {},
+      timestamp: 5678,
+      tags: [],
+    }
     const reg = on(
       SomethingHappened,
-      (state: S, event: { value: number }, id: unknown): S => ({
+      (state: S, { payload, timestamp }): S => ({
         ...state,
-        name: `${id}-${event.value}`,
+        name: `${payload.value}-${timestamp}`,
       }),
     )
-    const result = reg.evolve({ name: "" }, { value: 7 }, "agg-1")
-    expect(result).toEqual({ name: "agg-1-7" })
+    const result = reg.evolve({ name: "" }, message)
+    expect(result).toEqual({ name: "7-5678" })
   })
 })

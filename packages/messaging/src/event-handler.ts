@@ -1,6 +1,6 @@
 import type { z } from "zod"
-import type { Metadata } from "@kronos-ts/common"
 import type { EventDescriptor } from "./descriptor.js"
+import type { SequencedEventMessage } from "./message.js"
 
 // ---------------------------------------------------------------------------
 // Singular factory — mirrors commandHandler / queryHandler.
@@ -16,18 +16,15 @@ import type { EventDescriptor } from "./descriptor.js"
 export interface EventHandlerDefinition<P extends z.ZodType = z.ZodType> {
   readonly kind: "event-handler"
   readonly descriptor: EventDescriptor<P>
-  readonly handler: (
-    event: z.infer<P>,
-    metadata: Metadata,
-  ) => Promise<void> | void
+  readonly handler: (message: SequencedEventMessage<z.infer<P>>) => Promise<void> | void
 }
 
 /**
  * Defines a singular event handler.
  *
  * ```
- * const onCourseCreated = eventHandler(CourseCreated, async (event, metadata) => {
- *   await db.courses.insert({ id: event.courseId, name: event.name })
+ * const onCourseCreated = eventHandler(CourseCreated, async ({ payload, metadata, timestamp }) => {
+ *   await db.courses.insert({ id: payload.courseId, name: payload.name, createdAt: timestamp })
  * })
  * ```
  *
@@ -38,7 +35,7 @@ export interface EventHandlerDefinition<P extends z.ZodType = z.ZodType> {
  */
 export function eventHandler<P extends z.ZodType>(
   descriptor: EventDescriptor<P>,
-  handler: (event: z.infer<P>, metadata: Metadata) => Promise<void> | void,
+  handler: (message: SequencedEventMessage<z.infer<P>>) => Promise<void> | void,
 ): EventHandlerDefinition<P> {
   return { kind: "event-handler", descriptor, handler }
 }

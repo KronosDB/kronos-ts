@@ -135,7 +135,7 @@ export function createSubscribingEventProcessor(
 
     for (const reg of handlers) {
       try {
-        await reg.handler(event.payload, event.metadata)
+        await reg.handler(event)
       } catch (err) {
         // SubscribingEventProcessor doesn't have position tracking,
         // so pass -1n as position indicator

@@ -30,10 +30,10 @@ const Course = state({
   initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
-    on(CourseCreated, (state: CourseState, e) => ({
+    on(CourseCreated, (state: CourseState, { payload: e }) => ({
       ...state, created: true, name: e.name, capacity: e.capacity,
     })),
-    on(CourseCapacityChanged, (state: CourseState, e) => ({
+    on(CourseCapacityChanged, (state: CourseState, { payload: e }) => ({
       ...state, capacity: e.capacity,
     })),
   ],

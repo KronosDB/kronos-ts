@@ -79,7 +79,7 @@ export const append: AppendFunction = ((
       if (!cachedPromise) continue
       const evolvers = (module as any).evolvers as ReadonlyArray<{
         descriptor: { name: any }
-        evolve: (s: any, e: any, id: any) => any
+        evolve: (...args: any[]) => any
       }> | undefined
       if (!evolvers) continue
       for (const evolver of evolvers) {
@@ -88,7 +88,7 @@ export const append: AppendFunction = ((
             cacheKey,
             cachedPromise.then((result: any) => ({
               ...result,
-              state: evolver.evolve(result.state, eventPayload, id),
+              state: evolver.evolve(result.state, eventMessage),
             })),
           )
           break

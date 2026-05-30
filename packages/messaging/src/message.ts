@@ -35,6 +35,11 @@ export interface EventMessage<P = unknown> extends Message<P> {
   readonly tags: ReadonlyArray<{ readonly key: string; readonly value: string }>
 }
 
+export interface SequencedEventMessage<P = unknown> extends EventMessage<P> {
+  /** Stream position when the source has one; absent for push-only delivery. */
+  readonly sequence?: bigint
+}
+
 /**
  * A query message — dispatched to handler(s) that can answer it.
  */

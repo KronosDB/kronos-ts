@@ -29,7 +29,7 @@ const Thing = state({
   evolve: [on(ThingCreated, (s) => ({ ...s, created: true }))],
 })
 
-const createThingHandler = commandHandler(CreateThing, async (cmd, _md) => {
+const createThingHandler = commandHandler(CreateThing, async ({ payload: cmd }) => {
   await load(Thing, { id: cmd.id })
   append(ThingCreated, { id: cmd.id })
 })

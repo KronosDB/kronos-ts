@@ -45,7 +45,7 @@ describe("RabbitMQ query transport integration", () => {
     const worker = await kronos({ serviceName: "worker", instanceId: `${prefix}-worker`, quiet: true })
       .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
       .queries(
-        queryHandler(GetGreeting, async (q) => `hello, ${q.name}`),
+        queryHandler(GetGreeting, async ({ payload: q }) => `hello, ${q.name}`),
       )
       .start()
 
@@ -70,7 +70,7 @@ describe("RabbitMQ query transport integration", () => {
       .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
       .queries(queryHandler(WatchValue, async () => "initial"))
       .commands(
-        commandHandler(PublishUpdate, async (cmd) => {
+        commandHandler(PublishUpdate, async ({ payload: cmd }) => {
           emitUpdate(WatchValue, payloadEquals({ id: cmd.id }), cmd.value)
         }),
       )
@@ -123,7 +123,7 @@ describe("RabbitMQ query transport integration", () => {
       .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
       .queries(queryHandler(WatchValue, async () => "initial"))
       .commands(
-        commandHandler(PublishUpdate, async (cmd) => {
+        commandHandler(PublishUpdate, async ({ payload: cmd }) => {
           // Function filter — only IDs starting with "hi-" match. This case
           // could not cross the wire under the broadcast model because JS
           // functions don't serialize. Under the gossip-mirror model the

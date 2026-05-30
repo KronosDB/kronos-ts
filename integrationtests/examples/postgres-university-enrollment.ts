@@ -79,8 +79,8 @@ const Course = state({
   initial: (): CourseState => ({ opened: false, capacity: 0, enrolled: [] }),
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
-    on(CourseOpened, (s, e) => ({ ...s, opened: true, capacity: e.capacity })),
-    on(StudentEnrolled, (s, e) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
+    on(CourseOpened, (s, { payload: e }) => ({ ...s, opened: true, capacity: e.capacity })),
+    on(StudentEnrolled, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
   ],
 })
 
@@ -91,8 +91,8 @@ const Student = state({
   initial: (): StudentState => ({ registered: false, maxCourses: 0, courses: [] }),
   criteria: (id) => EventCriteria.havingTags(tag("studentId", id.studentId)),
   evolve: [
-    on(StudentRegistered, (s, e) => ({ ...s, registered: true, maxCourses: e.maxCourses })),
-    on(StudentEnrolled, (s, e) => ({ ...s, courses: [...s.courses, e.courseId] })),
+    on(StudentRegistered, (s, { payload: e }) => ({ ...s, registered: true, maxCourses: e.maxCourses })),
+    on(StudentEnrolled, (s, { payload: e }) => ({ ...s, courses: [...s.courses, e.courseId] })),
   ],
 })
 
@@ -114,19 +114,19 @@ const EnrollStudent = command({
   routingKey: "courseId",
 })
 
-const openCourse = commandHandler(OpenCourse, async (cmd) => {
+const openCourse = commandHandler(OpenCourse, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (course.opened) throw new Error(`Course ${cmd.courseId} already opened`)
   append(CourseOpened, { courseId: cmd.courseId, title: cmd.title, capacity: cmd.capacity })
 })
 
-const registerStudent = commandHandler(RegisterStudent, async (cmd) => {
+const registerStudent = commandHandler(RegisterStudent, async ({ payload: cmd }) => {
   const student = await load(Student, { studentId: cmd.studentId })
   if (student.registered) throw new Error(`Student ${cmd.studentId} already registered`)
   append(StudentRegistered, { studentId: cmd.studentId, name: cmd.name, maxCourses: cmd.maxCourses })
 })
 
-const enrollStudent = commandHandler(EnrollStudent, async (cmd) => {
+const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   const student = await load(Student, { studentId: cmd.studentId })
   if (!course.opened) throw new Error("Course not open")
@@ -144,7 +144,7 @@ const enrollStudent = commandHandler(EnrollStudent, async (cmd) => {
 type DrizzleDb = ReturnType<typeof drizzle<Record<string, never>>>
 
 function buildProjector(db: DrizzleDb) {
-  const onCourseOpened = eventHandler(CourseOpened, async (e) => {
+  const onCourseOpened = eventHandler(CourseOpened, async ({ payload: e }) => {
     await db
       .insert(courseViews)
       .values({ courseId: e.courseId, title: e.title, capacity: e.capacity, enrolledCount: 0 })
@@ -153,7 +153,7 @@ function buildProjector(db: DrizzleDb) {
         set: { title: e.title, capacity: e.capacity, updatedAt: new Date() },
       })
   })
-  const onStudentEnrolled = eventHandler(StudentEnrolled, async (e) => {
+  const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }) => {
     await db
       .update(courseViews)
       .set({

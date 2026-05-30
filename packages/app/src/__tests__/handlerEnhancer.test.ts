@@ -53,7 +53,7 @@ const PingState = state({
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
   evolve: [on(Pinged, (s) => ({ ...s, pinged: true }))],
 })
-const pingHandler = commandHandler(Ping, async (cmd) => {
+const pingHandler = commandHandler(Ping, async ({ payload: cmd }) => {
   await load(PingState, { id: cmd.id })
   append(Pinged, { id: cmd.id })
   return `OK:${cmd.id}` as const
@@ -127,7 +127,7 @@ describe("handlerEnhancer wires through command handler registration", () => {
 describe("handlerEnhancer wires through query handler registration", () => {
   it("composedEnhancer wraps query handlers — TRACED: marker visible on return", async () => {
     const recorded: Array<any> = []
-    const echo = queryHandler(Echo, async (payload, _metadata) => `OK:${payload.id}`)
+    const echo = queryHandler(Echo, async ({ payload }) => `OK:${payload.id}`)
     const app = kronos({ quiet: true })
       .queries(echo)
       .handlerEnhancer(tracingEnhancer("TRACED:", recorded))
@@ -155,7 +155,7 @@ describe("handlerEnhancer wires through subscribing event processor", () => {
   it("composedEnhancer wraps subscribing-processor event handlers", async () => {
     const recorded: Array<any> = []
     let received = ""
-    const onPinged = eventHandler(Pinged, async (payload) => {
+    const onPinged = eventHandler(Pinged, async ({ payload }) => {
       received = payload.id
     })
     const app = kronos({ quiet: true })

@@ -1,10 +1,10 @@
 import type { z } from "zod"
-import type { Metadata } from "@kronos-ts/common"
 import type {
   CommandDescriptor,
   EventDescriptor,
   QueryDescriptor,
 } from "./descriptor.js"
+import type { EventMessage, QueryMessage, SequencedEventMessage } from "./message.js"
 
 // ---------------------------------------------------------------------------
 // Handler context shapes — DELETED (Plan 04-02, D-41)
@@ -22,10 +22,7 @@ import type {
 export interface EventHandlerRegistration<P extends z.ZodType = z.ZodType> {
   readonly kind: "event-handler"
   readonly descriptor: EventDescriptor<P>
-  readonly handler: (
-    event: z.infer<P>,
-    metadata: Metadata,
-  ) => Promise<void> | void
+  readonly handler: (message: SequencedEventMessage<z.infer<P>>) => Promise<void> | void
 }
 
 /**
@@ -40,7 +37,7 @@ export interface EvolverRegistration<
 > {
   readonly kind: "evolver"
   readonly descriptor: EventDescriptor<P>
-  readonly evolve: (state: S, event: z.infer<P>, id: unknown) => S | Promise<S>
+  readonly evolve: (state: S, message: EventMessage<z.infer<P>>) => S | Promise<S>
 }
 
 /** A paired query descriptor + handler function, with result type on the handler. */
@@ -50,10 +47,7 @@ export interface QueryHandlerRegistration<
 > {
   readonly kind: "query-handler"
   readonly descriptor: QueryDescriptor<Q>
-  readonly handler: (
-    query: z.infer<Q>,
-    metadata: Metadata,
-  ) => Promise<R> | R
+  readonly handler: (message: QueryMessage<z.infer<Q>>) => Promise<R> | R
 }
 
 // ---------------------------------------------------------------------------
@@ -65,13 +59,13 @@ export interface QueryHandlerRegistration<
  * Pairs a descriptor with its handler for use in handler/evolve arrays.
  *
  * Usage:
- * - Event handlers:  `on(CourseCreated, async (event, ctx) => { ... })`
- * - Query handlers:  `on(GetCourse, async (query, ctx) => { return { ... } })`
- * - Evolvers:        `on(CourseCreated, (state, event) => ({ ...state, name: event.name }))`
+ * - Event handlers:  `on(CourseCreated, async ({ payload, metadata }) => { ... })`
+ * - Query handlers:  `on(GetCourse, async ({ payload, metadata }) => { return { ... } })`
+ * - Evolvers:        `on(CourseCreated, (state, { payload }) => ({ ...state, name: payload.name }))`
  *
  * The overload is resolved by the descriptor kind and how many arguments
- * the callback declares. Evolvers receive `(state, event)` or `(state, event, id)`,
- * while event handlers receive `(event, context)`.
+ * the callback declares. Event and query handlers receive the full typed message.
+ * Evolvers receive the current state plus the full typed event message.
  *
  * In practice the distinction is enforced by the array type:
  * - `evolve: [on(...)]` expects `EvolverRegistration`
@@ -81,22 +75,19 @@ export interface QueryHandlerRegistration<
 // Overload: evolver (event descriptor + state evolve function)
 export function on<S, P extends z.ZodType>(
   descriptor: EventDescriptor<P>,
-  evolve: (state: S, event: z.infer<P>, id: unknown) => S | Promise<S>,
+  evolve: (state: S, message: EventMessage<z.infer<P>>) => S | Promise<S>,
 ): EvolverRegistration<S, P>
 
 // Overload: event handler (event descriptor + handler function)
 export function on<P extends z.ZodType>(
   descriptor: EventDescriptor<P>,
-  handler: (event: z.infer<P>, metadata: Metadata) => Promise<void> | void,
+  handler: (message: SequencedEventMessage<z.infer<P>>) => Promise<void> | void,
 ): EventHandlerRegistration<P>
 
 // Overload: query handler
 export function on<Q extends z.ZodType, R>(
   descriptor: QueryDescriptor<Q>,
-  handler: (
-    query: z.infer<Q>,
-    metadata: Metadata,
-  ) => Promise<R> | R,
+  handler: (message: QueryMessage<z.infer<Q>>) => Promise<R> | R,
 ): QueryHandlerRegistration<Q, R>
 
 export function on(
@@ -127,7 +118,7 @@ export function on(
  */
 export function onEvent<S, P extends z.ZodType>(
   descriptor: EventDescriptor<P>,
-  evolve: (state: S, event: z.infer<P>, id: unknown) => S | Promise<S>,
+  evolve: (state: S, message: EventMessage<z.infer<P>>) => S | Promise<S>,
 ): EvolverRegistration<S, P> {
   return { kind: "evolver", descriptor, evolve }
 }

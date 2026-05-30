@@ -26,10 +26,10 @@ const GetCourse = query({
 
 describe("on()", () => {
   it("creates an event handler registration", () => {
-    const reg = on(CourseCreated, async (event) => {
+    const reg = on(CourseCreated, async ({ payload }) => {
       // event is typed as { courseId: string, name: string }
-      event.courseId
-      event.name
+      payload.courseId
+      payload.name
     })
 
     expect(reg.kind).toBe("event-handler")
@@ -37,8 +37,8 @@ describe("on()", () => {
   })
 
   it("creates a query handler registration", () => {
-    const reg = on(GetCourse, async (query) => {
-      return { courseId: query.courseId, name: "Test Course" }
+    const reg = on(GetCourse, async ({ payload }) => {
+      return { courseId: payload.courseId, name: "Test Course" }
     })
 
     expect(reg.kind).toBe("query-handler")
@@ -52,7 +52,7 @@ describe("onEvent()", () => {
 
     const reg = onEvent<CourseState, typeof CourseCreated.payload>(
       CourseCreated,
-      (state, event) => ({ ...state, name: event.name }),
+      (state, { payload }) => ({ ...state, name: payload.name }),
     )
 
     expect(reg.kind).toBe("evolver")
@@ -60,8 +60,15 @@ describe("onEvent()", () => {
 
     const evolved = reg.evolve(
       { name: "", capacity: 0 },
-      { courseId: "cs-101", name: "Intro" },
-      "cs-101",
+      {
+        identifier: "evt-1",
+        name: CourseCreated.name,
+        version: CourseCreated.version,
+        payload: { courseId: "cs-101", name: "Intro" },
+        metadata: {},
+        timestamp: Date.now(),
+        tags: [],
+      },
     )
     expect(evolved.name).toBe("Intro")
   })
@@ -69,7 +76,7 @@ describe("onEvent()", () => {
 
 describe("commandHandler()", () => {
   it("creates a command handler definition with simple form (no result)", () => {
-    const handler = commandHandler(CreateCourse, async (cmd, _metadata) => {
+    const handler = commandHandler(CreateCourse, async ({ payload: cmd }) => {
       // void handler
     })
 
@@ -85,7 +92,7 @@ describe("commandHandler()", () => {
       result: z.object({ courseId: z.string() }),
     })
 
-    const handler = commandHandler(CreateCourseWithResult, async (cmd, _metadata) => {
+    const handler = commandHandler(CreateCourseWithResult, async ({ payload: cmd }) => {
       return { courseId: cmd.courseId }
     })
 
@@ -96,7 +103,7 @@ describe("commandHandler()", () => {
   it("creates a command handler with appendCondition override", () => {
     const handler = commandHandler(CreateCourse, {
       appendCondition: (cmd, sourced) => sourced,
-      handler: async (cmd, _metadata) => {},
+      handler: async () => {},
     })
 
     expect(handler.appendCondition).toBeDefined()
@@ -110,9 +117,9 @@ describe("commandHandler()", () => {
 
 describe("eventHandler()", () => {
   it("creates a singular event handler definition with the expected shape", () => {
-    const def = eventHandler(CourseCreated, async (event) => {
-      event.courseId
-      event.name
+    const def = eventHandler(CourseCreated, async ({ payload }) => {
+      payload.courseId
+      payload.name
     })
 
     expect(def.kind).toBe("event-handler")
@@ -122,19 +129,27 @@ describe("eventHandler()", () => {
 
   it("invokes the handler with payload + metadata", async () => {
     const seen: Array<{ courseId: string; name: string }> = []
-    const def = eventHandler(CourseCreated, async (event) => {
-      seen.push(event)
+    const def = eventHandler(CourseCreated, async ({ payload }) => {
+      seen.push(payload)
     })
 
-    await def.handler({ courseId: "cs-101", name: "Intro" }, {})
+    await def.handler({
+      identifier: "evt-1",
+      name: CourseCreated.name,
+      version: CourseCreated.version,
+      payload: { courseId: "cs-101", name: "Intro" },
+      metadata: {},
+      timestamp: Date.now(),
+      tags: [],
+    })
     expect(seen).toEqual([{ courseId: "cs-101", name: "Intro" }])
   })
 })
 
 describe("queryHandler()", () => {
   it("creates a singular query handler definition with the expected shape", () => {
-    const def = queryHandler(GetCourse, async (query) => {
-      return { courseId: query.courseId, name: "Test" }
+    const def = queryHandler(GetCourse, async ({ payload }) => {
+      return { courseId: payload.courseId, name: "Test" }
     })
 
     expect(def.kind).toBe("query-handler")
@@ -143,11 +158,17 @@ describe("queryHandler()", () => {
   })
 
   it("invokes the handler and returns its result", async () => {
-    const def = queryHandler(GetCourse, async (query) => {
-      return { courseId: query.courseId, name: "Echo" }
+    const def = queryHandler(GetCourse, async ({ payload }) => {
+      return { courseId: payload.courseId, name: "Echo" }
     })
 
-    const result = await def.handler({ courseId: "cs-999" }, {})
+    const result = await def.handler({
+      identifier: "qry-1",
+      name: GetCourse.name,
+      payload: { courseId: "cs-999" },
+      metadata: {},
+      timestamp: Date.now(),
+    })
     expect(result).toEqual({ courseId: "cs-999", name: "Echo" })
   })
 })

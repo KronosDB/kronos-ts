@@ -144,7 +144,7 @@ describe("registerCommandHandlersNatively", () => {
       const bus = createRecordingCommandBus()
       const config = createStubConfiguration({ commandBus: bus })
 
-      const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
+      const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
         append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
       })
 
@@ -182,7 +182,7 @@ describe("registerCommandHandlersNatively", () => {
         const config = createStubConfiguration({ commandBus: bus, stateManager })
 
         let loadedState: any = null
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
           loadedState = await load({ name: "Course" }, cmd.courseId)
         })
 
@@ -206,7 +206,7 @@ describe("registerCommandHandlersNatively", () => {
         const bus = createRecordingCommandBus()
         const config = createStubConfiguration({ commandBus: bus })
 
-        const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
+        const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
         })
 
@@ -236,7 +236,7 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, eventStore })
 
-        const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
+        const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
           append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
         })
 
@@ -282,7 +282,7 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
           await load({ name: "Course" }, cmd.courseId)
           append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
         })
@@ -328,7 +328,7 @@ describe("registerCommandHandlersNatively", () => {
 
         const customCriteria: EventCriteria = { kind: "any-tag" }
         const changeCapacity = commandHandler(ChangeCourseCapacity, {
-          handler: async (cmd, _metadata) => {
+          handler: async ({ payload: cmd }) => {
             await load({ name: "Course" }, cmd.courseId)
             append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
           },
@@ -370,7 +370,7 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
           // Load same entity twice
           await load({ name: "Course" }, cmd.courseId)
           await load({ name: "Course" }, cmd.courseId)
@@ -407,7 +407,7 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (_cmd, _metadata) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async () => {
           await load({ name: "Course" }, "cs-101")
           await load({ name: "Course" }, "cs-202")
         })
@@ -447,7 +447,7 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
           await load({ name: "Course" }, "cs-101")
           await load({ name: "Course" }, "cs-202")
           append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
@@ -495,10 +495,10 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, eventStore })
 
-        const outer = commandHandler(OuterCommand, async (cmd) => {
+        const outer = commandHandler(OuterCommand, async ({ payload: cmd }) => {
           await bus.dispatch(makeCommandMessage(InnerCommand, { courseId: cmd.courseId }))
         })
-        const inner = commandHandler(InnerCommand, async (cmd) => {
+        const inner = commandHandler(InnerCommand, async ({ payload: cmd }) => {
           append(CourseCreated, { courseId: cmd.courseId, name: "Nested" })
         })
 

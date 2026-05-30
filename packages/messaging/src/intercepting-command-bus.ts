@@ -15,10 +15,10 @@ export function createInterceptingCommandBus(
   /** Register a dispatch interceptor. Returns an unsubscribe function. */
   registerDispatchInterceptor(interceptor: DispatchInterceptor<CommandMessage>): () => void
   /** Register a handler interceptor. Returns an unsubscribe function. */
-  registerHandlerInterceptor(interceptor: HandlerInterceptor): () => void
+  registerHandlerInterceptor(interceptor: HandlerInterceptor<CommandMessage>): () => void
 } {
   const dispatchInterceptors: Array<DispatchInterceptor<CommandMessage>> = []
-  const handlerInterceptors: Array<HandlerInterceptor> = []
+  const handlerInterceptors: Array<HandlerInterceptor<CommandMessage>> = []
 
   return {
     async dispatch(message: CommandMessage): Promise<unknown> {
@@ -35,20 +35,21 @@ export function createInterceptingCommandBus(
       commandName: string,
       handler: (message: CommandMessage) => Promise<unknown>,
     ) {
-      // Wrap the handler with handler interceptors
       const wrappedHandler = (message: CommandMessage) => {
         if (handlerInterceptors.length === 0) {
           return handler(message)
         }
 
-        let chain = () => handler(message)
+        let chain = (currentMessage: CommandMessage) => handler(currentMessage)
         for (let i = handlerInterceptors.length - 1; i >= 0; i--) {
           const interceptor = handlerInterceptors[i]!
           const next = chain
-          chain = () => interceptor(message, next)
+          chain = (currentMessage: CommandMessage) =>
+            interceptor(currentMessage, (replacementMessage) =>
+              next(replacementMessage ?? currentMessage))
         }
 
-        return chain()
+        return chain(message)
       }
 
       delegate.subscribe(commandName, wrappedHandler)

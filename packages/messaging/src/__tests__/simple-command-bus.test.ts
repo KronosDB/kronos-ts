@@ -356,6 +356,38 @@ describe("InterceptingCommandBus", () => {
       ])
     })
 
+    it("can proceed with a replacement message", async () => {
+      const inner = createSimpleCommandBus()
+      const bus = createInterceptingCommandBus(inner)
+      const seen: Array<Record<string, unknown>> = []
+
+      bus.subscribe("test.Cmd", async (msg) => {
+        seen.push(msg.metadata)
+        return msg.payload
+      })
+
+      bus.registerHandlerInterceptor(async (msg, next) => {
+        return next({
+          ...msg,
+          metadata: { ...msg.metadata, tenantId: "tenant-1" },
+          payload: { transformed: true },
+        })
+      })
+
+      bus.registerHandlerInterceptor(async (msg, next) => {
+        seen.push(msg.metadata)
+        return next()
+      })
+
+      const result = await bus.dispatch(commandMsg("Cmd", { transformed: false }))
+
+      expect(result).toEqual({ transformed: true })
+      expect(seen).toEqual([
+        { tenantId: "tenant-1" },
+        { tenantId: "tenant-1" },
+      ])
+    })
+
     it("can be unsubscribed", async () => {
       const inner = createSimpleCommandBus()
       const bus = createInterceptingCommandBus(inner)

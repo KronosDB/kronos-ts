@@ -84,7 +84,7 @@ describe("append", () => {
       const state = processingStateStorage.getStore()!
 
       // Set up a mock state module with an evolver for CourseCreated
-      const evolverFn = mock((s: any, e: any, _id: any) => ({ ...s, name: e.name }))
+      const evolverFn = mock((s: any, { payload: e }: any) => ({ ...s, name: e.name }))
       const mockModule = {
         name: "Course",
         evolvers: [

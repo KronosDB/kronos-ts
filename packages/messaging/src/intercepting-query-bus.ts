@@ -17,10 +17,10 @@ export function createInterceptingQueryBus(
   /** Register a dispatch interceptor. Returns an unsubscribe function. */
   registerDispatchInterceptor(interceptor: DispatchInterceptor<QueryMessage>): () => void
   /** Register a handler interceptor. Returns an unsubscribe function. */
-  registerHandlerInterceptor(interceptor: HandlerInterceptor): () => void
+  registerHandlerInterceptor(interceptor: HandlerInterceptor<QueryMessage>): () => void
 } {
   const dispatchInterceptors: Array<DispatchInterceptor<QueryMessage>> = []
-  const handlerInterceptors: Array<HandlerInterceptor> = []
+  const handlerInterceptors: Array<HandlerInterceptor<QueryMessage>> = []
 
   return {
     async query(message: QueryMessage): Promise<unknown> {
@@ -36,20 +36,21 @@ export function createInterceptingQueryBus(
       queryName: string,
       handler: (message: QueryMessage) => Promise<unknown>,
     ) {
-      // Wrap the handler with handler interceptors
       const wrappedHandler = (message: QueryMessage) => {
         if (handlerInterceptors.length === 0) {
           return handler(message)
         }
 
-        let chain = () => handler(message)
+        let chain = (currentMessage: QueryMessage) => handler(currentMessage)
         for (let i = handlerInterceptors.length - 1; i >= 0; i--) {
           const interceptor = handlerInterceptors[i]!
           const next = chain
-          chain = () => interceptor(message, next)
+          chain = (currentMessage: QueryMessage) =>
+            interceptor(currentMessage, (replacementMessage) =>
+              next(replacementMessage ?? currentMessage))
         }
 
-        return chain()
+        return chain(message)
       }
 
       delegate.subscribe(queryName, wrappedHandler)

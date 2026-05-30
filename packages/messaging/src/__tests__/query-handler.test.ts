@@ -15,7 +15,7 @@ const GetCourseView = query({
 
 describe("queryHandler() — singular factory (Phase 11-01)", () => {
   it("returns a definition with kind 'query-handler', descriptor, and handler", () => {
-    const def = queryHandler(GetCourseView, async (q, _metadata) => {
+    const def = queryHandler(GetCourseView, async ({ payload: q }) => {
       return { courseId: q.courseId, name: "Intro" }
     })
 
@@ -25,21 +25,33 @@ describe("queryHandler() — singular factory (Phase 11-01)", () => {
   })
 
   it("invokes the user handler with the query payload and returns its result", async () => {
-    const def = queryHandler(GetCourseView, async (q, _metadata) => {
+    const def = queryHandler(GetCourseView, async ({ payload: q }) => {
       return { courseId: q.courseId, name: "Intro" }
     })
 
-    const result = await def.handler({ courseId: "cs-101" }, emptyMetadata())
+    const result = await def.handler({
+      identifier: "qry-1",
+      name: GetCourseView.name,
+      payload: { courseId: "cs-101" },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    })
 
     expect(result).toEqual({ courseId: "cs-101", name: "Intro" })
   })
 
   it("supports synchronous handlers that return the result directly", () => {
-    const def = queryHandler(GetCourseView, (q, _metadata) => {
+    const def = queryHandler(GetCourseView, ({ payload: q }) => {
       return { courseId: q.courseId, name: "Sync" }
     })
 
-    const result = def.handler({ courseId: "cs-101" }, emptyMetadata())
+    const result = def.handler({
+      identifier: "qry-1",
+      name: GetCourseView.name,
+      payload: { courseId: "cs-101" },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    })
 
     expect(result).toEqual({ courseId: "cs-101", name: "Sync" })
   })
@@ -49,7 +61,7 @@ describe("queryHandler() — singular factory (Phase 11-01)", () => {
     const def: QueryHandlerDefinition<
       typeof GetCourseView.payload,
       { courseId: string; name: string }
-    > = queryHandler(GetCourseView, async (q) => ({
+    > = queryHandler(GetCourseView, async ({ payload: q }) => ({
       courseId: q.courseId,
       name: "Inferred",
     }))

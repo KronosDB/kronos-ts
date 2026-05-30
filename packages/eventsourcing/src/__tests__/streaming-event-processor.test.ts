@@ -39,11 +39,11 @@ const Course = state({
   initial: (_id) => ({ created: false, name: "" }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
-    on(CourseCreated, (s: CourseState, e) => ({ created: true, name: e.name })),
+    on(CourseCreated, (s: CourseState, { payload: e }) => ({ created: true, name: e.name })),
   ],
 })
 
-const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
+const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
@@ -64,7 +64,7 @@ describe("StreamingEventProcessor", () => {
       const eventStore = createInMemoryEventStore()
       const processed: string[] = []
 
-      const onCourseCreated = eventHandler(CourseCreated, async (e) => {
+      const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }) => {
         processed.push(e.courseId)
       })
 
@@ -138,7 +138,7 @@ describe("StreamingEventProcessor", () => {
       // Mark processor as having processed up to position 2
       await tokenStore.store("course-projection", 0, globalSequenceToken(2n))
 
-      const onCourseCreated = eventHandler(CourseCreated, async (e) => {
+      const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }) => {
         processed.push({
           courseId: e.courseId,
           replayed: isReplay(),

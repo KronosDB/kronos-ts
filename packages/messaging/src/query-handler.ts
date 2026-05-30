@@ -1,6 +1,6 @@
 import type { z } from "zod"
-import type { Metadata } from "@kronos-ts/common"
 import type { QueryDescriptor } from "./descriptor.js"
+import type { QueryMessage } from "./message.js"
 
 // ---------------------------------------------------------------------------
 // Singular factory — mirrors commandHandler / eventHandler.
@@ -23,15 +23,15 @@ export interface QueryHandlerDefinition<
 > {
   readonly kind: "query-handler"
   readonly descriptor: QueryDescriptor<Q, z.ZodType | undefined>
-  readonly handler: (query: z.infer<Q>, metadata: Metadata) => Promise<R> | R
+  readonly handler: (message: QueryMessage<z.infer<Q>>) => Promise<R> | R
 }
 
 /**
  * Defines a singular query handler.
  *
  * ```
- * const getCourseView = queryHandler(GetCourseView, async (q, metadata) => {
- *   const view = courseViews.get(q.courseId)
+ * const getCourseView = queryHandler(GetCourseView, async ({ payload, metadata }) => {
+ *   const view = courseViews.get(payload.courseId)
  *   if (!view) throw new Error("not found")
  *   return view
  * })
@@ -43,7 +43,7 @@ export interface QueryHandlerDefinition<
  */
 export function queryHandler<Q extends z.ZodType, R>(
   descriptor: QueryDescriptor<Q, z.ZodType | undefined>,
-  handler: (query: z.infer<Q>, metadata: Metadata) => Promise<R> | R,
+  handler: (message: QueryMessage<z.infer<Q>>) => Promise<R> | R,
 ): QueryHandlerDefinition<Q, R> {
   return { kind: "query-handler", descriptor, handler }
 }

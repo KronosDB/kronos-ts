@@ -51,7 +51,7 @@ const Tuple = state({
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
   evolve: [on(Tapped, (s) => ({ ...s, tapped: true }))],
 })
-const tapHandler = commandHandler(Tap, async (cmd) => {
+const tapHandler = commandHandler(Tap, async ({ payload: cmd }) => {
   await load(Tuple, { id: cmd.id })
   append(Tapped, { id: cmd.id })
 })

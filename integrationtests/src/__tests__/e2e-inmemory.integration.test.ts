@@ -118,13 +118,13 @@ const Course = state({
   initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
-    on(CourseCreated, (s: CourseState, e) => ({
+    on(CourseCreated, (s: CourseState, { payload: e }) => ({
       ...s, created: true, name: e.name, capacity: e.capacity,
     })),
-    on(CourseCapacityChanged, (s: CourseState, e) => ({
+    on(CourseCapacityChanged, (s: CourseState, { payload: e }) => ({
       ...s, capacity: e.capacity,
     })),
-    on(StudentSubscribed, (s: CourseState, e) => ({
+    on(StudentSubscribed, (s: CourseState, { payload: e }) => ({
       ...s, enrolled: [...s.enrolled, e.studentId],
     })),
     on(EnrollmentClosed, (s: CourseState) => ({ ...s, closed: true })),
@@ -133,19 +133,19 @@ const Course = state({
 
 // -- Command handlers --
 
-const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
+const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async (cmd, _metadata) => {
+const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
+const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
@@ -161,13 +161,13 @@ const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata)
 // command is handled in its own fresh UnitOfWork, independent of the event
 // processor's UnitOfWork that ran the automation.
 
-const closeEnrollment = commandHandler(CloseEnrollment, async (cmd) => {
+const closeEnrollment = commandHandler(CloseEnrollment, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created || course.closed) return
   append(EnrollmentClosed, { courseId: cmd.courseId })
 })
 
-const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async (e) => {
+const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload: e }) => {
   const course = await load(Course, { courseId: e.courseId })
   if (course.created && !course.closed && course.enrolled.length >= course.capacity) {
     await send(CloseEnrollment, { courseId: e.courseId })
@@ -182,7 +182,7 @@ function createProjection() {
   const courseViews = new Map<string, CourseView>()
 
   const projectionHandlers = [
-    eventHandler(CourseCreated, async (e, _metadata) => {
+    eventHandler(CourseCreated, async ({ payload: e }) => {
       const view: CourseView = {
         courseId: e.courseId,
         name: e.name,
@@ -192,14 +192,14 @@ function createProjection() {
       courseViews.set(e.courseId, view)
       emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
     }),
-    eventHandler(CourseCapacityChanged, async (e, _metadata) => {
+    eventHandler(CourseCapacityChanged, async ({ payload: e }) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.capacity = e.capacity
         emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
       }
     }),
-    eventHandler(StudentSubscribed, async (e, _metadata) => {
+    eventHandler(StudentSubscribed, async ({ payload: e }) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.enrolledCount++
@@ -208,13 +208,13 @@ function createProjection() {
     }),
   ]
 
-  const getCourseView = queryHandler(GetCourseView, async (q, _metadata) => {
+  const getCourseView = queryHandler(GetCourseView, async ({ payload: q }) => {
     const view = courseViews.get(q.courseId)
     if (!view) throw new Error("Course not found")
     return view
   })
 
-  const getAllCourses = queryHandler(GetAllCourses, async (_q, _metadata) => {
+  const getAllCourses = queryHandler(GetAllCourses, async () => {
     return [...courseViews.values()]
   })
 
@@ -381,7 +381,7 @@ describe("E2E: In-memory full CQRS flow", () => {
   it("subscribing processor delivers events synchronously", async () => {
     // given
     const received: string[] = []
-    const onCourseCreated = eventHandler(CourseCreated, async (e) => {
+    const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }) => {
       received.push(e.courseId)
     })
 
@@ -407,8 +407,8 @@ describe("E2E: In-memory full CQRS flow", () => {
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
     const auditLog: string[] = []
 
-    const auditOnCourseCreated = eventHandler(CourseCreated, async (e) => { auditLog.push(`created:${e.courseId}`) })
-    const auditOnStudentSubscribed = eventHandler(StudentSubscribed, async (e) => { auditLog.push(`enrolled:${e.studentId}`) })
+    const auditOnCourseCreated = eventHandler(CourseCreated, async ({ payload: e }) => { auditLog.push(`created:${e.courseId}`) })
+    const auditOnStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }) => { auditLog.push(`enrolled:${e.studentId}`) })
 
     running = await kronos({ quiet: true })
       .states(Course)

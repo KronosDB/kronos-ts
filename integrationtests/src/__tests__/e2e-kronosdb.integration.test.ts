@@ -83,19 +83,19 @@ const Course = state({
   initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
-    on(CourseCreated, (s: CourseState, e) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
-    on(StudentSubscribed, (s: CourseState, e) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
+    on(CourseCreated, (s: CourseState, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
+    on(StudentSubscribed, (s: CourseState, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
     on(EnrollmentClosed, (s: CourseState) => ({ ...s, closed: true })),
   ],
 })
 
-const createCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
+const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata) => {
+const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
@@ -108,13 +108,13 @@ const subscribeStudent = commandHandler(SubscribeStudent, async (cmd, _metadata)
 // CloseEnrollment command via send(). The command runs in its own fresh
 // UnitOfWork per the AF5-aligned model.
 
-const closeEnrollment = commandHandler(CloseEnrollment, async (cmd) => {
+const closeEnrollment = commandHandler(CloseEnrollment, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created || course.closed) return
   append(EnrollmentClosed, { courseId: cmd.courseId })
 })
 
-const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async (e) => {
+const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload: e }) => {
   const course = await load(Course, { courseId: e.courseId })
   if (course.created && !course.closed && course.enrolled.length >= course.capacity) {
     await send(CloseEnrollment, { courseId: e.courseId })
@@ -125,12 +125,12 @@ const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async (e) => {
 type CourseView = { courseId: string; name: string; capacity: number; enrolledCount: number }
 const courseViews = new Map<string, CourseView>()
 
-const onCourseCreated = eventHandler(CourseCreated, async (e, _metadata) => {
+const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }) => {
   courseViews.set(e.courseId, { courseId: e.courseId, name: e.name, capacity: e.capacity, enrolledCount: 0 })
   emitUpdate(GetCourse, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
 })
 
-const onStudentSubscribed = eventHandler(StudentSubscribed, async (e, _metadata) => {
+const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }) => {
   const view = courseViews.get(e.courseId)
   if (view) {
     view.enrolledCount++
@@ -138,7 +138,7 @@ const onStudentSubscribed = eventHandler(StudentSubscribed, async (e, _metadata)
   }
 })
 
-const getCourse = queryHandler(GetCourse, async (q, _metadata) => {
+const getCourse = queryHandler(GetCourse, async ({ payload: q }) => {
   const view = courseViews.get(q.courseId)
   if (!view) throw new Error("Course not found")
   return view

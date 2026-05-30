@@ -24,7 +24,7 @@ const PingState = state({
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
   evolve: [on(Pinged, (s) => ({ ...s, pinged: true }))],
 })
-const pingHandler = commandHandler(Ping, async (cmd, _md) => {
+const pingHandler = commandHandler(Ping, async ({ payload: cmd }) => {
   await load(PingState, { id: cmd.id })
   append(Pinged, { id: cmd.id })
 })

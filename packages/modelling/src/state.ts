@@ -79,7 +79,7 @@ export interface StateModule<
  *   initial: () => ({ created: false, name: "", capacity: 0 }),
  *   criteria: (id) => EventCriteria.havingTags({ courseId: id.courseId }),
  *   evolve: [
- *     on(CourseCreated, (s, event) => ({ ...s, created: true })),
+ *     on(CourseCreated, (s, { payload: event }) => ({ ...s, created: true })),
  *   ],
  * })
  * ```

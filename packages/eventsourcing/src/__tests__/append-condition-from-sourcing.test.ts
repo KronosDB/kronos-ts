@@ -46,7 +46,7 @@ const Thing = state({
   criteria: ({ id }) => EventCriteria.havingTags(tag("id", id)),
   evolve: [on(ThingTouched, (s) => ({ ...s, touched: true }))],
 })
-const touchThing = commandHandler(TouchThing, async (cmd) => {
+const touchThing = commandHandler(TouchThing, async ({ payload: cmd }) => {
   await load(Thing, { id: cmd.id })
   append(ThingTouched, { id: cmd.id })
 })

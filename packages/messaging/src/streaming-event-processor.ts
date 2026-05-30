@@ -249,7 +249,7 @@ export function createStreamingEventProcessor(
 
     for (const reg of handlers) {
       try {
-        await reg.handler(event.payload, event.metadata)
+        await reg.handler({ ...event, sequence: sequencedEvent.sequence })
       } catch (err) {
         await errorHandler.handleError(err, eventName, sequencedEvent.sequence)
       }

@@ -84,7 +84,7 @@ const Greeting = state({
   evolve: [on(Greeted, (s: GreetState) => ({ ...s, greeted: true }))],
 })
 
-const greet = commandHandler(Greet, async (cmd, _metadata) => {
+const greet = commandHandler(Greet, async ({ payload: cmd }) => {
   const g = await load(Greeting, { id: cmd.id })
   if (g.greeted) throw new Error("already greeted")
   append(Greeted, { id: cmd.id, who: cmd.who })
@@ -134,7 +134,7 @@ describe("openTelemetry() span observation (E2E)", () => {
   it("event handler invocation emits a child span", async () => {
     // given
     const seen: string[] = []
-    const onGreeted = eventHandler(Greeted, async (e) => {
+    const onGreeted = eventHandler(Greeted, async ({ payload: e }) => {
       seen.push(e.id)
     })
 

@@ -93,7 +93,7 @@ describe("RabbitMQ command transport integration", () => {
       .set("eventStore", () => probe.eventStore)
       .states(StateA, StateB)
       .commands(
-        commandHandler(Finish, async (cmd) => {
+        commandHandler(Finish, async ({ payload: cmd }) => {
           await load(StateB, { bId: cmd.bId })
           append(BFinished, { bId: cmd.bId })
         }),
@@ -105,7 +105,7 @@ describe("RabbitMQ command transport integration", () => {
       .set("eventStore", () => probe.eventStore)
       .states(StateA, StateB)
       .commands(
-        commandHandler(StartWithSend, async (cmd) => {
+        commandHandler(StartWithSend, async ({ payload: cmd }) => {
           await load(StateA, { aId: cmd.aId })
           await send(Finish, { bId: cmd.bId })
         }),

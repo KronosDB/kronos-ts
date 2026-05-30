@@ -124,7 +124,7 @@ describe("SubscribingEventProcessor", () => {
 
       const handler: EventHandlerRegistration<any> = {
         descriptor: { kind: "event", name: qn("test", "SomethingHappened"), version: "1.0", payload: {} as any },
-        handler: async (payload) => { received.push(payload) },
+        handler: async ({ payload }) => { received.push(payload) },
       }
 
       processor = createSubscribingEventProcessor({
@@ -150,7 +150,7 @@ describe("SubscribingEventProcessor", () => {
 
       const handler: EventHandlerRegistration<any> = {
         descriptor: { kind: "event", name: qn("test", "SomethingHappened"), version: "1.0", payload: {} as any },
-        handler: async (payload) => { received.push(payload) },
+        handler: async ({ payload }) => { received.push(payload) },
       }
 
       processor = createSubscribingEventProcessor({
@@ -175,7 +175,7 @@ describe("SubscribingEventProcessor", () => {
 
       const handler: EventHandlerRegistration<any> = {
         descriptor: { kind: "event", name: qn("test", "SomethingHappened"), version: "1.0", payload: {} as any },
-        handler: async (payload) => { received.push(payload) },
+        handler: async ({ payload }) => { received.push(payload) },
       }
 
       processor = createSubscribingEventProcessor({
@@ -201,7 +201,7 @@ describe("SubscribingEventProcessor", () => {
 
       const handler: EventHandlerRegistration<any> = {
         descriptor: { kind: "event", name: qn("test", "ItemAdded"), version: "1.0", payload: {} as any },
-        handler: async (payload: { item: string }) => { received.push(payload.item) },
+        handler: async ({ payload }: any) => { received.push(payload.item) },
       }
 
       processor = createSubscribingEventProcessor({

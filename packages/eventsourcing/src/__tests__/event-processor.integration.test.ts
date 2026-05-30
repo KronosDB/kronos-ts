@@ -49,10 +49,10 @@ const Student = state({
   id: { studentId: z.string() },
   initial: () => ({ enrolled: false, name: "" }),
   criteria: ({ studentId }) => EventCriteria.havingTags(tag("studentId", studentId)),
-  evolve: [on(StudentEnrolled, (s, e) => ({ enrolled: true, name: e.name }))],
+  evolve: [on(StudentEnrolled, (s, { payload: e }) => ({ enrolled: true, name: e.name }))],
 })
 
-const enrollStudent = commandHandler(EnrollStudent, async (cmd) => {
+const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }) => {
   const s = await load(Student, { studentId: cmd.studentId })
   if (s.enrolled) throw new Error("Already enrolled")
   append(StudentEnrolled, { studentId: cmd.studentId, name: cmd.name })
@@ -72,10 +72,10 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
 describe("Full flow: command -> event -> processor -> projection -> query", () => {
   it("command produces events, processor delivers to projection, query reads it", async () => {
     const view = new Map<string, { studentId: string; name: string }>()
-    const onStudentEnrolled = eventHandler(StudentEnrolled, async (e) => {
+    const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }) => {
       view.set(e.studentId, { studentId: e.studentId, name: e.name })
     })
-    const getStudent = queryHandler(GetStudent, async (p, _metadata) => view.get(p.studentId))
+    const getStudent = queryHandler(GetStudent, async ({ payload: p }) => view.get(p.studentId))
 
     const running = await kronos({ quiet: true })
       .states(Student)
@@ -107,7 +107,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
 
   it("multiple commands produce events that update the projection", async () => {
     const view = new Map<string, { studentId: string; name: string }>()
-    const onStudentEnrolled = eventHandler(StudentEnrolled, async (e) => {
+    const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }) => {
       view.set(e.studentId, { studentId: e.studentId, name: e.name })
     })
 
@@ -144,16 +144,16 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
       payload: z.object({ studentId: z.string(), newName: z.string() }),
       tags: (p) => [tag("studentId", p.studentId)],
     })
-    const renameStudent = commandHandler(SecondCmd, async (cmd) => {
+    const renameStudent = commandHandler(SecondCmd, async ({ payload: cmd }) => {
       append(SecondEvent, { studentId: cmd.studentId, newName: cmd.newName })
     })
 
     const enrolled: string[] = []
     const renamed: string[] = []
-    const onStudentEnrolled = eventHandler(StudentEnrolled, async (e) => {
+    const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }) => {
       enrolled.push(e.studentId)
     })
-    const onStudentRenamed = eventHandler(SecondEvent, async (e) => {
+    const onStudentRenamed = eventHandler(SecondEvent, async ({ payload: e }) => {
       renamed.push(e.studentId)
     })
 

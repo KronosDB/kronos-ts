@@ -134,7 +134,7 @@ describe("TrackingEventProcessor", () => {
       const handler: EventHandlerRegistration<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
-        handler: (payload) => { delivered.push(payload) },
+        handler: ({ payload }) => { delivered.push(payload) },
       }
 
       const processor = createTrackingEventProcessor({
@@ -167,7 +167,7 @@ describe("TrackingEventProcessor", () => {
       const handler: EventHandlerRegistration<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
-        handler: (payload) => { delivered.push(payload) },
+        handler: ({ payload }) => { delivered.push(payload) },
       }
 
       const processor = createTrackingEventProcessor({
@@ -277,7 +277,7 @@ describe("TrackingEventProcessor", () => {
         eventHandlers: [{
           kind: "event-handler",
           descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
-          handler: (_payload, _metadata) => {
+          handler: () => {
             delivered.push(BigInt(delivered.length))
           },
         }],
@@ -312,7 +312,7 @@ describe("TrackingEventProcessor", () => {
       const handler: EventHandlerRegistration<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
-        handler: (payload) => {
+        handler: ({ payload }) => {
           callCount++
           if (callCount === 2) throw new Error("handler failed")
           delivered.push(payload)
@@ -350,7 +350,7 @@ describe("TrackingEventProcessor", () => {
       const handler: EventHandlerRegistration<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
-        handler: (payload) => {
+        handler: ({ payload }) => {
           delivered.push(payload)
           throw new Error("handler failed")
         },
@@ -416,7 +416,7 @@ describe("TrackingEventProcessor", () => {
       const handler: EventHandlerRegistration<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
-        handler: (payload) => { delivered.push(payload) },
+        handler: ({ payload }) => { delivered.push(payload) },
       }
 
       const processor = createTrackingEventProcessor({

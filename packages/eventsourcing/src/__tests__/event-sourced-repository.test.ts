@@ -38,10 +38,10 @@ const Course = state({
   initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
-    on(CourseCreated, (state: CourseState, e) => ({
+    on(CourseCreated, (state: CourseState, { payload: e }) => ({
       ...state, created: true, name: e.name, capacity: e.capacity,
     })),
-    on(CourseCapacityChanged, (state: CourseState, e) => ({
+    on(CourseCapacityChanged, (state: CourseState, { payload: e }) => ({
       ...state, capacity: e.capacity,
     })),
   ],
@@ -141,6 +141,7 @@ describe("EventSourcedRepository", () => {
 
   describe("multi-stream entity (DCB)", () => {
     type SubscriptionState = {
+      courseId: string
       courseExists: boolean
       courseCapacity: number
       studentsInCourse: number
@@ -156,7 +157,8 @@ describe("EventSourcedRepository", () => {
     const Subscription = state({
       name: "CourseSubscription",
       id: { courseId: z.string(), studentId: z.string() },
-      initial: (): SubscriptionState => ({
+      initial: (id): SubscriptionState => ({
+        courseId: id.courseId,
         courseExists: false,
         courseCapacity: 0,
         studentsInCourse: 0,
@@ -168,17 +170,16 @@ describe("EventSourcedRepository", () => {
           EventCriteria.havingTags(tag("studentId", id.studentId)),
         ),
       evolve: [
-        on(CourseCreated, (state: SubscriptionState, e) => ({
+        on(CourseCreated, (state: SubscriptionState, { payload: e }) => ({
           ...state, courseExists: true, courseCapacity: e.capacity,
         })),
         on(StudentEnrolledInFaculty, (state: SubscriptionState) => ({
           ...state, studentEnrolled: true,
         })),
-        on(StudentSubscribedToCourse, (state: SubscriptionState, e, id) => {
-          const stateId = id as { courseId: string; studentId: string }
+        on(StudentSubscribedToCourse, (state: SubscriptionState, { payload: e }) => {
           return {
             ...state,
-            studentsInCourse: e.courseId === stateId.courseId
+            studentsInCourse: e.courseId === state.courseId
               ? state.studentsInCourse + 1 : state.studentsInCourse,
           }
         }),

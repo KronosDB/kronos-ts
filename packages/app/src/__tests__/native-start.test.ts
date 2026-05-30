@@ -53,7 +53,7 @@ const Thing = state({
   evolve: [on(ThingCreated, (s) => ({ ...s, created: true }))],
 })
 
-const createThingHandler = commandHandler(CreateThing, async (cmd) => {
+const createThingHandler = commandHandler(CreateThing, async ({ payload: cmd }) => {
   await load(Thing, { id: cmd.id })
   append(ThingCreated, { id: cmd.id })
 })
@@ -73,7 +73,7 @@ describe("native App.start() — end-to-end without configurer (Plan 03a)", () =
   })
 
   it("Test 2: subscribes query handlers natively and returns the handler's result", async () => {
-    const getThing = queryHandler(GetThing, async (payload, _metadata) => ({ id: payload.id, created: true }))
+    const getThing = queryHandler(GetThing, async ({ payload }) => ({ id: payload.id, created: true }))
     const app = kronos({ quiet: true }).queries(getThing)
     const running = await app.start()
     const result = await running.queryGateway.query(
@@ -87,7 +87,7 @@ describe("native App.start() — end-to-end without configurer (Plan 03a)", () =
 
   it("Test 3: wires event handlers via subscribing processor — append triggers handler", async () => {
     let received = ""
-    const onThingCreated = eventHandler(ThingCreated, async (payload) => {
+    const onThingCreated = eventHandler(ThingCreated, async ({ payload }) => {
       received = payload.id
     })
     const app = kronos({ quiet: true })

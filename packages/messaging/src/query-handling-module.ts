@@ -31,7 +31,7 @@ export function registerQueryHandlersNatively(
   for (const reg of handlers) {
     const queryName = qualifiedNameToString(reg.descriptor.name)
     let invocation = async (message: QueryMessage) =>
-      reg.handler(message.payload, message.metadata)
+      reg.handler(message)
     if (deps.handlerEnhancer) {
       invocation = deps.handlerEnhancer.wrapHandler(invocation, {
         messageType: "query",

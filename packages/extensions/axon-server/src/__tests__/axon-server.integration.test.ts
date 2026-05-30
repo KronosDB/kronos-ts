@@ -83,18 +83,18 @@ const Course = state({
   initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [] }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
   evolve: [
-    on(CourseCreated, (s: CourseState, e) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
-    on(StudentEnrolled, (s: CourseState, e) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
+    on(CourseCreated, (s: CourseState, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
+    on(StudentEnrolled, (s: CourseState, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
   ],
 })
 
-const handleCreateCourse = commandHandler(CreateCourse, async (cmd, _metadata) => {
+const handleCreateCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
   append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const handleEnrollStudent = commandHandler(EnrollStudent, async (cmd, _metadata) => {
+const handleEnrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }) => {
   const course = await load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")

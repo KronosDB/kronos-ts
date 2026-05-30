@@ -103,13 +103,13 @@ describe("RabbitMQ remote command handling e2e", () => {
     const probe = probeEventStore()
     const transport = new LoopbackTransport()
 
-    const start = commandHandler(Start, async (cmd) => {
+    const start = commandHandler(Start, async ({ payload: cmd }) => {
       await load(StateA, { aId: cmd.aId })
       const { send } = await import("@kronos-ts/messaging")
       await send(Finish, { bId: cmd.bId })
     })
 
-    const finish = commandHandler(Finish, async (cmd) => {
+    const finish = commandHandler(Finish, async ({ payload: cmd }) => {
       await load(StateB, { bId: cmd.bId })
       append(BFinished, { bId: cmd.bId })
     })

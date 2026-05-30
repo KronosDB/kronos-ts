@@ -51,7 +51,7 @@ const Thing = state({
   criteria: ({ id }) => EventCriteria.havingTags(tag("id", id)),
   evolve: [on(ThingCreated, (s) => ({ ...s, created: true }))],
 })
-const createThing = commandHandler(CreateThing, async (cmd) => {
+const createThing = commandHandler(CreateThing, async ({ payload: cmd }) => {
   await load(Thing, { id: cmd.id })
   append(ThingCreated, { id: cmd.id })
 })
@@ -72,7 +72,7 @@ describe("Transactional event processing — typed tokenStore + transactionManag
     // Inject a probe tokenStore via the typed slot — no per-processor override.
     const probe = createInMemoryTokenStore()
     const seen: string[] = []
-    const onThingCreated = eventHandler(ThingCreated, async (e) => {
+    const onThingCreated = eventHandler(ThingCreated, async ({ payload: e }) => {
       seen.push(e.id)
     })
 
@@ -106,7 +106,7 @@ describe("Transactional event processing — typed tokenStore + transactionManag
     const seenSecond: string[] = []
 
     function makeOnThingCreated(sink: string[]) {
-      return eventHandler(ThingCreated, async (e) => {
+      return eventHandler(ThingCreated, async ({ payload: e }) => {
         sink.push(e.id)
       })
     }

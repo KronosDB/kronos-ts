@@ -1,7 +1,7 @@
 import type { z } from "zod"
-import type { Metadata } from "@kronos-ts/common"
 import type { CommandDescriptor } from "./descriptor.js"
 import type { EventCriteria } from "./event-criteria.js"
+import type { CommandMessage } from "./message.js"
 
 /**
  * A registered command handler — pairs a command descriptor with its handler function.
@@ -14,11 +14,10 @@ export interface CommandHandlerDefinition<
   readonly kind: "command-handler"
   readonly descriptor: CommandDescriptor<P, R>
   readonly handler: (
-    command: z.infer<P>,
-    metadata: Metadata,
+    message: CommandMessage<z.infer<P>>,
   ) => R extends z.ZodType ? Promise<z.infer<R>> | z.infer<R> : Promise<void> | void
   readonly appendCondition?: (
-    command: z.infer<P>,
+    message: CommandMessage<z.infer<P>>,
     sourcedCriteria: EventCriteria,
   ) => EventCriteria
 }
@@ -28,9 +27,9 @@ export interface CommandHandlerDefinition<
  *
  * Void command (no result on descriptor):
  * ```
- * commandHandler(ChangeCourseCapacity, async (command, metadata) => {
- *   const course = await load(Course, command.courseId)
- *   append(CourseCapacityChanged, { courseId: command.courseId, capacity: command.capacity })
+ * commandHandler(ChangeCourseCapacity, async ({ payload, metadata }) => {
+ *   const course = await load(Course, { courseId: payload.courseId })
+ *   append(CourseCapacityChanged, { courseId: payload.courseId, capacity: payload.capacity })
  * })
  * ```
  *
@@ -42,45 +41,36 @@ export interface CommandHandlerDefinition<
  *   result: z.object({ courseId: z.string() }),
  * })
  *
- * commandHandler(CreateCourse, async (command, metadata) => {
+ * commandHandler(CreateCourse, async ({ payload, metadata }) => {
  *   append(CourseCreated, { ... })
- *   return { courseId: command.courseId }  // ← must match descriptor's result schema
+ *   return { courseId: payload.courseId }  // ← must match descriptor's result schema
  * })
  * ```
  *
  * With append condition override:
  * ```
  * commandHandler(CreateCourse, {
- *   handler: async (command, metadata) => { ... },
+ *   handler: async ({ payload, metadata }) => { ... },
  *   appendCondition: (command, criteria) => criteria,
  * })
  * ```
  */
 export function commandHandler<P extends z.ZodType>(
   descriptor: CommandDescriptor<P, undefined>,
-  handler: (
-    command: z.infer<P>,
-    metadata: Metadata,
-  ) => Promise<void> | void,
+  handler: (message: CommandMessage<z.infer<P>>) => Promise<void> | void,
 ): CommandHandlerDefinition<P, undefined>
 
 export function commandHandler<P extends z.ZodType, R extends z.ZodType>(
   descriptor: CommandDescriptor<P, R>,
-  handler: (
-    command: z.infer<P>,
-    metadata: Metadata,
-  ) => Promise<z.infer<R>> | z.infer<R>,
+  handler: (message: CommandMessage<z.infer<P>>) => Promise<z.infer<R>> | z.infer<R>,
 ): CommandHandlerDefinition<P, R>
 
 export function commandHandler<P extends z.ZodType>(
   descriptor: CommandDescriptor<P, undefined>,
   options: {
-    handler: (
-      command: z.infer<P>,
-      metadata: Metadata,
-    ) => Promise<void> | void
+    handler: (message: CommandMessage<z.infer<P>>) => Promise<void> | void
     appendCondition?: (
-      command: z.infer<P>,
+      message: CommandMessage<z.infer<P>>,
       sourcedCriteria: EventCriteria,
     ) => EventCriteria
   },
@@ -89,12 +79,9 @@ export function commandHandler<P extends z.ZodType>(
 export function commandHandler<P extends z.ZodType, R extends z.ZodType>(
   descriptor: CommandDescriptor<P, R>,
   options: {
-    handler: (
-      command: z.infer<P>,
-      metadata: Metadata,
-    ) => Promise<z.infer<R>> | z.infer<R>
+    handler: (message: CommandMessage<z.infer<P>>) => Promise<z.infer<R>> | z.infer<R>
     appendCondition?: (
-      command: z.infer<P>,
+      message: CommandMessage<z.infer<P>>,
       sourcedCriteria: EventCriteria,
     ) => EventCriteria
   },

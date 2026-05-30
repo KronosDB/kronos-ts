@@ -55,7 +55,7 @@ describe("Entity Lifecycle Hooks", () => {
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
         evolve: [
-          on(ItemCreated, (state: ItemState, e) => ({ ...state, created: true, name: e.name })),
+          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
         ],
         lifecycle: {
           onCreate: (state, id) => { created.push({ state: { ...state }, id }) },
@@ -90,8 +90,8 @@ describe("Entity Lifecycle Hooks", () => {
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
         evolve: [
-          on(ItemCreated, (state: ItemState, e) => ({ ...state, created: true, name: e.name })),
-          on(ItemRenamed, (state: ItemState, e) => ({ ...state, name: e.name })),
+          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
+          on(ItemRenamed, (state: ItemState, { payload: e }) => ({ ...state, name: e.name })),
         ],
         lifecycle: {
           onStateChange: (from, to) => {
@@ -129,7 +129,7 @@ describe("Entity Lifecycle Hooks", () => {
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
         evolve: [
-          on(ItemCreated, (state: ItemState, e) => ({ ...state, created: true, name: e.name })),
+          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
           on(ItemDeleted, (state: ItemState) => ({ ...state, deleted: true })),
         ],
         lifecycle: {
@@ -163,7 +163,7 @@ describe("Entity Lifecycle Hooks", () => {
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
         evolve: [
-          on(ItemCreated, (state: ItemState, e) => ({ ...state, created: true, name: e.name })),
+          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
           on(ItemDeleted, (state: ItemState) => ({ ...state, deleted: true })),
         ],
         lifecycle: {
@@ -198,7 +198,7 @@ describe("Entity Lifecycle Hooks", () => {
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
         evolve: [
-          on(ItemCreated, (state: ItemState, e) => ({ ...state, created: true, name: e.name })),
+          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
         ],
         // no lifecycle
       })

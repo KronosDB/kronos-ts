@@ -133,7 +133,7 @@ async function applyEvent<Id, S>(
   for (const evolver of module.evolvers) {
     const evolverType = qualifiedNameToString(evolver.descriptor.name)
     if (evolverType === eventType) {
-      return await evolver.evolve(state, event.payload, id)
+      return await evolver.evolve(state, event)
     }
   }
 

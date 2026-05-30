@@ -15,10 +15,10 @@ const CourseCreated = event({
 
 describe("eventHandler() — singular factory (Phase 11-01)", () => {
   it("returns a definition with kind 'event-handler', descriptor, and handler", () => {
-    const def = eventHandler(CourseCreated, async (e, _metadata) => {
+    const def = eventHandler(CourseCreated, async ({ payload }) => {
       // e is typed as { courseId: string, name: string }
-      e.courseId
-      e.name
+      payload.courseId
+      payload.name
     })
 
     expect(def.kind).toBe("event-handler")
@@ -26,27 +26,93 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
     expect(typeof def.handler).toBe("function")
   })
 
-  it("invokes the user handler with the event payload and metadata", async () => {
+  it("invokes the user handler with the event message", async () => {
     const seen: Array<{ courseId: string; name: string }> = []
-    const def = eventHandler(CourseCreated, async (e, _metadata) => {
-      seen.push(e)
+    const def = eventHandler(CourseCreated, async ({ payload }) => {
+      seen.push(payload)
     })
 
-    await def.handler({ courseId: "cs-101", name: "Intro" }, emptyMetadata())
+    await def.handler({
+      identifier: "evt-1",
+      name: CourseCreated.name,
+      version: CourseCreated.version,
+      payload: { courseId: "cs-101", name: "Intro" },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+      tags: [],
+    })
 
     expect(seen).toEqual([{ courseId: "cs-101", name: "Intro" }])
   })
 
+  it("supports destructuring event message details", async () => {
+    const metadata = emptyMetadata()
+    const message = {
+      identifier: "evt-1",
+      name: CourseCreated.name,
+      version: CourseCreated.version,
+      payload: { courseId: "cs-101", name: "Intro" },
+      metadata,
+      timestamp: 1715472000000,
+      tags: [{ key: "courseId", value: "cs-101" }],
+    }
+
+    let seenTimestamp: number | undefined
+    let seenVersion: string | undefined
+    let seenTag: string | undefined
+
+    const def = eventHandler(
+      CourseCreated,
+      async ({ timestamp, version, tags }) => {
+        seenTimestamp = timestamp
+        seenVersion = version
+        seenTag = tags[0]?.value
+      },
+    )
+
+    await def.handler(message)
+
+    expect(seenTimestamp).toBe(1715472000000)
+    expect(seenVersion).toBe(CourseCreated.version)
+    expect(seenTag).toBe("cs-101")
+  })
+
+  it("exposes metadata on the message", async () => {
+    const metadata = emptyMetadata()
+    let seenMetadata: unknown
+
+    const def = eventHandler(CourseCreated, async ({ metadata }) => {
+      seenMetadata = metadata
+    })
+
+    await def.handler({
+      identifier: "evt-1",
+      name: CourseCreated.name,
+      version: CourseCreated.version,
+      payload: { courseId: "cs-101", name: "Intro" },
+      metadata,
+      timestamp: Date.now(),
+      tags: [],
+    })
+
+    expect(seenMetadata).toBe(metadata)
+  })
+
   it("supports synchronous handlers", () => {
     let called = false
-    const def = eventHandler(CourseCreated, (_e, _metadata) => {
+    const def = eventHandler(CourseCreated, () => {
       called = true
     })
 
-    const result = def.handler(
-      { courseId: "cs-101", name: "Intro" },
-      emptyMetadata(),
-    )
+    const result = def.handler({
+      identifier: "evt-1",
+      name: CourseCreated.name,
+      version: CourseCreated.version,
+      payload: { courseId: "cs-101", name: "Intro" },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+      tags: [],
+    })
 
     // Sync handler — return type is void (undefined)
     expect(result).toBeUndefined()
