@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn, tag, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
-import { event, on, EventCriteria, type EventMessage } from "@kronos-ts/messaging"
+import { event, EventCriteria, type EventMessage } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
 import { createEventSourcedRepository } from "../event-sourced-repository.js"
@@ -54,8 +54,8 @@ describe("Entity Lifecycle Hooks", () => {
         id: { itemId: z.string() },
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
-        evolve: [
-          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
+        evolve: (on) => [
+          on(ItemCreated, (state, { payload: e }) => ({ ...state, created: true, name: e.name })),
         ],
         lifecycle: {
           onCreate: (state, id) => { created.push({ state: { ...state }, id }) },
@@ -89,9 +89,9 @@ describe("Entity Lifecycle Hooks", () => {
         id: { itemId: z.string() },
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
-        evolve: [
-          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
-          on(ItemRenamed, (state: ItemState, { payload: e }) => ({ ...state, name: e.name })),
+        evolve: (on) => [
+          on(ItemCreated, (state, { payload: e }) => ({ ...state, created: true, name: e.name })),
+          on(ItemRenamed, (state, { payload: e }) => ({ ...state, name: e.name })),
         ],
         lifecycle: {
           onStateChange: (from, to) => {
@@ -128,9 +128,9 @@ describe("Entity Lifecycle Hooks", () => {
         id: { itemId: z.string() },
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
-        evolve: [
-          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
-          on(ItemDeleted, (state: ItemState) => ({ ...state, deleted: true })),
+        evolve: (on) => [
+          on(ItemCreated, (state, { payload: e }) => ({ ...state, created: true, name: e.name })),
+          on(ItemDeleted, (state) => ({ ...state, deleted: true })),
         ],
         lifecycle: {
           isDeleted: (state) => state.deleted,
@@ -162,9 +162,9 @@ describe("Entity Lifecycle Hooks", () => {
         id: { itemId: z.string() },
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
-        evolve: [
-          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
-          on(ItemDeleted, (state: ItemState) => ({ ...state, deleted: true })),
+        evolve: (on) => [
+          on(ItemCreated, (state, { payload: e }) => ({ ...state, created: true, name: e.name })),
+          on(ItemDeleted, (state) => ({ ...state, deleted: true })),
         ],
         lifecycle: {
           isDeleted: (state) => state.deleted,
@@ -197,8 +197,8 @@ describe("Entity Lifecycle Hooks", () => {
         id: { itemId: z.string() },
         initial: (_id) => ({ created: false, name: "", deleted: false }) as ItemState,
         criteria: (id) => EventCriteria.havingTags(tag("itemId", id.itemId)),
-        evolve: [
-          on(ItemCreated, (state: ItemState, { payload: e }) => ({ ...state, created: true, name: e.name })),
+        evolve: (on) => [
+          on(ItemCreated, (state, { payload: e }) => ({ ...state, created: true, name: e.name })),
         ],
         // no lifecycle
       })

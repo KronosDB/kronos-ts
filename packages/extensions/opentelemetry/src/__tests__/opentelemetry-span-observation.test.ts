@@ -23,7 +23,6 @@ import { qn, tag } from "@kronos-ts/common"
 import {
   command,
   event,
-  on,
   commandHandler,
   eventHandler,
   EventCriteria,
@@ -81,7 +80,7 @@ const Greeting = state({
   id: { id: z.string() },
   initial: () => ({ greeted: false }) as GreetState,
   criteria: (id) => EventCriteria.havingTags(tag("id", id.id)),
-  evolve: [on(Greeted, (s: GreetState) => ({ ...s, greeted: true }))],
+  evolve: (on) => [on(Greeted, (s) => ({ ...s, greeted: true }))],
 })
 
 const greet = commandHandler(Greet, async ({ payload: cmd }) => {

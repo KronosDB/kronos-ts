@@ -15,7 +15,7 @@ const Course = state({
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "" }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: [],
+  evolve: (on) => [],
 })
 
 describe("StateManager", () => {

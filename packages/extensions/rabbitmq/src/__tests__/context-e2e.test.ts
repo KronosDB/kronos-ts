@@ -6,7 +6,6 @@ import type { App } from "@kronos-ts/app"
 import {
   command,
   event,
-  on,
   commandHandler,
   EventCriteria,
 } from "@kronos-ts/messaging"
@@ -48,7 +47,7 @@ const StateA = state({
   id: { aId: z.string() },
   initial: () => ({}),
   criteria: (id) => EventCriteria.havingTags(tag("aId", id.aId)),
-  evolve: [on(ASeen, (s) => s)],
+  evolve: (on) => [on(ASeen, (s) => s)],
 })
 
 const StateB = state({
@@ -56,7 +55,7 @@ const StateB = state({
   id: { bId: z.string() },
   initial: () => ({}),
   criteria: (id) => EventCriteria.havingTags(tag("bId", id.bId)),
-  evolve: [on(BFinished, (s) => s)],
+  evolve: (on) => [on(BFinished, (s) => s)],
 })
 
 class LoopbackTransport implements RabbitMqCommandTransport {

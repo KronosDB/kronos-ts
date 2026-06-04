@@ -4,7 +4,6 @@ import { tag } from "@kronos-ts/common"
 import {
   withNamespace,
   EventCriteria,
-  on,
   commandHandler,
   eventHandler,
   queryHandler,
@@ -78,19 +77,19 @@ type CourseState = {
 const Course = state({
   name: "Course",
   id: { courseId: z.string() },
-  initial: () => ({ created: false, name: "", capacity: 0, enrolled: [] }),
+  initial: (): CourseState => ({ created: false, name: "", capacity: 0, enrolled: [] }),
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: [
-    on(CourseCreated, (s: CourseState, { payload }) => ({
+  evolve: (on) => [
+    on(CourseCreated, (s, { payload }) => ({
       ...s, created: true, name: payload.name, capacity: payload.capacity,
     })),
-    on(CourseCapacityChanged, (s: CourseState, { payload }) => ({
+    on(CourseCapacityChanged, (s, { payload }) => ({
       ...s, capacity: payload.capacity,
     })),
-    on(StudentSubscribed, (s: CourseState, { payload }) => ({
+    on(StudentSubscribed, (s, { payload }) => ({
       ...s, enrolled: [...s.enrolled, payload.studentId],
     })),
-    on(StudentUnsubscribed, (s: CourseState, { payload }) => ({
+    on(StudentUnsubscribed, (s, { payload }) => ({
       ...s, enrolled: s.enrolled.filter((sid) => sid !== payload.studentId),
     })),
   ],

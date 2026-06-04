@@ -14,7 +14,6 @@ import { qn, emptyMetadata } from "@kronos-ts/common"
 import {
   command,
   event,
-  on,
   commandHandler,
   queryHandler,
   eventHandler,
@@ -51,7 +50,7 @@ const PingState = state({
   id: { id: z.string() },
   initial: () => ({ pinged: false }),
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
-  evolve: [on(Pinged, (s) => ({ ...s, pinged: true }))],
+  evolve: (on) => [on(Pinged, (s) => ({ ...s, pinged: true }))],
 })
 const pingHandler = commandHandler(Ping, async ({ payload: cmd }) => {
   await load(PingState, { id: cmd.id })

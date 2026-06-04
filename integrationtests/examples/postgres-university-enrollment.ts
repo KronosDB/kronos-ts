@@ -23,7 +23,6 @@ import { qn, tag } from "@kronos-ts/common"
 import {
   command,
   event,
-  on,
   commandHandler,
   eventHandler,
   trackingProcessor,
@@ -78,7 +77,7 @@ const Course = state({
   id: { courseId: z.string() },
   initial: (): CourseState => ({ opened: false, capacity: 0, enrolled: [] }),
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: [
+  evolve: (on) => [
     on(CourseOpened, (s, { payload: e }) => ({ ...s, opened: true, capacity: e.capacity })),
     on(StudentEnrolled, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
   ],
@@ -90,7 +89,7 @@ const Student = state({
   id: { studentId: z.string() },
   initial: (): StudentState => ({ registered: false, maxCourses: 0, courses: [] }),
   criteria: (id) => EventCriteria.havingTags(tag("studentId", id.studentId)),
-  evolve: [
+  evolve: (on) => [
     on(StudentRegistered, (s, { payload: e }) => ({ ...s, registered: true, maxCourses: e.maxCourses })),
     on(StudentEnrolled, (s, { payload: e }) => ({ ...s, courses: [...s.courses, e.courseId] })),
   ],

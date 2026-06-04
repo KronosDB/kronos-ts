@@ -16,7 +16,6 @@ import { qn, emptyMetadata } from "@kronos-ts/common"
 import {
   command,
   event,
-  on,
   commandHandler,
   EventCriteria,
 } from "@kronos-ts/messaging"
@@ -49,7 +48,7 @@ const Tuple = state({
   id: { id: z.string() },
   initial: () => ({ tapped: false }),
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
-  evolve: [on(Tapped, (s) => ({ ...s, tapped: true }))],
+  evolve: (on) => [on(Tapped, (s) => ({ ...s, tapped: true }))],
 })
 const tapHandler = commandHandler(Tap, async ({ payload: cmd }) => {
   await load(Tuple, { id: cmd.id })

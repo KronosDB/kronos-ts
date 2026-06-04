@@ -7,7 +7,6 @@ import {
   commandHandler,
   event,
   EventCriteria,
-  on,
   send,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
@@ -48,7 +47,7 @@ const StateA = state({
   id: { aId: z.string() },
   initial: () => ({}),
   criteria: (id) => EventCriteria.havingTags(tag("aId", id.aId)),
-  evolve: [on(AObserved, (s) => s)],
+  evolve: (on) => [on(AObserved, (s) => s)],
 })
 
 const StateB = state({
@@ -56,7 +55,7 @@ const StateB = state({
   id: { bId: z.string() },
   initial: () => ({}),
   criteria: (id) => EventCriteria.havingTags(tag("bId", id.bId)),
-  evolve: [on(BFinished, (s) => s)],
+  evolve: (on) => [on(BFinished, (s) => s)],
 })
 
 function probeEventStore() {

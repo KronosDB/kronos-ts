@@ -1,6 +1,11 @@
 import type { z } from "zod"
-import type { EventCriteria, EventMessage } from "@kronos-ts/messaging"
-import type { EvolverRegistration } from "@kronos-ts/messaging"
+import { on } from "@kronos-ts/messaging"
+import type {
+  EventCriteria,
+  EventMessage,
+  EvolverRegistration,
+  EventDescriptor,
+} from "@kronos-ts/messaging"
 
 /**
  * A named record mapping field names to Zod schemas.
@@ -41,6 +46,19 @@ export interface StateLifecycle<Id = unknown, S = unknown> {
 }
 
 /**
+ * The state-scoped `on` handed to an `evolve` builder.
+ *
+ * It is the same `on` as the top-level export, but with the state type `S`
+ * already bound. Because `S` is fixed before the evolver callbacks are
+ * checked, each callback receives `state: S` contextually — no `(s: S)`
+ * annotation, and a wrong return is still rejected against `S`.
+ */
+export type EvolverBuilder<S> = <P extends z.ZodType>(
+  descriptor: EventDescriptor<P>,
+  evolve: (state: S, message: EventMessage<z.infer<P>>) => S | Promise<S>,
+) => EvolverRegistration<S, P>
+
+/**
  * A state module — a self-contained definition of state sourced from events.
  *
  * The `Id` type is always a named record (e.g., `{ courseId: string }`),
@@ -72,13 +90,20 @@ export interface StateModule<
  * The state type is inferred from the `initial` function's return type —
  * no separate type definition needed.
  *
+ * Evolvers are registered through a builder: `evolve: (on) => [...]`, where
+ * `on` is bound to the state type. Because `S` is fixed by `initial` before
+ * the evolvers are checked, each callback receives `state: S` contextually —
+ * no `(s: S)` annotation, and a wrong return is still rejected against `S`.
+ * When `initial` under-specifies `S` (empty arrays, unions), annotate the one
+ * source of truth: `initial: (id): CourseState => (...)`.
+ *
  * ```typescript
  * const Course = state({
  *   name: "Course",
  *   id: { courseId: z.string() },
  *   initial: () => ({ created: false, name: "", capacity: 0 }),
  *   criteria: (id) => EventCriteria.havingTags({ courseId: id.courseId }),
- *   evolve: [
+ *   evolve: (on) => [
  *     on(CourseCreated, (s, { payload: event }) => ({ ...s, created: true })),
  *   ],
  * })
@@ -89,16 +114,7 @@ export function state<IS extends IdSchema, S>(def: {
   id: IS
   initial: (id: InferIdFromSchema<IS>) => S
   criteria: (id: InferIdFromSchema<IS>) => EventCriteria
-  evolve: Array<EvolverRegistration<S, any>>
-  lifecycle?: StateLifecycle<InferIdFromSchema<IS>, S>
-}): StateModule<InferIdFromSchema<IS>, S>
-
-export function state<IS extends IdSchema, S>(def: {
-  name: string
-  id: IS
-  initial: (id: InferIdFromSchema<IS>) => S
-  criteria: (id: InferIdFromSchema<IS>) => EventCriteria
-  evolve: Array<EvolverRegistration<S, any>>
+  evolve: (on: EvolverBuilder<S>) => Array<EvolverRegistration<S, any>>
   lifecycle?: StateLifecycle<InferIdFromSchema<IS>, S>
 }): StateModule<InferIdFromSchema<IS>, S> {
   return {
@@ -107,7 +123,7 @@ export function state<IS extends IdSchema, S>(def: {
     idSchema: def.id,
     create: def.initial,
     criteria: def.criteria,
-    evolvers: def.evolve,
+    evolvers: def.evolve(on as unknown as EvolverBuilder<S>),
     lifecycle: def.lifecycle,
   }
 }

@@ -15,7 +15,6 @@ import { qn, emptyMetadata } from "@kronos-ts/common"
 import {
   command,
   event,
-  on,
   commandHandler,
   EventCriteria,
   type CommandBus,
@@ -48,7 +47,7 @@ const Thing = state({
   id: { id: z.string() },
   initial: () => ({ created: false }),
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
-  evolve: [on(ThingCreated, (s) => ({ ...s, created: true }))],
+  evolve: (on) => [on(ThingCreated, (s) => ({ ...s, created: true }))],
 })
 
 const createThingHandler = commandHandler(CreateThing, async ({ payload: cmd }) => {

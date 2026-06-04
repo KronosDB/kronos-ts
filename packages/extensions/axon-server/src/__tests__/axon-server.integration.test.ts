@@ -27,7 +27,6 @@ import { qn, tag } from "@kronos-ts/common"
 import {
   command,
   event,
-  on,
   commandHandler,
   EventCriteria,
   jsonSerializer,
@@ -82,9 +81,9 @@ const Course = state({
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [] }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: [
-    on(CourseCreated, (s: CourseState, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
-    on(StudentEnrolled, (s: CourseState, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
+  evolve: (on) => [
+    on(CourseCreated, (s, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
+    on(StudentEnrolled, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
   ],
 })
 

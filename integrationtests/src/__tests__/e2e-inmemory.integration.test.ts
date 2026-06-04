@@ -22,7 +22,6 @@ import {
   command,
   event,
   query,
-  on,
   commandHandler,
   eventHandler,
   queryHandler,
@@ -117,17 +116,17 @@ const Course = state({
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: [
-    on(CourseCreated, (s: CourseState, { payload: e }) => ({
+  evolve: (on) => [
+    on(CourseCreated, (s, { payload: e }) => ({
       ...s, created: true, name: e.name, capacity: e.capacity,
     })),
-    on(CourseCapacityChanged, (s: CourseState, { payload: e }) => ({
+    on(CourseCapacityChanged, (s, { payload: e }) => ({
       ...s, capacity: e.capacity,
     })),
-    on(StudentSubscribed, (s: CourseState, { payload: e }) => ({
+    on(StudentSubscribed, (s, { payload: e }) => ({
       ...s, enrolled: [...s.enrolled, e.studentId],
     })),
-    on(EnrollmentClosed, (s: CourseState) => ({ ...s, closed: true })),
+    on(EnrollmentClosed, (s) => ({ ...s, closed: true })),
   ],
 })
 

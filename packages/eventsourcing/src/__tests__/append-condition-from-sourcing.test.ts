@@ -16,7 +16,6 @@ import { qn, tag, emptyMetadata } from "@kronos-ts/common"
 import {
   command,
   event,
-  on,
   commandHandler,
   EventCriteria,
   type EventMessage,
@@ -44,7 +43,7 @@ const Thing = state({
   id: { id: z.string() },
   initial: () => ({ touched: false }),
   criteria: ({ id }) => EventCriteria.havingTags(tag("id", id)),
-  evolve: [on(ThingTouched, (s) => ({ ...s, touched: true }))],
+  evolve: (on) => [on(ThingTouched, (s) => ({ ...s, touched: true }))],
 })
 const touchThing = commandHandler(TouchThing, async ({ payload: cmd }) => {
   await load(Thing, { id: cmd.id })

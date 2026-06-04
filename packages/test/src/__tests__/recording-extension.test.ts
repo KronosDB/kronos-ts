@@ -4,7 +4,6 @@ import { qn, tag, emptyMetadata } from "@kronos-ts/common"
 import {
   command,
   event,
-  on,
   commandHandler,
   EventCriteria,
 } from "@kronos-ts/messaging"
@@ -39,7 +38,7 @@ const Thing = state({
   id: { id: z.string() },
   initial: (_id) => ({ exists: false }) as ThingState,
   criteria: (id) => EventCriteria.havingTags(tag("id", id.id)),
-  evolve: [on(TestThingHappened, (s: ThingState) => ({ ...s, exists: true }))],
+  evolve: (on) => [on(TestThingHappened, (s) => ({ ...s, exists: true }))],
 })
 
 const doTestThingHandler = commandHandler(DoTestThing, async ({ payload: cmd }) => {

@@ -4,7 +4,6 @@ import { qn, tag } from "@kronos-ts/common"
 import {
   command,
   event,
-  on,
   commandHandler,
   eventHandler,
   EventCriteria,
@@ -38,8 +37,8 @@ const Course = state({
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "" }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: [
-    on(CourseCreated, (s: CourseState, { payload: e }) => ({ created: true, name: e.name })),
+  evolve: (on) => [
+    on(CourseCreated, (s, { payload: e }) => ({ created: true, name: e.name })),
   ],
 })
 

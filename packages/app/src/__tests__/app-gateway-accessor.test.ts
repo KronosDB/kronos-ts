@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test"
 import { z } from "zod"
 import { qn } from "@kronos-ts/common"
-import { command, commandHandler, EventCriteria, event, on } from "@kronos-ts/messaging"
+import { command, commandHandler, EventCriteria, event, } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { append, load } from "@kronos-ts/eventsourcing"
 import { kronos, type RunningApp } from "../index.js"
@@ -22,7 +22,7 @@ const PingState = state({
   id: { id: z.string() },
   initial: () => ({ pinged: false }),
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
-  evolve: [on(Pinged, (s) => ({ ...s, pinged: true }))],
+  evolve: (on) => [on(Pinged, (s) => ({ ...s, pinged: true }))],
 })
 const pingHandler = commandHandler(Ping, async ({ payload: cmd }) => {
   await load(PingState, { id: cmd.id })

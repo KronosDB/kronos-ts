@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test"
 import { z } from "zod"
 import { qn, emptyMetadata } from "@kronos-ts/common"
-import { command, event, on, commandHandler, EventCriteria } from "@kronos-ts/messaging"
+import { command, event, commandHandler, EventCriteria } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { load, append } from "@kronos-ts/eventsourcing"
 import { AppImpl, AppAlreadyStartedError, type RunningApp } from "../app.js"
@@ -39,7 +39,7 @@ const Thing = state({
   id: { id: z.string() },
   initial: () => ({ created: false }),
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
-  evolve: [on(ThingCreated, (s) => ({ ...s, created: true }))],
+  evolve: (on) => [on(ThingCreated, (s) => ({ ...s, created: true }))],
 })
 
 const createThingHandler = commandHandler(CreateThing, async ({ payload: cmd }) => {

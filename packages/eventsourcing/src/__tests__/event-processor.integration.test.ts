@@ -16,7 +16,6 @@ import {
   command,
   event,
   query,
-  on,
   commandHandler,
   eventHandler,
   queryHandler,
@@ -49,7 +48,7 @@ const Student = state({
   id: { studentId: z.string() },
   initial: () => ({ enrolled: false, name: "" }),
   criteria: ({ studentId }) => EventCriteria.havingTags(tag("studentId", studentId)),
-  evolve: [on(StudentEnrolled, (s, { payload: e }) => ({ enrolled: true, name: e.name }))],
+  evolve: (on) => [on(StudentEnrolled, (s, { payload: e }) => ({ enrolled: true, name: e.name }))],
 })
 
 const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }) => {

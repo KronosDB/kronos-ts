@@ -1,6 +1,7 @@
 export {
   type StateModule,
   type StateLifecycle,
+  type EvolverBuilder,
   type IdSchema,
   type InferIdFromSchema,
   state,

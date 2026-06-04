@@ -22,7 +22,11 @@ import { Defaults } from "./defaults-handles.js"
  * channel BEFORE in-memory defaults are registered.
  */
 export interface KronosPartialConfig {
-  states?: StateModule[]
+  // StateModule<any, any>: Id sits in a contravariant position (create/criteria
+  // accept it), so a concrete StateModule<{id:string},…> is not assignable to
+  // StateModule<unknown,unknown>. Matches App.states()'s StatesArg. `any` accepts
+  // any module. (Surfaced once the evolve builder began inferring S precisely.)
+  states?: StateModule<any, any>[]
   commands?: CommandHandlerDefinition<any, any>[]
   queries?: QueryHandlerDefinition[]
   processors?: EventProcessorModule[]

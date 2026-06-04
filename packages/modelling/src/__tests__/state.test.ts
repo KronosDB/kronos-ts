@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn, tag } from "@kronos-ts/common"
-import { event, on, EventCriteria } from "@kronos-ts/messaging"
+import { event, EventCriteria } from "@kronos-ts/messaging"
 import { state } from "../state.js"
 
 // -- Fixtures --
@@ -31,14 +31,14 @@ describe("state()", () => {
       id: { courseId: z.string() },
       initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
       criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-      evolve: [
-        on(CourseCreated, (state: CourseState, { payload: event }) => ({
+      evolve: (on) => [
+        on(CourseCreated, (state, { payload: event }) => ({
           ...state,
           created: true,
           name: event.name,
           capacity: event.capacity,
         })),
-        on(CourseCapacityChanged, (state: CourseState, { payload: event }) => ({
+        on(CourseCapacityChanged, (state, { payload: event }) => ({
           ...state,
           capacity: event.capacity,
         })),
@@ -56,7 +56,7 @@ describe("state()", () => {
       id: { courseId: z.string() },
       initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
       criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-      evolve: [],
+      evolve: (on) => [],
     })
 
     const initial = Course.create({ courseId: "any" })
@@ -70,7 +70,7 @@ describe("state()", () => {
       id: { courseId: z.string() },
       initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
       criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-      evolve: [],
+      evolve: (on) => [],
     })
 
     const criteria = Course.criteria({ courseId: "cs-101" })
@@ -87,14 +87,14 @@ describe("state()", () => {
       id: { courseId: z.string() },
       initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
       criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-      evolve: [
-        on(CourseCreated, (state: CourseState, { payload: event }) => ({
+      evolve: (on) => [
+        on(CourseCreated, (state, { payload: event }) => ({
           ...state,
           created: true,
           name: event.name,
           capacity: event.capacity,
         })),
-        on(CourseCapacityChanged, (state: CourseState, { payload: event }) => ({
+        on(CourseCapacityChanged, (state, { payload: event }) => ({
           ...state,
           capacity: event.capacity,
         })),

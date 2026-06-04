@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn, tag, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
-import { event, on, EventCriteria, type EventMessage } from "@kronos-ts/messaging"
+import { event, EventCriteria, type EventMessage } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
 import { createEventSourcedRepository } from "../event-sourced-repository.js"
@@ -29,11 +29,11 @@ const Course = state({
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "", capacity: 0 }) as CourseState,
   criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: [
-    on(CourseCreated, (state: CourseState, { payload: e }) => ({
+  evolve: (on) => [
+    on(CourseCreated, (state, { payload: e }) => ({
       ...state, created: true, name: e.name, capacity: e.capacity,
     })),
-    on(CourseCapacityChanged, (state: CourseState, { payload: e }) => ({
+    on(CourseCapacityChanged, (state, { payload: e }) => ({
       ...state, capacity: e.capacity,
     })),
   ],
