@@ -1,5 +1,5 @@
 ---
-"@kronos-ts/modelling": major
+"@kronos-ts/modelling": minor
 "@kronos-ts/app": patch
 ---
 
