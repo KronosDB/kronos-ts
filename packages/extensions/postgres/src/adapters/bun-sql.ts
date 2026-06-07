@@ -173,6 +173,9 @@ export function bunSqlAdapter(config: BunSqlAdapterConfig): PostgresAdapter {
       // normalized (errno -> code) via normalizeBunSqlError before propagating.
       return inst.begin(`ISOLATION LEVEL ${isolationLevel}`, async (txSql) => {
         const tx: PostgresAdapterTransaction = {
+          unwrap<T = unknown>(): T {
+            return txSql as unknown as T
+          },
           async query<R extends QueryRow = QueryRow>(
             text: string,
             params?: unknown[],

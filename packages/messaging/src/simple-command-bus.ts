@@ -1,6 +1,6 @@
 import type { CommandBus } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
-import { runInNewUoW } from "./unit-of-work.js"
+import { runInNewUoW, type UoWRunner } from "./unit-of-work.js"
 import { qualifiedNameToString } from "@kronos-ts/common"
 
 /**
@@ -16,14 +16,20 @@ import { qualifiedNameToString } from "@kronos-ts/common"
  * by sharing a transaction. DCB read-set / append-condition merging
  * happens only WITHIN a single handler's UnitOfWork.
  *
- * Transactional wiring composes at the runner level via
- * `transactionalUnitOfWorkFactory(runInNewUoW, txManager)` and is consumed
- * by extensions / processors directly, not by the bus.
+ * The handler runs through `unitOfWorkRunner` — by default `runInNewUoW`, but
+ * the configurer injects the resolved `unitOfWorkFactory` slot (e.g. a
+ * transactional runner from a storage extension) so the per-command UoW
+ * carries whatever transaction that backend provides. This mirrors the
+ * distributed command buses (kronosdb / axon-server), which already run
+ * handlers through the configured runner. The runner is always built on
+ * `runInNewUoW`, so a command — primary OR nested via `send()` — still gets
+ * its own fresh UoW (and its own independent transaction); composition does
+ * not change AF5 isolation, only whether that fresh UoW has a transaction.
  *
  * Interceptor support is provided by wrapping with
  * {@link createInterceptingCommandBus}.
  */
-export function createSimpleCommandBus(): CommandBus {
+export function createSimpleCommandBus(unitOfWorkRunner: UoWRunner = runInNewUoW): CommandBus {
   const handlers = new Map<string, (message: CommandMessage) => Promise<unknown>>()
 
   return {
@@ -34,12 +40,12 @@ export function createSimpleCommandBus(): CommandBus {
         throw new Error(`No handler registered for command "${key}"`)
       }
 
-      // AF5 parity: every command gets its own fresh UnitOfWork, even when
-      // dispatched from inside another handler. Dispatch interceptors have
-      // already run in the caller's context (the intercepting bus wraps
-      // this one), so correlation data is carried on `message.metadata`
-      // before we cross into the new UoW.
-      return runInNewUoW(message.metadata, () => handler(message))
+      // AF5 parity: every command gets its own fresh UnitOfWork (the runner is
+      // built on runInNewUoW), even when dispatched from inside another
+      // handler. Dispatch interceptors have already run in the caller's context
+      // (the intercepting bus wraps this one), so correlation data is carried
+      // on `message.metadata` before we cross into the new UoW.
+      return unitOfWorkRunner(message.metadata, () => handler(message))
     },
 
     subscribe(

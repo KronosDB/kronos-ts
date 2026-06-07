@@ -101,6 +101,9 @@ export function postgresAdapter(config: PostgresAdapterConfig): PostgresAdapter 
       // pins to the underlying connection for the duration.
       return (await c.begin(`ISOLATION LEVEL ${isolationLevel}`, async (txSql) => {
         const tx: PostgresAdapterTransaction = {
+          unwrap<T = unknown>(): T {
+            return txSql as unknown as T
+          },
           async query<R extends QueryRow = QueryRow>(
             text: string,
             params?: unknown[],

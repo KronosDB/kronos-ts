@@ -119,6 +119,87 @@ const adapter = bunSqlAdapter({
 })
 ```
 
+## Transactions
+
+Every command handler runs inside a single Unit of Work, and with this extension that UoW carries a Postgres transaction. A handler's appended events are buffered and flushed as one bulk write at commit; anything else you write **on the same transaction** commits — or rolls back — atomically with them. So "edit a row and append an `Updated` event" is one atomic operation.
+
+The transaction is **lazy**: it opens on the first writer (an append, or your own SQL) and never opens for pure-read handlers, so read-only work claims no connection from the pool.
+
+This is the framework's transaction, exposed for you to enroll work into. The extension does **not** ship an ORM client — you bring (or wrap) your own. The two pieces you need are both from `@kronos-ts/messaging`:
+
+- `getOrBeginActiveTransaction<PostgresAdapterTransaction>()` — returns the UoW's transaction, opening the lazy one on first call. Use on **write** paths.
+- `getActiveTransaction<PostgresAdapterTransaction>()` — returns it only if already open (else `undefined`), without forcing one. Use on **read-only** paths that shouldn't provoke a connection.
+
+### Running your own SQL — no ORM needed
+
+The transaction handle runs parameterised SQL directly (it's what the event store appends with):
+
+```typescript
+import { getOrBeginActiveTransaction } from "@kronos-ts/messaging"
+import type { PostgresAdapterTransaction } from "@kronos-ts/postgres"
+import { append } from "@kronos-ts/eventsourcing"
+
+// inside a command handler:
+const tx = await getOrBeginActiveTransaction<PostgresAdapterTransaction>()
+await tx!.query("UPDATE widgets SET name = $1 WHERE id = $2", [name, id])
+append(WidgetUpdated, { id, name })   // commits together, rolls back together
+```
+
+### Handing the transaction to an ORM
+
+`tx.unwrap<T>()` returns the live driver connection backing the transaction — the *same* connection the event store appends on. Bind your ORM to it and its writes join the transaction. The handle type depends on the adapter you wired:
+
+| Adapter | `unwrap()` returns |
+|---------|--------------------|
+| `pgAdapter` | `pg` `PoolClient` |
+| `postgresAdapter` | scoped `Sql` (porsager) |
+| `bunSqlAdapter` | scoped Bun `SQL` |
+
+#### Drizzle (the easy case)
+
+`drizzle(connection)` accepts an already-open connection, so binding is a one-liner — pick the import matching your adapter:
+
+```typescript
+// pgAdapter
+import { drizzle } from "drizzle-orm/node-postgres"
+import type { PoolClient } from "pg"
+const db = drizzle(tx.unwrap<PoolClient>(), { schema })
+
+// postgresAdapter
+import { drizzle } from "drizzle-orm/postgres-js"
+import type { Sql } from "postgres"
+const db = drizzle(tx.unwrap<Sql>(), { schema })
+
+// bunSqlAdapter
+import { drizzle } from "drizzle-orm/bun-sql"
+import type { SQL } from "bun"
+const db = drizzle(tx.unwrap<SQL>(), { schema })
+```
+
+`drizzle(conn)` is a thin wrapper, so a small per-call helper is the ergonomic shape:
+
+```typescript
+async function uowDb() {
+  const tx = await getOrBeginActiveTransaction<PostgresAdapterTransaction>()
+  if (!tx) throw new Error("no active UnitOfWork transaction")
+  return drizzle(tx.unwrap<PoolClient>(), { schema })
+}
+
+// in a command handler:
+const db = await uowDb()
+await db.insert(widgets).values({ id, name })
+  .onConflictDoUpdate({ target: widgets.id, set: { name } })
+append(WidgetUpdated, { id, name })
+```
+
+#### Kysely / TypeORM and other pool-owning ORMs
+
+ORMs that manage their own connection pool are more work — they don't take a borrowed connection directly. The route is a thin custom dialect/driver whose `acquireConnection()` hands back `unwrap()`'s connection and whose begin/commit/release are no-ops (the UoW owns the transaction lifecycle). Doable, just more plumbing than Drizzle. For occasional statements, the raw `tx.query(...)` path above is usually simpler than wiring a dialect.
+
+### The one rule
+
+Bind your client to **`unwrap()`'s connection** — never to a separately-created pool. A separate pool is a separate connection, hence a separate transaction, and your writes silently stop being atomic with your events. `unwrap()` is the guarantee that you're on the framework's connection.
+
 ## DCB Semantics
 
 The engine implements [Dynamic Consistency Boundaries](https://dcb.events):

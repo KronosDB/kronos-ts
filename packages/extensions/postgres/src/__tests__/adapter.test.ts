@@ -37,6 +37,9 @@ describe("PostgresAdapter interface (structural)", () => {
         fn: (tx: PostgresAdapterTransaction) => Promise<T>,
       ): Promise<T> {
         return fn({
+          unwrap<T = unknown>(): T {
+            return undefined as unknown as T
+          },
           async query<R>(_sql: string, _params?: unknown[]): Promise<R[]> {
             return []
           },
@@ -61,6 +64,9 @@ describe("PostgresAdapter interface (structural)", () => {
 
   it("PostgresAdapterTransaction exposes query but NOT transaction (no nested transactions)", () => {
     const tx: PostgresAdapterTransaction = {
+      unwrap<T = unknown>(): T {
+        return undefined as unknown as T
+      },
       async query<R>(_sql: string, _params?: unknown[]): Promise<R[]> {
         return []
       },

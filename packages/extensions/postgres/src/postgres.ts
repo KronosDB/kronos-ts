@@ -27,13 +27,12 @@
  * scope for this extension — postgres token store is a separate package).
  */
 
-import type { App, KronosComponents } from "@kronos-ts/app"
+import type { App } from "@kronos-ts/app"
 import type { ResilienceConfig } from "@kronos-ts/common"
 import { withRetry } from "@kronos-ts/common"
 import {
   lazyTransactionalUnitOfWorkFactory,
   runInNewUoW,
-  type TransactionManager,
 } from "@kronos-ts/messaging"
 import type { PostgresAdapter } from "./adapter.js"
 import { createPostgresEventStore } from "./postgres-event-store.js"
@@ -68,6 +67,8 @@ export function postgres(config: PostgresConfig): (app: App) => void {
   const bootstrap = config.bootstrap ?? true
   const tables = config.tableNames ?? DEFAULT_TABLE_NAMES
 
+  const txManager = postgresTransactionManager(adapter)
+
   return (app: App) => {
     app.set("eventStore", ({ serializer, tagResolver }) =>
       createPostgresEventStore({ adapter, serializer, tagResolver, tableNames: tables }),
@@ -75,12 +76,16 @@ export function postgres(config: PostgresConfig): (app: App) => void {
     app.set("snapshotStore", ({ serializer }) =>
       createPostgresSnapshotStore({ adapter, serializer, tableNames: tables }),
     )
-    app.set("transactionManager", () => postgresTransactionManager(adapter))
-    app.set("unitOfWorkFactory", (resolved: KronosComponents) =>
-      lazyTransactionalUnitOfWorkFactory(
-        runInNewUoW,
-        resolved.transactionManager as TransactionManager<unknown>,
-      ),
+    app.set("transactionManager", () => txManager)
+    // Lazy: pure-read UoWs never claim a connection; the first writer (an
+    // append flush, or a user's own SQL via getOrBeginActiveTransaction)
+    // begins the tx, and everything in that UoW — events AND co-located
+    // writes — commits or rolls back together. The command bus runs handlers
+    // through this factory (see createSimpleCommandBus), so command handlers
+    // get the transaction without this extension reaching into the command
+    // pipeline.
+    app.set("unitOfWorkFactory", () =>
+      lazyTransactionalUnitOfWorkFactory(runInNewUoW, txManager),
     )
 
     // Durable scheduler — closure captures the instance so the worker can be

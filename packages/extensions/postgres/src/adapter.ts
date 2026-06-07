@@ -41,6 +41,19 @@ export type QueryRow = Record<string, unknown>
  */
 export interface PostgresAdapterTransaction {
   query<R extends QueryRow = QueryRow>(sql: string, params?: unknown[]): Promise<R[]>
+  /**
+   * Escape hatch returning the live driver-specific handle backing this
+   * transaction — the pg `PoolClient`, or the scoped `sql` for postgres.js /
+   * Bun.sql. Lets an external query builder (e.g. Drizzle) issue statements on
+   * the SAME connection, and therefore the SAME transaction, as the engine's
+   * appends — so an application's CRUD writes commit or roll back atomically
+   * with its events.
+   *
+   * The caller owns the cast (the handle type is driver-specific) and the
+   * handle is valid ONLY for the lifetime of this transaction — never retain
+   * it past the UoW that opened it.
+   */
+  unwrap<T = unknown>(): T
 }
 
 /** Handle to a live LISTEN subscription. unlisten() unregisters + releases

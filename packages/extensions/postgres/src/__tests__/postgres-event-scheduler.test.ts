@@ -128,6 +128,9 @@ function createFakeAdapter() {
 
       const txTable = table
       const tx: PostgresAdapterTransaction = {
+        unwrap<T = unknown>(): T {
+          return undefined as unknown as T
+        },
         async query<R>(sql: string, params?: unknown[]): Promise<R[]> {
           return execOn(txTable, sql, params) as R[]
         },

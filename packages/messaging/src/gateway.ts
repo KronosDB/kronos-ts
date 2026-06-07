@@ -74,32 +74,24 @@ export interface QueryGateway {
 /**
  * Creates a command gateway backed by a command bus.
  *
- * Plan 03-04 (CTX-04 / D-34): the optional `unitOfWorkRunner` lets the
- * configurer inject a transactional wrapper (`transactionalUnitOfWorkFactory`)
- * around the dispatch boundary. Defaults to `runInNewUoW` — preserves the
- * Plan 03-01 contract that every gateway call starts a fresh UoW.
+ * AF5-aligned (CLAUDE.md command model): the gateway is a thin message-builder
+ * and does NOT establish a UnitOfWork. The command bus owns the single
+ * per-command UoW (and, via the configured `unitOfWorkFactory`, its
+ * transaction) — see `createSimpleCommandBus`. Dispatch interceptors run on
+ * the message before it crosses into that UoW; the dispatch-side hook channel
+ * is ALS, not a threaded ProcessingContext.
  */
-export function createCommandGateway(
-  bus: CommandBus,
-  unitOfWorkRunner: UoWRunner = runInNewUoW,
-): CommandGateway {
+export function createCommandGateway(bus: CommandBus): CommandGateway {
   return {
     async send(descriptor, payload, metadata) {
       const resolvedMetadata = metadata ?? emptyMetadata()
-      // Plan 03-01 (D-32) / Plan 03-03 (CTX-01): gateways always start a new
-      // UoW. The bus.dispatch call below will detect the ALS state we just
-      // established (via runInUoW in simple-command-bus) and reuse it — so
-      // this is the single UoW boundary for the dispatch chain. No
-      // ProcessingContext parameter is threaded.
-      return unitOfWorkRunner(resolvedMetadata, () =>
-        bus.dispatch({
-          identifier: generateIdentifier(),
-          name: descriptor.name,
-          payload,
-          metadata: resolvedMetadata,
-          timestamp: Date.now(),
-        }) as Promise<any>,
-      ) as any
+      return bus.dispatch({
+        identifier: generateIdentifier(),
+        name: descriptor.name,
+        payload,
+        metadata: resolvedMetadata,
+        timestamp: Date.now(),
+      }) as any
     },
   }
 }

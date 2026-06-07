@@ -612,7 +612,7 @@ export class AppImpl implements App {
     //     `app.commandGateway` / `app.queryGateway` accessors are only populated at
     //     the `register` stage — preserving the AppNotStartedError contract for
     //     pre-register hooks (Plan 08-01).
-    const commandGateway = createCommandGateway(built.commandBus, built.unitOfWorkFactory)
+    const commandGateway = createCommandGateway(built.commandBus)
     const queryGateway = createQueryGateway(built.queryBus, built.unitOfWorkFactory)
 
     // 5g. Run typed-stage start hooks in forward order with D-77 warn-then-continue

@@ -33,7 +33,10 @@ export function registerInMemoryDefaults(app: App): void {
     inMemory: true,
     warning: "[kronos] snapshotStore: in-memory — not durable, configure an extension for production",
   })
-  app.setDefault("commandBus", () => createSimpleCommandBus(), {
+  // Run handlers through the resolved unitOfWorkFactory so a transactional
+  // backend (e.g. postgres) gives each command's UoW a transaction. With the
+  // in-memory default factory (runInNewUoW) this is identical to before.
+  app.setDefault("commandBus", ({ unitOfWorkFactory }) => createSimpleCommandBus(unitOfWorkFactory), {
     inMemory: true,
     warning: "[kronos] commandBus: in-memory — single-process only, configure an extension for distribution",
   })

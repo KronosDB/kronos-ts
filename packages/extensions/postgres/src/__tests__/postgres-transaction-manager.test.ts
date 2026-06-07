@@ -24,6 +24,9 @@ function createRecordingAdapter() {
       log.push(`begin:${isolationLevel}`)
       try {
         const result = await fn({
+          unwrap<T = unknown>(): T {
+            return undefined as unknown as T
+          },
           async query(sql: string) {
             log.push(`query:${sql}`)
             return []

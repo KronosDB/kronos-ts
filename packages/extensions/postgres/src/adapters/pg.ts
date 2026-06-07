@@ -119,6 +119,9 @@ export function pgAdapter(config: PgAdapterConfig): PostgresAdapter {
       try {
         await client.query(`BEGIN ISOLATION LEVEL ${isolationLevel}`)
         const tx: PostgresAdapterTransaction = {
+          unwrap<T = unknown>(): T {
+            return client as unknown as T
+          },
           async query<R extends QueryRow = QueryRow>(
             sql: string,
             params?: unknown[],
