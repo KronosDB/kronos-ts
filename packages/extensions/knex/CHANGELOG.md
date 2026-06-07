@@ -1,5 +1,12 @@
 # @kronos-ts/knex
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [74dc43d]
+  - @kronos-ts/messaging@0.3.0
+
 ## 0.1.2
 
 ### Patch Changes

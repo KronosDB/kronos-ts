@@ -1,5 +1,67 @@
 # @kronos-ts/app
 
+## 0.3.0
+
+### Minor Changes
+
+- 74dc43d: Command handlers now run inside the UnitOfWork's transaction, so a handler's appended events and any other writes it makes commit — or roll back — atomically.
+
+  Previously the command bus opened a fresh UnitOfWork that bypassed the configured `unitOfWorkFactory`, so a transaction provided by a backend never reached command handlers (each `append()` opened its own short-lived transaction instead). The in-memory `createSimpleCommandBus` now runs handlers through the configured `unitOfWorkFactory` — matching the distributed buses (kronosdb / axon-server), which already did this. With the in-memory default factory (`runInNewUoW`) behavior is unchanged; a transactional backend gives each command's UoW a transaction.
+
+  `@kronos-ts/postgres`: command handlers are transactional out of the box — **lazy**, so pure-read handlers never claim a connection. `PostgresAdapterTransaction` gains `unwrap<T>()`, which returns the live driver connection backing the UoW transaction (pg `PoolClient`, or the scoped `sql` for porsager/Bun). Use it to run your own SQL, or bind an ORM, in the same transaction as your events:
+
+  ```ts
+  const tx = await getOrBeginActiveTransaction<PostgresAdapterTransaction>();
+  await tx!.query("UPDATE widgets SET name = $1 WHERE id = $2", [name, id]);
+  append(WidgetUpdated, { id, name }); // same commit
+  // or hand tx.unwrap() to Drizzle/Kysely — see the @kronos-ts/postgres README.
+  ```
+
+  **Breaking (`@kronos-ts/messaging`):** `createCommandGateway(bus, unitOfWorkRunner?)` is now `createCommandGateway(bus)` — the gateway is a thin message-builder and no longer opens a UnitOfWork; the command bus owns the single per-command UoW (AF5-aligned). `createSimpleCommandBus()` now accepts an optional `UoWRunner` (defaults to `runInNewUoW`). Direct callers of `createCommandGateway` that passed a runner should drop the second argument; the transactional runner now belongs on the `unitOfWorkFactory` slot, which the bus consumes.
+
+  **Breaking (`@kronos-ts/postgres`)** for custom adapter authors only: `PostgresAdapterTransaction` now requires an `unwrap<T>(): T` method returning the underlying driver connection. The three bundled adapters (pg / postgres / bun-sql) implement it; custom adapters must add it.
+
+### Patch Changes
+
+- c1a1cf5: **Breaking:** `state()` evolvers are now registered through a builder —
+  `evolve: (on) => [...]` — instead of a bare array. The `on` handed to the
+  builder is bound to the state type, so evolver callbacks no longer need a
+  `(s: State)` annotation: the state type is fixed by `initial` before the
+  evolvers are checked, so they are validated against it instead of competing to
+  infer it. This delivers the documented "state type is inferred from `initial`"
+  behavior.
+
+  Migrate by wrapping the array in `(on) => [...]`, dropping the `(s: State)`
+  annotations, and removing the now-unused `on` import (the builder supplies it).
+  Annotate `initial` (`initial: (id): State => ...`) only when it under-specifies
+  the type via empty arrays or unions.
+
+  ```ts
+  // before
+  evolve: [
+    on(CourseCreated, (s: CourseState, { payload }) => ({
+      ...s,
+      created: true,
+    })),
+  ];
+  // after
+  evolve: (on) => [
+    on(CourseCreated, (s, { payload }) => ({ ...s, created: true })),
+  ];
+  ```
+
+  `@kronos-ts/app`: `kronos({ states })` partial-config now accepts precisely-typed
+  state modules (`StateModule<any, any>[]`), matching `App.states()`. The previous
+  `StateModule[]` (`<unknown, unknown>`) rejected concrete modules because `Id`
+  sits in a contravariant position — a latent bug surfaced once the evolve builder
+  began inferring state types precisely.
+
+- Updated dependencies [c1a1cf5]
+- Updated dependencies [74dc43d]
+  - @kronos-ts/modelling@0.2.0
+  - @kronos-ts/messaging@0.3.0
+  - @kronos-ts/eventsourcing@0.1.3
+
 ## 0.2.0
 
 ### Minor Changes
