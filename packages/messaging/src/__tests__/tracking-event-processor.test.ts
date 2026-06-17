@@ -373,6 +373,50 @@ describe("TrackingEventProcessor", () => {
       // then -- position should NOT advance past the failing event
       expect(processor.position).toBe(0n)
     })
+
+    it("redelivers a failed batch on the next poll without a restart", async () => {
+      // given -- a handler that throws the first time it sees sequence 1n,
+      // then succeeds. Before the fix, the live stream cursor advanced past
+      // the failed batch during accumulation while the token did not, so the
+      // event was skipped until a restart and the position never reached 2n.
+      const attempts: bigint[] = []
+      const events = [
+        makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n),
+        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      let thrown = false
+      const handler: EventHandlerRegistration<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: ({ sequence }: any) => {
+          attempts.push(sequence)
+          if (sequence === 1n && !thrown) {
+            thrown = true
+            throw new Error("transient handler failure")
+          }
+        },
+      }
+
+      const processor = createTrackingEventProcessor({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [handler],
+
+        errorHandler: propagatingErrorHandler(),
+        pollingIntervalMs: 10,
+      })
+
+      // when -- never restarted; reaching 2n requires redelivery of the failed event
+      await processor.start()
+      await waitForPosition(processor, 2n)
+      processor.stop()
+
+      // then -- the failed event was retried and the checkpoint advanced past it
+      expect(processor.position).toBe(2n)
+      expect(attempts.filter((s) => s === 1n).length).toBeGreaterThanOrEqual(2)
+    })
   })
 
   describe("stop and restart", () => {

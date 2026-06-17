@@ -75,6 +75,8 @@ export interface StreamingEventProcessorOptions {
   unitOfWorkRunner?: UoWRunner
   tokenStore?: TokenStore
   batchSize?: number
+  /** Delay before retrying after a batch failure, in ms. Backs off to avoid hot-looping a deterministic failure. */
+  errorBackoffMs?: number
   errorHandler?: EventProcessingErrorHandler
   /** Optional handler enhancer applied to all event handlers at setup time. */
   handlerEnhancer?: HandlerEnhancerDefinition
@@ -96,6 +98,7 @@ export function createStreamingEventProcessor(
     unitOfWorkRunner = runInNewUoW,
     tokenStore,
     batchSize = 100,
+    errorBackoffMs = 1000,
     errorHandler = loggingErrorHandler(name),
     handlerEnhancer,
     onReset,
@@ -158,6 +161,22 @@ export function createStreamingEventProcessor(
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
       console.error(`Event processor "${name}" error:`, err)
+      // Realign the live stream to the committed checkpoint. During batch
+      // accumulation the stream cursor (and any read-ahead buffer) advanced
+      // past this batch, but `token` was NOT advanced — the failing UnitOfWork
+      // never reached PREPARE_COMMIT. Closing discards the stream's buffer so
+      // the next cycle reopens at token.position() and re-reads — and thus
+      // redelivers — the failed batch. Without this the stream cursor outruns
+      // the checkpoint and the failed events are skipped until a restart.
+      // Mirrors Axon's close-and-reopen-from-token recovery. Back off before
+      // retrying so a deterministically failing handler can't hot-loop.
+      stream?.close()
+      stream = null
+      if (isRunning) {
+        if (processTimer !== null) clearTimeout(processTimer)
+        processTimer = setTimeout(processAvailable, errorBackoffMs)
+      }
+      return
     } finally {
       processing = false
     }
@@ -170,24 +189,26 @@ export function createStreamingEventProcessor(
   }
 
   async function processFromStream() {
-    if (!stream) return
+    // Lazily (re)open the stream at the committed token. The error path nulls
+    // `stream` so processing resumes from the checkpoint, not a stale cursor.
+    if (!stream) openStream()
 
     // Check for stream errors — reopen if needed
-    const streamError = stream.error()
+    const streamError = stream!.error()
     if (streamError) {
       console.error(`Event processor "${name}": stream error, reopening:`, streamError)
-      stream.close()
+      stream!.close()
       stream = null
       openStream()
       return
     }
 
     const batch: SequencedEvent[] = []
-    let event = stream.next()
+    let event = stream!.next()
     while (event && batch.length < batchSize) {
       batch.push(event)
-      if (batch.length < batchSize && stream.hasNextAvailable()) {
-        event = stream.next()
+      if (batch.length < batchSize && stream!.hasNextAvailable()) {
+        event = stream!.next()
       } else {
         break
       }
@@ -196,7 +217,7 @@ export function createStreamingEventProcessor(
     if (batch.length > 0) {
       caughtUp = false
       await processBatch(batch)
-      if (stream.hasNextAvailable()) {
+      if (stream!.hasNextAvailable()) {
         scheduleImmediate()
       }
     } else {

@@ -224,6 +224,16 @@ export function createTrackingEventProcessor(
       }
     } catch (err) {
       console.error(`Event processor "${name}" error during poll:`, err)
+      // Realign the live stream to the committed checkpoint. During batch
+      // accumulation the stream cursor (and any read-ahead buffer) advanced
+      // past this batch, but `token` was NOT advanced — the failing UnitOfWork
+      // never reached PREPARE_COMMIT. Closing discards the stream's buffer so
+      // the next poll reopens at token.position() and re-reads — and thus
+      // redelivers — the failed batch. Without this the stream cursor outruns
+      // the checkpoint and the failed events are skipped until a restart.
+      // Mirrors Axon's close-and-reopen-from-token recovery.
+      stream?.close()
+      stream = null
       if (isRunning) pollTimer = setTimeout(poll, pollingIntervalMs * 2)
     } finally {
       processing = false
