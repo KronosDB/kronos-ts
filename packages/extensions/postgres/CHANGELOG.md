@@ -1,5 +1,14 @@
 # @kronos-ts/postgres
 
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [6a3dca4]
+  - @kronos-ts/eventsourcing@0.2.0
+  - @kronos-ts/messaging@0.5.0
+  - @kronos-ts/app@0.3.3
+
 ## 0.3.2
 
 ### Patch Changes
