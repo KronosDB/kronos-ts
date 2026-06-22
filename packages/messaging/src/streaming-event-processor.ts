@@ -5,6 +5,14 @@ import type { StreamableEventSource, MessageStream, SequencedEvent } from "./eve
 import type { UoWRunner } from "./unit-of-work.js"
 import { runInNewUoW } from "./unit-of-work.js"
 import type { TokenStore } from "./token-store.js"
+import type { SequencedDeadLetterQueue, EnqueuePolicy, DeadLetter } from "./dead-letter-queue.js"
+import type { SequencingPolicy } from "./sequencing-policy.js"
+import { createDeadLetteringDelivery } from "./dead-lettering-handler.js"
+import { type DeadLetterListener, noOpDeadLetterListener } from "./dead-letter-listener.js"
+import {
+  type DeadLetterReprocessor,
+  createDeadLetterReprocessor,
+} from "./dead-letter-reprocessor.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
 import { loggingErrorHandler } from "./tracking-event-processor.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
@@ -55,6 +63,9 @@ export interface StreamingEventProcessor {
   start(): Promise<void>
   stop(): void
   resetTokens(startPosition?: bigint, resetContext?: unknown): Promise<void>
+  /** Replay parked dead letters back through the handlers (oldest matching
+   * sequence). No-op returning false when no DLQ is configured. */
+  reprocessDeadLetters(filter?: (sequenceId: string) => boolean): Promise<boolean>
   splitSegment(segmentId: number): Promise<boolean>
   mergeSegment(segmentId: number): Promise<boolean>
   releaseSegment(segmentId: number): Promise<void>
@@ -74,6 +85,24 @@ export interface StreamingEventProcessorOptions {
   onEventDelivery?: () => void
   unitOfWorkRunner?: UoWRunner
   tokenStore?: TokenStore
+  /**
+   * Dead letter queue for poison-pill handling. When set, a handler failure
+   * parks the event in the DLQ (per {@link enqueuePolicy}) and the batch
+   * commits so the token advances past it — instead of redelivering the batch
+   * forever. The enqueue runs inside the batch UnitOfWork, so it commits in the
+   * same transaction as the token update.
+   */
+  deadLetterQueue?: SequencedDeadLetterQueue
+  /** Decides whether a failed event is enqueued. Default: always enqueue. */
+  enqueuePolicy?: EnqueuePolicy
+  /** Decides each event's ordered sequence for the DLQ. Default: first tag value. */
+  sequencingPolicy?: SequencingPolicy
+  /** Observability hook for dead-letter lifecycle events. Default: no-op. */
+  deadLetterListener?: DeadLetterListener
+  /** When true, resetTokens() also clears this processor's DLQ (Axon allowReset). Default: false. */
+  resetClearsDeadLetters?: boolean
+  /** When set, automatically drains the DLQ on this interval (ms). Off by default. */
+  dlqRetryIntervalMs?: number
   batchSize?: number
   /** Delay before retrying after a batch failure, in ms. Backs off to avoid hot-looping a deterministic failure. */
   errorBackoffMs?: number
@@ -97,7 +126,13 @@ export function createStreamingEventProcessor(
     onEventDelivery,
     unitOfWorkRunner = runInNewUoW,
     tokenStore,
-    batchSize = 100,
+    deadLetterQueue,
+    enqueuePolicy,
+    sequencingPolicy,
+    deadLetterListener = noOpDeadLetterListener(),
+    resetClearsDeadLetters = false,
+    dlqRetryIntervalMs,
+    batchSize = 1,
     errorBackoffMs = 1000,
     errorHandler = loggingErrorHandler(name),
     handlerEnhancer,
@@ -105,6 +140,31 @@ export function createStreamingEventProcessor(
   } = options
 
   const segment = 0
+
+  // Option A: when a DLQ is configured, handler failures are caught and parked
+  // (not propagated), so the batch commits and the token advances past the
+  // poison pill. Built once; invoked inside the batch UnitOfWork by deliverEvent.
+  const deadLetterDelivery = deadLetterQueue
+    ? createDeadLetteringDelivery({
+        queue: deadLetterQueue,
+        policy: enqueuePolicy,
+        sequencingPolicy,
+        listener: deadLetterListener,
+      })
+    : undefined
+
+  // Reprocessor: replays a parked letter through the same handlers, with the
+  // same ALS resources as live delivery, so dependencies resolve identically.
+  const reprocessor: DeadLetterReprocessor | undefined = deadLetterQueue
+    ? createDeadLetterReprocessor({
+        queue: deadLetterQueue,
+        policy: enqueuePolicy,
+        unitOfWorkRunner,
+        listener: deadLetterListener,
+        replay: replayDeadLetter,
+      })
+    : undefined
+  let dlqRetryTimer: ReturnType<typeof setInterval> | null = null
 
   const handlerMap = new Map<string, Array<EventHandlerRegistration<any>>>()
   for (const reg of eventHandlers) {
@@ -268,12 +328,41 @@ export function createStreamingEventProcessor(
     // Optional per-event callback (e.g. monitoring hooks registered inside the UoW).
     if (onEventDelivery) onEventDelivery()
 
+    // DLQ path: park failures, keep the batch committable (Option A). The DLQ
+    // delivery enforces per-sequence ordering and never propagates, so the
+    // errorHandler / batch-redelivery path is bypassed while a DLQ is active.
+    if (deadLetterDelivery) {
+      await deadLetterDelivery.deliver(sequencedEvent, handlers)
+      return
+    }
+
     for (const reg of handlers) {
       try {
         await reg.handler({ ...event, sequence: sequencedEvent.sequence })
       } catch (err) {
         await errorHandler.handleError(err, eventName, sequencedEvent.sequence)
       }
+    }
+  }
+
+  // Replay a parked dead letter through the handlers, re-establishing the same
+  // ALS resources as live delivery. Throws on the first handler failure so the
+  // reprocessor can requeue the letter (delivery is at-least-once → handlers
+  // must be idempotent).
+  async function replayDeadLetter(letter: DeadLetter): Promise<void> {
+    const event = letter.message
+    const eventName = qualifiedNameToString(event.name)
+    const handlers = handlerMap.get(eventName)
+    if (!handlers || handlers.length === 0) return
+
+    if (stateManager !== undefined) setResource(STATE_MANAGER_KEY, stateManager as any)
+    if (commandBus !== undefined) setResource(COMMAND_BUS_KEY, commandBus)
+    if (queryBus !== undefined) setResource(QUERY_BUS_KEY, queryBus)
+
+    const position =
+      typeof letter.diagnostics.position === "number" ? BigInt(letter.diagnostics.position) : 0n
+    for (const reg of handlers) {
+      await reg.handler({ ...event, sequence: position })
     }
   }
 
@@ -308,6 +397,13 @@ export function createStreamingEventProcessor(
       isRunning = true
       openStream()
       scheduleImmediate()
+      if (reprocessor && dlqRetryIntervalMs && dlqRetryIntervalMs > 0) {
+        dlqRetryTimer = setInterval(() => {
+          void reprocessor.reprocessAll().catch((err) => {
+            console.error(`Event processor "${name}": scheduled DLQ drain failed:`, err)
+          })
+        }, dlqRetryIntervalMs)
+      }
     },
 
     stop() {
@@ -316,10 +412,19 @@ export function createStreamingEventProcessor(
         clearTimeout(processTimer)
         processTimer = null
       }
+      if (dlqRetryTimer !== null) {
+        clearInterval(dlqRetryTimer)
+        dlqRetryTimer = null
+      }
       if (stream) {
         stream.close()
         stream = null
       }
+    },
+
+    async reprocessDeadLetters(filter?: (sequenceId: string) => boolean) {
+      if (!reprocessor) return false
+      return reprocessor.reprocess(filter)
     },
 
     async resetTokens(startPosition: bigint = 0n, resetContext?: unknown) {
@@ -341,6 +446,12 @@ export function createStreamingEventProcessor(
 
       if (tokenStore) {
         await tokenStore.store(name, segment, token)
+      }
+
+      // Axon allowReset: only clear parked letters when opted in (a replay
+      // re-derives view state, making prior dead letters meaningless).
+      if (resetClearsDeadLetters && deadLetterQueue) {
+        await deadLetterQueue.clear()
       }
 
       if (onReset) {

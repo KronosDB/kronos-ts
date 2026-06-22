@@ -1,13 +1,18 @@
 import { qualifiedNameToString } from "@kronos-ts/common"
-import type { EventMessage } from "./message.js"
 import type { EventHandlerRegistration } from "./handler.js"
 import type { SequencedEvent } from "./event-source.js"
+import { type SequencingPolicy, defaultSequencingPolicy } from "./sequencing-policy.js"
 import {
   type SequencedDeadLetterQueue,
   type EnqueuePolicy,
-  alwaysEnqueuePolicy,
   createDeadLetter,
+  DeadLetterQueueOverflowError,
 } from "./dead-letter-queue.js"
+import { alwaysEnqueuePolicy } from "./enqueue-policy.js"
+import {
+  type DeadLetterListener,
+  noOpDeadLetterListener,
+} from "./dead-letter-listener.js"
 
 /**
  * Options for dead-lettering event handler wrapper.
@@ -18,11 +23,13 @@ export interface DeadLetteringOptions {
   /** Policy deciding whether to dead-letter a failed event. Default: always. */
   policy?: EnqueuePolicy
   /**
-   * Extract a sequence identifier from an event. Events in the same
+   * Decides which ordered sequence an event belongs to. Events in the same
    * sequence are ordered — if one fails, subsequent ones are blocked.
-   * Default: uses the first tag value or event name.
+   * Default: {@link defaultSequencingPolicy} (first tag value, else event name).
    */
-  sequenceIdentifier?: (event: EventMessage) => string
+  sequencingPolicy?: SequencingPolicy
+  /** Observability hook for dead-letter lifecycle events. Default: no-op. */
+  listener?: DeadLetterListener
 }
 
 /**
@@ -41,7 +48,8 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
   const {
     queue,
     policy = alwaysEnqueuePolicy(),
-    sequenceIdentifier = defaultSequenceIdentifier,
+    sequencingPolicy = defaultSequencingPolicy,
+    listener = noOpDeadLetterListener(),
   } = options
 
   return {
@@ -57,19 +65,27 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
       handlers: Array<EventHandlerRegistration<any>>,
     ): Promise<void> {
       const event = sequencedEvent.event
-      const seqId = sequenceIdentifier(event)
+      const seqId = sequencingPolicy(event)
 
-      // If this sequence already has dead letters, block this event too
-      const blocked = await queue.enqueueIfPresent(
-        seqId,
-        () => createDeadLetter(
-          event,
-          new Error("Blocked: previous event in sequence failed"),
-          seqId,
-          { blocked: true, position: Number(sequencedEvent.sequence) },
-        ),
+      // If this sequence already has dead letters, block this event too —
+      // preserving per-sequence ordering. A full-queue rejection here
+      // propagates as backpressure (see enqueue path below).
+      let blockedLetter: ReturnType<typeof createDeadLetter> | undefined
+      const blocked = await withOverflowReported(seqId, () =>
+        queue.enqueueIfPresent(seqId, () => {
+          blockedLetter = createDeadLetter(
+            event,
+            new Error("Blocked: previous event in sequence failed"),
+            seqId,
+            { blocked: true, position: Number(sequencedEvent.sequence) },
+          )
+          return blockedLetter
+        }),
       )
-      if (blocked) return
+      if (blocked) {
+        if (blockedLetter) listener.onEnqueued(blockedLetter, { blocked: true })
+        return
+      }
 
       // Try to deliver to all handlers
       for (const reg of handlers) {
@@ -84,26 +100,34 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
 
           const decision = policy.decide(letter, error)
           if (decision.shouldEnqueue) {
-            await queue.enqueue({
+            const enqueued = {
               ...letter,
               cause: decision.cause ?? letter.cause,
               diagnostics: decision.diagnostics
                 ? { ...letter.diagnostics, ...decision.diagnostics }
                 : letter.diagnostics,
-            })
+            }
+            // A full queue throws DeadLetterQueueOverflowError, which propagates
+            // to stall and redeliver the batch (Axon backpressure) — surfaced
+            // via the listener rather than silently looping.
+            await withOverflowReported(seqId, () => queue.enqueue(enqueued))
+            listener.onEnqueued(enqueued, { blocked: false })
           }
-          // Error is consumed by DLQ — don't propagate
+          // Error is consumed by DLQ (parked or dropped) — don't propagate.
           return
         }
       }
     },
   }
-}
 
-function defaultSequenceIdentifier(event: EventMessage): string {
-  // Use first tag value if available, otherwise event name
-  if (event.tags && event.tags.length > 0) {
-    return event.tags[0]!.value
+  async function withOverflowReported<T>(seqId: string, op: () => Promise<T>): Promise<T> {
+    try {
+      return await op()
+    } catch (err) {
+      if (err instanceof DeadLetterQueueOverflowError) {
+        listener.onOverflow(seqId, err)
+      }
+      throw err
+    }
   }
-  return qualifiedNameToString(event.name)
 }

@@ -36,8 +36,8 @@ describe("InMemorySequencedDeadLetterQueue", () => {
       await dlq.enqueue(letter("seq-1"))
 
       expect(await dlq.contains("seq-1")).toBe(true)
-      expect(dlq.size()).toBe(1)
-      expect(dlq.amountOfSequences()).toBe(1)
+      expect(await dlq.size()).toBe(1)
+      expect(await dlq.amountOfSequences()).toBe(1)
     })
 
     it("enqueues multiple letters in same sequence", async () => {
@@ -46,8 +46,8 @@ describe("InMemorySequencedDeadLetterQueue", () => {
       await dlq.enqueue(letter("seq-1"))
       await dlq.enqueue(letter("seq-1"))
 
-      expect(dlq.size()).toBe(2)
-      expect(dlq.amountOfSequences()).toBe(1)
+      expect(await dlq.size()).toBe(2)
+      expect(await dlq.amountOfSequences()).toBe(1)
     })
 
     it("enqueues letters in different sequences", async () => {
@@ -56,8 +56,8 @@ describe("InMemorySequencedDeadLetterQueue", () => {
       await dlq.enqueue(letter("seq-1"))
       await dlq.enqueue(letter("seq-2"))
 
-      expect(dlq.size()).toBe(2)
-      expect(dlq.amountOfSequences()).toBe(2)
+      expect(await dlq.size()).toBe(2)
+      expect(await dlq.amountOfSequences()).toBe(2)
     })
 
     it("returns false for unknown sequence", async () => {
@@ -75,7 +75,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
       const result = await dlq.enqueueIfPresent("seq-1", () => letter("seq-1"))
 
       expect(result).toBe(true)
-      expect(dlq.size()).toBe(2)
+      expect(await dlq.size()).toBe(2)
     })
 
     it("does not enqueue when sequence does not exist", async () => {
@@ -88,7 +88,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
       })
 
       expect(result).toBe(false)
-      expect(dlq.size()).toBe(0)
+      expect(await dlq.size()).toBe(0)
       expect(supplierCalled).toBe(false) // Supplier should NOT be called
     })
   })
@@ -103,7 +103,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
 
       await dlq.evict("seq-1", l1)
 
-      expect(dlq.size()).toBe(1)
+      expect(await dlq.size()).toBe(1)
       const remaining = await dlq.deadLetterSequence("seq-1")
       expect(remaining[0]).toBe(l2)
     })
@@ -116,7 +116,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
       await dlq.evict("seq-1", l1)
 
       expect(await dlq.contains("seq-1")).toBe(false)
-      expect(dlq.amountOfSequences()).toBe(0)
+      expect(await dlq.amountOfSequences()).toBe(0)
     })
   })
 
@@ -174,7 +174,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
         async () => ({ shouldEnqueue: false }),
       )
 
-      expect(dlq.size()).toBe(0)
+      expect(await dlq.size()).toBe(0)
     })
 
     it("requeues and stops when processingTask returns shouldEnqueue=true", async () => {
@@ -196,7 +196,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
       // Should have only tried the first letter
       expect(processedCount).toBe(1)
       // Both letters still in queue
-      expect(dlq.size()).toBe(2)
+      expect(await dlq.size()).toBe(2)
     })
 
     it("returns false when no matching sequences", async () => {
@@ -255,8 +255,8 @@ describe("InMemorySequencedDeadLetterQueue", () => {
 
       await dlq.clear()
 
-      expect(dlq.size()).toBe(0)
-      expect(dlq.amountOfSequences()).toBe(0)
+      expect(await dlq.size()).toBe(0)
+      expect(await dlq.amountOfSequences()).toBe(0)
     })
   })
 })

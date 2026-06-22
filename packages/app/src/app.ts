@@ -594,6 +594,12 @@ export class AppImpl implements App {
             // store (or any extension-supplied replacement) drives position
             // persistence — the slot is the single source of truth.
             tokenStore: proc.tokenStore ?? built.tokenStore,
+            deadLetterQueue: proc.deadLetterQueue,
+            enqueuePolicy: proc.enqueuePolicy,
+            sequencingPolicy: proc.sequencingPolicy,
+            deadLetterListener: proc.deadLetterListener,
+            resetClearsDeadLetters: proc.resetClearsDeadLetters,
+            dlqRetryIntervalMs: proc.dlqRetryIntervalMs,
             batchSize: proc.batchSize,
             pollingIntervalMs: proc.pollingIntervalMs,
             errorHandler: proc.errorHandler,
