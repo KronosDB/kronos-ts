@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Publish all public @kronos-ts/* packages with `bun publish`.
+# Publish all public @kronos-ts/* packages with `npm publish`.
 #
-# Why this exists: `changeset publish` shells out to `npm publish`, which does
-# not understand Bun's workspace protocol. Published manifests end up with
-# literal `"workspace:*"` strings and consumers can't install. `bun publish`
-# resolves `workspace:*` to the concrete version before uploading.
+# Why npm (not bun): publishing authenticates via npm Trusted Publishing (OIDC)
+# in CI, which `bun publish` does not implement (it errors with "missing
+# authentication"). npm >= 11.5.1 performs the OIDC token exchange automatically.
+#
+# Why the rewrite step: `npm publish` does not understand Bun's workspace
+# protocol, so it would upload literal `"workspace:*"` specifiers and consumers
+# couldn't install. `scripts/resolve-workspace.mjs` rewrites those to concrete
+# versions before each publish, and the manifest is restored (git checkout)
+# afterwards so the working tree is left untouched.
 #
 # Versioning/changelogs are still handled by `changeset version` (run
 # separately via `bun run version-packages`). This script only handles the
@@ -63,8 +68,15 @@ for dir in "${PACKAGES[@]}"; do
   fi
 
   echo "publish: $name@$version"
-  (cd "$dir" && bun publish --access public) || { failed=$((failed + 1)); continue; }
-  published=$((published + 1))
+  # Resolve workspace:* -> concrete versions, publish via npm (OIDC), then
+  # restore the manifest regardless of outcome.
+  node "$ROOT/scripts/resolve-workspace.mjs" "$pkg_json"
+  if (cd "$dir" && npm publish --access public); then
+    published=$((published + 1))
+  else
+    failed=$((failed + 1))
+  fi
+  git checkout -- "$pkg_json"
 done
 
 echo ""
