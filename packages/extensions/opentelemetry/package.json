@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/opentelemetry",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "OpenTelemetry extension for Kronos — tracing for commands and events.",
   "license": "Apache-2.0",
   "type": "module",
