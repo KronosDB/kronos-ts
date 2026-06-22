@@ -7,3 +7,8 @@ export {
 export {
   prismaTokenStore,
 } from "./prisma-token-store.js"
+
+export {
+  prismaDeadLetterQueue,
+  type PrismaDeadLetterQueueConfig,
+} from "./prisma-dead-letter-queue.js"

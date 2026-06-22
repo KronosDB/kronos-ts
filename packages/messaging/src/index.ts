@@ -304,17 +304,49 @@ export {
   type EnqueueDecision,
   type EnqueuePolicy,
   type SequencedDeadLetterQueue,
-  alwaysEnqueuePolicy,
   createDeadLetter,
   createInMemoryDeadLetterQueue,
   DeadLetterQueueOverflowError,
 } from "./dead-letter-queue.js"
+
+// Enqueue policies + decisions
+export {
+  Decisions,
+  alwaysEnqueuePolicy,
+  retryThenEvictPolicy,
+  type RetryThenEvictOptions,
+  ATTEMPTS_DIAGNOSTIC,
+} from "./enqueue-policy.js"
 
 // Dead-lettering event delivery
 export {
   type DeadLetteringOptions,
   createDeadLetteringDelivery,
 } from "./dead-lettering-handler.js"
+
+// Dead-letter reprocessing
+export {
+  type DeadLetterReprocessor,
+  type DeadLetterReprocessorOptions,
+  type DeadLetterReplay,
+  createDeadLetterReprocessor,
+} from "./dead-letter-reprocessor.js"
+
+// Dead-letter observability
+export {
+  type DeadLetterListener,
+  noOpDeadLetterListener,
+  loggingDeadLetterListener,
+  multiDeadLetterListener,
+} from "./dead-letter-listener.js"
+
+// Sequencing policy
+export {
+  type SequencingPolicy,
+  sequentialPerTag,
+  defaultSequencingPolicy,
+  fullConcurrencyPolicy,
+} from "./sequencing-policy.js"
 
 // Upcasting
 export {

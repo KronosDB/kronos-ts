@@ -2,7 +2,9 @@ import type { EventHandlerDefinition } from "./event-handler.js"
 import type { TokenStore } from "./token-store.js"
 import type { UoWRunner } from "./unit-of-work.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
-import type { SequencedDeadLetterQueue } from "./dead-letter-queue.js"
+import type { SequencedDeadLetterQueue, EnqueuePolicy } from "./dead-letter-queue.js"
+import type { SequencingPolicy } from "./sequencing-policy.js"
+import type { DeadLetterListener } from "./dead-letter-listener.js"
 
 /**
  * Base configuration shared by all event processor types.
@@ -27,6 +29,16 @@ export interface TrackingProcessorModule extends EventProcessorBase {
   readonly unitOfWorkRunner?: UoWRunner
   readonly errorHandler?: EventProcessingErrorHandler
   readonly deadLetterQueue?: SequencedDeadLetterQueue
+  /** Decides whether a failed event is enqueued in the DLQ. Default: always enqueue. */
+  readonly enqueuePolicy?: EnqueuePolicy
+  /** Decides each event's ordered sequence for the DLQ. Default: first tag value. */
+  readonly sequencingPolicy?: SequencingPolicy
+  /** Observability hook for dead-letter lifecycle events. Default: no-op. */
+  readonly deadLetterListener?: DeadLetterListener
+  /** When true, resetTokens() also clears this processor's DLQ. Default: false. */
+  readonly resetClearsDeadLetters?: boolean
+  /** When set, automatically drains the DLQ on this interval (ms). Off by default. */
+  readonly dlqRetryIntervalMs?: number
   /** Number of segments created on first startup. Default 16 (Axon Framework parity). Always set by builder.build(). */
   readonly initialSegmentCount: number
   readonly claimExtensionThresholdMs?: number
@@ -89,6 +101,11 @@ export class TrackingProcessorBuilder {
   private _unitOfWorkRunner?: UoWRunner
   private _errorHandler?: EventProcessingErrorHandler
   private _deadLetterQueue?: SequencedDeadLetterQueue
+  private _enqueuePolicy?: EnqueuePolicy
+  private _sequencingPolicy?: SequencingPolicy
+  private _deadLetterListener?: DeadLetterListener
+  private _resetClearsDeadLetters?: boolean
+  private _dlqRetryIntervalMs?: number
   private _initialSegmentCount?: number
   private _claimExtensionThresholdMs?: number
   private _tokenClaimIntervalMs?: number
@@ -109,7 +126,15 @@ export class TrackingProcessorBuilder {
     return this
   }
 
-  /** Events per batch/transaction. Default: 100. */
+  /**
+   * Events per batch/transaction (one UnitOfWork). Default: 1 (Axon parity).
+   *
+   * A batch shares one UnitOfWork, so all events in it share the per-UoW
+   * `load()` cache, DCB read-set, and a single atomic commit. Keep the default
+   * of 1 for processors that make per-entity decisions via `load()`
+   * (automations) so each decision stays isolated. Raise it for read-model
+   * projections that only apply idempotent view updates and want throughput.
+   */
   batchSize(size: number): this {
     this._batchSize = size
     return this
@@ -143,9 +168,43 @@ export class TrackingProcessorBuilder {
     return this
   }
 
-  /** Set a dead letter queue for this processor. */
+  /**
+   * Set a dead letter queue for this processor. When set, handler failures are
+   * parked in the queue and the processor advances past them (Option A) rather
+   * than redelivering the failed batch indefinitely.
+   */
   deadLetterQueue(queue: SequencedDeadLetterQueue): this {
     this._deadLetterQueue = queue
+    return this
+  }
+
+  /** Policy deciding whether a failed event is enqueued in the DLQ. Default: always. */
+  enqueuePolicy(policy: EnqueuePolicy): this {
+    this._enqueuePolicy = policy
+    return this
+  }
+
+  /** Policy deciding each event's ordered sequence for the DLQ. Default: first tag value. */
+  sequencingPolicy(policy: SequencingPolicy): this {
+    this._sequencingPolicy = policy
+    return this
+  }
+
+  /** Observability hook for dead-letter lifecycle events. */
+  deadLetterListener(listener: DeadLetterListener): this {
+    this._deadLetterListener = listener
+    return this
+  }
+
+  /** When true, resetTokens() also clears this processor's DLQ (Axon allowReset). */
+  resetClearsDeadLetters(enabled = true): this {
+    this._resetClearsDeadLetters = enabled
+    return this
+  }
+
+  /** Automatically drain the DLQ on this interval (ms). Omit to disable scheduled retries. */
+  dlqRetryInterval(ms: number): this {
+    this._dlqRetryIntervalMs = ms
     return this
   }
 
@@ -167,6 +226,11 @@ export class TrackingProcessorBuilder {
       unitOfWorkRunner: this._unitOfWorkRunner,
       errorHandler: this._errorHandler,
       deadLetterQueue: this._deadLetterQueue,
+      enqueuePolicy: this._enqueuePolicy,
+      sequencingPolicy: this._sequencingPolicy,
+      deadLetterListener: this._deadLetterListener,
+      resetClearsDeadLetters: this._resetClearsDeadLetters,
+      dlqRetryIntervalMs: this._dlqRetryIntervalMs,
       initialSegmentCount: this._initialSegmentCount ?? 16,
       claimExtensionThresholdMs: this._claimExtensionThresholdMs,
       tokenClaimIntervalMs: this._tokenClaimIntervalMs,

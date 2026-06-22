@@ -8,3 +8,8 @@ export {
   typeormTokenStore,
   type TypeOrmManagerLike,
 } from "./typeorm-token-store.js"
+
+export {
+  typeormDeadLetterQueue,
+  type TypeOrmDeadLetterQueueConfig,
+} from "./typeorm-dead-letter-queue.js"

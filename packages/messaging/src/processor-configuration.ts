@@ -30,7 +30,7 @@ import type { SequencedDeadLetterQueue } from "./dead-letter-queue.js"
  * with `registerEventProcessor()` instead.
  */
 export interface ProcessorConfiguration {
-  /** Events per transaction. Default: 100 */
+  /** Events per transaction (one UnitOfWork). Default: 1 (Axon parity). */
   batchSize?: number
 
   /** Number of segments to create on first startup. Default: 1 */

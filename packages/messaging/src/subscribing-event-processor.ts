@@ -27,6 +27,12 @@ export type { SubscribableEventSource } from "./event-bus.js"
  * - Processes events synchronously with the publisher
  * - Is suitable for in-memory projections that don't need persistence
  *
+ * It also does **not** support a dead-letter queue — deliberately. A DLQ exists
+ * to let a processor advance its token past a poison pill and reprocess later;
+ * a subscribing processor has no token and runs in the publisher's call stack,
+ * so a failure must surface to the publisher (via the error handler), not be
+ * silently parked. Use a tracking/streaming processor with `.deadLetterQueue()`
+ * when you need dead-lettering.
  */
 export interface SubscribingEventProcessor {
   readonly name: string

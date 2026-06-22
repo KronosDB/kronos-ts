@@ -44,17 +44,6 @@ export interface EnqueuePolicy {
 }
 
 /**
- * Default policy: always enqueue with the original cause.
- */
-export function alwaysEnqueuePolicy(): EnqueuePolicy {
-  return {
-    decide() {
-      return { shouldEnqueue: true }
-    },
-  }
-}
-
-/**
  * A sequenced dead letter queue that maintains ordering within sequences.
  *
  * Events in the same sequence (identified by `sequenceIdentifier`) are
@@ -125,10 +114,10 @@ export interface SequencedDeadLetterQueue {
   ): Promise<boolean>
 
   /** Total number of dead letters across all sequences. */
-  size(): number
+  size(): Promise<number>
 
   /** Number of sequences with dead letters. */
-  amountOfSequences(): number
+  amountOfSequences(): Promise<number>
 
   /** Clear all dead letters. */
   clear(): Promise<void>
@@ -136,8 +125,10 @@ export interface SequencedDeadLetterQueue {
   /**
    * Check if the queue is full for the given sequence.
    * Returns true if max sequences or max sequence size is reached.
+   *
+   * Async so persistent backends can answer with a count query.
    */
-  isFull(sequenceIdentifier: string): boolean
+  isFull(sequenceIdentifier: string): Promise<boolean>
 }
 
 /**
@@ -272,7 +263,7 @@ export function createInMemoryDeadLetterQueue(options?: {
       }
     },
 
-    size() {
+    async size() {
       let total = 0
       for (const letters of sequences.values()) {
         total += letters.length
@@ -280,7 +271,7 @@ export function createInMemoryDeadLetterQueue(options?: {
       return total
     },
 
-    amountOfSequences() {
+    async amountOfSequences() {
       return sequences.size
     },
 
@@ -289,7 +280,7 @@ export function createInMemoryDeadLetterQueue(options?: {
       processing.clear()
     },
 
-    isFull(sequenceIdentifier) {
+    async isFull(sequenceIdentifier) {
       const seq = sequences.get(sequenceIdentifier)
       if (seq) {
         return seq.length >= maxSequenceSize
