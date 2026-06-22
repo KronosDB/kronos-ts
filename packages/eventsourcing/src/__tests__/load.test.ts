@@ -57,6 +57,42 @@ describe("load", () => {
     })
   })
 
+  it("does NOT collide two different OBJECT ids of the same module within one UoW (gotcha #7)", async () => {
+    // Regression: the cache key used String(id), so {ticketId:"A"} and
+    // {ticketId:"B"} both stringified to "[object Object]" and shared one
+    // entry — the second load returned the first ticket's state.
+    const loadFn = mock((_module: any, id: any) =>
+      Promise.resolve({
+        state: { ticketId: id.ticketId },
+        sourcingInfo: { criteria: { kind: "any" }, markerPosition: 0n },
+      }),
+    )
+    const sm = { load: loadFn } as any
+
+    await runInNewUoW(emptyMetadata(), async () => {
+      setResource(STATE_MANAGER_KEY, sm)
+      const a = await load<{ ticketId: string }>(mockModule, { ticketId: "A" })
+      const b = await load<{ ticketId: string }>(mockModule, { ticketId: "B" })
+
+      expect(a.ticketId).toBe("A")
+      expect(b.ticketId).toBe("B") // would be "A" under the old String(id) key
+      expect(loadFn).toHaveBeenCalledTimes(2) // distinct cache keys → two real loads
+    })
+  })
+
+  it("key order in an object id does not change the cache key", async () => {
+    const loadFn = mock((_module: any, _id: any) =>
+      Promise.resolve({ state: {}, sourcingInfo: { criteria: { kind: "any" }, markerPosition: 0n } }),
+    )
+    const sm = { load: loadFn } as any
+    await runInNewUoW(emptyMetadata(), async () => {
+      setResource(STATE_MANAGER_KEY, sm)
+      await load(mockModule, { a: 1, b: 2 })
+      await load(mockModule, { b: 2, a: 1 }) // same id, different construction order → cache hit
+      expect(loadFn).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it("populates STATE_CACHE_KEY, STATE_MODULES_KEY and SOURCING_INFOS_KEY on first load", async () => {
     const sm = makeStateManager({ name: "Intro" })
     await runInNewUoW(emptyMetadata(), async () => {
@@ -69,9 +105,9 @@ describe("load", () => {
       const infos = state.resources.get(SOURCING_INFOS_KEY.symbol) as Array<{ criteria: any; markerPosition: bigint }>
 
       expect(cache).toBeDefined()
-      expect(cache.has("Course:c1")).toBe(true)
+      expect(cache.has('Course:"c1"')).toBe(true)
       expect(modules).toBeDefined()
-      expect(modules.has("Course:c1")).toBe(true)
+      expect(modules.has('Course:"c1"')).toBe(true)
       expect(infos).toBeDefined()
       expect(infos).toHaveLength(1)
       expect(infos[0]!.markerPosition).toBe(0n)

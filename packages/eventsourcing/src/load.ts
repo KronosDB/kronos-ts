@@ -40,6 +40,27 @@ type StateManagerLike = {
 export const STATE_MANAGER_KEY: ResourceKey<StateManagerLike> = resourceKey("stateManager")
 
 /**
+ * Stable cache key for a state id. State ids are typically objects
+ * (e.g. `{ ticketId }`), and `String({...})` collapses every object to
+ * `"[object Object]"` — which would make two different ids of the same module
+ * share a cache entry within a UoW and return each other's state. Serialize
+ * structurally instead, with sorted keys (so id construction order is
+ * irrelevant) and bigint support. Primitive ids serialize to a unique string
+ * too, so this is strictly safer than `String(id)`.
+ */
+function stableIdKey(id: unknown): string {
+  return JSON.stringify(id, (_key, value) => {
+    if (typeof value === "bigint") return `${value}n`
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const sorted: Record<string, unknown> = {}
+      for (const k of Object.keys(value).sort()) sorted[k] = (value as Record<string, unknown>)[k]
+      return sorted
+    }
+    return value
+  })
+}
+
+/**
  * Plan 04-01 (HDL-02 / D-42): module-level load.
  *
  * Read-only — NOT phase-guarded per D-43. Throws NoActiveUnitOfWork outside
@@ -53,7 +74,7 @@ export const load: LoadFunction = (async <S>(module: { name: string }, id: unkno
   if (!stateManager) throw new Error("No state manager configured")
 
   const cache = computeIfAbsent(STATE_CACHE_KEY, () => new Map())
-  const cacheKey = `${module.name}:${String(id)}`
+  const cacheKey = `${module.name}:${stableIdKey(id)}`
   if (!cache.has(cacheKey)) {
     cache.set(cacheKey, stateManager.load(module, id))
     const modules = computeIfAbsent(STATE_MODULES_KEY, () => new Map())
