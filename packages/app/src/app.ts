@@ -574,6 +574,7 @@ export class AppImpl implements App {
             stateManager,
             commandBus: built.commandBus,
             queryBus: built.queryBus,
+            eventScheduler: built.eventScheduler,
             unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
             errorHandler: proc.errorHandler,
             handlerEnhancer: composedHandlerEnhancer,
@@ -588,6 +589,7 @@ export class AppImpl implements App {
             stateManager,
             commandBus: built.commandBus,
             queryBus: built.queryBus,
+            eventScheduler: built.eventScheduler,
             unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
             // Plan 09-01 (D-84): per-processor override wins, otherwise fall
             // back to the resolved tokenStore slot so the default in-memory
@@ -772,6 +774,7 @@ function createConfigShim(
     stateManager,
     commandBus: built.commandBus,
     queryBus: built.queryBus,
+    eventScheduler: built.eventScheduler,
     eventStore: built.eventStore,
     eventBus: built.eventBus,
     snapshotStore: built.snapshotStore,
