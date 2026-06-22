@@ -26,6 +26,7 @@ const COMMAND_INVOCATION_KEYS = {
   STATE_MANAGER: "stateManager",
   COMMAND_BUS: "commandBus",
   QUERY_BUS: "queryBus",
+  EVENT_SCHEDULER: "eventScheduler",
   EVENT_STORE: "eventStore",
   TAG_RESOLVER: "tagResolver",
 } as const
@@ -43,7 +44,9 @@ import {
   BUFFERED_EVENTS_KEY,
   SOURCING_INFOS_KEY,
   STATE_MANAGER_KEY,
+  EVENT_SCHEDULER_KEY,
 } from "@kronos-ts/eventsourcing"
+import type { EventScheduler } from "./event-scheduler.js"
 
 // ---------------------------------------------------------------------------
 // Command invocation — D-82: byte-identical ALS resource setup at invocation entry.
@@ -75,6 +78,9 @@ export function createCommandInvocation(
     }
     if (config.hasComponent(COMMAND_INVOCATION_KEYS.QUERY_BUS)) {
       setResource(QUERY_BUS_KEY, config.getComponent<QueryBus>(COMMAND_INVOCATION_KEYS.QUERY_BUS))
+    }
+    if (config.hasComponent(COMMAND_INVOCATION_KEYS.EVENT_SCHEDULER)) {
+      setResource(EVENT_SCHEDULER_KEY, config.getComponent<EventScheduler>(COMMAND_INVOCATION_KEYS.EVENT_SCHEDULER))
     }
 
     // Register event flush in PREPARE_COMMIT phase once per UnitOfWork.

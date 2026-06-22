@@ -28,7 +28,8 @@ import { REPLAY_STATE_KEY } from "./replay-token.js"
 import { setResource, onPrepareCommit } from "./processing-state.js"
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
-import { STATE_MANAGER_KEY } from "@kronos-ts/eventsourcing"
+import { STATE_MANAGER_KEY, EVENT_SCHEDULER_KEY } from "@kronos-ts/eventsourcing"
+import type { EventScheduler } from "./event-scheduler.js"
 import { COMMAND_BUS_KEY } from "./send.js"
 import { QUERY_BUS_KEY } from "./emit-update.js"
 
@@ -81,6 +82,8 @@ export interface StreamingEventProcessorOptions {
   commandBus?: CommandBus
   /** Query bus injected into ALS at handler-invocation entry (D-44). */
   queryBus?: QueryBus
+  /** Event scheduler injected into ALS at handler-invocation entry (read by schedule()). */
+  eventScheduler?: EventScheduler
   /** Optional per-event callback fired inside the UoW before handler invocation (e.g. monitoring). */
   onEventDelivery?: () => void
   unitOfWorkRunner?: UoWRunner
@@ -123,6 +126,7 @@ export function createStreamingEventProcessor(
     stateManager,
     commandBus,
     queryBus,
+    eventScheduler,
     onEventDelivery,
     unitOfWorkRunner = runInNewUoW,
     tokenStore,
@@ -325,6 +329,7 @@ export function createStreamingEventProcessor(
     if (stateManager !== undefined) setResource(STATE_MANAGER_KEY, stateManager as any)
     if (commandBus !== undefined) setResource(COMMAND_BUS_KEY, commandBus)
     if (queryBus !== undefined) setResource(QUERY_BUS_KEY, queryBus)
+    if (eventScheduler !== undefined) setResource(EVENT_SCHEDULER_KEY, eventScheduler)
     // Optional per-event callback (e.g. monitoring hooks registered inside the UoW).
     if (onEventDelivery) onEventDelivery()
 
@@ -358,6 +363,7 @@ export function createStreamingEventProcessor(
     if (stateManager !== undefined) setResource(STATE_MANAGER_KEY, stateManager as any)
     if (commandBus !== undefined) setResource(COMMAND_BUS_KEY, commandBus)
     if (queryBus !== undefined) setResource(QUERY_BUS_KEY, queryBus)
+    if (eventScheduler !== undefined) setResource(EVENT_SCHEDULER_KEY, eventScheduler)
 
     const position =
       typeof letter.diagnostics.position === "number" ? BigInt(letter.diagnostics.position) : 0n
