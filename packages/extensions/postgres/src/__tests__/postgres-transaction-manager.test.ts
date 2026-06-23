@@ -49,7 +49,7 @@ function createRecordingAdapter() {
 describe("postgresTransactionManager", () => {
   it("begin() opens a pg tx and returns a queryable handle", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const tm = postgresTransactionManager(adapter)
+    const tm = postgresTransactionManager(adapter, undefined, { idleInTransactionTimeoutMs: 0 })
 
     const tx = await tm.begin()
     expect(typeof tx.query).toBe("function")
@@ -64,7 +64,7 @@ describe("postgresTransactionManager", () => {
 
   it("rollback() makes the adapter ROLLBACK without committing", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const tm = postgresTransactionManager(adapter)
+    const tm = postgresTransactionManager(adapter, undefined, { idleInTransactionTimeoutMs: 0 })
 
     const tx = await tm.begin()
     await tx.query("INSERT ...")
@@ -75,7 +75,7 @@ describe("postgresTransactionManager", () => {
 
   it("honors a non-default isolation level", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const tm = postgresTransactionManager(adapter, IsolationLevel.SERIALIZABLE)
+    const tm = postgresTransactionManager(adapter, IsolationLevel.SERIALIZABLE, { idleInTransactionTimeoutMs: 0 })
 
     const tx = await tm.begin()
     await tm.commit(tx)
@@ -88,7 +88,7 @@ describe("postgresTransactionManager", () => {
     // adapter.transaction() call, so multiple queries inside one begin/commit
     // pair must all log against that single handle — covered by sequence below.
     const { adapter, log } = createRecordingAdapter()
-    const tm = postgresTransactionManager(adapter)
+    const tm = postgresTransactionManager(adapter, undefined, { idleInTransactionTimeoutMs: 0 })
 
     const tx = await tm.begin()
     await tx.query("A")
@@ -107,7 +107,7 @@ describe("postgresTransactionManager", () => {
 
   it("two sequential begin/commit pairs open two distinct txes", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const tm = postgresTransactionManager(adapter)
+    const tm = postgresTransactionManager(adapter, undefined, { idleInTransactionTimeoutMs: 0 })
 
     const a = await tm.begin()
     await tm.commit(a)
@@ -118,5 +118,75 @@ describe("postgresTransactionManager", () => {
       "begin:READ COMMITTED", "commit",
       "begin:READ COMMITTED", "commit",
     ])
+  })
+
+  it("arms idle_in_transaction_session_timeout via SET LOCAL by default (30s)", async () => {
+    const { adapter, log } = createRecordingAdapter()
+    const tm = postgresTransactionManager(adapter)
+
+    const tx = await tm.begin()
+    await tm.commit(tx)
+
+    expect(log).toEqual([
+      "begin:READ COMMITTED",
+      "query:SET LOCAL idle_in_transaction_session_timeout = 30000",
+      "commit",
+    ])
+  })
+
+  it("adds statement_timeout when configured", async () => {
+    const { adapter, log } = createRecordingAdapter()
+    const tm = postgresTransactionManager(adapter, undefined, {
+      idleInTransactionTimeoutMs: 10_000,
+      statementTimeoutMs: 5_000,
+    })
+
+    const tx = await tm.begin()
+    await tm.commit(tx)
+
+    expect(log).toEqual([
+      "begin:READ COMMITTED",
+      "query:SET LOCAL idle_in_transaction_session_timeout = 10000",
+      "query:SET LOCAL statement_timeout = 5000",
+      "commit",
+    ])
+  })
+
+  it("emits no SET LOCAL when both timeouts are disabled", async () => {
+    const { adapter, log } = createRecordingAdapter()
+    const tm = postgresTransactionManager(adapter, undefined, {
+      idleInTransactionTimeoutMs: 0,
+      statementTimeoutMs: 0,
+    })
+
+    const tx = await tm.begin()
+    await tm.commit(tx)
+
+    expect(log).toEqual(["begin:READ COMMITTED", "commit"])
+  })
+
+  it("begin() rejects (does not hang) when the tx callback fails before handing back the tx", async () => {
+    // Adapter whose first in-tx statement throws — models BEGIN-time failure
+    // (e.g. arming SET LOCAL fails). Before the fix, captureTx never ran and
+    // begin()'s await hung forever; now it must reject.
+    const adapter: PostgresAdapter = {
+      async query() { return [] },
+      async queryOne() { return null },
+      async transaction<T>(
+        _isolationLevel: IsolationLevel,
+        fn: (tx: PostgresAdapterTransaction) => Promise<T>,
+      ): Promise<T> {
+        return fn({
+          unwrap<T = unknown>(): T { return undefined as unknown as T },
+          async query() { throw new Error("boom: SET LOCAL failed") },
+        })
+      },
+      async listen(): Promise<ListenSubscription> { return { async unlisten() {} } },
+      async connect() {},
+      async disconnect() {},
+    }
+    const tm = postgresTransactionManager(adapter) // default arms SET LOCAL → throws
+
+    await expect(tm.begin()).rejects.toThrow(/boom: SET LOCAL failed/)
   })
 })

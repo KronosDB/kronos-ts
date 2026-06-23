@@ -53,6 +53,10 @@ function createFakeAdapter() {
   function execOn(map: Map<string, FakeRow>, sql: string, params: unknown[] = []): unknown[] {
     const compact = sql.replace(/\s+/g, " ").trim()
 
+    // Per-transaction safety GUCs armed by postgresTransactionManager via
+    // SET LOCAL. No-op for the fake — they only matter against real postgres.
+    if (compact.startsWith("SET LOCAL")) return []
+
     // INSERT new schedule
     if (compact.startsWith("INSERT INTO")) {
       const [id, fireAt, type, tags, payload, metadata, version, ts] = params as [
