@@ -83,4 +83,44 @@ describe("schedule helpers", () => {
   it("throws outside a UnitOfWork", async () => {
     await expect(schedule(descriptor, { id: "X" }, new Date())).rejects.toThrow()
   })
+
+  it("rejects an Invalid Date `at`", async () => {
+    const sm = mockScheduler()
+    await runInNewUoW(emptyMetadata(), async () => {
+      setResource(EVENT_SCHEDULER_KEY, sm as any)
+      await expect(schedule(descriptor, { id: "X" }, new Date(NaN))).rejects.toThrow(/valid Date/)
+    })
+    expect(sm.scheduled).toHaveLength(0)
+  })
+
+  it("allows a past `at` (fires ASAP)", async () => {
+    const sm = mockScheduler()
+    const past = new Date(Date.now() - 60_000)
+    await runInNewUoW(emptyMetadata(), async () => {
+      setResource(EVENT_SCHEDULER_KEY, sm as any)
+      await schedule(descriptor, { id: "P" }, past)
+    })
+    expect(sm.scheduled).toHaveLength(1)
+    expect(sm.scheduled[0]!.at).toBe(past)
+  })
+
+  it("scheduleAfter rejects a non-finite delay", async () => {
+    const sm = mockScheduler()
+    await runInNewUoW(emptyMetadata(), async () => {
+      setResource(EVENT_SCHEDULER_KEY, sm as any)
+      await expect(scheduleAfter(descriptor, { id: "X" }, NaN)).rejects.toThrow(/finite number/)
+      await expect(scheduleAfter(descriptor, { id: "X" }, Infinity)).rejects.toThrow(/finite number/)
+    })
+    expect(sm.scheduled).toHaveLength(0)
+  })
+
+  it("scheduleAfter allows a negative delay (fires ASAP)", async () => {
+    const sm = mockScheduler()
+    await runInNewUoW(emptyMetadata(), async () => {
+      setResource(EVENT_SCHEDULER_KEY, sm as any)
+      const before = Date.now()
+      await scheduleAfter(descriptor, { id: "N" }, -5_000)
+      expect(sm.scheduled[0]!.at.getTime()).toBeLessThanOrEqual(before)
+    })
+  })
 })

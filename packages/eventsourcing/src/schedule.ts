@@ -55,6 +55,15 @@ export const schedule: ScheduleFunction = (async <P extends z.ZodType>(
   const scheduler = state.resources.get(EVENT_SCHEDULER_KEY.symbol) as EventScheduler | undefined
   if (!scheduler) throw new Error("No event scheduler configured")
 
+  // Reject malformed fire times. A past-but-valid `at` is allowed — it fires
+  // ASAP, which is the intended deadline semantic — but an Invalid Date is a
+  // caller bug that otherwise behaves inconsistently across schedulers (the
+  // in-memory one fires immediately; the postgres one throws on toISOString at
+  // insert time). Fail fast and uniformly here instead.
+  if (!(at instanceof Date) || Number.isNaN(at.getTime())) {
+    throw new Error(`schedule: \`at\` must be a valid Date, received ${String(at)}`)
+  }
+
   const eventMessage: EventMessage = {
     identifier: generateIdentifier(),
     name: event.name,
@@ -82,12 +91,20 @@ export interface ScheduleAfterFunction {
  * Convenience wrapper over {@link schedule}: fire `delayMs` milliseconds from
  * now instead of at an absolute {@link Date}.
  */
-export const scheduleAfter: ScheduleAfterFunction = ((
+export const scheduleAfter: ScheduleAfterFunction = (async (
   event: EventDescriptor<any>,
   payload: unknown,
   delayMs: number,
   metadata?: Metadata,
-) => schedule(event, payload, new Date(Date.now() + delayMs), metadata as Metadata)) as ScheduleAfterFunction
+) => {
+  // A non-finite delay (NaN/Infinity) would produce an Invalid Date; reject it
+  // here so the error names the actual offending argument. A negative delay is
+  // allowed — it resolves to a past time and fires ASAP.
+  if (!Number.isFinite(delayMs)) {
+    throw new Error(`scheduleAfter: \`delayMs\` must be a finite number, received ${String(delayMs)}`)
+  }
+  return schedule(event, payload, new Date(Date.now() + delayMs), metadata as Metadata)
+}) as ScheduleAfterFunction
 
 /**
  * Attempt to cancel a previously {@link schedule}d event from inside a handler.
