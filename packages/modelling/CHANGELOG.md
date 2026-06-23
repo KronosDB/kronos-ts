@@ -1,5 +1,11 @@
 # @kronos-ts/modelling
 
+## 0.2.4
+
+### Patch Changes
+
+- @kronos-ts/messaging@0.5.1
+
 ## 0.2.3
 
 ### Patch Changes

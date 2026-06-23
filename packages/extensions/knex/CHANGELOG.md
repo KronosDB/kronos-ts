@@ -1,5 +1,11 @@
 # @kronos-ts/knex
 
+## 0.2.2
+
+### Patch Changes
+
+- @kronos-ts/messaging@0.5.1
+
 ## 0.2.1
 
 ### Patch Changes
