@@ -1,5 +1,13 @@
 # @kronos-ts/modelling
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [291acd2]
+- Updated dependencies [291acd2]
+  - @kronos-ts/messaging@0.6.0
+
 ## 0.2.4
 
 ### Patch Changes
