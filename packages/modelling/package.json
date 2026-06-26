@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/modelling",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "State modelling for Kronos — event-sourced state definitions and evolution.",
   "license": "Apache-2.0",
   "type": "module",
