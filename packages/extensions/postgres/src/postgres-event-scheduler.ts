@@ -109,7 +109,7 @@ interface ScheduleRow {
   payload: unknown
   metadata: unknown
   version: string
-  message_timestamp: string | number
+  timestamp: string | number
   [key: string]: unknown
 }
 
@@ -132,7 +132,7 @@ export function createPostgresEventScheduler(
       .map((t) => encodeTag(t.key, t.value))
     await tx.query(
       `INSERT INTO ${tables.scheduled}
-         (schedule_id, fire_at, status, type, tags, payload, metadata, version, message_timestamp)
+         (schedule_id, fire_at, status, type, tags, payload, metadata, version, timestamp)
        VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)`,
       [
         scheduleId,
@@ -196,7 +196,7 @@ export function createPostgresEventScheduler(
       name: qualifiedNameFromString(row.type),
       payload: decodeJsonbValue(row.payload),
       metadata: decodeJsonbValue(row.metadata) as EventMessage["metadata"],
-      timestamp: Number(row.message_timestamp),
+      timestamp: Number(row.timestamp),
       version: row.version,
       tags: decodeTags(row.tags),
     }
@@ -223,7 +223,7 @@ export function createPostgresEventScheduler(
         }
 
         const rows = await tx.query<ScheduleRow>(
-          `SELECT schedule_id, type, tags, payload, metadata, version, message_timestamp
+          `SELECT schedule_id, type, tags, payload, metadata, version, timestamp
            FROM ${tables.scheduled}
            WHERE status = 'pending' AND fire_at <= now()
            ORDER BY fire_at

@@ -163,7 +163,7 @@ export function createPostgresEventStore(
       const metadata = e.metadata ?? {}
 
       const rows = await tx.query<{ sequence_position: string; transaction_id: string }>(
-        `INSERT INTO ${tables.events} (event_id, type, tags, payload, metadata, version, message_timestamp)
+        `INSERT INTO ${tables.events} (event_id, type, tags, payload, metadata, version, timestamp)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING sequence_position, transaction_id`,
         [
@@ -193,7 +193,7 @@ export function createPostgresEventStore(
       const start = condition.start ?? 0n
       const built = buildCriteriaWhere(condition.criteria, 2) // $1 = start
       const sql = `
-        SELECT sequence_position, event_id, type, tags, payload, metadata, version, message_timestamp
+        SELECT sequence_position, event_id, type, tags, payload, metadata, version, timestamp
         FROM ${tables.events}
         WHERE sequence_position >= $1 AND (${built.where})
         ORDER BY sequence_position ASC
@@ -206,7 +206,7 @@ export function createPostgresEventStore(
         payload: unknown
         metadata: unknown
         version: string
-        message_timestamp: string | number
+        timestamp: string | number
       }>(sql, [start, ...built.params])
 
       const events: EventMessage[] = rows.map((r) => decodeEvent(r))
@@ -482,7 +482,7 @@ export function createPostgresEventStore(
           sql = `
             SELECT sequence_position::text AS sequence_position,
                    transaction_id::text AS transaction_id,
-                   event_id, type, tags, payload, metadata, version, message_timestamp
+                   event_id, type, tags, payload, metadata, version, timestamp
             FROM ${tables.events}
             WHERE sequence_position > $1::bigint
               AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
@@ -501,7 +501,7 @@ export function createPostgresEventStore(
           sql = `
             SELECT sequence_position::text AS sequence_position,
                    transaction_id::text AS transaction_id,
-                   event_id, type, tags, payload, metadata, version, message_timestamp
+                   event_id, type, tags, payload, metadata, version, timestamp
             FROM ${tables.events}
             WHERE (transaction_id, sequence_position) > ($1::xid8, $2::bigint)
               AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
@@ -521,7 +521,7 @@ export function createPostgresEventStore(
           payload: unknown
           metadata: unknown
           version: string
-          message_timestamp: string | number
+          timestamp: string | number
         }>(sql, queryParams)
 
         for (const r of rows) {
@@ -614,7 +614,7 @@ function decodeEvent(row: {
   sequence_position: string
   event_id: string
   version: string
-  message_timestamp: string | number
+  timestamp: string | number
 }): EventMessage {
   const qn = qualifiedNameFromString(row.type)
   const tags = row.tags.map((t) => {
@@ -631,7 +631,7 @@ function decodeEvent(row: {
     tags,
     payload: decodeJsonb(row.payload),
     metadata: decodeJsonb(row.metadata) as EventMessage["metadata"],
-    timestamp: Number(row.message_timestamp),
+    timestamp: Number(row.timestamp),
   }
 }
 

@@ -74,13 +74,13 @@ describe("buildEventsTableDDL", () => {
     expect(ddl).toMatch(/autovacuum_freeze_min_age/)
   })
 
-  it("persists version + message_timestamp so source()/open() reconstruct the full EventMessage", () => {
-    // message_timestamp is the EventMessage's authored timestamp (epoch ms), distinct
-    // from recorded_at (DB insert time). Mirrors the scheduled-events table.
+  it("persists version + timestamp so source()/open() reconstruct the full EventMessage", () => {
+    // timestamp is the EventMessage's authored timestamp (epoch ms).
     const ddl = buildEventsTableDDL(DEFAULT_TABLE_NAMES)
     expect(ddl).toMatch(/version\s+TEXT\s+NOT NULL/)
-    expect(ddl).toMatch(/message_timestamp\s+BIGINT\s+NOT NULL/)
-    expect(ddl).toMatch(/recorded_at\s+TIMESTAMPTZ\s+NOT NULL DEFAULT now\(\)/)
+    expect(ddl).toMatch(/timestamp\s+BIGINT\s+NOT NULL/)
+    // recorded_at was removed — the events table carries only the authored timestamp.
+    expect(ddl).not.toMatch(/recorded_at/)
   })
 })
 
@@ -133,14 +133,14 @@ describe("buildScheduledEventsTableDDL", () => {
     expect(ddl).toMatch(/CHECK \(status IN \('pending', 'appended', 'cancelled'\)\)/)
   })
 
-  it("captures the full EventMessage shape (type, tags, payload, metadata, version, message_timestamp)", () => {
+  it("captures the full EventMessage shape (type, tags, payload, metadata, version, timestamp)", () => {
     const ddl = buildScheduledEventsTableDDL(DEFAULT_TABLE_NAMES)
     expect(ddl).toMatch(/type\s+TEXT/)
     expect(ddl).toMatch(/tags\s+TEXT\[\]/)
     expect(ddl).toMatch(/payload\s+JSONB/)
     expect(ddl).toMatch(/metadata\s+JSONB/)
     expect(ddl).toMatch(/version\s+TEXT/)
-    expect(ddl).toMatch(/message_timestamp\s+BIGINT/)
+    expect(ddl).toMatch(/timestamp\s+BIGINT/)
   })
 
   it("substitutes the scheduled table name parameter", () => {

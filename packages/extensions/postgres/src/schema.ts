@@ -43,11 +43,12 @@ export function buildEventsTableDDL(tables: TableNames): string {
   // UNIQUE auto-creates a btree; v7's time-ordered prefix keeps it compact under
   // append load (a v4 random UUID would fragment the leaf pages over time).
   //
-  // version + message_timestamp persist the EventMessage's own `version` and authored
-  // `timestamp` (epoch ms) so source()/open() reconstruct the full EventMessage contract,
-  // matching the in-memory, axon-server, and kronosdb engines. message_timestamp is the
-  // authored time — distinct from recorded_at (DB insert time). This mirrors the
-  // scheduled-events table, which already carries both columns.
+  // version + timestamp persist the EventMessage's own `version` and authored `timestamp`
+  // (epoch ms) so source()/open() reconstruct the full EventMessage contract, matching the
+  // in-memory, axon-server, and kronosdb engines. `timestamp` is a BIGINT (epoch ms), fully
+  // btree/BRIN-indexable; `timestamp` is a non-reserved keyword in Postgres and works
+  // unquoted in every position we use (the only conflict is the `TIMESTAMP 'literal'` cast,
+  // which we never write).
   //
   // MIGRATION: this is CREATE-only. `CREATE TABLE IF NOT EXISTS` does NOT add columns to a
   // pre-existing table, and the columns are NOT NULL, so an events table created before
@@ -62,8 +63,7 @@ export function buildEventsTableDDL(tables: TableNames): string {
   payload            JSONB NOT NULL,
   metadata           JSONB NOT NULL DEFAULT '{}',
   version            TEXT NOT NULL,
-  message_timestamp  BIGINT NOT NULL,
-  recorded_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+  timestamp          BIGINT NOT NULL
 ) WITH (
   autovacuum_freeze_min_age   = 10000000,
   autovacuum_freeze_table_age = 100000000,
@@ -115,13 +115,15 @@ export function buildSnapshotsTableDDL(tables: TableNames): string {
  * # Payload columns
  *
  * The whole EventMessage shape is captured inline (event_id, type, tags,
- * payload, metadata, version, message_timestamp) so the fire-time worker
- * can reconstruct it from a single row read. `message_timestamp` is the
- * EventMessage's authored timestamp (epoch ms) — distinct from
- * `created_at` (when the row was inserted) and `fire_at` (when it should
- * fire). At append-time, the worker MAY overwrite message_timestamp with
- * `now()` so consumers see the actual append time; that is an
- * implementation decision left to the scheduler.
+ * payload, metadata, version, timestamp) so the fire-time worker can
+ * reconstruct it from a single row read. `timestamp` is the EventMessage's
+ * authored timestamp (epoch ms) — distinct from `created_at` (when the row
+ * was inserted) and `fire_at` (when it should fire). At append-time, the
+ * worker MAY overwrite `timestamp` with `now()` so consumers see the actual
+ * append time; that is an implementation decision left to the scheduler.
+ *
+ * Column names mirror the events table (`version`, `timestamp`) so a schedule
+ * row and the event it materialises into share the same vocabulary.
  */
 export function buildScheduledEventsTableDDL(tables: TableNames): string {
   return `CREATE TABLE IF NOT EXISTS ${tables.scheduled} (
@@ -134,7 +136,7 @@ export function buildScheduledEventsTableDDL(tables: TableNames): string {
   payload            JSONB NOT NULL,
   metadata           JSONB NOT NULL DEFAULT '{}',
   version            TEXT NOT NULL,
-  message_timestamp  BIGINT NOT NULL,
+  timestamp          BIGINT NOT NULL,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );`
 }

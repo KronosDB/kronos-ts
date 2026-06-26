@@ -38,7 +38,7 @@ interface FakeRow {
   payload: string
   metadata: string
   version: string
-  message_timestamp: number
+  timestamp: number
 }
 
 /**
@@ -71,7 +71,7 @@ function createFakeAdapter() {
         payload,
         metadata,
         version,
-        message_timestamp: ts,
+        timestamp: ts,
       })
       return []
     }
@@ -95,7 +95,7 @@ function createFakeAdapter() {
 
     // Worker SELECT
     if (
-      compact.startsWith("SELECT schedule_id, type, tags, payload, metadata, version, message_timestamp")
+      compact.startsWith("SELECT schedule_id, type, tags, payload, metadata, version, timestamp")
       && compact.includes("WHERE status = 'pending' AND fire_at <= now()")
     ) {
       const limit = Number(params[0] ?? 50)
@@ -110,7 +110,7 @@ function createFakeAdapter() {
         payload: r.payload,
         metadata: r.metadata,
         version: r.version,
-        message_timestamp: r.message_timestamp,
+        timestamp: r.timestamp,
       }))
     }
 

@@ -112,7 +112,7 @@ describe("Concurrent-commit-gap regression (kraken-tech scenario)", () => {
       // xmin, making both rows visible at once.
       const w1 = adapter.transaction("READ COMMITTED" as never, async (tx) => {
         await tx.query(
-          `INSERT INTO ${DEFAULT_TABLE_NAMES.events} (event_id, type, tags, payload, metadata, version, message_timestamp)
+          `INSERT INTO ${DEFAULT_TABLE_NAMES.events} (event_id, type, tags, payload, metadata, version, timestamp)
            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)`,
           [generateIdentifier(), "test.W1", ["label\x1FW1"], JSON.stringify({}), JSON.stringify({}), "1", Date.now()],
         )
