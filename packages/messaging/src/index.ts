@@ -104,6 +104,18 @@ export {
   multiHandlerEnhancerDefinition,
 } from "./handler-enhancer.js"
 
+// Metrics
+export {
+  type MetricsRecorder,
+  type Counter,
+  type Histogram,
+  type MetricAttributes,
+  type InstrumentOptions,
+  type MeteringOptions,
+  noOpMetricsRecorder,
+  meteringHandlerEnhancerDefinition,
+} from "./metrics.js"
+
 // Correlation data
 export {
   type CorrelationDataProvider,

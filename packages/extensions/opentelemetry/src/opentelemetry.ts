@@ -2,11 +2,17 @@ import type { App } from "@kronos-ts/app"
 import {
   createTracingCommandBus,
   tracingHandlerEnhancerDefinition,
+  meteringHandlerEnhancerDefinition,
+  type MeteringOptions,
 } from "@kronos-ts/messaging"
 import {
   createOpenTelemetrySpanFactory,
   type OpenTelemetrySpanFactoryOptions,
 } from "./opentelemetry-span-factory.js"
+import {
+  createOpenTelemetryMetricsRecorder,
+  type OpenTelemetryMetricsRecorderOptions,
+} from "./opentelemetry-metrics-recorder.js"
 
 /**
  * OpenTelemetry tracing extension for Kronos.
@@ -49,5 +55,34 @@ export function openTelemetry(
       createTracingCommandBus(delegate, spanFactory),
     )
     app.handlerEnhancer(tracingHandlerEnhancerDefinition(spanFactory))
+  }
+}
+
+/**
+ * OpenTelemetry metrics extension for Kronos.
+ *
+ * Wires a metering handler enhancer (via `app.handlerEnhancer(...)`) that
+ * records throughput, latency, error rate, and event-processing lag for every
+ * command/query/event handler invocation, using the OpenTelemetry Metrics API.
+ *
+ * Compose independently of (and alongside) {@link openTelemetry}:
+ *
+ * @example
+ * ```typescript
+ * await kronos()
+ *   .use(openTelemetry())        // tracing
+ *   .use(openTelemetryMetrics()) // metrics
+ *   .start()
+ * ```
+ *
+ * Requires an OpenTelemetry MeterProvider to be configured for measurements to
+ * be exported; without one this is effectively a no-op.
+ */
+export function openTelemetryMetrics(
+  options: OpenTelemetryMetricsRecorderOptions & MeteringOptions = {},
+): (app: App) => void {
+  return (app) => {
+    const recorder = createOpenTelemetryMetricsRecorder(options)
+    app.handlerEnhancer(meteringHandlerEnhancerDefinition(recorder, options))
   }
 }
