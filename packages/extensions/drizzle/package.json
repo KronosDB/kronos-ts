@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/drizzle",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Drizzle ORM extension for Kronos.",
   "license": "Apache-2.0",
   "type": "module",

@@ -1,5 +1,14 @@
 # @kronos-ts/app
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [dafdf12]
+  - @kronos-ts/messaging@0.7.0
+  - @kronos-ts/eventsourcing@0.2.3
+  - @kronos-ts/modelling@0.2.6
+
 ## 0.4.0
 
 ### Minor Changes
