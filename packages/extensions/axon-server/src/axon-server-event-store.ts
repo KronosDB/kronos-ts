@@ -121,6 +121,7 @@ function createEventConverters(serializer: Serializer) {
       }
 
       return {
+        kind: "event",
         identifier: protoEvent.identifier,
         name: qualifiedNameFromString(protoEvent.name),
         version: protoEvent.version,

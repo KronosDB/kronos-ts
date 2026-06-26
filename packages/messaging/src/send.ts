@@ -35,6 +35,7 @@ export const send: CommandDispatchFunction = async (descriptor, payload) => {
   const bus = state.resources.get(COMMAND_BUS_KEY.symbol) as CommandBus | undefined
   if (!bus) throw new Error("No command bus configured")
   return bus.dispatch({
+    kind: "command",
     identifier: generateIdentifier(),
     name: descriptor.name,
     payload,

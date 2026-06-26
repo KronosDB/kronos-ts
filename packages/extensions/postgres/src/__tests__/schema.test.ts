@@ -7,7 +7,6 @@ import {
   buildSnapshotsTableDDL,
   buildScheduledEventsTableDDL,
   buildScheduledEventsIndexesDDL,
-  buildAppendStoredProcedureDDL,
   bootstrapSchema,
   type SchemaBootstrapAdapter,
 } from "../schema.js"
@@ -73,6 +72,15 @@ describe("buildEventsTableDDL", () => {
     const ddl = buildEventsTableDDL(DEFAULT_TABLE_NAMES)
     expect(ddl).toMatch(/FILLFACTOR\s*=\s*100/)
     expect(ddl).toMatch(/autovacuum_freeze_min_age/)
+  })
+
+  it("persists version + message_timestamp so source()/open() reconstruct the full EventMessage", () => {
+    // message_timestamp is the EventMessage's authored timestamp (epoch ms), distinct
+    // from recorded_at (DB insert time). Mirrors the scheduled-events table.
+    const ddl = buildEventsTableDDL(DEFAULT_TABLE_NAMES)
+    expect(ddl).toMatch(/version\s+TEXT\s+NOT NULL/)
+    expect(ddl).toMatch(/message_timestamp\s+BIGINT\s+NOT NULL/)
+    expect(ddl).toMatch(/recorded_at\s+TIMESTAMPTZ\s+NOT NULL DEFAULT now\(\)/)
   })
 })
 
@@ -154,28 +162,6 @@ describe("buildScheduledEventsIndexesDDL", () => {
     expect(ddl).toMatch(/CREATE INDEX IF NOT EXISTS kronos_scheduled_events_pending_fire_at_idx/)
     expect(ddl).toMatch(/ON kronos_scheduled_events \(fire_at\)/)
     expect(ddl).toMatch(/WHERE status = 'pending'/)
-  })
-})
-
-describe("buildAppendStoredProcedureDDL", () => {
-  it("declares the kronos_append_with_check function", () => {
-    const ddl = buildAppendStoredProcedureDDL(DEFAULT_TABLE_NAMES)
-    expect(ddl).toMatch(/CREATE OR REPLACE FUNCTION kronos_append_with_check/)
-  })
-
-  it("RAISES EXCEPTION USING ERRCODE = 'KR001' on conflict (D-12.12)", () => {
-    const ddl = buildAppendStoredProcedureDDL(DEFAULT_TABLE_NAMES)
-    expect(ddl).toMatch(/RAISE EXCEPTION/)
-    expect(ddl).toMatch(/ERRCODE\s*=\s*'KR001'/)
-  })
-
-  it("accepts event_ids uuid[] and writes event_id in the INSERT (UNIQUE-based idempotency)", () => {
-    const ddl = buildAppendStoredProcedureDDL(DEFAULT_TABLE_NAMES)
-    // Signature: event_ids must be present as a uuid[] parameter
-    expect(ddl).toMatch(/event_ids\s+uuid\[\]/)
-    // INSERT must reference event_id as a target column, sourced from event_ids[i]
-    expect(ddl).toMatch(/INSERT INTO \w+\s*\(\s*event_id,/)
-    expect(ddl).toMatch(/VALUES\s*\(\s*event_ids\[i\]\s*,/)
   })
 })
 

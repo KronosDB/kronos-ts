@@ -28,6 +28,7 @@ export function createEventGateway(eventSink: EventSink): EventGateway {
     async publish(descriptor, payload, metadata = {}) {
       const tags = descriptor.tags ? descriptor.tags(payload) : []
       const event: EventMessage = {
+        kind: "event",
         identifier: generateIdentifier(),
         name: descriptor.name,
         version: descriptor.version,

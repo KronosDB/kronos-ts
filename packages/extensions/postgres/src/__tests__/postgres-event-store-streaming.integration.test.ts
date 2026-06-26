@@ -113,9 +113,9 @@ describe("open() — gap-free tailing (xid8 + pg_snapshot_xmin)", () => {
     // immediately on callback resolution — we need a controlled hold.
     const aPromise = adapter.transaction("READ COMMITTED" as never, async (tx) => {
       await tx.query(
-        `INSERT INTO ${DEFAULT_TABLE_NAMES.events} (event_id, type, tags, payload, metadata)
-         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)`,
-        [generateIdentifier(), "test.A", ["k\x1Fa"], JSON.stringify({}), JSON.stringify({})],
+        `INSERT INTO ${DEFAULT_TABLE_NAMES.events} (event_id, type, tags, payload, metadata, version, message_timestamp)
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)`,
+        [generateIdentifier(), "test.A", ["k\x1Fa"], JSON.stringify({}), JSON.stringify({}), "1", Date.now()],
       )
       // Hold the tx open for 500ms — B will commit during this window.
       await tx.query(`SELECT pg_sleep(0.5)`)

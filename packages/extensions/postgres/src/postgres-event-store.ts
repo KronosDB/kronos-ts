@@ -22,13 +22,8 @@
  *   - Wake-up via LISTEN/NOTIFY on `kronos_events_${tables.events}` channel
  *   - Fallback to 250ms polling if LISTEN is not supported
  *
- * Note on the stored procedure (buildAppendStoredProcedureDDL): The SP is
- * registered in schema.ts and available on the DB, but this plan uses
- * direct parameterised SQL for the conflict check + INSERT rather than
- * calling the SP. The SP's dynamic-SQL approach has complex $N-rebinding
- * requirements (criteria_params JSONB → USING binding) that are cleaner to
- * handle in TypeScript. Plan 06's review may revisit whether the SP
- * provides a meaningful benefit.
+ * The conflict check + INSERT run as direct parameterised SQL inside the
+ * append transaction (see checkAndInsert), not via a stored procedure.
  */
 
 import type {
@@ -168,8 +163,8 @@ export function createPostgresEventStore(
       const metadata = e.metadata ?? {}
 
       const rows = await tx.query<{ sequence_position: string; transaction_id: string }>(
-        `INSERT INTO ${tables.events} (event_id, type, tags, payload, metadata)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO ${tables.events} (event_id, type, tags, payload, metadata, version, message_timestamp)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING sequence_position, transaction_id`,
         [
           e.identifier,
@@ -177,6 +172,8 @@ export function createPostgresEventStore(
           encodedTags,
           JSON.stringify(payload),
           JSON.stringify(metadata),
+          e.version,
+          e.timestamp,
         ],
       )
       const row = rows[0]
@@ -196,17 +193,20 @@ export function createPostgresEventStore(
       const start = condition.start ?? 0n
       const built = buildCriteriaWhere(condition.criteria, 2) // $1 = start
       const sql = `
-        SELECT sequence_position, type, tags, payload, metadata
+        SELECT sequence_position, event_id, type, tags, payload, metadata, version, message_timestamp
         FROM ${tables.events}
         WHERE sequence_position >= $1 AND (${built.where})
         ORDER BY sequence_position ASC
       `
       const rows = await adapter.query<{
         sequence_position: string
+        event_id: string
         type: string
         tags: string[]
         payload: unknown
         metadata: unknown
+        version: string
+        message_timestamp: string | number
       }>(sql, [start, ...built.params])
 
       const events: EventMessage[] = rows.map((r) => decodeEvent(r))
@@ -482,7 +482,7 @@ export function createPostgresEventStore(
           sql = `
             SELECT sequence_position::text AS sequence_position,
                    transaction_id::text AS transaction_id,
-                   type, tags, payload, metadata
+                   event_id, type, tags, payload, metadata, version, message_timestamp
             FROM ${tables.events}
             WHERE sequence_position > $1::bigint
               AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
@@ -501,7 +501,7 @@ export function createPostgresEventStore(
           sql = `
             SELECT sequence_position::text AS sequence_position,
                    transaction_id::text AS transaction_id,
-                   type, tags, payload, metadata
+                   event_id, type, tags, payload, metadata, version, message_timestamp
             FROM ${tables.events}
             WHERE (transaction_id, sequence_position) > ($1::xid8, $2::bigint)
               AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
@@ -515,10 +515,13 @@ export function createPostgresEventStore(
         const rows = await adapter.query<{
           sequence_position: string
           transaction_id: string
+          event_id: string
           type: string
           tags: string[]
           payload: unknown
           metadata: unknown
+          version: string
+          message_timestamp: string | number
         }>(sql, queryParams)
 
         for (const r of rows) {
@@ -609,6 +612,9 @@ function decodeEvent(row: {
   payload: unknown
   metadata: unknown
   sequence_position: string
+  event_id: string
+  version: string
+  message_timestamp: string | number
 }): EventMessage {
   const qn = qualifiedNameFromString(row.type)
   const tags = row.tags.map((t) => {
@@ -618,11 +624,15 @@ function decodeEvent(row: {
       : { key: t, value: "" }
   })
   return {
+    kind: "event",
+    identifier: row.event_id,
     name: qn,
+    version: row.version,
     tags,
     payload: decodeJsonb(row.payload),
-    metadata: decodeJsonb(row.metadata),
-  } as unknown as EventMessage
+    metadata: decodeJsonb(row.metadata) as EventMessage["metadata"],
+    timestamp: Number(row.message_timestamp),
+  }
 }
 
 // Adapter-agnostic JSONB decoding: pgAdapter/postgresAdapter return parsed

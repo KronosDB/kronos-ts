@@ -667,6 +667,7 @@ function createDistributedCommandBus(
         if (handler) {
           try {
             const commandMessage: CommandMessage = {
+              kind: "command",
               identifier: proto.messageIdentifier,
               name: qualifiedNameFromString(commandName),
               payload: deserializePayload(proto.payload?.data as Uint8Array | undefined),
@@ -905,6 +906,7 @@ export function createDistributedQueryBus(
       if (handler) {
         try {
           const queryMessage: QueryMessage = {
+            kind: "query",
             identifier: proto.messageIdentifier,
             name: qualifiedNameFromString(queryName),
             payload,
@@ -974,6 +976,7 @@ export function createDistributedQueryBus(
         if (handler) {
           try {
             const queryMessage: QueryMessage = {
+              kind: "query",
               identifier: proto.messageIdentifier,
               name: qualifiedNameFromString(queryName),
               payload: deserializePayload(proto.payload?.data as Uint8Array | undefined),

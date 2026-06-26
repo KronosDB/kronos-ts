@@ -109,6 +109,8 @@ export {
   type CorrelationDataProvider,
   CORRELATION_DATA_KEY,
   getActiveCorrelationData,
+  applyCorrelationData,
+  contributeCorrelationData,
   messageOriginProvider,
   simpleCorrelationDataProvider,
   correlationDataHandlerInterceptor,

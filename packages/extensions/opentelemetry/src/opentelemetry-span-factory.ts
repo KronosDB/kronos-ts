@@ -37,7 +37,7 @@ const metadataSetter: TextMapSetter<Record<string, unknown>> = {
 // OpenTelemetry Span wrapper
 // ---------------------------------------------------------------------------
 
-function wrapOtelSpan(otelSpan: import("@opentelemetry/api").Span, parentContext: OtelContext): Span {
+function wrapOtelSpan(otelSpan: import("@opentelemetry/api").Span, _parentContext: OtelContext): Span {
   return {
     start() {
       // OTel spans are started at creation — nothing to do
@@ -51,6 +51,13 @@ function wrapOtelSpan(otelSpan: import("@opentelemetry/api").Span, parentContext
       otelSpan.recordException(error)
       otelSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
       otelSpan.end()
+    },
+    runActive<T>(fn: () => T): T {
+      // Make this span the active context for the duration of `fn`. With the
+      // AsyncLocalStorage context manager the span stays active across awaits in
+      // an async `fn`, so propagateContext / currentTraceContext and any child
+      // spans created during handling parent to it.
+      return context.with(trace.setSpan(context.active(), otelSpan), fn)
     },
   }
 }
@@ -123,6 +130,21 @@ export function createOpenTelemetrySpanFactory(
       return wrapOtelSpan(otelSpan, parentContext)
     },
 
+    createLinkedHandlerSpan(operationName: string, parentMessage: Message): Span {
+      // New trace (root), linked to the parent message's span rather than
+      // parented to it — the originating trace may be long finished by the time
+      // an asynchronous processor handles the event.
+      const parentContext = extractContext(parentMessage)
+      const parentSpanContext = trace.getSpanContext(parentContext)
+      const otelSpan = tracer.startSpan(operationName, {
+        kind: SpanKind.CONSUMER,
+        root: true,
+        links: parentSpanContext ? [{ context: parentSpanContext }] : [],
+      })
+      addMessageAttributes(otelSpan, parentMessage)
+      return wrapOtelSpan(otelSpan, parentContext)
+    },
+
     createDispatchSpan(operationName: string, parentMessage: Message): Span {
       const parentContext = extractContext(parentMessage)
       const otelSpan = tracer.startSpan(
@@ -153,6 +175,16 @@ export function createOpenTelemetrySpanFactory(
         ...message,
         metadata: { ...message.metadata, ...additionalMetadata },
       }
+    },
+
+    currentTraceContext(): Record<string, string> {
+      const carrier: Record<string, string> = {}
+      propagation.inject(
+        context.active(),
+        carrier,
+        metadataSetter as TextMapSetter<Record<string, string>>,
+      )
+      return carrier
     },
 
     registerSpanAttributeProvider(provider: SpanAttributesProvider) {

@@ -53,9 +53,6 @@ describe("postgres() extension", () => {
     await adapter.connect()
     await adapter.query(`DROP TABLE IF EXISTS kronos_events CASCADE`)
     await adapter.query(`DROP TABLE IF EXISTS kronos_snapshots CASCADE`)
-
-    // Also drop the stored procedure
-    await adapter.query(`DROP FUNCTION IF EXISTS kronos_append_with_check CASCADE`)
     await adapter.disconnect()
 
     const app = kronos({ quiet: true })

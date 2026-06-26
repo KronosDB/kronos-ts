@@ -3,6 +3,9 @@ import type {
   CommandHandlerDefinition,
   QueryHandlerDefinition,
   EventProcessorModule,
+  HandlerInterceptor,
+  CommandMessage,
+  QueryMessage,
 } from "@kronos-ts/messaging"
 import {
   createInterceptingCommandBus,
@@ -87,7 +90,13 @@ export function kronos(partial?: KronosPartialConfig): App {
     (inner, _resolved) => {
       const wrapped = createInterceptingCommandBus(inner)
       for (const fn of app._state.commandDispatchInterceptors) wrapped.registerDispatchInterceptor(fn)
-      for (const fn of app._state.handlerInterceptors) wrapped.registerHandlerInterceptor(fn)
+      // `app.handlerInterceptor()` registers bus-agnostic `HandlerInterceptor<Message>`s.
+      // Since `Message.kind` was added, `HandlerInterceptor<Message>` is no longer assignable
+      // to `HandlerInterceptor<CommandMessage>` (the `next` callback is contravariant). The
+      // adaptation is sound: the bus only ever drives `next` with its own CommandMessage, so a
+      // generic interceptor that forwards what it received stays within bounds. Direct
+      // registrants via `commandBus.registerHandlerInterceptor` keep the strict CommandMessage type.
+      for (const fn of app._state.handlerInterceptors) wrapped.registerHandlerInterceptor(fn as HandlerInterceptor<CommandMessage>)
       return wrapped
     },
   )
@@ -96,7 +105,9 @@ export function kronos(partial?: KronosPartialConfig): App {
     (inner, _resolved) => {
       const wrapped = createInterceptingQueryBus(inner)
       for (const fn of app._state.queryDispatchInterceptors) wrapped.registerDispatchInterceptor(fn)
-      for (const fn of app._state.handlerInterceptors) wrapped.registerHandlerInterceptor(fn)
+      // See the command-bus fan-out above: bus-agnostic interceptors are adapted onto the
+      // typed QueryMessage bus; the bus only drives `next` with its own QueryMessage.
+      for (const fn of app._state.handlerInterceptors) wrapped.registerHandlerInterceptor(fn as HandlerInterceptor<QueryMessage>)
       return wrapped
     },
   )

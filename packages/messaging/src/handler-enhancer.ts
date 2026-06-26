@@ -1,10 +1,12 @@
+import type { MessageKind } from "./message.js"
+
 /**
  * Metadata about a handler being enhanced. Allows enhancers to
  * selectively wrap based on handler type, message name, etc.
  */
 export interface HandlerMetadata {
   /** The type of message this handler processes. */
-  readonly messageType: "command" | "event" | "query"
+  readonly messageType: MessageKind
   /** The qualified name of the message (e.g., "university.courses.CreateCourse"). */
   readonly messageName: string
   /** The name of the handler group or module (e.g., "course-commands"). */

@@ -65,6 +65,7 @@ export const schedule: ScheduleFunction = (async <P extends z.ZodType>(
   }
 
   const eventMessage: EventMessage = {
+    kind: "event",
     identifier: generateIdentifier(),
     name: event.name,
     version: event.version,

@@ -169,6 +169,36 @@ describe("openTelemetry() span observation (E2E)", () => {
     expect(handlerSpan).toBeDefined()
   })
 
+  it("event handler span links back to the triggering event's trace across the event-store boundary", async () => {
+    // given
+    const onGreeted = eventHandler(Greeted, async () => {})
+
+    running = await kronos({ quiet: true })
+      .states(Greeting)
+      .commands(greet)
+      .processors(
+        subscribingProcessor("greet-projection")
+          .eventHandlers(onGreeted)
+          .build(),
+      )
+      .use(openTelemetry())
+      .start()
+
+    // when
+    await running.commandGateway.send(Greet, { id: "g-4", who: "world" })
+    await new Promise((r) => setTimeout(r, 50))
+
+    // then — the event handler runs in a NEW trace (the originating command
+    // trace may be long gone for async processors) that is LINKED to the
+    // producing span. The link only exists if the appended Greeted event
+    // carried the command handler's trace context — i.e. trace context was
+    // captured onto the UnitOfWork and applied to the appended event.
+    const spans = harness.exporter.getFinishedSpans()
+    const handlerSpan = spans.find((s) => s.name.includes("greet-projection"))
+    expect(handlerSpan).toBeDefined()
+    expect(handlerSpan!.links.length).toBeGreaterThanOrEqual(1)
+  })
+
   it("emits no spans when openTelemetry() extension is not installed", async () => {
     // given — identical app WITHOUT .use(openTelemetry())
     running = await kronos({ quiet: true })

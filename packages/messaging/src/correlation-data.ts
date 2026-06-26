@@ -93,6 +93,68 @@ export function simpleCorrelationDataProvider(...metadataKeys: string[]): Correl
 }
 
 // ---------------------------------------------------------------------------
+// Extract phase (shared by the handler interceptor and the event processors)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute correlation data from the given providers for `message` and merge it
+ * into the active UnitOfWork's correlation-data resource (`CORRELATION_DATA_KEY`).
+ *
+ * This is the reusable "extract" step. It is run:
+ * - by {@link correlationDataHandlerInterceptor} for command/query handlers, and
+ * - by the event processors per-event before invoking event handlers, so an
+ *   automation's outgoing commands/events inherit the triggering event's
+ *   lineage.
+ *
+ * Each provider is called with the message. Exceptions are caught and logged
+ * (they don't break message processing). Results merge over any existing
+ * correlation data, so values contributed earlier (e.g. via
+ * {@link contributeCorrelationData}) are preserved unless a provider overrides
+ * the same key.
+ *
+ * Must be called inside an active UnitOfWork.
+ */
+export function applyCorrelationData(
+  message: Message,
+  providers: ReadonlyArray<CorrelationDataProvider>,
+): void {
+  const correlationData: Record<string, string> = {}
+
+  for (const provider of providers) {
+    try {
+      Object.assign(correlationData, provider.correlationDataFor(message))
+    } catch (err) {
+      console.warn(
+        "Encountered exception creating correlation data from provider:",
+        err,
+      )
+    }
+  }
+
+  const existing = getActiveCorrelationData() ?? {}
+  setResource(CORRELATION_DATA_KEY, { ...existing, ...correlationData })
+}
+
+/**
+ * Contribute additional correlation data to the active UnitOfWork, merged over
+ * whatever is already present under `CORRELATION_DATA_KEY`. The merged set is
+ * applied to every message dispatched/appended from this UnitOfWork by the
+ * correlation-data dispatch interceptor and the event appender.
+ *
+ * Use this from a handler enhancer or handler to seed extra lineage keys that
+ * the built-in providers don't cover — for example an OpenTelemetry
+ * `traceparent` so the trace context rides along on outgoing messages. This is
+ * the supported alternative to mutating the object returned by
+ * {@link getActiveCorrelationData}.
+ *
+ * Throws `NoActiveUnitOfWork` when called outside an active UnitOfWork.
+ */
+export function contributeCorrelationData(partial: Record<string, string>): void {
+  const existing = getActiveCorrelationData() ?? {}
+  setResource(CORRELATION_DATA_KEY, { ...existing, ...partial })
+}
+
+// ---------------------------------------------------------------------------
 // Interceptor factory
 // ---------------------------------------------------------------------------
 
@@ -100,38 +162,18 @@ export function simpleCorrelationDataProvider(...metadataKeys: string[]): Correl
  * Creates a handler interceptor that extracts correlation data from the
  * incoming message and stores it in the ProcessingContext.
  *
- * This is the "extract" phase of the dual-interceptor pattern.
- *
- * Each provider is called with the message. Exceptions are caught and
- * logged (they don't break message processing). Results are merged —
- * later providers override earlier ones on key conflicts.
- *
- * The correlation data is stored as a ProcessingContext resource under
- * `CORRELATION_DATA_KEY`, where the dispatch interceptor reads it.
+ * This is the "extract" phase of the dual-interceptor pattern, delegating to
+ * {@link applyCorrelationData}. The correlation data is stored as a
+ * ProcessingContext resource under `CORRELATION_DATA_KEY`, where the dispatch
+ * interceptor reads it.
  */
 export function correlationDataHandlerInterceptor(
   providers: ReadonlyArray<CorrelationDataProvider>,
 ): HandlerInterceptor {
   return (message, next) => {
-    const correlationData: Record<string, string> = {}
-
-    for (const provider of providers) {
-      try {
-        const data = provider.correlationDataFor(message)
-        Object.assign(correlationData, data)
-      } catch (err) {
-        console.warn(
-          "Encountered exception creating correlation data from provider:",
-          err,
-        )
-      }
-    }
-
-    // Store in ALS-backed processing state.
     // CTX-01 / Plan 03-03: HandlerInterceptor no longer threads ProcessingContext;
     // resource writes go directly through the module-level ALS accessor.
-    setResource(CORRELATION_DATA_KEY, correlationData)
-
+    applyCorrelationData(message, providers)
     return next()
   }
 }

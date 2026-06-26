@@ -35,7 +35,6 @@ const EVENT_FLUSH_REGISTERED_KEY = resourceKey<boolean>("commandInvocationEventF
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
-import { CORRELATION_DATA_KEY } from "./correlation-data.js"
 import { getResource, setResource, onPrepareCommit, hasResource } from "./processing-state.js"
 import { COMMAND_BUS_KEY } from "./send.js"
 import { QUERY_BUS_KEY } from "./emit-update.js"
@@ -96,24 +95,17 @@ export function createCommandInvocation(
 
         const eventStore = config.getComponent<{ append: (events: ReadonlyArray<EventMessage>, condition?: any) => Promise<unknown> }>(COMMAND_INVOCATION_KEYS.EVENT_STORE)
 
-        // Enrich events with correlation data from ProcessingContext
-        // (set by the CorrelationDataHandlerInterceptor during handler execution)
-        const correlationData = getResource(CORRELATION_DATA_KEY)
-        const enrichedEvents = correlationData
-          ? buffered.map(event => ({
-              ...event,
-              metadata: { ...event.metadata, ...correlationData },
-            }))
-          : buffered
+        // Correlation data is applied to each event when it is appended (see
+        // append()), so buffered events already carry the active lineage here.
 
         // Resolve tags via TagResolver (if configured)
         const tagResolver = config.getOptionalComponent<{ resolve: (event: EventMessage) => Array<{ key: string; value: string }> }>(COMMAND_INVOCATION_KEYS.TAG_RESOLVER)
         const resolvedEvents = tagResolver
-          ? enrichedEvents.map(event => ({
+          ? buffered.map(event => ({
               ...event,
               tags: [...event.tags, ...tagResolver.resolve(event)],
             }))
-          : enrichedEvents
+          : buffered
         const sourcingInfos = getResource(SOURCING_INFOS_KEY) ?? []
 
         let appendCondition: any = undefined

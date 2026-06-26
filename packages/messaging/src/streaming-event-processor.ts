@@ -25,6 +25,7 @@ import {
   advanceToken,
 } from "./tracking-token.js"
 import { REPLAY_STATE_KEY } from "./replay-token.js"
+import { applyCorrelationData, type CorrelationDataProvider } from "./correlation-data.js"
 import { setResource, onPrepareCommit } from "./processing-state.js"
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
@@ -84,6 +85,12 @@ export interface StreamingEventProcessorOptions {
   queryBus?: QueryBus
   /** Event scheduler injected into ALS at handler-invocation entry (read by schedule()). */
   eventScheduler?: EventScheduler
+  /**
+   * Correlation data providers run against each event before its handlers are
+   * invoked, so commands/events dispatched from an event handler inherit the
+   * triggering event's correlationId/causationId.
+   */
+  correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>
   /** Optional per-event callback fired inside the UoW before handler invocation (e.g. monitoring). */
   onEventDelivery?: () => void
   unitOfWorkRunner?: UoWRunner
@@ -127,6 +134,7 @@ export function createStreamingEventProcessor(
     commandBus,
     queryBus,
     eventScheduler,
+    correlationDataProviders,
     onEventDelivery,
     unitOfWorkRunner = runInNewUoW,
     tokenStore,
@@ -330,6 +338,11 @@ export function createStreamingEventProcessor(
     if (commandBus !== undefined) setResource(COMMAND_BUS_KEY, commandBus)
     if (queryBus !== undefined) setResource(QUERY_BUS_KEY, queryBus)
     if (eventScheduler !== undefined) setResource(EVENT_SCHEDULER_KEY, eventScheduler)
+    // Seed correlation data from the triggering event so an automation's
+    // outgoing commands/events inherit its lineage.
+    if (correlationDataProviders && correlationDataProviders.length > 0) {
+      applyCorrelationData(event, correlationDataProviders)
+    }
     // Optional per-event callback (e.g. monitoring hooks registered inside the UoW).
     if (onEventDelivery) onEventDelivery()
 

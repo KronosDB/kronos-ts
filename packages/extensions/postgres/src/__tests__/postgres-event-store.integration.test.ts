@@ -21,6 +21,7 @@ const NOOP_TAG_RESOLVER = { resolve: (e: EventMessage) => e.tags }
 function makeEvent(type: string, tags: { key: string; value: string }[], payload: unknown = {}): EventMessage {
   // Note: QualifiedName uses 'name' (not 'localName') per packages/common/src/qualified-name.ts
   return {
+    kind: "event",
     identifier: generateIdentifier(), // UUID v7 per quick 260511-mks
     name: { namespace: "test", name: type },
     tags,
@@ -28,7 +29,7 @@ function makeEvent(type: string, tags: { key: string; value: string }[], payload
     metadata: {},
     timestamp: Date.now(),
     version: "1",
-  } as unknown as EventMessage
+  }
 }
 
 beforeAll(async () => {
@@ -92,6 +93,26 @@ describe("append + source", () => {
     ])
     const result = await store.source({ criteria: { kind: "any-tag" }, start: 0n })
     expect(result.events.length).toBe(1)
+  })
+
+  it("source() round-trips the full EventMessage — identifier, timestamp, version (engine parity)", async () => {
+    // Guards the contract gap where postgres dropped identifier/timestamp/version on read
+    // while the in-memory, axon-server, and kronosdb engines preserved them.
+    const original = makeEvent("OrderPlaced", [{ key: "order", value: "RT" }], { amount: 42 })
+    await store.append([original])
+
+    const result = await store.source({
+      criteria: { kind: "tags", tags: [{ key: "order", value: "RT" }] },
+      start: 0n,
+    })
+    expect(result.events.length).toBe(1)
+    const sourced = result.events[0]!
+    expect(sourced.kind).toBe("event")
+    expect(sourced.identifier).toBe(original.identifier)
+    expect(sourced.timestamp).toBe(original.timestamp)
+    expect(sourced.version).toBe(original.version)
+    expect(sourced.payload).toEqual(original.payload)
+    expect(sourced.name).toEqual(original.name)
   })
 })
 

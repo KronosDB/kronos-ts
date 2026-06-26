@@ -441,7 +441,7 @@ class ThenPhaseImpl implements ThenPhase {
       await runInNewUoW(emptyMetadata(), async () => {
         const events: EventMessage[] = this.givenEvents.map(([desc, payload]) => {
           const tags = desc.tags ? desc.tags(payload) : []
-          return { identifier: generateIdentifier(), name: desc.name, version: desc.version, payload, metadata: emptyMetadata(), timestamp: Date.now(), tags }
+          return { kind: "event" as const, identifier: generateIdentifier(), name: desc.name, version: desc.version, payload, metadata: emptyMetadata(), timestamp: Date.now(), tags }
         })
         await eventStore.append(events)
       })
@@ -477,7 +477,7 @@ class ThenPhaseImpl implements ThenPhase {
       const payload = this.whenAction.payload
       const tags = desc.tags ? desc.tags(payload) : []
       try {
-        await eventStore.append([{ identifier: generateIdentifier(), name: desc.name, version: desc.version, payload, metadata: this.whenAction.metadata ?? emptyMetadata(), timestamp: Date.now(), tags }])
+        await eventStore.append([{ kind: "event", identifier: generateIdentifier(), name: desc.name, version: desc.version, payload, metadata: this.whenAction.metadata ?? emptyMetadata(), timestamp: Date.now(), tags }])
       } catch (err) { error = err }
     }
 

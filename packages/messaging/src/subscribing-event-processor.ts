@@ -10,6 +10,7 @@ import type { SubscribableEventSource } from "./event-bus.js"
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
+import { applyCorrelationData, type CorrelationDataProvider } from "./correlation-data.js"
 import { setResource } from "./processing-state.js"
 import { STATE_MANAGER_KEY, EVENT_SCHEDULER_KEY } from "@kronos-ts/eventsourcing"
 import type { EventScheduler } from "./event-scheduler.js"
@@ -56,6 +57,13 @@ export interface SubscribingEventProcessorOptions {
   queryBus?: QueryBus
   /** Event scheduler injected into ALS at handler-invocation entry (read by schedule()). */
   eventScheduler?: EventScheduler
+  /**
+   * Correlation data providers run against each event before its handlers are
+   * invoked. Their output is seeded into the UoW so commands/events dispatched
+   * from an event handler inherit the triggering event's
+   * correlationId/causationId. Empty/undefined → no seeding.
+   */
+  correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>
   /** Optional per-event callback fired inside the UoW before handler invocation (e.g. monitoring). */
   onEventDelivery?: () => void
   unitOfWorkRunner?: UoWRunner
@@ -87,6 +95,7 @@ export function createSubscribingEventProcessor(
     commandBus,
     queryBus,
     eventScheduler,
+    correlationDataProviders,
     onEventDelivery,
     unitOfWorkRunner = runInNewUoW,
     errorHandler = loggingErrorHandler(name),
@@ -141,6 +150,11 @@ export function createSubscribingEventProcessor(
     if (commandBus !== undefined) setResource(COMMAND_BUS_KEY, commandBus)
     if (queryBus !== undefined) setResource(QUERY_BUS_KEY, queryBus)
     if (eventScheduler !== undefined) setResource(EVENT_SCHEDULER_KEY, eventScheduler)
+    // Seed correlation data from the triggering event so an automation's
+    // outgoing commands/events inherit its lineage.
+    if (correlationDataProviders && correlationDataProviders.length > 0) {
+      applyCorrelationData(event, correlationDataProviders)
+    }
     // Optional per-event callback (e.g. monitoring hooks registered inside the UoW).
     if (onEventDelivery) onEventDelivery()
 

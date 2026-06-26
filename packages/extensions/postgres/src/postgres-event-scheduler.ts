@@ -191,6 +191,7 @@ export function createPostgresEventScheduler(
 
   function reconstructEvent(row: ScheduleRow): EventMessage {
     return {
+      kind: "event",
       identifier: row.schedule_id,
       name: qualifiedNameFromString(row.type),
       payload: decodeJsonbValue(row.payload),

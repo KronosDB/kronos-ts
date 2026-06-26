@@ -86,6 +86,7 @@ export function createCommandGateway(bus: CommandBus): CommandGateway {
     async send(descriptor, payload, metadata) {
       const resolvedMetadata = metadata ?? emptyMetadata()
       return bus.dispatch({
+        kind: "command",
         identifier: generateIdentifier(),
         name: descriptor.name,
         payload,
@@ -114,6 +115,7 @@ export function createQueryGateway(
       // bus.query, which handles its own UoW.
       return unitOfWorkRunner(resolvedMetadata, () =>
         bus.query({
+          kind: "query",
           identifier: generateIdentifier(),
           name: descriptor.name,
           payload,
@@ -125,6 +127,7 @@ export function createQueryGateway(
 
     subscriptionQuery(descriptor, payload, metadata) {
       return bus.subscriptionQuery({
+        kind: "query",
         identifier: generateIdentifier(),
         name: descriptor.name,
         payload,

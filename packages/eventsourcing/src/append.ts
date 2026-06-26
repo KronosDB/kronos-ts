@@ -2,6 +2,7 @@ import {
   resourceKey,
   qualifiedNameToString,
   generateIdentifier,
+  mergeMetadata,
   type Metadata,
   type ResourceKey,
 } from "@kronos-ts/common"
@@ -10,6 +11,7 @@ import {
   computeIfAbsent,
   requireInvocationPhase,
 } from "@kronos-ts/messaging/processing-state"
+import { CORRELATION_DATA_KEY } from "@kronos-ts/messaging/correlation-data"
 import type { z } from "zod"
 import type { EventDescriptor, EventMessage, EventCriteria } from "@kronos-ts/messaging"
 
@@ -55,12 +57,26 @@ export const append: AppendFunction = ((
   const state = requireInvocationPhase() // D-43 mutator guard
   const events = computeIfAbsent(BUFFERED_EVENTS_KEY, () => [])
   const tags = eventDescriptor.tags ? eventDescriptor.tags(eventPayload) : []
+
+  // Apply the active UnitOfWork's correlation data to the appended event so it
+  // carries the correct correlationId/causationId of the message currently
+  // being handled. Merges over the base metadata (explicit arg, else UoW
+  // metadata). No-op when no correlation data is set — keeps events untouched
+  // for apps that don't configure correlation providers.
+  const baseMetadata = eventMetadata ?? state.metadata // fallback to UoW metadata when caller omits
+  const correlationData = getResource(CORRELATION_DATA_KEY)
+  const metadata =
+    correlationData && Object.keys(correlationData).length > 0
+      ? mergeMetadata(baseMetadata, correlationData)
+      : baseMetadata
+
   const eventMessage: EventMessage = {
+    kind: "event",
     identifier: generateIdentifier(),
     name: eventDescriptor.name,
     version: eventDescriptor.version,
     payload: eventPayload,
-    metadata: eventMetadata ?? state.metadata, // fallback to UoW metadata when caller omits
+    metadata,
     timestamp: Date.now(),
     tags,
   }

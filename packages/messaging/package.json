@@ -26,7 +26,8 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./processing-state": "./src/processing-state.ts"
+    "./processing-state": "./src/processing-state.ts",
+    "./correlation-data": "./src/correlation-data.ts"
   },
   "files": [
     "dist",
@@ -51,6 +52,10 @@
       "./processing-state": {
         "types": "./dist/processing-state.d.ts",
         "default": "./dist/processing-state.js"
+      },
+      "./correlation-data": {
+        "types": "./dist/correlation-data.d.ts",
+        "default": "./dist/correlation-data.js"
       }
     }
   },

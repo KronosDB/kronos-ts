@@ -1,7 +1,7 @@
 /**
- * SQLSTATE used by the schema-bootstrap stored procedure when a DCB
- * append condition is violated. Per D-12.12: dedicated SQLSTATE via
- * `RAISE ... USING ERRCODE`, never error-text parsing.
+ * SQLSTATE-style code tagged onto the error when a DCB append condition is
+ * violated. The conflict check in `checkAndInsert` detects the violation and
+ * attaches this code (per D-12.12: a dedicated code, never error-text parsing).
  *
  * `KR001` lives in the Postgres user-defined SQLSTATE range (KX–ZZ).
  * It is intentionally distinct from:

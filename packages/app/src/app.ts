@@ -16,6 +16,7 @@ import type {
   SubscribingEventProcessor,
   StreamableEventSource,
   SubscribableEventSource,
+  CorrelationDataProvider,
 } from "@kronos-ts/messaging"
 import {
   registerCommandHandlersNatively,
@@ -25,6 +26,9 @@ import {
   createTrackingEventProcessor,
   createSubscribingEventProcessor,
   multiHandlerEnhancerDefinition,
+  messageOriginProvider,
+  correlationDataHandlerInterceptor,
+  correlationDataDispatchInterceptor,
 } from "@kronos-ts/messaging"
 import { createEventSourcedRepository } from "@kronos-ts/eventsourcing"
 import type { SnapshotPolicy, SnapshotStore } from "@kronos-ts/eventsourcing"
@@ -124,6 +128,19 @@ export interface App {
    */
   handlerInterceptor(fn: HandlerInterceptor): App
   /**
+   * Register one or more correlation data providers. The providers feed both
+   * the command/query handler "extract" interceptor and the per-event seeding
+   * in every event processor, and their output is applied to outgoing
+   * commands/events (and appended events) via the correlation dispatch
+   * interceptor + event appender. This is the single place correlation lineage
+   * is configured — registering here makes an event handler's outgoing messages
+   * inherit the triggering event's correlationId/causationId.
+   *
+   * Multiple calls accumulate. When none are registered, the framework defaults
+   * to a single `messageOriginProvider()`. Returns App for chaining.
+   */
+  correlationDataProvider(...providers: CorrelationDataProvider[]): App
+  /**
    * Plan 09-01 (D-86): accumulator for HandlerEnhancerDefinition. Mirrors the
    * Phase 6 dispatch-interceptor accumulator pattern. Multiple registrations
    * compose left-to-right via multiHandlerEnhancerDefinition (first registered
@@ -188,6 +205,8 @@ export interface AppState {
   readonly queryDispatchInterceptors: DispatchInterceptor<QueryMessage>[]
   readonly eventDispatchInterceptors: DispatchInterceptor<EventMessage>[]
   readonly handlerInterceptors: HandlerInterceptor[]
+  /** Correlation data providers; defaults to [messageOriginProvider()] at start when empty. */
+  readonly correlationDataProviders: CorrelationDataProvider[]
   /** Plan 09-01 (D-86): accumulator composed via multiHandlerEnhancerDefinition at start. */
   readonly handlerEnhancers: HandlerEnhancerDefinition[]
   readonly startHooks: Array<{ stage: LifecycleStage; fn: LifecycleHook }>
@@ -250,6 +269,7 @@ export class AppImpl implements App {
       queryDispatchInterceptors: [],
       eventDispatchInterceptors: [],
       handlerInterceptors: [],
+      correlationDataProviders: [],
       handlerEnhancers: [],
       startHooks: [],
       stopHooks: [],
@@ -399,6 +419,12 @@ export class AppImpl implements App {
     return this
   }
 
+  correlationDataProvider(...providers: CorrelationDataProvider[]): App {
+    this.guard()
+    this._state.correlationDataProviders.push(...providers)
+    return this
+  }
+
   handlerEnhancer(def: HandlerEnhancerDefinition): App {
     this.guard()
     this._state.handlerEnhancers.push(def)
@@ -450,6 +476,25 @@ export class AppImpl implements App {
     // 2. Mark started AFTER extensions ran (so extensions can mutate) but BEFORE slot resolution
     //    (so resolved factories can't trigger fluent calls — defensive).
     this._started = true
+
+    // 2b. Resolve correlation lineage from one source. Providers default to a
+    //     single messageOriginProvider() when the app registered none. Wire the
+    //     "extract" handler interceptor (command/query) and the "apply" dispatch
+    //     interceptors (command/query/event) into the accumulators BEFORE
+    //     decorators are applied below, so the intercepting wrappers pick them
+    //     up. Event processors receive the same providers in step 5e and seed
+    //     per-event; the event appender applies the resulting data to appended
+    //     events. The interceptors no-op outside a UnitOfWork, so primary
+    //     gateway dispatches are unaffected — only handler-to-handler flows
+    //     carry lineage.
+    const correlationProviders =
+      this._state.correlationDataProviders.length > 0
+        ? this._state.correlationDataProviders
+        : [messageOriginProvider()]
+    this._state.handlerInterceptors.push(correlationDataHandlerInterceptor(correlationProviders))
+    this._state.commandDispatchInterceptors.push(correlationDataDispatchInterceptor())
+    this._state.queryDispatchInterceptors.push(correlationDataDispatchInterceptor())
+    this._state.eventDispatchInterceptors.push(correlationDataDispatchInterceptor())
 
     // 3. Build the lazy Resolved proxy and EAGERLY resolve all 8 slots up-front
     //    (Pitfall 1 — interleaving slot resolution with configurer registration creates stale-cache hazards).
@@ -575,6 +620,7 @@ export class AppImpl implements App {
             commandBus: built.commandBus,
             queryBus: built.queryBus,
             eventScheduler: built.eventScheduler,
+            correlationDataProviders: correlationProviders,
             unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
             errorHandler: proc.errorHandler,
             handlerEnhancer: composedHandlerEnhancer,
@@ -590,6 +636,7 @@ export class AppImpl implements App {
             commandBus: built.commandBus,
             queryBus: built.queryBus,
             eventScheduler: built.eventScheduler,
+            correlationDataProviders: correlationProviders,
             unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
             // Plan 09-01 (D-84): per-processor override wins, otherwise fall
             // back to the resolved tokenStore slot so the default in-memory
