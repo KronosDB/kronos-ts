@@ -1,5 +1,26 @@
 # @kronos-ts/messaging
 
+## 0.8.0
+
+### Minor Changes
+
+- 56bfb6d: Expose event processors for host/admin control, with a status snapshot.
+
+  - `EventProcessorStatus` (running / error / position / caughtUp / replaying) is added to the common `event-processor` module, and `TrackingEventProcessor` now implements the common `EventProcessor` interface and reports `status()`. The processor tracks caught-up and last-error state, clearing the error once a later batch succeeds.
+  - `RunningApp.eventProcessors()` returns the built processors keyed by name — the seam a host or admin UI enumerates to read status and call `start()` / `stop()` / `resetTokens()`. The framework ships no watchdog or auto-restart; operating processors is the host's responsibility.
+  - The `EventProcessorStatus` type previously exported from the streaming processor module is no longer re-exported (the streaming processor keeps its own internal per-segment status type).
+
+- 56bfb6d: Default event processors to propagate handler errors; remove the swallowing logging handler.
+
+  - `loggingErrorHandler` is removed. It logged a failed handler and advanced the token, silently skipping the event — which corrupts a read model. AF5 retired the equivalent swallow-and-continue handler to legacy; the only live processor error handler there is the propagating one.
+  - The default `errorHandler` for tracking, streaming, and subscribing processors is now `propagatingErrorHandler()`. A failed handler no longer advances the token: the batch rolls back and is redelivered (with backoff), so a transient failure recovers on retry and a real bug stops the processor at the offending event instead of skipping it. To deliberately move past a poison pill, attach a dead-letter queue.
+  - This changes the default behavior of any processor that previously relied on the swallow-and-continue default. Supply a custom `errorHandler` if you need skip-on-error semantics.
+
+### Patch Changes
+
+- Updated dependencies [56bfb6d]
+  - @kronos-ts/eventsourcing@0.3.0
+
 ## 0.7.0
 
 ### Minor Changes

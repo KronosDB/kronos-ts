@@ -1,5 +1,20 @@
 # @kronos-ts/eventsourcing
 
+## 0.3.0
+
+### Minor Changes
+
+- 56bfb6d: Carry correlation data onto scheduled events.
+
+  `schedule()` now merges the active unit of work's correlation data onto the scheduled event at schedule-time, mirroring `append()`. The fired event carries the correct correlationId/causationId of the message that scheduled it, instead of only the unit-of-work metadata. No-op when no correlation data is set.
+
+### Patch Changes
+
+- Updated dependencies [56bfb6d]
+- Updated dependencies [56bfb6d]
+  - @kronos-ts/messaging@0.8.0
+  - @kronos-ts/modelling@0.2.7
+
 ## 0.2.3
 
 ### Patch Changes
