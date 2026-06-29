@@ -2,6 +2,7 @@ import { describe, it, expect, mock } from "bun:test"
 import { qn, emptyMetadata } from "@kronos-ts/common"
 import { runInNewUoW } from "@kronos-ts/messaging"
 import { setResource } from "@kronos-ts/messaging/processing-state"
+import { CORRELATION_DATA_KEY } from "@kronos-ts/messaging/correlation-data"
 import { schedule, scheduleAfter, cancelSchedule, EVENT_SCHEDULER_KEY } from "../schedule.js"
 
 const EVENT_NAME = qn("test", "Scheduled")
@@ -49,6 +50,47 @@ describe("schedule helpers", () => {
     expect(event.tags).toEqual([{ key: "id", value: "A" }])
     expect(event.identifier).toBeDefined()
     expect(usedAt).toBe(at)
+  })
+
+  it("merges the active UoW correlation data onto the scheduled event", async () => {
+    const sm = mockScheduler()
+    await runInNewUoW(emptyMetadata(), async () => {
+      setResource(EVENT_SCHEDULER_KEY, sm as any)
+      // Simulates what the correlation handler interceptor writes when a
+      // command/event handler runs — lineage lives here, not in UoW metadata.
+      setResource(CORRELATION_DATA_KEY, { correlationId: "corr-1", causationId: "cause-1" })
+      await schedule(descriptor, { id: "A" }, new Date(Date.now() + 60_000))
+    })
+
+    expect(sm.scheduled[0]!.event.metadata).toMatchObject({
+      correlationId: "corr-1",
+      causationId: "cause-1",
+    })
+  })
+
+  it("merges correlation data over explicitly provided metadata", async () => {
+    const sm = mockScheduler()
+    await runInNewUoW(emptyMetadata(), async () => {
+      setResource(EVENT_SCHEDULER_KEY, sm as any)
+      setResource(CORRELATION_DATA_KEY, { correlationId: "corr-1", causationId: "cause-1" })
+      await schedule(descriptor, { id: "A" }, new Date(Date.now() + 60_000), { tenant: "acme" } as any)
+    })
+
+    expect(sm.scheduled[0]!.event.metadata).toEqual({
+      tenant: "acme",
+      correlationId: "corr-1",
+      causationId: "cause-1",
+    })
+  })
+
+  it("leaves event metadata untouched when no correlation data is set", async () => {
+    const sm = mockScheduler()
+    await runInNewUoW(emptyMetadata(), async () => {
+      setResource(EVENT_SCHEDULER_KEY, sm as any)
+      await schedule(descriptor, { id: "A" }, new Date(Date.now() + 60_000), { tenant: "acme" } as any)
+    })
+
+    expect(sm.scheduled[0]!.event.metadata).toEqual({ tenant: "acme" })
   })
 
   it("scheduleAfter fires delayMs from now", async () => {

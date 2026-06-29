@@ -23,8 +23,13 @@ import type {
   QueryRow,
 } from "../adapter.js"
 import { IsolationLevel } from "../adapter.js"
+import {
+  type SessionTimeoutOptions,
+  applySessionTimeouts,
+  resolveSessionTimeouts,
+} from "../session-timeouts.js"
 
-export interface BunSqlAdapterConfig {
+export interface BunSqlAdapterConfig extends SessionTimeoutOptions {
   readonly connectionString: string
 }
 
@@ -106,6 +111,7 @@ function getBunSql(): BunSqlConstructor {
 export function bunSqlAdapter(config: BunSqlAdapterConfig): PostgresAdapter {
   let sql: BunSqlInstance | undefined
   let disconnected = false
+  const timeouts = resolveSessionTimeouts(config)
 
   function getInstance(): BunSqlInstance {
     if (!sql) {
@@ -183,6 +189,9 @@ export function bunSqlAdapter(config: BunSqlAdapterConfig): PostgresAdapter {
             return txSql.unsafe(text, normalizeParams(params)).catch(normalizeBunSqlError) as Promise<R[]>
           },
         }
+        // Arm the per-transaction safety timeouts before handing the tx to the
+        // caller, so even the very first awaited statement is bounded.
+        await applySessionTimeouts(tx, timeouts)
         return fn(tx)
       }).catch(normalizeBunSqlError)
     },

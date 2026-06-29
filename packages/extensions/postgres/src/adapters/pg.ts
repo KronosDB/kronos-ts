@@ -21,8 +21,13 @@ import type {
   QueryRow,
 } from "../adapter.js"
 import { IsolationLevel } from "../adapter.js"
+import {
+  type SessionTimeoutOptions,
+  applySessionTimeouts,
+  resolveSessionTimeouts,
+} from "../session-timeouts.js"
 
-export interface PgAdapterConfig {
+export interface PgAdapterConfig extends SessionTimeoutOptions {
   /** Standard libpq URI: postgresql://user:pass@host:port/db */
   readonly connectionString: string
   /** Optional pg.Pool config overrides (max connections, idleTimeoutMillis, etc.). */
@@ -39,6 +44,7 @@ export function pgAdapter(config: PgAdapterConfig): PostgresAdapter {
   let listenClient: PoolClient | undefined
   const listenSlots = new Map<string, Set<ListenerSlot>>()
   let disconnected = false
+  const timeouts = resolveSessionTimeouts(config)
 
   function getPool(): Pool {
     if (!pool) {
@@ -132,6 +138,9 @@ export function pgAdapter(config: PgAdapterConfig): PostgresAdapter {
         }
         let result: T
         try {
+          // Arm the per-transaction safety timeouts before handing the tx to
+          // the caller, so even the very first awaited statement is bounded.
+          await applySessionTimeouts(tx, timeouts)
           result = await fn(tx)
         } catch (err) {
           // ROLLBACK best-effort; preserve the ORIGINAL error.

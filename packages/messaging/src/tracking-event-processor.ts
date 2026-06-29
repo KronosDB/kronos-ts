@@ -1,4 +1,5 @@
 import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
+import type { EventProcessor, EventProcessorStatus } from "./event-processor.js"
 import type { EventHandlerRegistration } from "./handler.js"
 import type { EventHandlerDefinition } from "./event-handler.js"
 import type { StreamableEventSource, MessageStream, SequencedEvent } from "./event-source.js"
@@ -43,7 +44,7 @@ import { QUERY_BUS_KEY } from "./emit-update.js"
  * Supports replay via {@link resetTokens} — the processor can be stopped,
  * reset to a starting position, and restarted.
  */
-export interface TrackingEventProcessor {
+export interface TrackingEventProcessor extends EventProcessor {
   readonly name: string
   readonly running: boolean
   /** Current effective position in the event stream. */
@@ -52,6 +53,11 @@ export interface TrackingEventProcessor {
   readonly replaying: boolean
   start(): Promise<void>
   stop(): void
+  /**
+   * Point-in-time progress snapshot (running / error / position / caughtUp /
+   * replaying) — the surface an admin UI reads to show processor health.
+   */
+  status(): EventProcessorStatus
   /**
    * Reset the processor to replay events from a starting position.
    * The processor must be stopped before calling this.
@@ -123,21 +129,13 @@ export interface EventProcessingErrorHandler {
 }
 
 /**
- * Logs errors and continues processing. Default behavior.
- */
-export function loggingErrorHandler(processorName: string): EventProcessingErrorHandler {
-  return {
-    handleError(error, eventName, position) {
-      console.error(
-        `Event processor "${processorName}": handler failed for "${eventName}" at position ${position}:`,
-        error,
-      )
-    },
-  }
-}
-
-/**
- * Rethrows errors, aborting the current batch and triggering rollback.
+ * Rethrows errors, aborting the current batch and triggering rollback — the
+ * default. A failed handler does NOT advance the token: the batch is rolled
+ * back and redelivered (with backoff), so a read-model never silently skips a
+ * bad event. Mirrors AF5, whose only live processor error handler is
+ * `PropagatingErrorHandler` (the swallow-and-continue handler was retired to
+ * legacy). When an automation must move past a poison pill instead of
+ * retrying, attach a dead-letter queue.
  */
 export function propagatingErrorHandler(): EventProcessingErrorHandler {
   return {
@@ -170,7 +168,7 @@ export function createTrackingEventProcessor(
     dlqRetryIntervalMs,
     pollingIntervalMs = 500,
     batchSize = 1,
-    errorHandler = loggingErrorHandler(name),
+    errorHandler = propagatingErrorHandler(),
     handlerEnhancer,
     onReset,
   } = options
@@ -226,6 +224,9 @@ export function createTrackingEventProcessor(
   let stream: MessageStream<SequencedEvent> | null = null
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let processing = false
+  // Status fields exposed via status() for observability / admin control.
+  let caughtUp = false
+  let lastError: Error | undefined
 
   async function initialize() {
     if (tokenStore) {
@@ -277,14 +278,22 @@ export function createTrackingEventProcessor(
       }
 
       if (batch.length > 0) {
+        caughtUp = false
         await processBatch(batch)
+        // A clean batch clears any prior error — the processor has recovered.
+        lastError = undefined
         if (isRunning) {
           if (stream!.hasNextAvailable()) {
             scheduleImmediate()
+          } else {
+            // Drained everything currently available — caught up until the
+            // stream callback wakes us with new events.
+            caughtUp = true
           }
-          // else: stream callback will wake us when events arrive
         }
       } else {
+        // No events available — the processor is caught up with the stream.
+        caughtUp = true
         // If replay is done and no more events, unwrap
         if (isReplayToken(token)) {
           token = globalSequenceToken(token.position())
@@ -298,6 +307,7 @@ export function createTrackingEventProcessor(
         }
       }
     } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
       console.error(`Event processor "${name}" error during poll:`, err)
       // Realign the live stream to the committed checkpoint. During batch
       // accumulation the stream cursor (and any read-ahead buffer) advanced
@@ -411,6 +421,16 @@ export function createTrackingEventProcessor(
     get running() { return isRunning },
     get position() { return token.position() },
     get replaying() { return isReplaying(token) },
+
+    status(): EventProcessorStatus {
+      return {
+        running: isRunning,
+        error: lastError,
+        position: token.position(),
+        caughtUp,
+        replaying: isReplaying(token),
+      }
+    },
 
     async start() {
       if (isRunning) return

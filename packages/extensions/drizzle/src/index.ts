@@ -2,6 +2,7 @@ export {
   drizzleTransactionManager,
   type DrizzleDatabaseLike,
   type DrizzleTransaction,
+  type DrizzleTransactionManagerOptions,
 } from "./drizzle-transaction-manager.js"
 
 export {

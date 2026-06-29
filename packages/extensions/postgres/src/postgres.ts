@@ -60,14 +60,6 @@ export interface PostgresConfig {
     readonly pollIntervalMs?: number
     readonly batchSize?: number
   }
-  /** Safety timeouts applied via `SET LOCAL` to every UoW-scoped transaction.
-   *  Guards against a stalled UoW holding a connection — and pinning
-   *  `pg_snapshot_xmin`, which would stall all streaming tailing — open until
-   *  restart. Defaults: 30s idle-in-transaction, statement timeout disabled. */
-  readonly transaction?: {
-    readonly idleInTransactionTimeoutMs?: number
-    readonly statementTimeoutMs?: number
-  }
 }
 
 export function postgres(config: PostgresConfig): (app: App) => void {
@@ -75,7 +67,11 @@ export function postgres(config: PostgresConfig): (app: App) => void {
   const bootstrap = config.bootstrap ?? true
   const tables = config.tableNames ?? DEFAULT_TABLE_NAMES
 
-  const txManager = postgresTransactionManager(adapter, undefined, config.transaction)
+  // Safety timeouts (idle-in-transaction / statement) are armed by the adapter
+  // itself — configure them on the adapter (e.g. `pgAdapter({ connectionString,
+  // idleInTransactionTimeoutMs })`), so every transaction through it is bounded
+  // and two adapters on two databases stay independently configured.
+  const txManager = postgresTransactionManager(adapter)
 
   return (app: App) => {
     app.set("eventStore", ({ serializer, tagResolver }) =>

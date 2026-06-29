@@ -2,7 +2,6 @@ import { describe, expect, it, beforeEach } from "bun:test"
 import { qn, emptyMetadata, type QualifiedName } from "@kronos-ts/common"
 import {
   createTrackingEventProcessor,
-  loggingErrorHandler,
   propagatingErrorHandler,
   type TrackingEventProcessorOptions,
 } from "../tracking-event-processor.js"
@@ -298,46 +297,6 @@ describe("TrackingEventProcessor", () => {
   })
 
   describe("error handling", () => {
-    it("logging error handler logs and continues processing", async () => {
-      // given
-      const delivered: unknown[] = []
-      const events = [
-        makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n),
-        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
-        makeEvent(TEST_EVENT_NAME, { value: 3 }, 2n),
-      ]
-      const eventSource = createInMemoryEventSource(events)
-
-      let callCount = 0
-      const handler: EventHandlerRegistration<any> = {
-        kind: "event-handler",
-        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
-        handler: ({ payload }) => {
-          callCount++
-          if (callCount === 2) throw new Error("handler failed")
-          delivered.push(payload)
-        },
-      }
-
-      const processor = createTrackingEventProcessor({
-        name: "test-processor",
-        eventSource,
-        eventHandlers: [handler],
-
-        errorHandler: loggingErrorHandler("test-processor"),
-        pollingIntervalMs: 10,
-      })
-
-      // when
-      await processor.start()
-      await waitForPosition(processor, 3n)
-      processor.stop()
-
-      // then -- first and third events delivered, second failed but continued
-      expect(delivered).toEqual([{ value: 1 }, { value: 3 }])
-      expect(processor.position).toBe(3n)
-    })
-
     it("propagating error handler aborts the batch", async () => {
       // given
       const delivered: unknown[] = []
@@ -670,6 +629,85 @@ describe("TrackingEventProcessor", () => {
 
       // then
       expect(processor.replaying).toBe(false)
+    })
+  })
+
+  describe("status() — admin/observability snapshot", () => {
+    it("reports caught-up with the advanced position after draining the stream", async () => {
+      const events = [
+        makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n),
+        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+      const handler: EventHandlerRegistration<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: () => {},
+      }
+      const processor = createTrackingEventProcessor({
+        name: "balances",
+        eventSource,
+        eventHandlers: [handler],
+        pollingIntervalMs: 10,
+      })
+
+      await processor.start()
+      await waitForPosition(processor, 2n)
+      // Let one empty poll run so caughtUp flips true.
+      await new Promise((r) => setTimeout(r, 30))
+      const status = processor.status()
+      processor.stop()
+
+      expect(status.running).toBe(true)
+      expect(status.position).toBe(2n)
+      expect(status.caughtUp).toBe(true)
+      expect(status.replaying).toBe(false)
+      expect(status.error).toBeUndefined()
+    })
+
+    it("surfaces the last error and clears it once a later batch succeeds", async () => {
+      let failOnce = true
+      const events = [makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n)]
+      const eventSource = createInMemoryEventSource(events)
+      const handler: EventHandlerRegistration<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: () => {
+          if (failOnce) {
+            failOnce = false
+            throw new Error("boom")
+          }
+        },
+      }
+      // No DLQ + propagating handler → the batch rolls back and redelivers, so
+      // the first failure surfaces in status().error, then clears on the retry.
+      const processor = createTrackingEventProcessor({
+        name: "balances",
+        eventSource,
+        eventHandlers: [handler],
+        pollingIntervalMs: 10,
+        errorHandler: propagatingErrorHandler(),
+      })
+
+      await processor.start()
+      await waitForPosition(processor, 1n) // recovers on retry
+      await new Promise((r) => setTimeout(r, 30))
+      const status = processor.status()
+      processor.stop()
+
+      expect(status.position).toBe(1n)
+      expect(status.error).toBeUndefined() // cleared after the successful retry
+    })
+
+    it("reports not-running before start", () => {
+      const processor = createTrackingEventProcessor({
+        name: "balances",
+        eventSource: createInMemoryEventSource([]),
+        eventHandlers: [],
+      })
+      const status = processor.status()
+      expect(status.running).toBe(false)
+      expect(status.position).toBe(0n)
     })
   })
 })

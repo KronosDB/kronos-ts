@@ -2,6 +2,7 @@ export {
   knexTransactionManager,
   type KnexInstanceLike,
   type KnexTransaction,
+  type KnexTransactionManagerOptions,
 } from "./knex-transaction-manager.js"
 
 export {

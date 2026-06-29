@@ -187,8 +187,8 @@ export {
   createEventGateway,
 } from "./event-gateway.js"
 
-// Event processor common interface
-export { type EventProcessor } from "./event-processor.js"
+// Event processor common control + status surface (AF5 EventProcessor analog)
+export { type EventProcessor, type EventProcessorStatus } from "./event-processor.js"
 
 // Event source (for processors)
 export {
@@ -206,7 +206,6 @@ export {
   type TrackingEventProcessor,
   type TrackingEventProcessorOptions,
   type EventProcessingErrorHandler,
-  loggingErrorHandler,
   propagatingErrorHandler,
   createTrackingEventProcessor,
 } from "./tracking-event-processor.js"
@@ -308,7 +307,6 @@ export {
 export {
   type StreamingEventProcessor,
   type StreamingEventProcessorOptions,
-  type EventProcessorStatus,
   createStreamingEventProcessor,
 } from "./streaming-event-processor.js"
 

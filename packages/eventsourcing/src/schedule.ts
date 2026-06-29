@@ -1,5 +1,6 @@
-import { generateIdentifier, type Metadata, resourceKey, type ResourceKey } from "@kronos-ts/common"
-import { requireInvocationPhase } from "@kronos-ts/messaging/processing-state"
+import { generateIdentifier, mergeMetadata, type Metadata, resourceKey, type ResourceKey } from "@kronos-ts/common"
+import { getResource, requireInvocationPhase } from "@kronos-ts/messaging/processing-state"
+import { CORRELATION_DATA_KEY } from "@kronos-ts/messaging/correlation-data"
 import type { z } from "zod"
 import type {
   EventDescriptor,
@@ -64,13 +65,29 @@ export const schedule: ScheduleFunction = (async <P extends z.ZodType>(
     throw new Error(`schedule: \`at\` must be a valid Date, received ${String(at)}`)
   }
 
+  // Capture the active UnitOfWork's correlation data onto the scheduled event
+  // at schedule-time — mirroring append(). Correlation/causation lineage lives
+  // in the CORRELATION_DATA_KEY resource (written by the correlation handler
+  // interceptor), NOT in state.metadata, so capturing only the UoW metadata
+  // would drop it. There is no originating UoW to read from when the event
+  // later fires (timer / worker tick), so schedule-time is the only point where
+  // this lineage is available. The causationId becomes the message that
+  // scheduled the event, which is exactly "what caused" the fired event.
+  // No-op when no correlation data is set.
+  const baseMetadata = metadata ?? state.metadata
+  const correlationData = getResource(CORRELATION_DATA_KEY)
+  const eventMetadata =
+    correlationData && Object.keys(correlationData).length > 0
+      ? mergeMetadata(baseMetadata, correlationData)
+      : baseMetadata
+
   const eventMessage: EventMessage = {
     kind: "event",
     identifier: generateIdentifier(),
     name: event.name,
     version: event.version,
     payload,
-    metadata: metadata ?? state.metadata,
+    metadata: eventMetadata,
     timestamp: Date.now(),
     tags: event.tags ? event.tags(payload) : [],
   }

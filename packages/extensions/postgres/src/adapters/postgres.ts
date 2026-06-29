@@ -26,8 +26,13 @@ import type {
   QueryRow,
 } from "../adapter.js"
 import { IsolationLevel } from "../adapter.js"
+import {
+  type SessionTimeoutOptions,
+  applySessionTimeouts,
+  resolveSessionTimeouts,
+} from "../session-timeouts.js"
 
-export interface PostgresAdapterConfig {
+export interface PostgresAdapterConfig extends SessionTimeoutOptions {
   readonly connectionString: string
   /** Additional postgres.js options. `transform.column.from` is forced off regardless. */
   readonly clientOptions?: Parameters<typeof postgresClient>[1]
@@ -36,6 +41,7 @@ export interface PostgresAdapterConfig {
 export function postgresAdapter(config: PostgresAdapterConfig): PostgresAdapter {
   let sql: Sql | undefined
   let disconnected = false
+  const timeouts = resolveSessionTimeouts(config)
 
   function getSql(): Sql {
     if (!sql) {
@@ -112,6 +118,9 @@ export function postgresAdapter(config: PostgresAdapterConfig): PostgresAdapter 
             return rows
           },
         }
+        // Arm the per-transaction safety timeouts before handing the tx to the
+        // caller, so even the very first awaited statement is bounded.
+        await applySessionTimeouts(tx, timeouts)
         return fn(tx)
       })) as T
     },

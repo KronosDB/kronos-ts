@@ -5,7 +5,7 @@ import type { EventHandlerDefinition } from "./event-handler.js"
 import type { UoWRunner } from "./unit-of-work.js"
 import { runInNewUoW } from "./unit-of-work.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
-import { loggingErrorHandler } from "./tracking-event-processor.js"
+import { propagatingErrorHandler } from "./tracking-event-processor.js"
 import type { SubscribableEventSource } from "./event-bus.js"
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
@@ -98,7 +98,7 @@ export function createSubscribingEventProcessor(
     correlationDataProviders,
     onEventDelivery,
     unitOfWorkRunner = runInNewUoW,
-    errorHandler = loggingErrorHandler(name),
+    errorHandler = propagatingErrorHandler(),
     handlerEnhancer,
   } = options
 
