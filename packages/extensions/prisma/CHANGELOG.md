@@ -1,5 +1,13 @@
 # @kronos-ts/prisma
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [56bfb6d]
+- Updated dependencies [56bfb6d]
+  - @kronos-ts/messaging@0.8.0
+
 ## 0.2.4
 
 ### Patch Changes

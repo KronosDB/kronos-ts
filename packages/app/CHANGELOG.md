@@ -1,5 +1,24 @@
 # @kronos-ts/app
 
+## 0.5.0
+
+### Minor Changes
+
+- 56bfb6d: Expose event processors for host/admin control, with a status snapshot.
+
+  - `EventProcessorStatus` (running / error / position / caughtUp / replaying) is added to the common `event-processor` module, and `TrackingEventProcessor` now implements the common `EventProcessor` interface and reports `status()`. The processor tracks caught-up and last-error state, clearing the error once a later batch succeeds.
+  - `RunningApp.eventProcessors()` returns the built processors keyed by name — the seam a host or admin UI enumerates to read status and call `start()` / `stop()` / `resetTokens()`. The framework ships no watchdog or auto-restart; operating processors is the host's responsibility.
+  - The `EventProcessorStatus` type previously exported from the streaming processor module is no longer re-exported (the streaming processor keeps its own internal per-segment status type).
+
+### Patch Changes
+
+- Updated dependencies [56bfb6d]
+- Updated dependencies [56bfb6d]
+- Updated dependencies [56bfb6d]
+  - @kronos-ts/messaging@0.8.0
+  - @kronos-ts/eventsourcing@0.3.0
+  - @kronos-ts/modelling@0.2.7
+
 ## 0.4.1
 
 ### Patch Changes
