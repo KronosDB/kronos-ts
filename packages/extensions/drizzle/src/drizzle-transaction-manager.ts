@@ -13,6 +13,27 @@ export interface DrizzleDatabaseLike {
  */
 export type DrizzleTransaction = any
 
+export interface DrizzleTransactionManagerOptions {
+  /**
+   * Runs once on every transaction, right after it opens and before the UoW
+   * gets the handle. This is where a Postgres-backed deployment arms session
+   * GUCs — chiefly `idle_in_transaction_session_timeout` — so a stalled UoW
+   * (e.g. a hung dead-letter drain whose replay never returns) is aborted by
+   * the database instead of pinning a connection indefinitely. The Postgres
+   * adapter does this for its own transactions; this hook is the equivalent
+   * seam for the (DB-agnostic) Drizzle/Knex path. No-op by default.
+   *
+   * Example (postgres-js driver):
+   * ```ts
+   * drizzleTransactionManager(db, {
+   *   onBeginTransaction: (tx) => tx.execute(sql.raw(
+   *     "SET LOCAL idle_in_transaction_session_timeout = 30000")),
+   * })
+   * ```
+   */
+  readonly onBeginTransaction?: (tx: DrizzleTransaction) => Promise<void>
+}
+
 /**
  * Creates a TransactionManager for Drizzle ORM.
  *
@@ -37,15 +58,19 @@ export type DrizzleTransaction = any
  */
 export function drizzleTransactionManager(
   db: DrizzleDatabaseLike,
+  options: DrizzleTransactionManagerOptions = {},
 ): TransactionManager<DrizzleTransaction> {
+  const { onBeginTransaction } = options
   return {
     async begin(): Promise<DrizzleTransaction> {
       let resolveTx!: (tx: DrizzleTransaction) => void
+      let rejectTx!: (error: unknown) => void
       let resolveCompletion!: () => void
       let rejectCompletion!: (error: unknown) => void
 
-      const txReady = new Promise<DrizzleTransaction>((resolve) => {
+      const txReady = new Promise<DrizzleTransaction>((resolve, reject) => {
         resolveTx = resolve
+        rejectTx = reject
       })
 
       const completionSignal = new Promise<void>((resolve, reject) => {
@@ -54,9 +79,24 @@ export function drizzleTransactionManager(
       })
 
       const txPromise = db.transaction(async (tx) => {
+        // Arm session settings (e.g. idle-in-transaction timeout) before the
+        // UoW gets the handle, so begin() only resolves once the tx is bounded.
+        if (onBeginTransaction) {
+          try {
+            await onBeginTransaction(tx)
+          } catch (err) {
+            // Surface as a begin() rejection rather than hanging on txReady.
+            rejectTx(err)
+            throw err
+          }
+        }
         resolveTx(tx)
         await completionSignal
       })
+      // If db.transaction() rejects before onBeginTransaction runs (e.g. the
+      // pool can't hand out a connection), make begin() reject instead of
+      // hanging on txReady forever.
+      txPromise.catch(rejectTx)
 
       const tx = await txReady
       ;(tx as any).__kronos_commit = resolveCompletion

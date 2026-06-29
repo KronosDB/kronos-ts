@@ -12,6 +12,27 @@ export interface KnexInstanceLike {
  */
 export type KnexTransaction = any
 
+export interface KnexTransactionManagerOptions {
+  /**
+   * Runs once on every transaction, right after it opens and before the UoW
+   * gets the handle. This is where a Postgres-backed deployment arms session
+   * GUCs — chiefly `idle_in_transaction_session_timeout` — so a stalled UoW
+   * (e.g. a hung dead-letter drain whose replay never returns) is aborted by
+   * the database instead of pinning a connection indefinitely. The Postgres
+   * adapter does this for its own transactions; this hook is the equivalent
+   * seam for the (DB-agnostic) Knex/Drizzle path. No-op by default.
+   *
+   * Example (pg client):
+   * ```ts
+   * knexTransactionManager(knex, {
+   *   onBeginTransaction: (trx) => trx.raw(
+   *     "SET LOCAL idle_in_transaction_session_timeout = 30000"),
+   * })
+   * ```
+   */
+  readonly onBeginTransaction?: (tx: KnexTransaction) => Promise<void>
+}
+
 /**
  * Creates a TransactionManager for Knex.
  *
@@ -32,15 +53,19 @@ export type KnexTransaction = any
  */
 export function knexTransactionManager(
   knex: KnexInstanceLike,
+  options: KnexTransactionManagerOptions = {},
 ): TransactionManager<KnexTransaction> {
+  const { onBeginTransaction } = options
   return {
     async begin(): Promise<KnexTransaction> {
       let resolveTx!: (tx: KnexTransaction) => void
+      let rejectTx!: (error: unknown) => void
       let resolveCompletion!: () => void
       let rejectCompletion!: (error: unknown) => void
 
-      const txReady = new Promise<KnexTransaction>((resolve) => {
+      const txReady = new Promise<KnexTransaction>((resolve, reject) => {
         resolveTx = resolve
+        rejectTx = reject
       })
 
       const completionSignal = new Promise<void>((resolve, reject) => {
@@ -49,9 +74,23 @@ export function knexTransactionManager(
       })
 
       const txPromise = knex.transaction(async (trx) => {
+        // Arm session settings (e.g. idle-in-transaction timeout) before the
+        // UoW gets the handle, so begin() only resolves once the tx is bounded.
+        if (onBeginTransaction) {
+          try {
+            await onBeginTransaction(trx)
+          } catch (err) {
+            rejectTx(err)
+            throw err
+          }
+        }
         resolveTx(trx)
         await completionSignal
       })
+      // If knex.transaction() rejects before onBeginTransaction runs (e.g. the
+      // pool can't hand out a connection), make begin() reject instead of
+      // hanging on txReady forever.
+      txPromise.catch(rejectTx)
 
       const tx = await txReady
       ;(tx as any).__kronos_commit = resolveCompletion

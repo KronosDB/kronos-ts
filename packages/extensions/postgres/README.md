@@ -94,8 +94,21 @@ import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 const adapter = pgAdapter({
   connectionString: "postgresql://user:pass@host/db",
   poolConfig: { max: 10 }, // optional pg.Pool overrides
+  // Per-transaction safety timeouts, armed via SET LOCAL on every transaction
+  // this adapter opens. Defaults: 30s idle-in-transaction, statement off.
+  idleInTransactionTimeoutMs: 30_000, // 0 disables
+  statementTimeoutMs: 0, // opt in per deployment
 })
 ```
+
+> **Safety timeouts live on the adapter.** Every transaction opened through the
+> adapter (UoW-scoped commits, the event store's own-tx appends, the scheduler
+> worker) is bounded, and each adapter instance is configured independently — so
+> an event-store adapter and an event-processing adapter pointed at two
+> different databases stay fully decoupled. `idleInTransactionTimeoutMs` is the
+> important one: it stops a stalled transaction from pinning a connection (and
+> `pg_snapshot_xmin`, which gates the tailing query) open indefinitely. The same
+> two options are available on `postgresAdapter` and `bunSqlAdapter`.
 
 ### postgresAdapter
 

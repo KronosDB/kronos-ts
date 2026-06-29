@@ -14,7 +14,7 @@ import {
   createDeadLetterReprocessor,
 } from "./dead-letter-reprocessor.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
-import { loggingErrorHandler } from "./tracking-event-processor.js"
+import { propagatingErrorHandler } from "./tracking-event-processor.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import type { TrackingToken } from "./tracking-token.js"
 import {
@@ -146,7 +146,7 @@ export function createStreamingEventProcessor(
     dlqRetryIntervalMs,
     batchSize = 1,
     errorBackoffMs = 1000,
-    errorHandler = loggingErrorHandler(name),
+    errorHandler = propagatingErrorHandler(),
     handlerEnhancer,
     onReset,
   } = options

@@ -12,6 +12,7 @@ import type {
   DispatchInterceptor,
   HandlerInterceptor,
   HandlerEnhancerDefinition,
+  EventProcessor,
   TrackingEventProcessor,
   SubscribingEventProcessor,
   StreamableEventSource,
@@ -187,6 +188,14 @@ export interface RunningApp {
   readonly identity: KronosIdentity
   readonly commandGateway: CommandGateway
   readonly queryGateway: QueryGateway
+  /**
+   * The built event processors, keyed by name — the kronos analog of AF5's
+   * `EventProcessingConfiguration.eventProcessors()`. This is the seam a host
+   * or admin UI drives: enumerate processors, read `status()` (on tracking
+   * processors), and `start()`/`stop()`/`resetTokens()`. The framework ships
+   * no watchdog or auto-restart; operating the processors is the host's call.
+   */
+  eventProcessors(): ReadonlyMap<string, EventProcessor>
   stop(): Promise<void>
 }
 
@@ -700,6 +709,12 @@ export class AppImpl implements App {
     const stageTimeoutMs = this._stageTimeoutMs
     const stopHooks = this._state.stopHooks
     const identity = this.identity
+    // Name-keyed registry of built processors — the EventProcessingConfiguration
+    // .eventProcessors() analog a host/admin UI enumerates and drives. Frozen so
+    // callers can't mutate the framework's processor set.
+    const processorRegistry: ReadonlyMap<string, EventProcessor> = new Map(
+      builtProcessors.map((proc) => [proc.name, proc as EventProcessor]),
+    )
     return {
       get identity(): KronosIdentity {
         return identity
@@ -709,6 +724,9 @@ export class AppImpl implements App {
       },
       get queryGateway(): QueryGateway {
         return queryGateway
+      },
+      eventProcessors(): ReadonlyMap<string, EventProcessor> {
+        return processorRegistry
       },
       async stop() {
         // Stop processors first (mirrors legacy shutdown order).

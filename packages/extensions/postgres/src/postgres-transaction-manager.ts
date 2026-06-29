@@ -36,51 +36,10 @@ interface ManagedPostgresTransaction extends PostgresAdapterTransaction {
 /** Marker error: signals an intentional rollback so the .catch can suppress it. */
 const ROLLBACK_MARKER = "__kronos_postgres_tx_rollback__"
 
-/** Tuning for the safety timeouts applied to every UoW-scoped transaction. */
-export interface PostgresTransactionManagerOptions {
-  /**
-   * `idle_in_transaction_session_timeout` (ms) applied via `SET LOCAL` on every
-   * transaction. A UoW that begins a tx but stalls before commit/rollback would
-   * otherwise hold its connection — and pin `pg_snapshot_xmin`, which gates the
-   * gap-free tailing query in the event store — open indefinitely, stalling all
-   * streaming processors until the process restarts. This bounds that window:
-   * postgres aborts the idle transaction and the connection (and xmin) is freed.
-   * Default 30000 (30s). Set 0 to disable (postgres default — no timeout).
-   */
-  readonly idleInTransactionTimeoutMs?: number
-  /**
-   * `statement_timeout` (ms) applied via `SET LOCAL` on every transaction.
-   * Bounds a single hung statement inside the tx. Default 0 (disabled) — large
-   * appends / replays can legitimately run long, so opt in per deployment.
-   */
-  readonly statementTimeoutMs?: number
-}
-
-const DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS = 30_000
-
 export function postgresTransactionManager(
   adapter: PostgresAdapter,
   isolationLevel: IsolationLevel = IsolationLevel.READ_COMMITTED,
-  options: PostgresTransactionManagerOptions = {},
 ): TransactionManager<PostgresAdapterTransaction> {
-  const idleTimeoutMs = normalizeTimeoutMs(
-    options.idleInTransactionTimeoutMs ?? DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS,
-  )
-  const statementTimeoutMs = normalizeTimeoutMs(options.statementTimeoutMs ?? 0)
-
-  // GUCs cannot be parameterized ($1) — the value is a config-supplied integer,
-  // normalized to a non-negative whole number, so inlining is injection-safe.
-  // SET LOCAL auto-resets at COMMIT/ROLLBACK, so it never leaks onto pooled
-  // connections.
-  async function applyTimeouts(tx: PostgresAdapterTransaction): Promise<void> {
-    if (idleTimeoutMs > 0) {
-      await tx.query(`SET LOCAL idle_in_transaction_session_timeout = ${idleTimeoutMs}`)
-    }
-    if (statementTimeoutMs > 0) {
-      await tx.query(`SET LOCAL statement_timeout = ${statementTimeoutMs}`)
-    }
-  }
-
   return {
     async begin(): Promise<PostgresAdapterTransaction> {
       let captureTx!: (tx: PostgresAdapterTransaction) => void
@@ -97,9 +56,9 @@ export function postgresTransactionManager(
 
       const txPromise = adapter
         .transaction(isolationLevel, async (tx) => {
-          // Arm the per-transaction safety timeouts before handing the tx to
-          // the UoW, so even the very first awaited statement is bounded.
-          await applyTimeouts(tx)
+          // Per-transaction safety timeouts are armed by the adapter's
+          // transaction() at BEGIN (see session-timeouts.ts), so they cover
+          // this UoW-scoped tx and every ad-hoc adapter.transaction() alike.
           captureTx(tx)
           await completion
         })
@@ -151,13 +110,6 @@ export function postgresTransactionManager(
       }
     },
   }
-}
-
-/** Coerce a config timeout to a non-negative whole number of milliseconds.
- *  Non-finite or negative values disable the timeout (treated as 0). */
-function normalizeTimeoutMs(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 0
-  return Math.floor(value)
 }
 
 /**

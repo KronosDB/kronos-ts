@@ -49,6 +49,16 @@ export { postgres, type PostgresConfig } from "./postgres.js"
 // hand.
 export { postgresTransactionManager } from "./postgres-transaction-manager.js"
 
+// Per-transaction safety timeouts (idle-in-transaction / statement), armed by
+// each adapter's transaction() at BEGIN. The options are spread onto every
+// adapter config; the helpers are exported for authors of custom adapters.
+export {
+  type SessionTimeoutOptions,
+  type ResolvedSessionTimeouts,
+  resolveSessionTimeouts,
+  applySessionTimeouts,
+} from "./session-timeouts.js"
+
 // Postgres event scheduler — durable schedule() + cancel() + polling worker
 // that fires due schedules into the event store. Wired into postgres()
 // automatically when a uowFactory with the lazy postgres tx is in place;
