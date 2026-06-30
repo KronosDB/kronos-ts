@@ -174,6 +174,68 @@ describe("open() — bookmark resume", () => {
   })
 })
 
+describe("open() — gap-aware token resume (xid/seq inversion)", () => {
+  it("resuming from the emitted token does NOT skip a lower-position/higher-xid event", async () => {
+    // Construct the inversion that breaks a position-only durable token:
+    //   event A — LOWER xid8 (stamped first) but HIGHER sequence_position
+    //   event B — HIGHER xid8 but LOWER sequence_position (inserted/committed first)
+    // Gap-free tailing delivers in (xid8, position) order, so A (lower xid)
+    // comes first even though its sequence_position is higher. A processor that
+    // consumed A and persisted only its position would, on reopen, filter
+    // `position > A.seq` and PERMANENTLY skip B (whose seq is lower). The
+    // gap-aware token carries A's xid8 so the tuple comparison still finds B.
+
+    let releaseA!: () => void
+    const bCommitted = new Promise<void>((r) => (releaseA = r))
+
+    // Tx A: stamp the xid early (before any event insert), wait until B has
+    // committed, THEN insert event A (so A gets the higher sequence_position).
+    const aPromise = adapter.transaction("READ COMMITTED" as never, async (tx) => {
+      await tx.query(`SELECT pg_current_xact_id()`) // assigns xid_A now
+      await bCommitted
+      await tx.query(
+        `INSERT INTO ${DEFAULT_TABLE_NAMES.events} (event_id, type, tags, payload, metadata, version, timestamp)
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)`,
+        [generateIdentifier(), "inv.invA", ["k\x1Fa"], JSON.stringify({}), JSON.stringify({}), "1", Date.now()],
+      )
+    })
+
+    // Ensure A has stamped its xid before B grabs a (higher) one.
+    await new Promise((r) => setTimeout(r, 150))
+
+    // Tx B: higher xid, but inserts + commits first → lower sequence_position.
+    await store.append([makeEvent("invB", [{ key: "k", value: "b" }])])
+    releaseA()
+    await aPromise
+
+    // First stream: consume ONLY A (delivered first — lower xid8).
+    const stream1 = store.open({ position: 0n })
+    const batch1 = await collectAvailable<SequencedEvent>(stream1 as never, 1)
+    stream1.close()
+    expect(batch1.length).toBe(1)
+    expect((batch1[0]!.event as { name: { name: string } }).name.name).toBe("invA")
+    const resumeToken = batch1[0]!.token
+    expect(resumeToken).toBeDefined()
+    expect(resumeToken!.kind).toBe("gap-aware")
+    // A has the HIGHER sequence_position despite the lower xid8.
+    expect(batch1[0]!.sequence).toBe(2n)
+
+    // Resume with the gap-aware token — B (seq 1) must still be delivered.
+    const stream2 = store.open({ position: batch1[0]!.sequence, token: resumeToken })
+    const batch2 = await collectAvailable<SequencedEvent>(stream2 as never, 1, 8000)
+    stream2.close()
+    expect(batch2.length).toBe(1)
+    expect((batch2[0]!.event as { name: { name: string } }).name.name).toBe("invB")
+
+    // Contrast: a position-only resume (the old behaviour) skips B forever,
+    // because B.seq (1) is not > A.seq (2).
+    const streamBad = store.open({ position: batch1[0]!.sequence })
+    const batchBad = await collectAvailable<SequencedEvent>(streamBad as never, 1, 1500)
+    streamBad.close()
+    expect(batchBad.length).toBe(0)
+  }, 30_000)
+})
+
 describe("StreamableEventSource extras", () => {
   it("getHeadPosition returns max sequence_position", async () => {
     await store.append([

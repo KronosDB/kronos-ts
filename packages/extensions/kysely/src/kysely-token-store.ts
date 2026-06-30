@@ -1,5 +1,10 @@
 import type { TokenStore, TrackingToken } from "@kronos-ts/messaging"
-import { getActiveTransaction, UnableToClaimTokenError, globalSequenceToken } from "@kronos-ts/messaging"
+import {
+  getActiveTransaction,
+  UnableToClaimTokenError,
+  serializeToken as serializeTokenData,
+  deserializeToken as deserializeTokenData,
+} from "@kronos-ts/messaging"
 import type { KyselyTransaction } from "./kysely-transaction-manager.js"
 
 /**
@@ -22,16 +27,12 @@ import type { KyselyTransaction } from "./kysely-transaction-manager.js"
  */
 
 function serializeToken(token: TrackingToken): { token_type: string; token: string } {
-  return {
-    token_type: "GlobalSequenceToken",
-    token: JSON.stringify({ position: token.position().toString() }),
-  }
+  const { type, data } = serializeTokenData(token)
+  return { token_type: type, token: data }
 }
 
 function deserializeToken(tokenType: string | null, token: string | null): TrackingToken | undefined {
-  if (!token || !tokenType) return undefined
-  const data = JSON.parse(token)
-  return globalSequenceToken(BigInt(data.position))
+  return deserializeTokenData(tokenType, token)
 }
 
 function nowIso(): string {

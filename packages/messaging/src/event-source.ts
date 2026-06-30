@@ -8,6 +8,16 @@ import type { TrackingToken } from "./tracking-token.js"
 export interface SequencedEvent {
   readonly sequence: bigint
   readonly event: EventMessage
+  /**
+   * The cursor token positioned immediately AFTER this event — i.e. resuming a
+   * stream from this token reads events strictly following this one. Supplied
+   * by gap-free engines (e.g. Postgres) so the processor persists the engine's
+   * own `(commit-order-key, sequence)` cursor verbatim instead of synthesising
+   * a position-only token, which would lose the commit-order key and skip
+   * events on reopen. Engines with a dense global sequence (in-memory, Axon
+   * Server) omit it; the processor then falls back to a position+1 token.
+   */
+  readonly token?: TrackingToken
 }
 
 /**
@@ -17,6 +27,13 @@ export interface SequencedEvent {
 export interface StreamingCondition {
   /** Position to start streaming from. */
   readonly position: bigint
+  /**
+   * The resume token. When it carries an engine-specific cursor (e.g. a
+   * {@link GapAwareToken} with a commit-order key), the engine resumes exactly
+   * from that cursor; otherwise it falls back to {@link position}. Optional so
+   * engines that only understand a position can ignore it.
+   */
+  readonly token?: TrackingToken
   /** Optional criteria to filter events. When omitted, all events are delivered. */
   readonly criteria?: EventCriteria
 }

@@ -23,6 +23,7 @@ import {
   isReplayToken,
   isReplaying,
   advanceToken,
+  advanceTokenTo,
 } from "./tracking-token.js"
 import { REPLAY_STATE_KEY } from "./replay-token.js"
 import { applyCorrelationData, type CorrelationDataProvider } from "./correlation-data.js"
@@ -216,7 +217,7 @@ export function createStreamingEventProcessor(
   }
 
   function openStream() {
-    stream = eventSource.open({ position: token.position() })
+    stream = eventSource.open({ position: token.position(), token })
     stream.setCallback(() => {
       if (isRunning && !processing) {
         scheduleImmediate()
@@ -312,7 +313,12 @@ export function createStreamingEventProcessor(
 
         await deliverEvent(sequencedEvent)
 
-        batchEndToken = advanceToken(batchEndToken, sequencedEvent.sequence + 1n)
+        // Prefer the engine's own cursor token (carries the commit-order key for
+        // gap-free resume); fall back to a position+1 token for dense-sequence
+        // engines that don't supply one.
+        batchEndToken = sequencedEvent.token
+          ? advanceTokenTo(batchEndToken, sequencedEvent.token)
+          : advanceToken(batchEndToken, sequencedEvent.sequence + 1n)
       }
 
       if (tokenStore) {

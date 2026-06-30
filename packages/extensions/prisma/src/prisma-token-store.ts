@@ -1,5 +1,10 @@
 import type { TokenStore, TrackingToken } from "@kronos-ts/messaging"
-import { getActiveTransaction, UnableToClaimTokenError, globalSequenceToken } from "@kronos-ts/messaging"
+import {
+  getActiveTransaction,
+  UnableToClaimTokenError,
+  serializeToken as serializeTokenData,
+  deserializeToken as deserializeTokenData,
+} from "@kronos-ts/messaging"
 import type { PrismaClientLike, PrismaTransactionClient } from "./prisma-transaction-manager.js"
 
 /**
@@ -32,16 +37,12 @@ interface TokenRow {
 }
 
 function serializeToken(token: TrackingToken): { tokenType: string; token: string } {
-  return {
-    tokenType: "GlobalSequenceToken",
-    token: JSON.stringify({ position: token.position().toString() }),
-  }
+  const { type, data } = serializeTokenData(token)
+  return { tokenType: type, token: data }
 }
 
 function deserializeToken(row: TokenRow): TrackingToken | undefined {
-  if (!row.token || !row.tokenType) return undefined
-  const data = JSON.parse(row.token)
-  return globalSequenceToken(BigInt(data.position))
+  return deserializeTokenData(row.tokenType, row.token)
 }
 
 function nowIso(): string {

@@ -47,6 +47,9 @@ import type {
 import {
   createMessageStream,
   globalSequenceToken,
+  gapAwareToken,
+  isGapAwareToken,
+  unwrapToken,
   FIRST_TOKEN,
   getOrBeginActiveTransaction,
   onAfterCommit,
@@ -451,11 +454,15 @@ export function createPostgresEventStore(
     },
 
     open(condition: StreamingCondition): MessageStream<SequencedEvent> {
-      let cursorPosition = condition.position
-      // The (xid8, position) tuple bookmark. We start with xid8 = '0' which is
-      // less than any real xid8 — so the (xid8, position) > ($1, $2) predicate
-      // collapses to effectively position > $2 on first read.
-      let cursorXid = "0"
+      // Resume the (xid8, position) tuple cursor exactly when the caller hands
+      // back a gap-aware token (the durable cursor minted by this engine). A
+      // bare position (fresh start or an explicit reset) seeds xid8 = '0', a
+      // sentinel below any real xid8 (pg_current_xact_id() never returns < 3),
+      // so the first fetch uses the position-only catch-up branch.
+      const resume = condition.token ? unwrapToken(condition.token) : undefined
+      const gapResume = resume && isGapAwareToken(resume) ? resume : undefined
+      let cursorPosition = gapResume ? gapResume.sequence : condition.position
+      let cursorXid = gapResume ? gapResume.gapKey : "0"
       const criteria = condition.criteria
       let closed = false
       let onAvailable: (() => void) | null = null
@@ -473,7 +480,12 @@ export function createPostgresEventStore(
         let queryParams: unknown[]
 
         if (cursorXid === "0") {
-          // Initial fetch: simple position filter — all committed events after cursorPosition.
+          // Initial fetch (no tuple cursor yet): position-only filter for all
+          // committed events strictly after cursorPosition. Only reached on a
+          // fresh start (position 0) or an explicit reset — once the first row
+          // is read the cursor switches to the gap-free (xid8, position) tuple
+          // branch below, which is what a live processor resumes from (it
+          // persists the gap-aware token, never a bare position).
           // $1 = position, criteria starts at $2
           const builtInitial = criteria
             ? buildCriteriaWhere(criteria, 2)
@@ -527,7 +539,11 @@ export function createPostgresEventStore(
         for (const r of rows) {
           const event = decodeEvent(r)
           const seq = BigInt(r.sequence_position)
-          buffer.push({ sequence: seq, event })
+          // The durable cursor positioned AFTER this event: the (xid8, position)
+          // tuple. Persisting it lets a reopened stream resume the gap-free
+          // tuple comparison instead of a lossy position-only filter that would
+          // skip an event with a lower sequence_position but higher xid8.
+          buffer.push({ sequence: seq, event, token: gapAwareToken(seq, r.transaction_id) })
           cursorXid = r.transaction_id
           cursorPosition = seq
         }

@@ -77,6 +77,50 @@ export function globalSequenceToken(sequence: bigint): GlobalSequenceToken {
   }
 }
 
+// ---------------------------------------------------------------------------
+// GapAwareToken
+// ---------------------------------------------------------------------------
+
+export interface GapAwareToken extends TrackingToken {
+  readonly kind: "gap-aware"
+  /** The `sequence_position` of the last consumed event — the `position()`. */
+  readonly sequence: bigint
+  /**
+   * An opaque, store-defined commit-order key that, paired with `sequence`,
+   * forms a gap-free tailing cursor. For the Postgres engine this is the
+   * event's `transaction_id` (xid8): the durable token MUST carry it because
+   * gap-free tailing orders by `(transaction_id, sequence_position)` and only
+   * `transaction_id` has a commit watermark (`pg_snapshot_xmin`). A position
+   * alone cannot resume the stream without permanently skipping events whose
+   * `sequence_position` is lower but whose `transaction_id` is higher (the
+   * xid/seq inversion that happens when a transaction writes other rows —
+   * stamping its xid — before appending its event).
+   */
+  readonly gapKey: string
+}
+
+/**
+ * Creates a token for a gap-free tailing engine: a `sequence` position paired
+ * with an opaque `gapKey` (the store's commit-order key, e.g. Postgres xid8).
+ * `position()` returns the sequence so replay/`covers` semantics are unchanged;
+ * the `gapKey` rides along so the engine can resume the `(gapKey, sequence)`
+ * cursor exactly on reopen instead of falling back to a lossy position filter.
+ */
+export function gapAwareToken(sequence: bigint, gapKey: string): GapAwareToken {
+  return {
+    kind: "gap-aware",
+    sequence,
+    gapKey,
+    position: () => sequence,
+    covers: (other) => sequence >= other.position(),
+    lowerBound: (other) =>
+      sequence <= other.position() ? gapAwareToken(sequence, gapKey) : globalSequenceToken(other.position()),
+    upperBound: (other) =>
+      sequence >= other.position() ? gapAwareToken(sequence, gapKey) : globalSequenceToken(other.position()),
+    samePositionAs: (other) => sequence === other.position(),
+  }
+}
+
 /**
  * Sentinel token representing the beginning of the event stream.
  * A processor starting with FIRST_TOKEN will read from position 0.
@@ -171,28 +215,87 @@ export function isGlobalSequenceToken(token: TrackingToken): token is GlobalSequ
   return token.kind === "global-sequence"
 }
 
+export function isGapAwareToken(token: TrackingToken): token is GapAwareToken {
+  return token.kind === "gap-aware"
+}
+
 // ---------------------------------------------------------------------------
 // Token operations
 // ---------------------------------------------------------------------------
+
+/**
+ * Advance a token to the position represented by `next`, preserving replay
+ * wrapping. Generalises {@link advanceToken} to any TrackingToken — used when
+ * the event source supplies its own cursor token (e.g. a {@link GapAwareToken}
+ * carrying a commit-order key) that must be persisted verbatim rather than
+ * collapsed to a bare position.
+ */
+export function advanceTokenTo(token: TrackingToken, next: TrackingToken): TrackingToken {
+  if (!isReplayToken(token)) {
+    return next
+  }
+
+  // Check if replay is complete
+  if (next.covers(token.tokenAtReset)) {
+    return next
+  }
+
+  // Still replaying — wrap the advanced token
+  return replayToken(token.tokenAtReset, next, token.resetContext)
+}
 
 /**
  * Advance a token to a new position. If the token is a ReplayToken and
  * the new position covers the reset point, unwraps to a plain token.
  */
 export function advanceToken(token: TrackingToken, newPosition: bigint): TrackingToken {
-  const advanced = globalSequenceToken(newPosition)
+  return advanceTokenTo(token, globalSequenceToken(newPosition))
+}
 
-  if (!isReplayToken(token)) {
-    return advanced
+// ---------------------------------------------------------------------------
+// Serialization
+// ---------------------------------------------------------------------------
+
+/** Wire shape for a persisted token: a `kind` discriminant + a JSON body. */
+export interface SerializedToken {
+  readonly type: string
+  readonly data: string
+}
+
+/**
+ * Serialize a token for durable storage. The JSON body always carries
+ * `position`; when the token (or, for a ReplayToken, its innermost token) is a
+ * {@link GapAwareToken}, the `gapKey` is preserved so the cursor resumes
+ * exactly on reload. ReplayTokens still flatten to their current position on
+ * the wire (replay-in-progress state does not survive a restart, as before),
+ * but the gapKey survives so live tailing resumes without skipping events.
+ */
+export function serializeToken(token: TrackingToken): SerializedToken {
+  const inner = unwrapToken(token)
+  const payload: { position: string; gapKey?: string } = {
+    position: token.position().toString(),
   }
-
-  // Check if replay is complete
-  if (advanced.covers(token.tokenAtReset)) {
-    return advanced
+  if (isGapAwareToken(inner)) {
+    payload.gapKey = inner.gapKey
   }
+  return { type: token.kind, data: JSON.stringify(payload) }
+}
 
-  // Still replaying — wrap the advanced position
-  return replayToken(token.tokenAtReset, advanced, token.resetContext)
+/**
+ * Reconstruct a token from its persisted form. A body carrying a `gapKey`
+ * rehydrates as a {@link GapAwareToken}; otherwise a {@link GlobalSequenceToken}.
+ * Returns undefined when there is no stored token.
+ */
+export function deserializeToken(
+  type: string | null | undefined,
+  data: string | null | undefined,
+): TrackingToken | undefined {
+  if (!data) return undefined
+  const parsed = JSON.parse(data) as { position: string; gapKey?: string }
+  if (parsed.gapKey !== undefined) {
+    return gapAwareToken(BigInt(parsed.position), parsed.gapKey)
+  }
+  return globalSequenceToken(BigInt(parsed.position))
 }
 
 /**
