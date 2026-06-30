@@ -1,5 +1,15 @@
 # @kronos-ts/rabbitmq
 
+## 0.3.9
+
+### Patch Changes
+
+- Updated dependencies [9eb84ff]
+  - @kronos-ts/messaging@0.9.0
+  - @kronos-ts/app@0.5.1
+  - @kronos-ts/eventsourcing@0.3.1
+  - @kronos-ts/modelling@0.2.8
+
 ## 0.3.8
 
 ### Patch Changes
