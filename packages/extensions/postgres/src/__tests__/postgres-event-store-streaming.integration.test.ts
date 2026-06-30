@@ -236,6 +236,39 @@ describe("open() — gap-aware token resume (xid/seq inversion)", () => {
   }, 30_000)
 })
 
+describe("open() — orders the tail by transaction_id numerically, not lexically", () => {
+  it("delivers events in xid8 NUMERIC order across a digit-count boundary", async () => {
+    // The tail selects `transaction_id::text AS transaction_id`; ORDER BY must
+    // reference the xid8 column, not that text alias, or it sorts lexically.
+    // When xids straddle a power-of-ten boundary, "1000" < "999" as text, so a
+    // lexical sort delivers events out of true commit order — and the (xid,seq)
+    // resume cursor then strands events on reopen. Pick a boundary safely below
+    // the live xid counter so the pg_snapshot_xmin watermark still admits them.
+    const cur = await adapter.queryOne<{ x: string }>(`SELECT pg_current_xact_id()::text AS x`)
+    const c = BigInt(cur!.x)
+    // largest power of ten <= c - 2 (so boundary-1, boundary, boundary+1 are all < c)
+    let boundary = 10n
+    while (boundary * 10n <= c - 2n) boundary *= 10n
+    const xids = [boundary - 1n, boundary, boundary + 1n] // e.g. 999, 1000, 1001
+    // Insert in ascending seq with ascending xid; lexical order would reorder
+    // the 1000/1001 rows ahead of the 999 row.
+    for (let i = 0; i < xids.length; i++) {
+      await adapter.query(
+        `INSERT INTO ${DEFAULT_TABLE_NAMES.events}
+           (sequence_position, event_id, transaction_id, type, tags, payload, metadata, version, timestamp)
+         VALUES ($1, $2, $3::xid8, $4, $5, $6::jsonb, $7::jsonb, $8, $9)`,
+        [i + 1, generateIdentifier(), String(xids[i]), "test.E", [`k\x1F${i}`], "{}", "{}", "1", Date.now()],
+      )
+    }
+
+    const stream = store.open({ position: 0n })
+    const events = await collectAvailable<SequencedEvent>(stream as never, 3)
+    stream.close()
+    // Numeric xid order == seq order [1,2,3]; a lexical sort would give [2,3,1].
+    expect(events.map((e) => Number(e.sequence))).toEqual([1, 2, 3])
+  })
+})
+
 describe("StreamableEventSource extras", () => {
   it("getHeadPosition returns max sequence_position", async () => {
     await store.append([

@@ -499,7 +499,7 @@ export function createPostgresEventStore(
             WHERE sequence_position > $1::bigint
               AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
               AND (${builtInitial.where})
-            ORDER BY transaction_id ASC, sequence_position ASC
+            ORDER BY ${tables.events}.transaction_id ASC, ${tables.events}.sequence_position ASC
             LIMIT $${limitParam}
           `
           queryParams = [String(cursorPosition), ...builtInitial.params, limit]
@@ -518,7 +518,7 @@ export function createPostgresEventStore(
             WHERE (transaction_id, sequence_position) > ($1::xid8, $2::bigint)
               AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
               AND (${builtTuple.where})
-            ORDER BY transaction_id ASC, sequence_position ASC
+            ORDER BY ${tables.events}.transaction_id ASC, ${tables.events}.sequence_position ASC
             LIMIT $${limitParam}
           `
           queryParams = [cursorXid, String(cursorPosition), ...builtTuple.params, limit]
