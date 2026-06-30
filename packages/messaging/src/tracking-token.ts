@@ -269,16 +269,22 @@ export interface SerializedToken {
  * exactly on reload. ReplayTokens still flatten to their current position on
  * the wire (replay-in-progress state does not survive a restart, as before),
  * but the gapKey survives so live tailing resumes without skipping events.
+ *
+ * `type` is a human-readable label describing the persisted shape — it matches
+ * the historical `GlobalSequenceToken` value (so existing rows are unchanged)
+ * and is `GapAwareToken` when a gapKey is present. Deserialization ignores it
+ * (it keys off the presence of `gapKey` in the body), so it is purely for
+ * diagnostics / readability of the token table.
  */
 export function serializeToken(token: TrackingToken): SerializedToken {
   const inner = unwrapToken(token)
-  const payload: { position: string; gapKey?: string } = {
-    position: token.position().toString(),
-  }
-  if (isGapAwareToken(inner)) {
-    payload.gapKey = inner.gapKey
-  }
-  return { type: token.kind, data: JSON.stringify(payload) }
+  const gapKey = isGapAwareToken(inner) ? inner.gapKey : undefined
+  const payload =
+    gapKey !== undefined
+      ? { position: token.position().toString(), gapKey }
+      : { position: token.position().toString() }
+  const type = gapKey !== undefined ? "GapAwareToken" : "GlobalSequenceToken"
+  return { type, data: JSON.stringify(payload) }
 }
 
 /**

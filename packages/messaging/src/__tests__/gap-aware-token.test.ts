@@ -31,6 +31,8 @@ describe("serializeToken / deserializeToken", () => {
   it("round-trips a GlobalSequenceToken (no gapKey)", () => {
     const s = serializeToken(globalSequenceToken(7n))
     expect(s.data).not.toContain("gapKey")
+    // Label matches the historical value so existing token rows are unchanged.
+    expect(s.type).toBe("GlobalSequenceToken")
     const back = deserializeToken(s.type, s.data)
     expect(back!.kind).toBe("global-sequence")
     expect(back!.position()).toBe(7n)
@@ -38,6 +40,8 @@ describe("serializeToken / deserializeToken", () => {
 
   it("round-trips a GapAwareToken preserving the gapKey", () => {
     const s = serializeToken(gapAwareToken(7n, "98765"))
+    // PascalCase label, consistent with GlobalSequenceToken in the same column.
+    expect(s.type).toBe("GapAwareToken")
     const back = deserializeToken(s.type, s.data)
     expect(isGapAwareToken(back!)).toBe(true)
     expect(back!.position()).toBe(7n)
