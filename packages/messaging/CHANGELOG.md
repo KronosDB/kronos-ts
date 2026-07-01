@@ -1,5 +1,15 @@
 # @kronos-ts/messaging
 
+## 0.9.1
+
+### Patch Changes
+
+- ad944b9: Label persisted tokens with PascalCase `token_type` values (`GlobalSequenceToken` / `GapAwareToken`).
+
+  The token serializer wrote the kebab-case token kind into the `token_type` column, leaving `gap-aware` sitting next to legacy `GlobalSequenceToken` rows. The value is informational — deserialization keys off the `gapKey` in the body, not the type string — so this only affects the readability of the token table.
+
+  - @kronos-ts/eventsourcing@0.3.2
+
 ## 0.9.0
 
 ### Minor Changes
