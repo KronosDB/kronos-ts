@@ -73,6 +73,17 @@ function defaultQueryInstructions(timeoutMs: number): any[] {
 }
 
 export interface KronosDbExtensionConfig extends KronosDbConnectionConfig {
+  /**
+   * Wire the distributed command/query buses backed by KronosDB.
+   * Default: true.
+   *
+   * Set to false to use KronosDB purely as an event/snapshot store and bring
+   * your own messaging transport (e.g. the RabbitMQ extension, which
+   * decorates the default local buses). The platform control plane
+   * (processor pause/start/split/merge, status reporting) stays active in
+   * both modes — it belongs to event processing, not command/query routing.
+   */
+  messaging?: boolean
   commandFlowControl?: FlowControlConfig
   queryFlowControl?: FlowControlConfig
   platformService?: PlatformServiceOptions
@@ -91,6 +102,17 @@ export interface KronosDbExtensionConfig extends KronosDbConnectionConfig {
  * ```ts
  * await kronos()
  *   .use(kronosDb({ componentName: "university-service" }))
+ *   .start()
+ * ```
+ *
+ * With `messaging: false` only the eventStore/snapshotStore slots are
+ * populated; the commandBus/queryBus slots are left untouched so another
+ * transport (or the in-memory defaults) can own them:
+ *
+ * ```ts
+ * await kronos()
+ *   .use(kronosDb({ componentName: "university-service", messaging: false }))
+ *   .use(rabbitMq({ url: "amqp://localhost" }))
  *   .start()
  * ```
  */
@@ -156,7 +178,9 @@ export function kronosDb(serverConfig: KronosDbExtensionConfig): (app: App) => v
       return createKronosDbSnapshotStore(lazyConnection, resolved.serializer)
     })
 
-    app.set("commandBus", (resolved) => {
+    const messaging = serverConfig.messaging !== false
+
+    if (messaging) app.set("commandBus", (resolved) => {
       const latch = createShutdownLatch()
       busLatches.push(latch)
 
@@ -192,7 +216,7 @@ export function kronosDb(serverConfig: KronosDbExtensionConfig): (app: App) => v
       return wrapper
     })
 
-    app.set("queryBus", (resolved) => {
+    if (messaging) app.set("queryBus", (resolved) => {
       const latch = createShutdownLatch()
       busLatches.push(latch)
 
