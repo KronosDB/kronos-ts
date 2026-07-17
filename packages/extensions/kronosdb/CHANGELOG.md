@@ -1,5 +1,27 @@
 # @kronos-ts/kronosdb
 
+## 0.3.0
+
+### Minor Changes
+
+- e71323e: Adopt KronosDB 0.5 batched read wire format (requires server >= 0.5).
+
+  Source and Stream responses now arrive as event batches (`SequencedEventBatch`)
+  instead of one event per gRPC message; the client unpacks them transparently,
+  so `source()` results and event-processor streams behave exactly as before —
+  just faster (server-side batching removes per-message framing overhead on
+  whole-log reads and live tailing). Permit-based flow control now counts
+  events, not messages. `SourceRequest`/`StreamSubscribe` gain a `batchSize`
+  option (0 = server default). Older servers (<= 0.4) are not supported by this
+  version of the client.
+
+  Also fixes `generate-proto` to emit `.js` import suffixes so regenerated
+  sources pass typecheck under `moduleResolution: node16`.
+
+- 3651f7a: Add a `messaging` option to the `kronosDb()` extension config (default `true`).
+
+  With `messaging: false` the extension populates only the `eventStore` and `snapshotStore` slots, leaving `commandBus`/`queryBus` free for another transport (e.g. the RabbitMQ extension) or the in-memory defaults. The platform control plane (processor pause/start/split/merge, status reporting) stays active in both modes.
+
 ## 0.2.10
 
 ### Patch Changes
