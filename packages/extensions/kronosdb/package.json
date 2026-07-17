@@ -33,7 +33,7 @@
     "!src/**/*.bench.ts"
   ],
   "scripts": {
-    "generate-proto": "grpc_tools_node_protoc --ts_proto_out=./src/generated --ts_proto_opt=outputServices=nice-grpc,outputServices=generic-definitions,useExactTypes=false,esModuleInterop=true,forceLong=bigint --proto_path=./proto ./proto/*.proto",
+    "generate-proto": "grpc_tools_node_protoc --ts_proto_out=./src/generated --ts_proto_opt=outputServices=nice-grpc,outputServices=generic-definitions,useExactTypes=false,importSuffix=.js,esModuleInterop=true,forceLong=bigint --proto_path=./proto ./proto/*.proto",
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist *.tsbuildinfo"
   },

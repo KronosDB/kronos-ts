@@ -97,19 +97,31 @@ export interface SourceRequest {
   fromSequence: bigint;
   /** Criteria to filter events. If empty, all events are returned. */
   criteria: Criterion[];
+  /**
+   * Maximum events per response message. 0 = server default (1024).
+   * Batches never wait for events — the server sends whatever it has in
+   * hand, so latency is unaffected; only per-message framing overhead is
+   * amortized.
+   */
+  batchSize: number;
 }
 
-/** Response containing either a matching event or the final consistency marker. */
+/** A batch of sequenced events, in ascending sequence order. */
+export interface SequencedEventBatch {
+  events: SequencedEvent[];
+}
+
+/** Response containing a batch of matching events or the final consistency marker. */
 export interface SourceResponse {
-  /** A matching event with its sequence. */
-  event?:
-    | SequencedEvent
-    | undefined;
   /**
    * The consistency marker at the end of the stream.
    * Use this for subsequent appends related to the same criteria.
    */
-  consistencyMarker?: bigint | undefined;
+  consistencyMarker?:
+    | bigint
+    | undefined;
+  /** A batch of matching events. */
+  batch?: SequencedEventBatch | undefined;
 }
 
 /**
@@ -133,7 +145,8 @@ export interface StreamSubscribe {
   criteria: Criterion[];
   /**
    * Initial number of permits. The server will send at most this many events
-   * before waiting for more permits. Must be > 0.
+   * before waiting for more permits. Must be > 0. Permits count EVENTS, not
+   * messages — a batch of N events consumes N permits.
    */
   initialPermits: bigint;
   /**
@@ -141,6 +154,12 @@ export interface StreamSubscribe {
    * Events matching any of these names are silently skipped (payload blacklisting).
    */
   blacklistedNames: string[];
+  /**
+   * Maximum events per response message. 0 = server default (1024). The
+   * server packs whatever is committed AND permitted into each message —
+   * it never waits to fill a batch, so tail latency is unaffected.
+   */
+  batchSize: number;
 }
 
 /** Grants additional permits on an active stream. */
@@ -149,17 +168,17 @@ export interface StreamPermits {
   permits: bigint;
 }
 
-/** A message on the event stream — either a matching event or a keep-alive heartbeat. */
+/** A message on the event stream — a batch of matching events or a keep-alive heartbeat. */
 export interface StreamResponse {
-  /** A matching event with its sequence. */
-  event?:
-    | SequencedEvent
-    | undefined;
   /**
    * Server heartbeat — sent periodically to detect slow/dead consumers.
    * Clients should ignore this (no response needed).
    */
-  heartbeat?: StreamHeartbeat | undefined;
+  heartbeat?:
+    | StreamHeartbeat
+    | undefined;
+  /** A batch of matching events, in ascending sequence order. */
+  batch?: SequencedEventBatch | undefined;
 }
 
 /** Keep-alive heartbeat on event streams. */
@@ -1024,7 +1043,7 @@ export const Criterion: MessageFns<Criterion> = {
 };
 
 function createBaseSourceRequest(): SourceRequest {
-  return { fromSequence: 0n, criteria: [] };
+  return { fromSequence: 0n, criteria: [], batchSize: 0 };
 }
 
 export const SourceRequest: MessageFns<SourceRequest> = {
@@ -1037,6 +1056,9 @@ export const SourceRequest: MessageFns<SourceRequest> = {
     }
     for (const v of message.criteria) {
       Criterion.encode(v!, writer.uint32(18).fork()).join();
+    }
+    if (message.batchSize !== 0) {
+      writer.uint32(24).uint32(message.batchSize);
     }
     return writer;
   },
@@ -1064,6 +1086,14 @@ export const SourceRequest: MessageFns<SourceRequest> = {
           message.criteria.push(Criterion.decode(reader, reader.uint32()));
           continue;
         }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.batchSize = reader.uint32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1083,6 +1113,11 @@ export const SourceRequest: MessageFns<SourceRequest> = {
       criteria: globalThis.Array.isArray(object?.criteria)
         ? object.criteria.map((e: any) => Criterion.fromJSON(e))
         : [],
+      batchSize: isSet(object.batchSize)
+        ? globalThis.Number(object.batchSize)
+        : isSet(object.batch_size)
+        ? globalThis.Number(object.batch_size)
+        : 0,
     };
   },
 
@@ -1094,6 +1129,9 @@ export const SourceRequest: MessageFns<SourceRequest> = {
     if (message.criteria?.length) {
       obj.criteria = message.criteria.map((e) => Criterion.toJSON(e));
     }
+    if (message.batchSize !== 0) {
+      obj.batchSize = Math.round(message.batchSize);
+    }
     return obj;
   },
 
@@ -1104,24 +1142,85 @@ export const SourceRequest: MessageFns<SourceRequest> = {
     const message = createBaseSourceRequest();
     message.fromSequence = object.fromSequence ?? 0n;
     message.criteria = object.criteria?.map((e) => Criterion.fromPartial(e)) || [];
+    message.batchSize = object.batchSize ?? 0;
+    return message;
+  },
+};
+
+function createBaseSequencedEventBatch(): SequencedEventBatch {
+  return { events: [] };
+}
+
+export const SequencedEventBatch: MessageFns<SequencedEventBatch> = {
+  encode(message: SequencedEventBatch, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.events) {
+      SequencedEvent.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SequencedEventBatch {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSequencedEventBatch();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.events.push(SequencedEvent.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SequencedEventBatch {
+    return {
+      events: globalThis.Array.isArray(object?.events) ? object.events.map((e: any) => SequencedEvent.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: SequencedEventBatch): unknown {
+    const obj: any = {};
+    if (message.events?.length) {
+      obj.events = message.events.map((e) => SequencedEvent.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<SequencedEventBatch>): SequencedEventBatch {
+    return SequencedEventBatch.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<SequencedEventBatch>): SequencedEventBatch {
+    const message = createBaseSequencedEventBatch();
+    message.events = object.events?.map((e) => SequencedEvent.fromPartial(e)) || [];
     return message;
   },
 };
 
 function createBaseSourceResponse(): SourceResponse {
-  return { event: undefined, consistencyMarker: undefined };
+  return { consistencyMarker: undefined, batch: undefined };
 }
 
 export const SourceResponse: MessageFns<SourceResponse> = {
   encode(message: SourceResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.event !== undefined) {
-      SequencedEvent.encode(message.event, writer.uint32(10).fork()).join();
-    }
     if (message.consistencyMarker !== undefined) {
       if (BigInt.asIntN(64, message.consistencyMarker) !== message.consistencyMarker) {
         throw new globalThis.Error("value provided for field message.consistencyMarker of type int64 too large");
       }
       writer.uint32(16).int64(message.consistencyMarker);
+    }
+    if (message.batch !== undefined) {
+      SequencedEventBatch.encode(message.batch, writer.uint32(26).fork()).join();
     }
     return writer;
   },
@@ -1133,20 +1232,20 @@ export const SourceResponse: MessageFns<SourceResponse> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.event = SequencedEvent.decode(reader, reader.uint32());
-          continue;
-        }
         case 2: {
           if (tag !== 16) {
             break;
           }
 
           message.consistencyMarker = reader.int64() as bigint;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.batch = SequencedEventBatch.decode(reader, reader.uint32());
           continue;
         }
       }
@@ -1160,22 +1259,22 @@ export const SourceResponse: MessageFns<SourceResponse> = {
 
   fromJSON(object: any): SourceResponse {
     return {
-      event: isSet(object.event) ? SequencedEvent.fromJSON(object.event) : undefined,
       consistencyMarker: isSet(object.consistencyMarker)
         ? BigInt(object.consistencyMarker)
         : isSet(object.consistency_marker)
         ? BigInt(object.consistency_marker)
         : undefined,
+      batch: isSet(object.batch) ? SequencedEventBatch.fromJSON(object.batch) : undefined,
     };
   },
 
   toJSON(message: SourceResponse): unknown {
     const obj: any = {};
-    if (message.event !== undefined) {
-      obj.event = SequencedEvent.toJSON(message.event);
-    }
     if (message.consistencyMarker !== undefined) {
       obj.consistencyMarker = message.consistencyMarker.toString();
+    }
+    if (message.batch !== undefined) {
+      obj.batch = SequencedEventBatch.toJSON(message.batch);
     }
     return obj;
   },
@@ -1185,10 +1284,10 @@ export const SourceResponse: MessageFns<SourceResponse> = {
   },
   fromPartial(object: DeepPartial<SourceResponse>): SourceResponse {
     const message = createBaseSourceResponse();
-    message.event = (object.event !== undefined && object.event !== null)
-      ? SequencedEvent.fromPartial(object.event)
-      : undefined;
     message.consistencyMarker = object.consistencyMarker ?? undefined;
+    message.batch = (object.batch !== undefined && object.batch !== null)
+      ? SequencedEventBatch.fromPartial(object.batch)
+      : undefined;
     return message;
   },
 };
@@ -1274,7 +1373,7 @@ export const StreamControl: MessageFns<StreamControl> = {
 };
 
 function createBaseStreamSubscribe(): StreamSubscribe {
-  return { fromSequence: 0n, criteria: [], initialPermits: 0n, blacklistedNames: [] };
+  return { fromSequence: 0n, criteria: [], initialPermits: 0n, blacklistedNames: [], batchSize: 0 };
 }
 
 export const StreamSubscribe: MessageFns<StreamSubscribe> = {
@@ -1296,6 +1395,9 @@ export const StreamSubscribe: MessageFns<StreamSubscribe> = {
     }
     for (const v of message.blacklistedNames) {
       writer.uint32(34).string(v!);
+    }
+    if (message.batchSize !== 0) {
+      writer.uint32(40).uint32(message.batchSize);
     }
     return writer;
   },
@@ -1339,6 +1441,14 @@ export const StreamSubscribe: MessageFns<StreamSubscribe> = {
           message.blacklistedNames.push(reader.string());
           continue;
         }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.batchSize = reader.uint32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1368,6 +1478,11 @@ export const StreamSubscribe: MessageFns<StreamSubscribe> = {
         : globalThis.Array.isArray(object?.blacklisted_names)
         ? object.blacklisted_names.map((e: any) => globalThis.String(e))
         : [],
+      batchSize: isSet(object.batchSize)
+        ? globalThis.Number(object.batchSize)
+        : isSet(object.batch_size)
+        ? globalThis.Number(object.batch_size)
+        : 0,
     };
   },
 
@@ -1385,6 +1500,9 @@ export const StreamSubscribe: MessageFns<StreamSubscribe> = {
     if (message.blacklistedNames?.length) {
       obj.blacklistedNames = message.blacklistedNames;
     }
+    if (message.batchSize !== 0) {
+      obj.batchSize = Math.round(message.batchSize);
+    }
     return obj;
   },
 
@@ -1397,6 +1515,7 @@ export const StreamSubscribe: MessageFns<StreamSubscribe> = {
     message.criteria = object.criteria?.map((e) => Criterion.fromPartial(e)) || [];
     message.initialPermits = object.initialPermits ?? 0n;
     message.blacklistedNames = object.blacklistedNames?.map((e) => e) || [];
+    message.batchSize = object.batchSize ?? 0;
     return message;
   },
 };
@@ -1463,16 +1582,16 @@ export const StreamPermits: MessageFns<StreamPermits> = {
 };
 
 function createBaseStreamResponse(): StreamResponse {
-  return { event: undefined, heartbeat: undefined };
+  return { heartbeat: undefined, batch: undefined };
 }
 
 export const StreamResponse: MessageFns<StreamResponse> = {
   encode(message: StreamResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.event !== undefined) {
-      SequencedEvent.encode(message.event, writer.uint32(10).fork()).join();
-    }
     if (message.heartbeat !== undefined) {
       StreamHeartbeat.encode(message.heartbeat, writer.uint32(18).fork()).join();
+    }
+    if (message.batch !== undefined) {
+      SequencedEventBatch.encode(message.batch, writer.uint32(26).fork()).join();
     }
     return writer;
   },
@@ -1484,20 +1603,20 @@ export const StreamResponse: MessageFns<StreamResponse> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.event = SequencedEvent.decode(reader, reader.uint32());
-          continue;
-        }
         case 2: {
           if (tag !== 18) {
             break;
           }
 
           message.heartbeat = StreamHeartbeat.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.batch = SequencedEventBatch.decode(reader, reader.uint32());
           continue;
         }
       }
@@ -1511,18 +1630,18 @@ export const StreamResponse: MessageFns<StreamResponse> = {
 
   fromJSON(object: any): StreamResponse {
     return {
-      event: isSet(object.event) ? SequencedEvent.fromJSON(object.event) : undefined,
       heartbeat: isSet(object.heartbeat) ? StreamHeartbeat.fromJSON(object.heartbeat) : undefined,
+      batch: isSet(object.batch) ? SequencedEventBatch.fromJSON(object.batch) : undefined,
     };
   },
 
   toJSON(message: StreamResponse): unknown {
     const obj: any = {};
-    if (message.event !== undefined) {
-      obj.event = SequencedEvent.toJSON(message.event);
-    }
     if (message.heartbeat !== undefined) {
       obj.heartbeat = StreamHeartbeat.toJSON(message.heartbeat);
+    }
+    if (message.batch !== undefined) {
+      obj.batch = SequencedEventBatch.toJSON(message.batch);
     }
     return obj;
   },
@@ -1532,11 +1651,11 @@ export const StreamResponse: MessageFns<StreamResponse> = {
   },
   fromPartial(object: DeepPartial<StreamResponse>): StreamResponse {
     const message = createBaseStreamResponse();
-    message.event = (object.event !== undefined && object.event !== null)
-      ? SequencedEvent.fromPartial(object.event)
-      : undefined;
     message.heartbeat = (object.heartbeat !== undefined && object.heartbeat !== null)
       ? StreamHeartbeat.fromPartial(object.heartbeat)
+      : undefined;
+    message.batch = (object.batch !== undefined && object.batch !== null)
+      ? SequencedEventBatch.fromPartial(object.batch)
       : undefined;
     return message;
   },

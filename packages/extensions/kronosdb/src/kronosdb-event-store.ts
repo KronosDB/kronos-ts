@@ -173,6 +173,8 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
       const request = {
         fromSequence: condition.start ?? 0n,
         criteria: effectiveCriterions,
+        // Events per response message; 0 lets the server pick its default.
+        batchSize: 0,
       }
 
       const events: EventMessage[] = []
@@ -180,13 +182,14 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
 
       const stream = connection.eventStore.source(request, { metadata: getMetadata() })
       for await (const response of stream) {
-        // SourceResponse uses oneof: event (SequencedEvent) or consistency_marker (int64)
-        if (response.event) {
-          const seqEvent = response.event
-          if (seqEvent.event) {
-            // KronosDB doesn't return tags on source — we need to fetch them
-            // For now, pass empty tags; tags are only relevant for append conditions
-            events.push(eventFromProto(seqEvent.event))
+        // SourceResponse uses oneof: batch (SequencedEventBatch) or consistency_marker (int64)
+        if (response.batch) {
+          for (const seqEvent of response.batch.events) {
+            if (seqEvent.event) {
+              // KronosDB doesn't return tags on source — we need to fetch them
+              // For now, pass empty tags; tags are only relevant for append conditions
+              events.push(eventFromProto(seqEvent.event))
+            }
           }
         }
         if (response.consistencyMarker !== undefined && response.consistencyMarker !== 0n) {
@@ -265,6 +268,10 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
             criteria: effectiveCriterions,
             initialPermits: BigInt(PERMIT_BATCH),
             blacklistedNames: [],
+            // Events per response message; 0 lets the server pick. The server
+            // never sends more unconsumed events than granted permits, so the
+            // effective batch cap is min(server default, outstanding permits).
+            batchSize: 0,
           },
         }
 
@@ -302,17 +309,20 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
         try {
           for await (const response of grpcStream) {
             if (completed) break
-            const seqEvent = response.event
-            // StreamResponse is a oneof { event, heartbeat } since kronosdb v0.2.0.
-            // For heartbeat frames, response.event is undefined and this guard skips
+            // StreamResponse is a oneof { batch, heartbeat } since kronosdb v0.5.
+            // For heartbeat frames, response.batch is undefined and this guard skips
             // them transparently — no explicit heartbeat branch needed (RESEARCH.md
             // KDB-03, Pitfall 3). Server emits one heartbeat every ~15 seconds.
-            if (seqEvent?.event) {
-              buffer.push({
-                sequence: seqEvent.sequence,
-                event: eventFromProto(seqEvent.event),
-              })
-              availableCallback?.()
+            if (response.batch) {
+              for (const seqEvent of response.batch.events) {
+                if (seqEvent.event) {
+                  buffer.push({
+                    sequence: seqEvent.sequence,
+                    event: eventFromProto(seqEvent.event),
+                  })
+                }
+              }
+              if (response.batch.events.length > 0) availableCallback?.()
             }
           }
           completed = true
