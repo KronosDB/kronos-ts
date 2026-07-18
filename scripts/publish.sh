@@ -6,10 +6,9 @@
 # authentication"). npm >= 11.5.1 performs the OIDC token exchange automatically.
 #
 # Why the rewrite step: `npm publish` does not understand Bun's workspace
-# protocol, so it would upload literal `"workspace:*"` specifiers and consumers
-# couldn't install. `scripts/resolve-workspace.mjs` rewrites those to concrete
-# versions before each publish, and the manifest is restored (git checkout)
-# afterwards so the working tree is left untouched.
+# protocol and does not apply nested publishConfig entrypoint overrides. The
+# rewrite resolves `workspace:*` to concrete versions and exposes the compiled
+# `dist` entrypoints at the top level, then restores the development manifest.
 #
 # Versioning/changelogs are still handled by `changeset version` (run
 # separately via `bun run version-packages`). This script only handles the
