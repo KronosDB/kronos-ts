@@ -1,5 +1,16 @@
 # @kronos-ts/test
 
+## 0.1.13
+
+### Patch Changes
+
+- Updated dependencies [f3f9fbc]
+  - @kronos-ts/common@0.1.2
+  - @kronos-ts/messaging@0.9.2
+  - @kronos-ts/modelling@0.2.10
+  - @kronos-ts/eventsourcing@0.3.3
+  - @kronos-ts/app@0.5.3
+
 ## 0.1.12
 
 ### Patch Changes

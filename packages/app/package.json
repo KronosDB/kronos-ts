@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/app",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Application container for Kronos — the kronos() builder, lifecycle, and extensions.",
   "license": "Apache-2.0",
   "type": "module",

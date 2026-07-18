@@ -1,5 +1,14 @@
 # @kronos-ts/opentelemetry
 
+## 0.4.4
+
+### Patch Changes
+
+- Updated dependencies [f3f9fbc]
+  - @kronos-ts/common@0.1.2
+  - @kronos-ts/messaging@0.9.2
+  - @kronos-ts/app@0.5.3
+
 ## 0.4.3
 
 ### Patch Changes
