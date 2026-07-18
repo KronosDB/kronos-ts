@@ -1,5 +1,14 @@
 # @kronos-ts/messaging
 
+## 0.9.2
+
+### Patch Changes
+
+- f3f9fbc: Publish compiled `dist` entrypoints in npm manifests instead of development-only TypeScript source paths. This makes the packages directly importable in Node.js while retaining concrete versions for workspace dependencies.
+- Updated dependencies [f3f9fbc]
+  - @kronos-ts/common@0.1.2
+  - @kronos-ts/eventsourcing@0.3.3
+
 ## 0.9.1
 
 ### Patch Changes

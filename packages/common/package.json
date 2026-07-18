@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/common",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Shared primitives for Kronos — qualified names, tags, and metadata.",
   "license": "Apache-2.0",
   "type": "module",
