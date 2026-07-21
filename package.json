@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "bun test",
     "test:unit": "bun test $(find packages -path '*/src/*' -name '*.test.ts' -not -name '*.integration.test.ts')",
+    "benchmark:kronosdb-postgres": "bun run integrationtests/src/benchmarks/kronosdb-postgres/run.ts",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "bun run build && bash scripts/publish.sh"
