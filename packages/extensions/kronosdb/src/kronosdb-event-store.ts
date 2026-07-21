@@ -182,18 +182,19 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
 
       const stream = connection.eventStore.source(request, { metadata: getMetadata() })
       for await (const response of stream) {
-        // SourceResponse uses oneof: batch (SequencedEventBatch) or consistency_marker (int64)
-        if (response.batch) {
-          for (const seqEvent of response.batch.events) {
-            if (seqEvent.event) {
-              // KronosDB doesn't return tags on source — we need to fetch them
-              // For now, pass empty tags; tags are only relevant for append conditions
-              events.push(eventFromProto(seqEvent.event))
-            }
+        const batch = response.batch
+        if (!batch) continue
+        for (const seqEvent of batch.events) {
+          if (seqEvent.event) {
+            // KronosDB doesn't return tags on source — we need to fetch them
+            // For now, pass empty tags; tags are only relevant for append conditions
+            events.push(eventFromProto(seqEvent.event))
           }
         }
-        if (response.consistencyMarker !== undefined && response.consistencyMarker !== 0n) {
-          marker = markerAt(response.consistencyMarker)
+        // The final batch carries the marker; 0n is a valid marker for an
+        // empty store, so presence — not truthiness — decides.
+        if (batch.consistencyMarker !== undefined) {
+          marker = markerAt(batch.consistencyMarker)
         }
       }
 
@@ -217,10 +218,7 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
 
       return {
         async commit() {
-          async function* requestStream() {
-            yield request
-          }
-          const response = await connection.eventStore.append(requestStream(), { metadata: getMetadata() })
+          const response = await connection.eventStore.append(request, { metadata: getMetadata() })
           responseMarker = response.consistencyMarker
           await notifySubscribers(newEvents)
         },
