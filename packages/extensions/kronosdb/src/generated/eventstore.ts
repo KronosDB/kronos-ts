@@ -49,7 +49,7 @@ export interface SequencedEvent {
   event: Event | undefined;
 }
 
-/** Request to append events. Sent as a stream to allow batching. */
+/** Request to append events. The repeated events field carries the batch. */
 export interface AppendRequest {
   /** Optional consistency condition. If omitted, events are appended unconditionally. */
   condition:
@@ -109,19 +109,22 @@ export interface SourceRequest {
 /** A batch of sequenced events, in ascending sequence order. */
 export interface SequencedEventBatch {
   events: SequencedEvent[];
+  /**
+   * Present on the FINAL batch of a Source stream: the next-exclusive
+   * consistency marker for subsequent DCB-conditioned appends. A source
+   * with no matching events still ends with one (empty) marker-carrying
+   * batch. Absent on Stream responses and non-final Source batches.
+   */
+  consistencyMarker?: bigint | undefined;
 }
 
-/** Response containing a batch of matching events or the final consistency marker. */
+/**
+ * Response containing a batch of matching events. The final batch carries
+ * the consistency marker — there is no separate marker frame.
+ */
 export interface SourceResponse {
-  /**
-   * The consistency marker at the end of the stream.
-   * Use this for subsequent appends related to the same criteria.
-   */
-  consistencyMarker?:
-    | bigint
-    | undefined;
   /** A batch of matching events. */
-  batch?: SequencedEventBatch | undefined;
+  batch: SequencedEventBatch | undefined;
 }
 
 /**
@@ -1148,13 +1151,19 @@ export const SourceRequest: MessageFns<SourceRequest> = {
 };
 
 function createBaseSequencedEventBatch(): SequencedEventBatch {
-  return { events: [] };
+  return { events: [], consistencyMarker: undefined };
 }
 
 export const SequencedEventBatch: MessageFns<SequencedEventBatch> = {
   encode(message: SequencedEventBatch, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     for (const v of message.events) {
       SequencedEvent.encode(v!, writer.uint32(10).fork()).join();
+    }
+    if (message.consistencyMarker !== undefined) {
+      if (BigInt.asIntN(64, message.consistencyMarker) !== message.consistencyMarker) {
+        throw new globalThis.Error("value provided for field message.consistencyMarker of type int64 too large");
+      }
+      writer.uint32(16).int64(message.consistencyMarker);
     }
     return writer;
   },
@@ -1174,6 +1183,14 @@ export const SequencedEventBatch: MessageFns<SequencedEventBatch> = {
           message.events.push(SequencedEvent.decode(reader, reader.uint32()));
           continue;
         }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.consistencyMarker = reader.int64() as bigint;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1186,6 +1203,11 @@ export const SequencedEventBatch: MessageFns<SequencedEventBatch> = {
   fromJSON(object: any): SequencedEventBatch {
     return {
       events: globalThis.Array.isArray(object?.events) ? object.events.map((e: any) => SequencedEvent.fromJSON(e)) : [],
+      consistencyMarker: isSet(object.consistencyMarker)
+        ? BigInt(object.consistencyMarker)
+        : isSet(object.consistency_marker)
+        ? BigInt(object.consistency_marker)
+        : undefined,
     };
   },
 
@@ -1193,6 +1215,9 @@ export const SequencedEventBatch: MessageFns<SequencedEventBatch> = {
     const obj: any = {};
     if (message.events?.length) {
       obj.events = message.events.map((e) => SequencedEvent.toJSON(e));
+    }
+    if (message.consistencyMarker !== undefined) {
+      obj.consistencyMarker = message.consistencyMarker.toString();
     }
     return obj;
   },
@@ -1203,22 +1228,17 @@ export const SequencedEventBatch: MessageFns<SequencedEventBatch> = {
   fromPartial(object: DeepPartial<SequencedEventBatch>): SequencedEventBatch {
     const message = createBaseSequencedEventBatch();
     message.events = object.events?.map((e) => SequencedEvent.fromPartial(e)) || [];
+    message.consistencyMarker = object.consistencyMarker ?? undefined;
     return message;
   },
 };
 
 function createBaseSourceResponse(): SourceResponse {
-  return { consistencyMarker: undefined, batch: undefined };
+  return { batch: undefined };
 }
 
 export const SourceResponse: MessageFns<SourceResponse> = {
   encode(message: SourceResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.consistencyMarker !== undefined) {
-      if (BigInt.asIntN(64, message.consistencyMarker) !== message.consistencyMarker) {
-        throw new globalThis.Error("value provided for field message.consistencyMarker of type int64 too large");
-      }
-      writer.uint32(16).int64(message.consistencyMarker);
-    }
     if (message.batch !== undefined) {
       SequencedEventBatch.encode(message.batch, writer.uint32(26).fork()).join();
     }
@@ -1232,14 +1252,6 @@ export const SourceResponse: MessageFns<SourceResponse> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
-        case 2: {
-          if (tag !== 16) {
-            break;
-          }
-
-          message.consistencyMarker = reader.int64() as bigint;
-          continue;
-        }
         case 3: {
           if (tag !== 26) {
             break;
@@ -1258,21 +1270,11 @@ export const SourceResponse: MessageFns<SourceResponse> = {
   },
 
   fromJSON(object: any): SourceResponse {
-    return {
-      consistencyMarker: isSet(object.consistencyMarker)
-        ? BigInt(object.consistencyMarker)
-        : isSet(object.consistency_marker)
-        ? BigInt(object.consistency_marker)
-        : undefined,
-      batch: isSet(object.batch) ? SequencedEventBatch.fromJSON(object.batch) : undefined,
-    };
+    return { batch: isSet(object.batch) ? SequencedEventBatch.fromJSON(object.batch) : undefined };
   },
 
   toJSON(message: SourceResponse): unknown {
     const obj: any = {};
-    if (message.consistencyMarker !== undefined) {
-      obj.consistencyMarker = message.consistencyMarker.toString();
-    }
     if (message.batch !== undefined) {
       obj.batch = SequencedEventBatch.toJSON(message.batch);
     }
@@ -1284,7 +1286,6 @@ export const SourceResponse: MessageFns<SourceResponse> = {
   },
   fromPartial(object: DeepPartial<SourceResponse>): SourceResponse {
     const message = createBaseSourceResponse();
-    message.consistencyMarker = object.consistencyMarker ?? undefined;
     message.batch = (object.batch !== undefined && object.batch !== null)
       ? SequencedEventBatch.fromPartial(object.batch)
       : undefined;
@@ -2159,11 +2160,14 @@ export const EventStoreDefinition = {
   name: "EventStore",
   fullName: "kronosdb.eventstore.EventStore",
   methods: {
-    /** Appends new events to the store. */
+    /**
+     * Appends new events to the store. One request carries the whole
+     * transaction: the repeated events field is the batch, all-or-nothing.
+     */
     append: {
       name: "Append",
       requestType: AppendRequest as typeof AppendRequest,
-      requestStream: true,
+      requestStream: false,
       responseType: AppendResponse as typeof AppendResponse,
       responseStream: false,
       options: {},
@@ -2235,11 +2239,11 @@ export const EventStoreDefinition = {
 } as const;
 
 export interface EventStoreServiceImplementation<CallContextExt = {}> {
-  /** Appends new events to the store. */
-  append(
-    request: AsyncIterable<AppendRequest>,
-    context: CallContext & CallContextExt,
-  ): Promise<DeepPartial<AppendResponse>>;
+  /**
+   * Appends new events to the store. One request carries the whole
+   * transaction: the repeated events field is the batch, all-or-nothing.
+   */
+  append(request: AppendRequest, context: CallContext & CallContextExt): Promise<DeepPartial<AppendResponse>>;
   /** Provides a finite stream of events matching the given criteria. */
   source(
     request: SourceRequest,
@@ -2273,11 +2277,11 @@ export interface EventStoreServiceImplementation<CallContextExt = {}> {
 }
 
 export interface EventStoreClient<CallOptionsExt = {}> {
-  /** Appends new events to the store. */
-  append(
-    request: AsyncIterable<DeepPartial<AppendRequest>>,
-    options?: CallOptions & CallOptionsExt,
-  ): Promise<AppendResponse>;
+  /**
+   * Appends new events to the store. One request carries the whole
+   * transaction: the repeated events field is the batch, all-or-nothing.
+   */
+  append(request: DeepPartial<AppendRequest>, options?: CallOptions & CallOptionsExt): Promise<AppendResponse>;
   /** Provides a finite stream of events matching the given criteria. */
   source(request: DeepPartial<SourceRequest>, options?: CallOptions & CallOptionsExt): AsyncIterable<SourceResponse>;
   /**
