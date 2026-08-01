@@ -11,11 +11,9 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
-  append,
   createInMemoryEventStore,
-  load,
   type AppendCondition,
-  type EventStore,
+  type EventStore
 } from "@kronos-ts/eventsourcing"
 import { rabbitMq } from "../rabbitmq.js"
 import { startRabbitMqContainer, type RunningRabbitMq } from "./testcontainers-setup.js"
@@ -92,9 +90,9 @@ describe("RabbitMQ command transport integration", () => {
       .set("eventStore", () => probe.eventStore)
       .states(StateA, StateB)
       .commands(
-        commandHandler(Finish, async ({ payload: cmd }) => {
-          await load(StateB, { bId: cmd.bId })
-          append(BFinished, { bId: cmd.bId })
+        commandHandler(Finish, async ({ payload: cmd }, ctx) => {
+          await ctx.load(StateB, { bId: cmd.bId })
+          ctx.append(BFinished, { bId: cmd.bId })
         }),
       )
       .start()
@@ -104,8 +102,8 @@ describe("RabbitMQ command transport integration", () => {
       .set("eventStore", () => probe.eventStore)
       .states(StateA, StateB)
       .commands(
-        commandHandler(StartWithSend, async ({ payload: cmd }) => {
-          await load(StateA, { aId: cmd.aId })
+        commandHandler(StartWithSend, async ({ payload: cmd }, ctx) => {
+          await ctx.load(StateA, { aId: cmd.aId })
           await send(Finish, { bId: cmd.bId })
         }),
       )

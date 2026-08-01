@@ -23,7 +23,6 @@ import {
   type HandlerEnhancerDefinition,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { append, load } from "@kronos-ts/eventsourcing"
 import { kronos } from "../kronos.js"
 import { AppImpl, AppAlreadyStartedError } from "../app.js"
 import { registerInMemoryDefaults } from "../defaults.js"
@@ -52,9 +51,9 @@ const PingState = state({
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
   evolve: (on) => [on(Pinged, (s) => ({ ...s, pinged: true }))],
 })
-const pingHandler = commandHandler(Ping, async ({ payload: cmd }) => {
-  await load(PingState, { id: cmd.id })
-  append(Pinged, { id: cmd.id })
+const pingHandler = commandHandler(Ping, async ({ payload: cmd }, ctx) => {
+  await ctx.load(PingState, { id: cmd.id })
+  ctx.append(Pinged, { id: cmd.id })
   return `OK:${cmd.id}` as const
 })
 
@@ -154,7 +153,7 @@ describe("handlerEnhancer wires through subscribing event processor", () => {
   it("composedEnhancer wraps subscribing-processor event handlers", async () => {
     const recorded: Array<any> = []
     let received = ""
-    const onPinged = eventHandler(Pinged, async ({ payload }) => {
+    const onPinged = eventHandler(Pinged, async ({ payload }, ctx) => {
       received = payload.id
     })
     const app = kronos({ quiet: true })

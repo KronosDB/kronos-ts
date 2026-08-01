@@ -20,7 +20,6 @@ import type { CommandMessage } from "../message.js"
 import type { EventCriteria } from "../event-criteria.js"
 import { processingStateStorage, Phase } from "../processing-state.js"
 import { runInNewUoW } from "../unit-of-work.js"
-import { load, append } from "@kronos-ts/eventsourcing"
 
 // ---------------------------------------------------------------------------
 // Test descriptors
@@ -144,8 +143,8 @@ describe("registerCommandHandlersNatively", () => {
       const bus = createRecordingCommandBus()
       const config = createStubConfiguration({ commandBus: bus })
 
-      const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
-        append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
+      const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
+        ctx.append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
       })
 
       const changeCapacity = commandHandler(ChangeCourseCapacity, async () => {})
@@ -164,7 +163,7 @@ describe("registerCommandHandlersNatively", () => {
   })
 
   describe("handler receives state from state manager", () => {
-    it("loads state via load()", async () => {
+    it("loads state via ctx.load()", async () => {
       await runInNewUoW(emptyMetadata(), async () => {
         // given
         const bus = createRecordingCommandBus()
@@ -182,8 +181,8 @@ describe("registerCommandHandlersNatively", () => {
         const config = createStubConfiguration({ commandBus: bus, stateManager })
 
         let loadedState: any = null
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
-          loadedState = await load({ name: "Course" }, cmd.courseId)
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }, ctx) => {
+          loadedState = await ctx.load({ name: "Course" }, cmd.courseId)
         })
 
         registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
@@ -206,8 +205,8 @@ describe("registerCommandHandlersNatively", () => {
         const bus = createRecordingCommandBus()
         const config = createStubConfiguration({ commandBus: bus })
 
-        const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
-          append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
+        const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
+          ctx.append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
         })
 
         registerCommandHandlersNatively([createCourse], { commandBus: bus, config, moduleName: "course-commands" })
@@ -236,8 +235,8 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, eventStore })
 
-        const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
-          append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
+        const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
+          ctx.append(CourseCreated, { courseId: cmd.courseId, name: cmd.name })
         })
 
         registerCommandHandlersNatively([createCourse], { commandBus: bus, config, moduleName: "course-commands" })
@@ -282,9 +281,9 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
-          await load({ name: "Course" }, cmd.courseId)
-          append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }, ctx) => {
+          await ctx.load({ name: "Course" }, cmd.courseId)
+          ctx.append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
         })
 
         registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
@@ -328,9 +327,9 @@ describe("registerCommandHandlersNatively", () => {
 
         const customCriteria: EventCriteria = { kind: "any-tag" }
         const changeCapacity = commandHandler(ChangeCourseCapacity, {
-          handler: async ({ payload: cmd }) => {
-            await load({ name: "Course" }, cmd.courseId)
-            append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+          handler: async ({ payload: cmd }, ctx) => {
+            await ctx.load({ name: "Course" }, cmd.courseId)
+            ctx.append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
           },
           appendCondition: (_cmd, _sourcedCriteria) => customCriteria,
         })
@@ -351,7 +350,7 @@ describe("registerCommandHandlersNatively", () => {
   })
 
   describe("entity cache", () => {
-    it("prevents duplicate load() in same invocation", async () => {
+    it("prevents duplicate ctx.load() in same invocation", async () => {
       await runInNewUoW(emptyMetadata(), async () => {
         // given
         let loadCount = 0
@@ -370,10 +369,10 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }, ctx) => {
           // Load same entity twice
-          await load({ name: "Course" }, cmd.courseId)
-          await load({ name: "Course" }, cmd.courseId)
+          await ctx.load({ name: "Course" }, cmd.courseId)
+          await ctx.load({ name: "Course" }, cmd.courseId)
         })
 
         registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
@@ -407,9 +406,9 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async () => {
-          await load({ name: "Course" }, "cs-101")
-          await load({ name: "Course" }, "cs-202")
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async (_message, ctx) => {
+          await ctx.load({ name: "Course" }, "cs-101")
+          await ctx.load({ name: "Course" }, "cs-202")
         })
 
         registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
@@ -447,10 +446,10 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, stateManager, eventStore })
 
-        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
-          await load({ name: "Course" }, "cs-101")
-          await load({ name: "Course" }, "cs-202")
-          append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+        const changeCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }, ctx) => {
+          await ctx.load({ name: "Course" }, "cs-101")
+          await ctx.load({ name: "Course" }, "cs-202")
+          ctx.append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
         })
 
         registerCommandHandlersNatively([changeCapacity], { commandBus: bus, config, moduleName: "course-commands" })
@@ -495,11 +494,11 @@ describe("registerCommandHandlersNatively", () => {
         }
         const config = createStubConfiguration({ commandBus: bus, eventStore })
 
-        const outer = commandHandler(OuterCommand, async ({ payload: cmd }) => {
+        const outer = commandHandler(OuterCommand, async ({ payload: cmd }, ctx) => {
           await bus.dispatch(makeCommandMessage(InnerCommand, { courseId: cmd.courseId }))
         })
-        const inner = commandHandler(InnerCommand, async ({ payload: cmd }) => {
-          append(CourseCreated, { courseId: cmd.courseId, name: "Nested" })
+        const inner = commandHandler(InnerCommand, async ({ payload: cmd }, ctx) => {
+          ctx.append(CourseCreated, { courseId: cmd.courseId, name: "Nested" })
         })
 
         registerCommandHandlersNatively([outer, inner], { commandBus: bus, config, moduleName: "course-commands" })

@@ -62,18 +62,17 @@ export {
 
 export { createInterceptingEventStore } from "./intercepting-event-store.js"
 
-// Module-level handler helpers (Plan 04-01 / HDL-02 / D-42)
-export { load, STATE_MANAGER_KEY } from "./load.js"
+// Handler capabilities are reached via the HandlerContext (second handler
+// argument in @kronos-ts/messaging). The implementations stay in this package
+// as internal subpath exports ("./append", "./load", "./schedule") consumed
+// by the context — only the ALS resource keys and types are public here.
+export { STATE_MANAGER_KEY } from "./load.js"
 export {
-  schedule,
-  scheduleAfter,
-  cancelSchedule,
   EVENT_SCHEDULER_KEY,
   type ScheduleFunction,
   type ScheduleAfterFunction,
 } from "./schedule.js"
 export {
-  append,
   BUFFERED_EVENTS_KEY,
   SOURCING_INFOS_KEY,
   STATE_CACHE_KEY,

@@ -21,11 +21,9 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
-  load,
-  append,
   type SnapshotStore,
   type SnapshotPolicy,
-  afterEvents,
+  afterEvents
 } from "@kronos-ts/eventsourcing"
 import { kronos } from "../kronos.js"
 import { AppImpl } from "../app.js"
@@ -50,12 +48,12 @@ const Tuple = state({
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
   evolve: (on) => [on(Tapped, (s) => ({ ...s, tapped: true }))],
 })
-const tapHandler = commandHandler(Tap, async ({ payload: cmd }) => {
-  await load(Tuple, { id: cmd.id })
-  append(Tapped, { id: cmd.id })
+const tapHandler = commandHandler(Tap, async ({ payload: cmd }, ctx) => {
+  await ctx.load(Tuple, { id: cmd.id })
+  ctx.append(Tapped, { id: cmd.id })
 })
 
-// Probe snapshot store: counts load() calls and records the (stateName, id) keys.
+// Probe snapshot store: counts ctx.load() calls and records the (stateName, id) keys.
 function probeSnapshotStore(): SnapshotStore & { loadCalls: Array<{ stateName: string; id: unknown }> } {
   const loadCalls: Array<{ stateName: string; id: unknown }> = []
   return {
@@ -106,7 +104,7 @@ describe("App.states() tuple-shape — Plan 09-01 (D-88)", () => {
 // ─── T4 — runtime threading verified via snapshotStore.load() observation ──
 
 describe("App.states() tuple options — runtime threading at start()", () => {
-  it("tuple-form snapshotStore is consulted during load() at command dispatch", async () => {
+  it("tuple-form snapshotStore is consulted during ctx.load() at command dispatch", async () => {
     const store = probeSnapshotStore()
     const app = kronos({ quiet: true })
       .states([Tuple, { snapshotStore: store, snapshotPolicy: afterEvents(100) }])
@@ -114,7 +112,7 @@ describe("App.states() tuple options — runtime threading at start()", () => {
     const running = await app.start()
     try {
       await running.commandGateway.send(Tap, { id: "t1" }, emptyMetadata())
-      // load() consulted the snapshot store at least once for entity "Tuple".
+      // ctx.load() consulted the snapshot store at least once for entity "Tuple".
       expect(store.loadCalls.length).toBeGreaterThan(0)
       expect(store.loadCalls.some((c) => c.stateName === "Tuple")).toBe(true)
     } finally {

@@ -15,7 +15,8 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
-import { load, append } from "../index.js"
+import { append } from "../append.js"
+import { load } from "../load.js"
 
 // -- Domain --
 

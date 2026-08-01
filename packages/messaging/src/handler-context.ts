@@ -1,5 +1,7 @@
 import type { Metadata } from "@kronos-ts/common"
-import { append, load } from "@kronos-ts/eventsourcing"
+import { append } from "@kronos-ts/eventsourcing/append"
+import { load } from "@kronos-ts/eventsourcing/load"
+import { schedule, scheduleAfter, cancelSchedule } from "@kronos-ts/eventsourcing/schedule"
 import type { z } from "zod"
 import type { CommandDescriptor, EventDescriptor } from "./descriptor.js"
 import { emitUpdate, type EmitUpdateFunction } from "./emit-update.js"
@@ -66,6 +68,12 @@ export interface ContextSendFunction {
 export interface EventHandlerContext {
   /** Load event-sourced state within the active UnitOfWork (cached per UoW). */
   readonly load: ContextLoadFunction
+  /** Schedule an event for future delivery via the configured event scheduler. */
+  readonly schedule: typeof import("@kronos-ts/eventsourcing/schedule").schedule
+  /** Schedule an event after a delay. */
+  readonly scheduleAfter: typeof import("@kronos-ts/eventsourcing/schedule").scheduleAfter
+  /** Cancel a previously scheduled event. */
+  readonly cancelSchedule: typeof import("@kronos-ts/eventsourcing/schedule").cancelSchedule
   /** Dispatch a command; it is handled in its own fresh UnitOfWork. */
   readonly send: ContextSendFunction
   /** Emit a subscription-query update through the active query bus. */
@@ -96,6 +104,9 @@ export interface HandlerContext extends EventHandlerContext {
  */
 export const EVENT_HANDLER_CONTEXT: EventHandlerContext = Object.freeze({
   load,
+  schedule,
+  scheduleAfter,
+  cancelSchedule,
   send,
   emitUpdate,
   transaction: getOrBeginActiveTransaction,
