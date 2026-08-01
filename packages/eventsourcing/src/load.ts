@@ -63,6 +63,9 @@ function stableIdKey(id: unknown): string {
 /**
  * Plan 04-01 (HDL-02 / D-42): module-level load.
  *
+ * @deprecated Prefer the handler context: `ctx.load(...)` (second handler
+ * argument on commandHandler/eventHandler). Same behaviour and caching.
+ *
  * Read-only — NOT phase-guarded per D-43. Throws NoActiveUnitOfWork outside
  * a UoW. Caches state within the UoW (duplicate load() calls for the
  * same module-id pair return the cached promise without re-querying the store).

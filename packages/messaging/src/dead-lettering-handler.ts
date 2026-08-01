@@ -13,6 +13,7 @@ import {
   type DeadLetterListener,
   noOpDeadLetterListener,
 } from "./dead-letter-listener.js"
+import { EVENT_HANDLER_CONTEXT } from "./handler-context.js"
 
 /**
  * Options for dead-lettering event handler wrapper.
@@ -90,7 +91,7 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
       // Try to deliver to all handlers
       for (const reg of handlers) {
         try {
-          await reg.handler({ ...event, sequence: sequencedEvent.sequence })
+          await reg.handler({ ...event, sequence: sequencedEvent.sequence }, EVENT_HANDLER_CONTEXT)
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err))
           const letter = createDeadLetter(event, error, seqId, {

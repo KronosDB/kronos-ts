@@ -1,6 +1,7 @@
 import type { z } from "zod"
 import type { EventDescriptor } from "./descriptor.js"
 import type { SequencedEventMessage } from "./message.js"
+import type { EventHandlerContext } from "./handler-context.js"
 
 // ---------------------------------------------------------------------------
 // Singular factory — mirrors commandHandler / queryHandler.
@@ -16,15 +17,24 @@ import type { SequencedEventMessage } from "./message.js"
 export interface EventHandlerDefinition<P extends z.ZodType = z.ZodType> {
   readonly kind: "event-handler"
   readonly descriptor: EventDescriptor<P>
-  readonly handler: (message: SequencedEventMessage<z.infer<P>>) => Promise<void> | void
+  readonly handler: (
+    message: SequencedEventMessage<z.infer<P>>,
+    context: EventHandlerContext,
+  ) => Promise<void> | void
 }
 
 /**
  * Defines a singular event handler.
  *
+ * The handler receives the sequenced event and an {@link EventHandlerContext}
+ * (`load`, `send`, `emitUpdate`, `transaction` — no `append`: processor
+ * UnitOfWorks flush no event buffer, so automations that produce events
+ * dispatch a command via `ctx.send` instead).
+ *
  * ```
- * const onCourseCreated = eventHandler(CourseCreated, async ({ payload, metadata, timestamp }) => {
- *   await db.courses.insert({ id: payload.courseId, name: payload.name, createdAt: timestamp })
+ * const onCourseCreated = eventHandler(CourseCreated, async ({ payload, timestamp }, ctx) => {
+ *   const tx = await ctx.transaction<Db>()
+ *   await insertCourseRow(tx, { id: payload.courseId, name: payload.name, createdAt: timestamp })
  * })
  * ```
  *
@@ -35,7 +45,7 @@ export interface EventHandlerDefinition<P extends z.ZodType = z.ZodType> {
  */
 export function eventHandler<P extends z.ZodType>(
   descriptor: EventDescriptor<P>,
-  handler: (message: SequencedEventMessage<z.infer<P>>) => Promise<void> | void,
+  handler: (message: SequencedEventMessage<z.infer<P>>, context: EventHandlerContext) => Promise<void> | void,
 ): EventHandlerDefinition<P> {
   return { kind: "event-handler", descriptor, handler }
 }

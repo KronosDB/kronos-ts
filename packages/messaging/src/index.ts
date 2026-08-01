@@ -281,6 +281,15 @@ export {
 
 // Module-level handler helpers (Plan 04-01 / HDL-02 / D-42)
 export { send, COMMAND_BUS_KEY } from "./send.js"
+export {
+  type HandlerContext,
+  type EventHandlerContext,
+  type ContextAppendFunction,
+  type ContextLoadFunction,
+  type ContextSendFunction,
+  HANDLER_CONTEXT,
+  EVENT_HANDLER_CONTEXT,
+} from "./handler-context.js"
 export { emitUpdate, QUERY_BUS_KEY } from "./emit-update.js"
 
 // Event scheduling

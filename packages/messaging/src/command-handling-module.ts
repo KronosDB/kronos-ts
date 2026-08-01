@@ -1,5 +1,6 @@
 import { qualifiedNameToString, resourceKey } from "@kronos-ts/common"
 import type { CommandHandlerDefinition } from "./command-handler.js"
+import { HANDLER_CONTEXT } from "./handler-context.js"
 
 /**
  * Minimal Configuration shape consumed by createCommandInvocation /
@@ -133,7 +134,7 @@ export function createCommandInvocation(
       })
     }
 
-    return handler.handler(message)
+    return handler.handler(message, HANDLER_CONTEXT)
   }
 }
 
