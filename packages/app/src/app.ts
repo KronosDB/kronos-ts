@@ -1,4 +1,5 @@
 import type { StateModule } from "@kronos-ts/modelling"
+import { DuplicateSliceNameError, type RegisteredSlice } from "./slice.js"
 import { createStateManager, type StateManager } from "@kronos-ts/modelling"
 import type {
   CommandHandlerDefinition,
@@ -100,6 +101,15 @@ export interface App {
   processors(): readonly EventProcessorModule[]
   /** Writer overload (D-103): appends EventProcessorModule registrations. */
   processors(...modules: EventProcessorModule[]): App
+  /**
+   * Read accessor: the slices registered through modules (name, owning module,
+   * app-defined meta), in registration order. Mirrors the processors() dual
+   * accessor (D-103). Hosts iterate this to build app edges (e.g. merge each
+   * slice's RPC contract fragment into a router).
+   */
+  slices(): readonly RegisteredSlice[]
+  /** Writer overload: appends slice registrations. Throws DuplicateSliceNameError. */
+  slices(...registrations: RegisteredSlice[]): App
   /** D-73: register an Extension (function) — runs during start() before slot resolution. */
   use(extension: Extension): App
   setDefault<K extends SlotName>(
@@ -196,6 +206,8 @@ export interface RunningApp {
    * no watchdog or auto-restart; operating the processors is the host's call.
    */
   eventProcessors(): ReadonlyMap<string, EventProcessor>
+  /** The registered slices (name, module, meta) — same view as App.slices(). */
+  slices(): readonly RegisteredSlice[]
   stop(): Promise<void>
 }
 
@@ -207,6 +219,7 @@ export interface AppState {
   readonly commandHandlers: CommandHandlerDefinition<any, any>[]
   readonly queryHandlers: QueryHandlerDefinition[]
   readonly processors: EventProcessorModule[]
+  readonly slices: RegisteredSlice[]
   readonly extensions: Extension[]
   readonly warningChannel: WarningChannel
   readonly decoratorRegistrations: DecoratorEntry[]   // NEW: per-app registration order; pipeline = left-to-right
@@ -271,6 +284,7 @@ export class AppImpl implements App {
       commandHandlers: [],
       queryHandlers: [],
       processors: [],
+      slices: [],
       extensions: [],
       warningChannel: options.warningChannel,
       decoratorRegistrations: [],
@@ -343,6 +357,22 @@ export class AppImpl implements App {
     }
     this.guard()
     this._state.processors.push(...modules)
+    return this
+  }
+
+  // Dual-overload slices() — read accessor + writer, mirroring processors().
+  slices(): readonly RegisteredSlice[]
+  slices(...registrations: RegisteredSlice[]): App
+  slices(...registrations: RegisteredSlice[]): App | readonly RegisteredSlice[] {
+    if (registrations.length === 0) {
+      return Object.freeze([...this._state.slices]) as readonly RegisteredSlice[]
+    }
+    this.guard()
+    for (const registration of registrations) {
+      const existing = this._state.slices.find((r) => r.name === registration.name)
+      if (existing) throw new DuplicateSliceNameError(registration.name, existing.module, registration.module)
+      this._state.slices.push(registration)
+    }
     return this
   }
 
@@ -728,6 +758,7 @@ export class AppImpl implements App {
       eventProcessors(): ReadonlyMap<string, EventProcessor> {
         return processorRegistry
       },
+      slices: (): readonly RegisteredSlice[] => this.slices(),
       async stop() {
         // Stop processors first (mirrors legacy shutdown order).
         for (const proc of builtProcessors) {

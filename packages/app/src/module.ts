@@ -17,6 +17,7 @@ import {
 } from "@kronos-ts/messaging"
 import type { z } from "zod"
 import type { App, Extension, StatesArg } from "./app.js"
+import type { Slice } from "./slice.js"
 
 // ---------------------------------------------------------------------------
 // Module composition — encapsulated dependency injection over the handler
@@ -75,18 +76,18 @@ export interface ModuleApi<Deps> {
    * Declare and register a command handler whose context carries the module
    * deps. Registered on the app immediately; also returned for tests.
    */
-  command<P extends z.ZodType>(
+  commandHandler<P extends z.ZodType>(
     descriptor: CommandDescriptor<P, undefined>,
     handler: (message: CommandMessage<z.infer<P>>, context: ModuleHandlerContext<Deps>) => Promise<void> | void,
   ): CommandHandlerDefinition<P, undefined>
-  command<P extends z.ZodType, R extends z.ZodType>(
+  commandHandler<P extends z.ZodType, R extends z.ZodType>(
     descriptor: CommandDescriptor<P, R>,
     handler: (
       message: CommandMessage<z.infer<P>>,
       context: ModuleHandlerContext<Deps>,
     ) => Promise<z.infer<R>> | z.infer<R>,
   ): CommandHandlerDefinition<P, R>
-  command<P extends z.ZodType, R extends z.ZodType>(
+  commandHandler<P extends z.ZodType, R extends z.ZodType>(
     descriptor: CommandDescriptor<P, R>,
     options: {
       handler: (
@@ -101,7 +102,7 @@ export interface ModuleApi<Deps> {
    * registered on the app — event handlers belong to a processor, so the
    * definition is returned for use in `processors(...)` / `.eventHandlers(...)`.
    */
-  event<P extends z.ZodType>(
+  eventHandler<P extends z.ZodType>(
     descriptor: EventDescriptor<P>,
     handler: (
       message: SequencedEventMessage<z.infer<P>>,
@@ -114,25 +115,25 @@ export interface ModuleApi<Deps> {
   queries(...handlers: QueryHandlerDefinition[]): void
   /** Register event processors on the app (passthrough). */
   processors(...modules: EventProcessorModule[]): void
+  /**
+   * Register slices: each slice's `register` runs against this module api (so
+   * its handlers get the module context), and its name + meta are recorded on
+   * the app for host iteration via `app.slices()`. Duplicate slice names
+   * throw {@link import("./slice.js").DuplicateSliceNameError}.
+   */
+  slices(...slices: Slice<Deps, any>[]): void
   /** The underlying app — escape hatch for advanced registration. */
   readonly app: App
 }
 
-/** A defined module: bind dependency values with `.with(deps)` to get an Extension. */
-export interface ModuleDefinition<Deps> {
-  readonly moduleName: string
-  /**
-   * Bind dependency values and produce an app Extension. Each call creates an
-   * independent configuration — registering the same module twice with
-   * different deps yields two fully isolated instances.
-   */
-  with(deps: Deps): Extension
-}
-
-/** A module with no deps also composes with plain `.use(mod.extension)`. */
-export interface DeplessModuleDefinition extends ModuleDefinition<Record<never, never>> {
-  readonly extension: Extension
-}
+/**
+ * A defined module IS a function: bind dependency values by calling it —
+ * `app.use(mod({ db }))` — and each call creates an independent, fully
+ * isolated configuration. No wrapper object, no `.with` ceremony: modules
+ * compose the way every other closure in the framework does. `moduleName`
+ * rides along as a property for diagnostics.
+ */
+export type Module<Deps> = ((deps: Deps) => Extension) & { readonly moduleName: string }
 
 /**
  * Define a module: a named registration scope with typed, isolated
@@ -150,15 +151,15 @@ export interface DeplessModuleDefinition extends ModuleDefinition<Record<never, 
  *
  * // composition root — deps bound here, per configuration:
  * kronos()
- *   .use(supportModule.with({ db, storage }))
- *   .use(schedulingModule.with({ db: schedulingDb }))   // different deps, zero bleed
+ *   .use(supportModule({ db, storage }))
+ *   .use(schedulingModule({ db: schedulingDb }))   // different deps, zero bleed
  * ```
  */
 export function defineModule<Deps extends Record<string, unknown> = Record<never, never>>(
   name: string,
   setup: (m: ModuleApi<Deps>) => void,
-): ModuleDefinition<Deps> {
-  const withDeps = (deps: Deps): Extension => {
+): Module<Deps> {
+  const configure = (deps: Deps): Extension => {
     for (const key of Object.keys(deps)) {
       if (RESERVED_CONTEXT_KEYS.has(key)) throw new ReservedContextKeyError(name, key)
     }
@@ -171,7 +172,7 @@ export function defineModule<Deps extends Record<string, unknown> = Record<never
         name,
         deps: frozenDeps,
         app,
-        command(descriptor: CommandDescriptor<any, any>, handlerOrOptions: any) {
+        commandHandler(descriptor: CommandDescriptor<any, any>, handlerOrOptions: any) {
           const bare = typeof handlerOrOptions === "function" ? handlerOrOptions : handlerOrOptions.handler
           const definition = commandHandler(descriptor, {
             handler: (message: CommandMessage<any>) => bare(message, commandContext),
@@ -182,7 +183,7 @@ export function defineModule<Deps extends Record<string, unknown> = Record<never
           app.commands(definition)
           return definition
         },
-        event(descriptor: EventDescriptor<any>, bare: any) {
+        eventHandler(descriptor: EventDescriptor<any>, bare: any) {
           return eventHandler(descriptor, (message: SequencedEventMessage<any>) => bare(message, eventContext))
         },
         states(...args) {
@@ -194,9 +195,15 @@ export function defineModule<Deps extends Record<string, unknown> = Record<never
         processors(...modules) {
           app.processors(...modules)
         },
+        slices(...sliceDefs) {
+          for (const slice of sliceDefs) {
+            app.slices({ name: slice.name, module: name, meta: slice.meta })
+            slice.register(api)
+          }
+        },
       }
       setup(api)
     }
   }
-  return { moduleName: name, with: withDeps }
+  return Object.assign(configure, { moduleName: name })
 }
