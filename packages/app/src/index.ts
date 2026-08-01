@@ -36,3 +36,11 @@ export type { TokenStore, TransactionManager, EventScheduler } from "@kronos-ts/
 // Plan 09-01 Task 2: handler enhancer + entities() tuple-shape types.
 export type { HandlerEnhancerDefinition } from "@kronos-ts/messaging"
 export type { StateOptions, StatesArg } from "./app.js"
+export {
+  defineModule,
+  ReservedContextKeyError,
+  type ModuleApi,
+  type ModuleDefinition,
+  type ModuleHandlerContext,
+  type ModuleEventHandlerContext,
+} from "./module.js"
