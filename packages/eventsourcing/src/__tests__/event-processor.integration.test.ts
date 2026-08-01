@@ -24,7 +24,8 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { kronos } from "@kronos-ts/app"
-import { load, append } from "../index.js"
+import { append } from "../append.js"
+import { load } from "../load.js"
 
 // ─── Domain ─────────────────────────────────────────────────────────────────
 

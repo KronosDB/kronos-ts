@@ -34,9 +34,7 @@ import {
 import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
-  type Snapshot,
-  load,
-  append,
+  type Snapshot
 } from "@kronos-ts/eventsourcing"
 import { kronos, type App, type RunningApp } from "@kronos-ts/app"
 import { axonServer } from "../axon-server.js"
@@ -87,18 +85,18 @@ const Course = state({
   ],
 })
 
-const handleCreateCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const handleCreateCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
-  append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
+  ctx.append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const handleEnrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const handleEnrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already enrolled")
-  append(StudentEnrolled, { courseId: cmd.courseId, studentId: cmd.studentId })
+  ctx.append(StudentEnrolled, { courseId: cmd.courseId, studentId: cmd.studentId })
 })
 
 // ============================================================================

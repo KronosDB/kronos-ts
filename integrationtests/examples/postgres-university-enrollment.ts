@@ -29,7 +29,7 @@ import {
   EventCriteria,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { load, append, afterEvents } from "@kronos-ts/eventsourcing"
+import { afterEvents } from "@kronos-ts/eventsourcing"
 import { kronos } from "@kronos-ts/app"
 import { postgres } from "@kronos-ts/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
@@ -113,27 +113,27 @@ const EnrollStudent = command({
   routingKey: "courseId",
 })
 
-const openCourse = commandHandler(OpenCourse, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const openCourse = commandHandler(OpenCourse, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (course.opened) throw new Error(`Course ${cmd.courseId} already opened`)
-  append(CourseOpened, { courseId: cmd.courseId, title: cmd.title, capacity: cmd.capacity })
+  ctx.append(CourseOpened, { courseId: cmd.courseId, title: cmd.title, capacity: cmd.capacity })
 })
 
-const registerStudent = commandHandler(RegisterStudent, async ({ payload: cmd }) => {
-  const student = await load(Student, { studentId: cmd.studentId })
+const registerStudent = commandHandler(RegisterStudent, async ({ payload: cmd }, ctx) => {
+  const student = await ctx.load(Student, { studentId: cmd.studentId })
   if (student.registered) throw new Error(`Student ${cmd.studentId} already registered`)
-  append(StudentRegistered, { studentId: cmd.studentId, name: cmd.name, maxCourses: cmd.maxCourses })
+  ctx.append(StudentRegistered, { studentId: cmd.studentId, name: cmd.name, maxCourses: cmd.maxCourses })
 })
 
-const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
-  const student = await load(Student, { studentId: cmd.studentId })
+const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
+  const student = await ctx.load(Student, { studentId: cmd.studentId })
   if (!course.opened) throw new Error("Course not open")
   if (!student.registered) throw new Error("Student not registered")
   if (course.enrolled.length >= course.capacity) throw new Error("Course full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already enrolled")
   if (student.courses.length >= student.maxCourses) throw new Error("Student over course load")
-  append(StudentEnrolled, { courseId: cmd.courseId, studentId: cmd.studentId })
+  ctx.append(StudentEnrolled, { courseId: cmd.courseId, studentId: cmd.studentId })
 })
 
 // ============================================================================
@@ -143,7 +143,7 @@ const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }) => 
 type DrizzleDb = ReturnType<typeof drizzle<Record<string, never>>>
 
 function buildProjector(db: DrizzleDb) {
-  const onCourseOpened = eventHandler(CourseOpened, async ({ payload: e }) => {
+  const onCourseOpened = eventHandler(CourseOpened, async ({ payload: e }, ctx) => {
     await db
       .insert(courseViews)
       .values({ courseId: e.courseId, title: e.title, capacity: e.capacity, enrolledCount: 0 })
@@ -152,7 +152,7 @@ function buildProjector(db: DrizzleDb) {
         set: { title: e.title, capacity: e.capacity, updatedAt: new Date() },
       })
   })
-  const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }) => {
+  const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }, ctx) => {
     await db
       .update(courseViews)
       .set({

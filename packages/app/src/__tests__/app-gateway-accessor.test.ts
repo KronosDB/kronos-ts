@@ -3,7 +3,6 @@ import { z } from "zod"
 import { qn } from "@kronos-ts/common"
 import { command, commandHandler, EventCriteria, event, } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { append, load } from "@kronos-ts/eventsourcing"
 import { kronos, type RunningApp } from "../index.js"
 import { AppNotStartedError } from "../errors.js"
 
@@ -24,9 +23,9 @@ const PingState = state({
   criteria: ({ id }) => EventCriteria.havingTags({ id }),
   evolve: (on) => [on(Pinged, (s) => ({ ...s, pinged: true }))],
 })
-const pingHandler = commandHandler(Ping, async ({ payload: cmd }) => {
-  await load(PingState, { id: cmd.id })
-  append(Pinged, { id: cmd.id })
+const pingHandler = commandHandler(Ping, async ({ payload: cmd }, ctx) => {
+  await ctx.load(PingState, { id: cmd.id })
+  ctx.append(Pinged, { id: cmd.id })
 })
 
 function makeApp() {

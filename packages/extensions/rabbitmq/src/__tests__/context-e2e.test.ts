@@ -11,11 +11,9 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
-  append,
   createInMemoryEventStore,
-  load,
   type EventStore,
-  type AppendCondition,
+  type AppendCondition
 } from "@kronos-ts/eventsourcing"
 import { createRabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
@@ -102,15 +100,15 @@ describe("RabbitMQ remote command handling e2e", () => {
     const probe = probeEventStore()
     const transport = new LoopbackTransport()
 
-    const start = commandHandler(Start, async ({ payload: cmd }) => {
-      await load(StateA, { aId: cmd.aId })
+    const start = commandHandler(Start, async ({ payload: cmd }, ctx) => {
+      await ctx.load(StateA, { aId: cmd.aId })
       const { send } = await import("@kronos-ts/messaging")
       await send(Finish, { bId: cmd.bId })
     })
 
-    const finish = commandHandler(Finish, async ({ payload: cmd }) => {
-      await load(StateB, { bId: cmd.bId })
-      append(BFinished, { bId: cmd.bId })
+    const finish = commandHandler(Finish, async ({ payload: cmd }, ctx) => {
+      await ctx.load(StateB, { bId: cmd.bId })
+      ctx.append(BFinished, { bId: cmd.bId })
     })
 
     const running = await kronos({ serviceName: "ctx-test", quiet: true })

@@ -17,12 +17,12 @@ import {
   eventHandler,
   EventCriteria,
   trackingProcessor,
-  send,
-  type EventMessage,
+  type EventMessage
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { kronos } from "@kronos-ts/app"
-import { load, append } from "../index.js"
+import { append } from "../append.js"
+import { load } from "../load.js"
 
 const EnrollStudent = command({
   name: qn("uni", "EnrollStudent"),
@@ -46,7 +46,7 @@ const Student = state({
   evolve: (on) => [on(StudentEnrolled, (s, { payload: e }) => ({ enrolled: true, name: e.name }))],
 })
 
-const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }) => {
+const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx) => {
   const s = await load(Student, { studentId: cmd.studentId })
   if (s.enrolled) throw new Error("Already enrolled")
   append(StudentEnrolled, { studentId: cmd.studentId, name: cmd.name })
@@ -67,12 +67,12 @@ describe("Correlation lineage: command -> event -> processor -> command", () => 
     let notifyMetadata: Metadata | undefined
 
     // Automation: react to StudentEnrolled, dispatch a follow-up command.
-    const onEnrolled = eventHandler(StudentEnrolled, async (message) => {
+    const onEnrolled = eventHandler(StudentEnrolled, async (message, ctx) => {
       triggeringEvent = message
-      await send(NotifyRegistry, { studentId: message.payload.studentId })
+      await ctx.send(NotifyRegistry, { studentId: message.payload.studentId })
     })
 
-    const notifyRegistry = commandHandler(NotifyRegistry, async ({ metadata }) => {
+    const notifyRegistry = commandHandler(NotifyRegistry, async ({ metadata }, ctx) => {
       notifyMetadata = metadata
     })
 

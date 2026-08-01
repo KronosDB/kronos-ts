@@ -63,8 +63,8 @@ function stableIdKey(id: unknown): string {
 /**
  * Plan 04-01 (HDL-02 / D-42): module-level load.
  *
- * @deprecated Prefer the handler context: `ctx.load(...)` (second handler
- * argument on commandHandler/eventHandler). Same behaviour and caching.
+ * Internal — exported only via the "./load" subpath for the HandlerContext.
+ * Handlers reach this as `ctx.load`.
  *
  * Read-only — NOT phase-guarded per D-43. Throws NoActiveUnitOfWork outside
  * a UoW. Caches state within the UoW (duplicate load() calls for the

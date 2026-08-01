@@ -8,7 +8,6 @@ import {
   EventCriteria,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { load, append } from "@kronos-ts/eventsourcing"
 import { kronos } from "@kronos-ts/app"
 import {
   testRecordingExtension,
@@ -41,9 +40,9 @@ const Thing = state({
   evolve: (on) => [on(TestThingHappened, (s) => ({ ...s, exists: true }))],
 })
 
-const doTestThingHandler = commandHandler(DoTestThing, async ({ payload: cmd }) => {
-  await load(Thing, { id: cmd.id })
-  append(TestThingHappened, { id: cmd.id })
+const doTestThingHandler = commandHandler(DoTestThing, async ({ payload: cmd }, ctx) => {
+  await ctx.load(Thing, { id: cmd.id })
+  ctx.append(TestThingHappened, { id: cmd.id })
 })
 
 // ============================================================================

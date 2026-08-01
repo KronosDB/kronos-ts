@@ -8,10 +8,8 @@ import {
   eventHandler,
   queryHandler,
   trackingProcessor,
-  emitUpdate,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { load, append } from "@kronos-ts/eventsourcing"
 
 // ---------------------------------------------------------------------------
 // Namespace + messages (private to the slice)
@@ -99,33 +97,33 @@ const Course = state({
 // Command handlers (private)
 // ---------------------------------------------------------------------------
 
-const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
-  append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
+  ctx.append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (cmd.capacity === course.capacity) return
   if (cmd.capacity < course.enrolled.length) throw new Error("Cannot reduce capacity below enrolled count")
-  append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+  ctx.append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Student already subscribed")
-  append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
+  ctx.append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
 })
 
-const unsubscribeStudent = commandHandler(UnsubscribeStudent, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const unsubscribeStudent = commandHandler(UnsubscribeStudent, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (!course.enrolled.includes(cmd.studentId)) throw new Error("Student not subscribed")
-  append(StudentUnsubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
+  ctx.append(StudentUnsubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
 })
 
 // ---------------------------------------------------------------------------
@@ -142,7 +140,7 @@ type CourseView = {
 
 const courseViews = new Map<string, CourseView>()
 
-const onCreated = eventHandler(CourseCreated, async ({ payload: e }) => {
+const onCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
   courseViews.set(e.courseId, {
     courseId: e.courseId,
     name: e.name,
@@ -150,32 +148,32 @@ const onCreated = eventHandler(CourseCreated, async ({ payload: e }) => {
     enrolledCount: 0,
     students: [],
   })
-  emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
+  ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
 })
 
-const onCapChanged = eventHandler(CourseCapacityChanged, async ({ payload: e }) => {
+const onCapChanged = eventHandler(CourseCapacityChanged, async ({ payload: e }, ctx) => {
   const view = courseViews.get(e.courseId)
   if (view) {
     view.capacity = e.capacity
-    emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+    ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
   }
 })
 
-const onSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }) => {
+const onSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
   const view = courseViews.get(e.courseId)
   if (view) {
     view.enrolledCount++
     view.students.push(e.studentId)
-    emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+    ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
   }
 })
 
-const onUnsubscribed = eventHandler(StudentUnsubscribed, async ({ payload: e }) => {
+const onUnsubscribed = eventHandler(StudentUnsubscribed, async ({ payload: e }, ctx) => {
   const view = courseViews.get(e.courseId)
   if (view) {
     view.enrolledCount--
     view.students = view.students.filter((id) => id !== e.studentId)
-    emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+    ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
   }
 })
 
