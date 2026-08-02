@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach } from "bun:test"
 import { z } from "zod"
 import { qn, emptyMetadata } from "@kronos-ts/common"
-import { command, event, EventCriteria } from "@kronos-ts/messaging"
+import { command, commandHandler, event, EventCriteria } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { kronos, type RunningApp } from "../kronos.js"
 import { defineModule, ReservedContextKeyError } from "../module.js"
@@ -152,14 +152,39 @@ describe("defineModule", () => {
   })
 })
 
+
 // ---------------------------------------------------------------------------
-// Slices
+// Encapsulation — scoped framework components
 // ---------------------------------------------------------------------------
 
-import { defineSlice, DuplicateSliceNameError } from "../slice.js"
-import type { ModuleApi } from "../module.js"
+import { createInMemoryEventStore, type EventStore } from "@kronos-ts/eventsourcing"
+import { qualifiedNameToString } from "@kronos-ts/common"
 
-describe("defineSlice", () => {
+const ThingArchived = event({
+  name: qn("mod-test", "ThingArchived"),
+  payload: z.object({ id: z.string() }),
+  tags: (p) => [{ key: "id", value: p.id }],
+})
+
+const ArchiveThing = command({
+  name: qn("mod-test", "ArchiveThing"),
+  payload: z.object({ id: z.string() }),
+})
+
+/** An in-memory event store that records the event names appended to it. */
+function recordingStore(): EventStore & { appended: string[] } {
+  const inner = createInMemoryEventStore()
+  const appended: string[] = []
+  const store = Object.create(inner) as EventStore & { appended: string[] }
+  store.appended = appended
+  store.append = async (events: ReadonlyArray<{ name: unknown }>, condition?: unknown) => {
+    for (const e of events) appended.push(qualifiedNameToString(e.name as never))
+    return (inner.append as (e: unknown, c: unknown) => Promise<unknown>)(events, condition)
+  }
+  return store
+}
+
+describe("module encapsulation", () => {
   let app: RunningApp | undefined
   afterEach(async () => {
     if (app) {
@@ -168,70 +193,91 @@ describe("defineSlice", () => {
     }
   })
 
-  it("slices register through the module context and expose typed meta to hosts", async () => {
+  it("modules can own separate event stores while sharing one messaging fabric", async () => {
+    const storeA = recordingStore()
+    const storeB = recordingStore()
     const db = fakeDb()
 
-    const openThing = defineSlice({
-      name: "open-thing",
-      meta: { rpc: { things: "open" }, docs: "Opens a thing." },
-      register: (m: ModuleApi<Deps>) => {
-        m.states(Thing)
-        m.commandHandler(CreateThing, async ({ payload }, ctx) => {
-          ctx.db.insert(`slice:${payload.id}:${ctx.tenant}`)
-          ctx.append(ThingCreated, { id: payload.id })
-        })
-      },
-    })
-
-    const mod = defineModule<Deps>("sliced", (m) => {
-      m.slices(openThing)
-    })
-
-    const builder = kronos({ quiet: true }).use(mod({ db, tenant: "acme" }))
-    app = await builder.start()
-
-    // Host-side iteration: name, owning module, and app-defined meta.
-    const registered = app.slices()
-    expect(registered).toHaveLength(1)
-    expect(registered[0]!.name).toBe("open-thing")
-    expect(registered[0]!.module).toBe("sliced")
-    expect((registered[0]!.meta as { rpc: { things: string } }).rpc.things).toBe("open")
-
-    // Slice handlers run with the module's dep-typed context.
-    await app.commandGateway.send(CreateThing, { id: "s-1" }, emptyMetadata())
-    expect(db.rows).toEqual(["slice:s-1:acme"])
-  })
-
-  it("duplicate slice names throw, naming both modules", async () => {
-    const slice = () =>
-      defineSlice({
-        name: "same-name",
-        register: (_m: ModuleApi<Record<string, unknown>>) => {},
+    const modA = defineModule<Deps>("alpha", (m) => {
+      m.set("eventStore", storeA)
+      m.states(Thing)
+      m.commandHandler(CreateThing, async ({ payload }, ctx) => {
+        await ctx.load(Thing, { id: payload.id })
+        ctx.append(ThingCreated, { id: payload.id })
       })
-    const modA = defineModule<Record<string, unknown>>("mod-a", (m) => m.slices(slice()))
-    const modB = defineModule<Record<string, unknown>>("mod-b", (m) => m.slices(slice()))
+    })
 
-    let thrown: unknown
-    try {
-      await kronos({ quiet: true }).use(modA({})).use(modB({})).start()
-    } catch (e) {
-      thrown = e
-    }
-    expect(thrown).toBeInstanceOf(DuplicateSliceNameError)
-    expect((thrown as Error).message).toContain("mod-a")
-    expect((thrown as Error).message).toContain("mod-b")
+    const modB = defineModule<Deps>("beta", (m) => {
+      m.set("eventStore", storeB)
+      m.states(Thing)
+      m.commandHandler(ArchiveThing, async ({ payload }, ctx) => {
+        await ctx.load(Thing, { id: payload.id })
+        ctx.append(ThingArchived, { id: payload.id })
+      })
+    })
+
+    app = await kronos({ quiet: true })
+      .use(modA({ db, tenant: "a" }))
+      .use(modB({ db, tenant: "b" }))
+      .start()
+
+    // Both modules' commands dispatch through the ONE root gateway — proof the
+    // command bus is shared by identity, not re-resolved per scope.
+    await app.commandGateway.send(CreateThing, { id: "a-1" }, emptyMetadata())
+    await app.commandGateway.send(ArchiveThing, { id: "b-1" }, emptyMetadata())
+
+    // ...while the events landed in each module's OWN store.
+    expect(storeA.appended).toEqual(["mod-test.ThingCreated"])
+    expect(storeB.appended).toEqual(["mod-test.ThingArchived"])
   })
 
-  it("meta defaults to undefined and slices() view is frozen", async () => {
-    const bare = defineSlice({
-      name: "bare",
-      register: (_m: ModuleApi<Record<string, unknown>>) => {},
-    })
-    const mod = defineModule<Record<string, unknown>>("bare-mod", (m) => m.slices(bare))
-    app = await kronos({ quiet: true }).use(mod({})).start()
+  it("a module that overrides nothing inherits the root components", async () => {
+    const rootStore = recordingStore()
+    const db = fakeDb()
 
-    const view = app.slices()
-    expect(view[0]!.meta).toBeUndefined()
-    expect(Object.isFrozen(view)).toBe(true)
+    const mod = defineModule<Deps>("inheritor", (m) => {
+      m.states(Thing)
+      m.commandHandler(CreateThing, async ({ payload }, ctx) => {
+        ctx.append(ThingCreated, { id: payload.id })
+      })
+    })
+
+    app = await kronos({ quiet: true })
+      .set("eventStore", rootStore)
+      .use(mod({ db, tenant: "root" }))
+      .start()
+
+    await app.commandGateway.send(CreateThing, { id: "r-1" }, emptyMetadata())
+    expect(rootStore.appended).toEqual(["mod-test.ThingCreated"])
+  })
+
+  it("root-level handlers keep working alongside scoped modules", async () => {
+    const rootStore = recordingStore()
+    const moduleStore = recordingStore()
+    const db = fakeDb()
+
+    const rootHandler = commandHandler(CreateThing, async ({ payload }, ctx) => {
+      ctx.append(ThingCreated, { id: payload.id })
+    })
+
+    const mod = defineModule<Deps>("scoped", (m) => {
+      m.set("eventStore", moduleStore)
+      m.commandHandler(ArchiveThing, async ({ payload }, ctx) => {
+        ctx.append(ThingArchived, { id: payload.id })
+      })
+    })
+
+    app = await kronos({ quiet: true })
+      .set("eventStore", rootStore)
+      .states(Thing)
+      .commands(rootHandler)
+      .use(mod({ db, tenant: "x" }))
+      .start()
+
+    await app.commandGateway.send(CreateThing, { id: "root-1" }, emptyMetadata())
+    await app.commandGateway.send(ArchiveThing, { id: "mod-1" }, emptyMetadata())
+
+    expect(rootStore.appended).toEqual(["mod-test.ThingCreated"])
+    expect(moduleStore.appended).toEqual(["mod-test.ThingArchived"])
   })
 })

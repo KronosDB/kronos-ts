@@ -44,9 +44,3 @@ export {
   type ModuleHandlerContext,
   type ModuleEventHandlerContext,
 } from "./module.js"
-export {
-  defineSlice,
-  DuplicateSliceNameError,
-  type Slice,
-  type RegisteredSlice,
-} from "./slice.js"

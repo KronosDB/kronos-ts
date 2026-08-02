@@ -15,9 +15,12 @@ import {
   type QueryHandlerDefinition,
   type EventProcessorModule,
 } from "@kronos-ts/messaging"
+import type { StateModule } from "@kronos-ts/modelling"
 import type { z } from "zod"
-import type { App, Extension, StatesArg } from "./app.js"
-import type { Slice } from "./slice.js"
+import type { App, Extension, StateOptions, StatesArg } from "./app.js"
+import type { KronosComponents, SlotName } from "./components.js"
+import type { SlotFactory } from "./slot-registry.js"
+import { createModuleScope } from "./module-scope.js"
 
 // ---------------------------------------------------------------------------
 // Module composition — encapsulated dependency injection over the handler
@@ -109,19 +112,27 @@ export interface ModuleApi<Deps> {
       context: ModuleEventHandlerContext<Deps>,
     ) => Promise<void> | void,
   ): EventHandlerDefinition<P>
-  /** Register state modules on the app (passthrough). */
-  states(...args: StatesArg[]): void
-  /** Register query handlers on the app (passthrough). */
-  queries(...handlers: QueryHandlerDefinition[]): void
-  /** Register event processors on the app (passthrough). */
-  processors(...modules: EventProcessorModule[]): void
   /**
-   * Register slices: each slice's `register` runs against this module api (so
-   * its handlers get the module context), and its name + meta are recorded on
-   * the app for host iteration via `app.slices()`. Duplicate slice names
-   * throw {@link import("./slice.js").DuplicateSliceNameError}.
+   * Override a framework slot FOR THIS MODULE ONLY. Slots left alone are
+   * inherited from the app by identity, so overriding `eventStore` gives the
+   * module its own store while it keeps sharing the root's command/query/event
+   * buses — different persistence, one messaging fabric.
+   *
+   * The factory form receives the scope's components as they resolve, so an
+   * override may build on the root's (or on an earlier override in the same
+   * module).
    */
-  slices(...slices: Slice<Deps, any>[]): void
+  set<K extends SlotName>(slot: K, factory: SlotFactory<K> | KronosComponents[K]): void
+  /**
+   * Register state modules in this module's scope. They are wired to a state
+   * manager built over THIS module's event store, so a module's states are not
+   * visible to another module's handlers.
+   */
+  states(...args: StatesArg[]): void
+  /** Register query handlers in this module's scope. */
+  queries(...handlers: QueryHandlerDefinition[]): void
+  /** Register event processors in this module's scope (scoped event store + state manager). */
+  processors(...modules: EventProcessorModule[]): void
   /** The underlying app — escape hatch for advanced registration. */
   readonly app: App
 }
@@ -149,10 +160,22 @@ export type Module<Deps> = ((deps: Deps) => Extension) & { readonly moduleName: 
  *   })
  * })
  *
- * // composition root — deps bound here, per configuration:
+ * A module is also the ENCAPSULATION boundary for framework components: call
+ * `m.set(slot, ...)` to scope a slot to this module. Anything not overridden is
+ * inherited from the app by identity, so modules can own separate event stores
+ * while sharing one messaging fabric:
+ *
+ * ```ts
+ * const support = defineModule<SupportDeps>("support", (m) => {
+ *   m.set("eventStore", supportStore)      // own persistence
+ *   m.states(TicketExistence)              // wired to supportStore
+ *   m.commandHandler(OpenTicket, async ({ payload }, ctx) => { ... })
+ * })
+ *
  * kronos()
- *   .use(supportModule({ db, storage }))
- *   .use(schedulingModule({ db: schedulingDb }))   // different deps, zero bleed
+ *   .use(postgres({ adapter }))            // root infra: buses + default store
+ *   .use(support({ db, storage }))         // scoped store, SHARED buses
+ *   .use(billing({ db: billingDb }))       // its own scope again
  * ```
  */
 export function defineModule<Deps extends Record<string, unknown> = Record<never, never>>(
@@ -164,6 +187,7 @@ export function defineModule<Deps extends Record<string, unknown> = Record<never
       if (RESERVED_CONTEXT_KEYS.has(key)) throw new ReservedContextKeyError(name, key)
     }
     return (app: App) => {
+      const scope = createModuleScope(app, name)
       const frozenDeps = Object.freeze({ ...deps })
       const commandContext = Object.freeze({ ...HANDLER_CONTEXT, ...frozenDeps }) as ModuleHandlerContext<Deps>
       const eventContext = Object.freeze({ ...EVENT_HANDLER_CONTEXT, ...frozenDeps }) as ModuleEventHandlerContext<Deps>
@@ -180,26 +204,33 @@ export function defineModule<Deps extends Record<string, unknown> = Record<never
               ? { appendCondition: handlerOrOptions.appendCondition }
               : {}),
           })
-          app.commands(definition)
+          scope.commandHandlers.push(definition)
           return definition
         },
         eventHandler(descriptor: EventDescriptor<any>, bare: any) {
           return eventHandler(descriptor, (message: SequencedEventMessage<any>) => bare(message, eventContext))
         },
+        set(slot, factory) {
+          const normalized: SlotFactory<SlotName> = (
+            typeof factory === "function" ? factory : () => factory
+          ) as SlotFactory<SlotName>
+          scope.slotOverrides.push({ slot, factory: normalized })
+        },
         states(...args) {
-          app.states(...args)
+          for (const arg of args) {
+            if (Array.isArray(arg)) {
+              const [stateModule, options] = arg as readonly [StateModule, StateOptions]
+              scope.stateEntries.push({ module: stateModule, options })
+            } else {
+              scope.stateEntries.push({ module: arg as StateModule, options: {} })
+            }
+          }
         },
         queries(...handlers) {
-          app.queries(...handlers)
+          scope.queryHandlers.push(...handlers)
         },
         processors(...modules) {
-          app.processors(...modules)
-        },
-        slices(...sliceDefs) {
-          for (const slice of sliceDefs) {
-            app.slices({ name: slice.name, module: name, meta: slice.meta })
-            slice.register(api)
-          }
+          scope.processors.push(...modules)
         },
       }
       setup(api)

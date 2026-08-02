@@ -1,5 +1,5 @@
 import type { StateModule } from "@kronos-ts/modelling"
-import { DuplicateSliceNameError, type RegisteredSlice } from "./slice.js"
+import { moduleScopesOf } from "./module-scope.js"
 import { createStateManager, type StateManager } from "@kronos-ts/modelling"
 import type {
   CommandHandlerDefinition,
@@ -37,7 +37,7 @@ import type { SnapshotPolicy, SnapshotStore } from "@kronos-ts/eventsourcing"
 import type { MinimalConfiguration } from "@kronos-ts/messaging"
 import { ALL_SLOTS, type KronosComponents, type SlotName } from "./components.js"
 import { SlotRegistry, type SlotFactory, type SlotMeta } from "./slot-registry.js"
-import { buildResolved } from "./resolved.js"
+import { buildResolved, type Resolved } from "./resolved.js"
 import type { WarningChannel } from "./warnings.js"
 import type { DecoratorEntry, DecoratorFactory, DecoratorHandle } from "./decorator.js"
 import { applyDecorators } from "./decorator.js"
@@ -101,15 +101,6 @@ export interface App {
   processors(): readonly EventProcessorModule[]
   /** Writer overload (D-103): appends EventProcessorModule registrations. */
   processors(...modules: EventProcessorModule[]): App
-  /**
-   * Read accessor: the slices registered through modules (name, owning module,
-   * app-defined meta), in registration order. Mirrors the processors() dual
-   * accessor (D-103). Hosts iterate this to build app edges (e.g. merge each
-   * slice's RPC contract fragment into a router).
-   */
-  slices(): readonly RegisteredSlice[]
-  /** Writer overload: appends slice registrations. Throws DuplicateSliceNameError. */
-  slices(...registrations: RegisteredSlice[]): App
   /** D-73: register an Extension (function) — runs during start() before slot resolution. */
   use(extension: Extension): App
   setDefault<K extends SlotName>(
@@ -206,8 +197,6 @@ export interface RunningApp {
    * no watchdog or auto-restart; operating the processors is the host's call.
    */
   eventProcessors(): ReadonlyMap<string, EventProcessor>
-  /** The registered slices (name, module, meta) — same view as App.slices(). */
-  slices(): readonly RegisteredSlice[]
   stop(): Promise<void>
 }
 
@@ -219,7 +208,6 @@ export interface AppState {
   readonly commandHandlers: CommandHandlerDefinition<any, any>[]
   readonly queryHandlers: QueryHandlerDefinition[]
   readonly processors: EventProcessorModule[]
-  readonly slices: RegisteredSlice[]
   readonly extensions: Extension[]
   readonly warningChannel: WarningChannel
   readonly decoratorRegistrations: DecoratorEntry[]   // NEW: per-app registration order; pipeline = left-to-right
@@ -284,7 +272,6 @@ export class AppImpl implements App {
       commandHandlers: [],
       queryHandlers: [],
       processors: [],
-      slices: [],
       extensions: [],
       warningChannel: options.warningChannel,
       decoratorRegistrations: [],
@@ -360,21 +347,6 @@ export class AppImpl implements App {
     return this
   }
 
-  // Dual-overload slices() — read accessor + writer, mirroring processors().
-  slices(): readonly RegisteredSlice[]
-  slices(...registrations: RegisteredSlice[]): App
-  slices(...registrations: RegisteredSlice[]): App | readonly RegisteredSlice[] {
-    if (registrations.length === 0) {
-      return Object.freeze([...this._state.slices]) as readonly RegisteredSlice[]
-    }
-    this.guard()
-    for (const registration of registrations) {
-      const existing = this._state.slices.find((r) => r.name === registration.name)
-      if (existing) throw new DuplicateSliceNameError(registration.name, existing.module, registration.module)
-      this._state.slices.push(registration)
-    }
-    return this
-  }
 
   use(extension: Extension): App {
     this.guard()
@@ -640,48 +612,57 @@ export class AppImpl implements App {
     //     Users wanting a subscribing processor write
     //     `subscribingProcessor(name).eventHandlers(...).build()` and pass it
     //     to `app.processors(...)` — there is no implicit shortcut.
-    const builtProcessors: Array<TrackingEventProcessor | SubscribingEventProcessor> = []
-    for (const proc of this._state.processors) {
+    // Processor construction, parameterized over the components + state manager
+    // it should bind to. The root app calls it with the resolved root set; each
+    // module scope calls it with its own (see 5e-bis), which is what lets a
+    // module's processors read from that module's event store.
+    const buildProcessorsFor = (
+      procs: readonly EventProcessorModule[],
+      ctxBuilt: { -readonly [K in SlotName]: KronosComponents[K] },
+      ctxStateManager: StateManager,
+    ): Array<TrackingEventProcessor | SubscribingEventProcessor> => {
+      const out: Array<TrackingEventProcessor | SubscribingEventProcessor> = []
+      for (const proc of procs) {
       if (proc.kind === "subscribing") {
-        const subscribable = built.eventStore as unknown as SubscribableEventSource
+        const subscribable = ctxBuilt.eventStore as unknown as SubscribableEventSource
         if (!subscribable.subscribe) {
           throw new Error(
             `Event source does not support subscription. ` +
               `Cannot create subscribing processor "${proc.name}".`,
           )
         }
-        builtProcessors.push(
+        out.push(
           createSubscribingEventProcessor({
             name: proc.name,
             eventSource: subscribable,
             eventHandlers: proc.eventHandlers,
-            stateManager,
-            commandBus: built.commandBus,
-            queryBus: built.queryBus,
-            eventScheduler: built.eventScheduler,
+            stateManager: ctxStateManager,
+            commandBus: ctxBuilt.commandBus,
+            queryBus: ctxBuilt.queryBus,
+            eventScheduler: ctxBuilt.eventScheduler,
             correlationDataProviders: correlationProviders,
-            unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
+            unitOfWorkRunner: proc.unitOfWorkRunner ?? ctxBuilt.unitOfWorkFactory,
             errorHandler: proc.errorHandler,
             handlerEnhancer: composedHandlerEnhancer,
           }),
         )
       } else {
-        builtProcessors.push(
+        out.push(
           createTrackingEventProcessor({
             name: proc.name,
-            eventSource: built.eventStore as unknown as StreamableEventSource,
+            eventSource: ctxBuilt.eventStore as unknown as StreamableEventSource,
             eventHandlers: proc.eventHandlers,
-            stateManager,
-            commandBus: built.commandBus,
-            queryBus: built.queryBus,
-            eventScheduler: built.eventScheduler,
+            stateManager: ctxStateManager,
+            commandBus: ctxBuilt.commandBus,
+            queryBus: ctxBuilt.queryBus,
+            eventScheduler: ctxBuilt.eventScheduler,
             correlationDataProviders: correlationProviders,
-            unitOfWorkRunner: proc.unitOfWorkRunner ?? built.unitOfWorkFactory,
+            unitOfWorkRunner: proc.unitOfWorkRunner ?? ctxBuilt.unitOfWorkFactory,
             // Plan 09-01 (D-84): per-processor override wins, otherwise fall
             // back to the resolved tokenStore slot so the default in-memory
             // store (or any extension-supplied replacement) drives position
             // persistence — the slot is the single source of truth.
-            tokenStore: proc.tokenStore ?? built.tokenStore,
+            tokenStore: proc.tokenStore ?? ctxBuilt.tokenStore,
             deadLetterQueue: proc.deadLetterQueue,
             enqueuePolicy: proc.enqueuePolicy,
             sequencingPolicy: proc.sequencingPolicy,
@@ -698,6 +679,67 @@ export class AppImpl implements App {
           }),
         )
       }
+      }
+      return out
+    }
+
+    const builtProcessors = buildProcessorsFor(this._state.processors, built, stateManager)
+
+    // 5e-bis. Module scopes (encapsulation). Each scope inherits the root's
+    //   resolved components BY IDENTITY — the same commandBus/queryBus/eventBus
+    //   instances — and re-resolves only the slots it overrode via `m.set(...)`.
+    //   So a module can own its event store while sharing the messaging fabric.
+    //   Its states get a state manager over ITS store, and its command/query
+    //   handlers dispatch through a config shim bound to that pair, which is
+    //   what makes `ctx.load` / the PREPARE_COMMIT event flush hit the scoped
+    //   store instead of the root one.
+    for (const scope of moduleScopesOf(this)) {
+      const scopedBuilt = { ...built } as { -readonly [K in SlotName]: KronosComponents[K] }
+      if (scope.slotOverrides.length > 0) {
+        // Overrides observe the scope as it resolves, so they can build on the
+        // root's components (or on an earlier override in the same module).
+        const scopedView = new Proxy(
+          {},
+          { get: (_t, prop) => scopedBuilt[prop as SlotName] },
+        ) as Resolved
+        for (const { slot, factory } of scope.slotOverrides) {
+          const base = factory(scopedView) as KronosComponents[SlotName]
+          scopedBuilt[slot] = applyDecorators(
+            slot,
+            base,
+            this._state.decoratorRegistrations,
+            scopedView,
+          ) as never
+        }
+      }
+
+      const scopedStateManager: StateManager = createStateManager()
+      for (const { module, options } of scope.stateEntries) {
+        scopedStateManager.register(
+          module,
+          createEventSourcedRepository(
+            module,
+            scopedBuilt.eventStore,
+            options.snapshotStore ?? scopedBuilt.snapshotStore,
+            options.snapshotPolicy,
+          ),
+        )
+      }
+
+      const scopedShim = createConfigShim(scopedBuilt, scopedStateManager)
+      const scopeLabel = `module:${scope.name}`
+      registerCommandHandlersNatively(scope.commandHandlers, {
+        commandBus: scopedBuilt.commandBus,
+        config: scopedShim,
+        moduleName: scopeLabel,
+        handlerEnhancer: composedHandlerEnhancer,
+      })
+      registerQueryHandlersNatively(scope.queryHandlers, {
+        queryBus: scopedBuilt.queryBus,
+        moduleName: scopeLabel,
+        handlerEnhancer: composedHandlerEnhancer,
+      })
+      builtProcessors.push(...buildProcessorsFor(scope.processors, scopedBuilt, scopedStateManager))
     }
 
     // 5f. Build CommandGateway / QueryGateway from resolved buses, threading the
@@ -758,7 +800,6 @@ export class AppImpl implements App {
       eventProcessors(): ReadonlyMap<string, EventProcessor> {
         return processorRegistry
       },
-      slices: (): readonly RegisteredSlice[] => this.slices(),
       async stop() {
         // Stop processors first (mirrors legacy shutdown order).
         for (const proc of builtProcessors) {
