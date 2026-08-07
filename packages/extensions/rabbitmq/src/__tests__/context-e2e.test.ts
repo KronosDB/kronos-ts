@@ -102,8 +102,7 @@ describe("RabbitMQ remote command handling e2e", () => {
 
     const start = commandHandler(Start, async ({ payload: cmd }, ctx) => {
       await ctx.load(StateA, { aId: cmd.aId })
-      const { send } = await import("@kronos-ts/messaging")
-      await send(Finish, { bId: cmd.bId })
+      await ctx.send(Finish, { bId: cmd.bId })
     })
 
     const finish = commandHandler(Finish, async ({ payload: cmd }, ctx) => {

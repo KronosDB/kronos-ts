@@ -7,7 +7,6 @@ import {
   commandHandler,
   event,
   EventCriteria,
-  send,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
@@ -104,7 +103,7 @@ describe("RabbitMQ command transport integration", () => {
       .commands(
         commandHandler(StartWithSend, async ({ payload: cmd }, ctx) => {
           await ctx.load(StateA, { aId: cmd.aId })
-          await send(Finish, { bId: cmd.bId })
+          await ctx.send(Finish, { bId: cmd.bId })
         }),
       )
       .start()

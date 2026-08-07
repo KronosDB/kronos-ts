@@ -31,11 +31,12 @@ import {
   queryHandler,
   EventCriteria,
   trackingProcessor,
-  emitUpdate,
-  send,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { type EventStore, afterEvents } from "@kronos-ts/eventsourcing"
+import {
+  type EventStore,
+  afterEvents,
+} from "@kronos-ts/eventsourcing"
 import { kronos, type App, type RunningApp } from "@kronos-ts/app"
 import { postgres, AppendConditionError } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
@@ -115,7 +116,7 @@ const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd 
 
 // -- Stateful automation: an event handler that reacts to StudentSubscribed,
 // sources the affected Course, and — if it is now full — issues a
-// CloseEnrollment command via send(). The command runs in its own fresh
+// CloseEnrollment command via ctx.send(). The command runs in its own fresh
 // UnitOfWork per the AF5-aligned model.
 
 const closeEnrollment = commandHandler(CloseEnrollment, async ({ payload: cmd }, ctx) => {
@@ -127,7 +128,7 @@ const closeEnrollment = commandHandler(CloseEnrollment, async ({ payload: cmd },
 const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
   const course = await ctx.load(Course, { courseId: e.courseId })
   if (course.created && !course.closed && course.enrolled.length >= course.capacity) {
-    await send(CloseEnrollment, { courseId: e.courseId })
+    await ctx.send(CloseEnrollment, { courseId: e.courseId })
   }
 })
 
@@ -139,14 +140,14 @@ const courseViews = new Map<string, CourseView>()
 const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
   const view: CourseView = { courseId: e.courseId, name: e.name, capacity: e.capacity, enrolledCount: 0 }
   courseViews.set(e.courseId, view)
-  emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
+  ctx.emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
 })
 
 const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
   const view = courseViews.get(e.courseId)
   if (!view) return
   view.enrolledCount++
-  emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
+  ctx.emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
 })
 
 const getCourse = queryHandler(GetCourse, async ({ payload: q }) => {
