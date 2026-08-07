@@ -36,6 +36,9 @@ import { createModuleScope } from "./module-scope.js"
 // state and no name-collision surface between modules.
 // ---------------------------------------------------------------------------
 
+/** Trace/error label for modules defined without an explicit name. */
+const ANONYMOUS_MODULE = "module"
+
 /** Framework capability names — module deps may not shadow these. */
 const RESERVED_CONTEXT_KEYS = new Set([
   "append",
@@ -150,10 +153,14 @@ export type Module<Deps> = ((deps: Deps) => Extension) & { readonly moduleName: 
  * Define a module: a named registration scope with typed, isolated
  * dependency injection.
  *
+ * `Deps` is inferred from the setup callback's annotation — there is no type
+ * argument to spell out. The name is optional; supply it only to label the
+ * module in traces and error messages.
+ *
  * ```ts
  * interface SupportDeps { db: Db; storage: Storage }
  *
- * export const supportModule = defineModule<SupportDeps>("support", (m) => {
+ * export const supportModule = defineModule((m: ModuleApi<SupportDeps>) => {
  *   m.command(OpenTicket, async ({ payload }, ctx) => {
  *     await ctx.db.insert(messageBodies).values({ ... })   // ctx.db — typed dep
  *     ctx.append(TicketOpened, { ticketId: payload.ticketId })
@@ -166,7 +173,7 @@ export type Module<Deps> = ((deps: Deps) => Extension) & { readonly moduleName: 
  * while sharing one messaging fabric:
  *
  * ```ts
- * const support = defineModule<SupportDeps>("support", (m) => {
+ * const support = defineModule("support", (m: ModuleApi<SupportDeps>) => {
  *   m.set("eventStore", supportStore)      // own persistence
  *   m.states(TicketExistence)              // wired to supportStore
  *   m.commandHandler(OpenTicket, async ({ payload }, ctx) => { ... })
@@ -179,9 +186,18 @@ export type Module<Deps> = ((deps: Deps) => Extension) & { readonly moduleName: 
  * ```
  */
 export function defineModule<Deps extends Record<string, unknown> = Record<never, never>>(
+  setup: (m: ModuleApi<Deps>) => void,
+): Module<Deps>
+export function defineModule<Deps extends Record<string, unknown> = Record<never, never>>(
   name: string,
   setup: (m: ModuleApi<Deps>) => void,
+): Module<Deps>
+export function defineModule<Deps extends Record<string, unknown> = Record<never, never>>(
+  nameOrSetup: string | ((m: ModuleApi<Deps>) => void),
+  maybeSetup?: (m: ModuleApi<Deps>) => void,
 ): Module<Deps> {
+  const name = typeof nameOrSetup === "string" ? nameOrSetup : ANONYMOUS_MODULE
+  const setup = (typeof nameOrSetup === "string" ? maybeSetup : nameOrSetup) as (m: ModuleApi<Deps>) => void
   const configure = (deps: Deps): Extension => {
     for (const key of Object.keys(deps)) {
       if (RESERVED_CONTEXT_KEYS.has(key)) throw new ReservedContextKeyError(name, key)

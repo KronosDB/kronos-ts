@@ -4,7 +4,7 @@ import { qn, emptyMetadata } from "@kronos-ts/common"
 import { command, commandHandler, event, EventCriteria } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { kronos, type RunningApp } from "../kronos.js"
-import { defineModule, ReservedContextKeyError } from "../module.js"
+import { defineModule, ReservedContextKeyError, type ModuleApi } from "../module.js"
 
 // ---------------------------------------------------------------------------
 // Test descriptors
@@ -279,5 +279,41 @@ describe("module encapsulation", () => {
 
     expect(rootStore.appended).toEqual(["mod-test.ThingCreated"])
     expect(moduleStore.appended).toEqual(["mod-test.ThingArchived"])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Signature ergonomics — Deps is inferred, the name is optional
+// ---------------------------------------------------------------------------
+
+describe("defineModule signature", () => {
+  it("infers Deps from the setup annotation — no type argument needed", async () => {
+    const db = fakeDb()
+
+    // No `defineModule<Deps>` and no name: Deps comes from the callback's
+    // ModuleApi<Deps> annotation, which is where the type belongs anyway.
+    const inferred = defineModule((m: ModuleApi<Deps>) => {
+      m.commandHandler(CreateThing, async (_msg, ctx) => {
+        const tenant: string = ctx.tenant // typed purely by inference
+        ctx.db.insert(tenant)
+      })
+    })
+
+    expect(inferred.moduleName).toBe("module")
+
+    // Inference is real, not `any`: a wrong deps shape must not compile.
+    // @ts-expect-error - deps must match the inferred SupportDeps-like shape
+    inferred({ nope: true })
+
+    const app = await kronos({ quiet: true }).use(inferred({ db, tenant: "inf" })).start()
+    await app.commandGateway.send(CreateThing, { id: "i-1" }, emptyMetadata())
+    await app.stop()
+
+    expect(db.rows).toEqual(["inf"])
+  })
+
+  it("an explicit name is still accepted, and labels the module", () => {
+    const named = defineModule("support", (_m: ModuleApi<Deps>) => {})
+    expect(named.moduleName).toBe("support")
   })
 })
