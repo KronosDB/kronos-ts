@@ -226,3 +226,66 @@ describe("handler context", () => {
     expect(seen).toBe(EVENT_HANDLER_CONTEXT)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Portability — the point of making capabilities explicit values
+// ---------------------------------------------------------------------------
+
+/**
+ * A domain helper living OUTSIDE any handler. It takes the context as a plain
+ * parameter, which is only possible because the capabilities are values on an
+ * object rather than module-level statics bound to an ambient UnitOfWork.
+ */
+async function openCourseVia(ctx: HandlerContext, courseId: string): Promise<{ exists: boolean }> {
+  const existing = (await ctx.load({ name: "CourseExistence" }, { courseId })) as { exists: boolean }
+  ctx.append(CourseCreated, { courseId, name: "Intro" })
+  return existing
+}
+
+describe("handler context portability", () => {
+  it("can be handed to helpers defined outside the handler", async () => {
+    const bus = createRecordingCommandBus()
+    const stateManager = {
+      load: async () => ({
+        state: { exists: false },
+        sourcingInfo: { criteria: { kind: "tags", tags: [] }, markerPosition: 0n },
+      }),
+    }
+    const config = createStubConfiguration({ commandBus: bus, stateManager })
+
+    const handler = commandHandler(CreateCourse, async ({ payload }, ctx) => {
+      // The whole capability set travels as one argument.
+      await openCourseVia(ctx, payload.courseId)
+    })
+    registerCommandHandlersNatively([handler], { commandBus: bus, config })
+
+    const invocation = bus.subscriptions.get("university.CreateCourse")!
+    await runInNewUoW(emptyMetadata(), async () => {
+      await invocation(makeCommandMessage(CreateCourse, { courseId: "c1", name: "Intro" }))
+
+      const state = processingStateStorage.getStore()!
+      const buffered = state.resources.get(BUFFERED_EVENTS_KEY.symbol) as Array<{ payload: { courseId: string } }>
+      expect(buffered).toHaveLength(1)
+      expect(buffered[0]!.payload.courseId).toBe("c1")
+    })
+  })
+
+  it("survives being destructured — members are not this-bound", async () => {
+    const bus = createRecordingCommandBus()
+    const config = createStubConfiguration({ commandBus: bus })
+
+    const handler = commandHandler(CreateCourse, async ({ payload }, ctx) => {
+      const { append } = ctx // pulled off the object entirely
+      append(CourseCreated, { courseId: payload.courseId, name: payload.name })
+    })
+    registerCommandHandlersNatively([handler], { commandBus: bus, config })
+
+    const invocation = bus.subscriptions.get("university.CreateCourse")!
+    await runInNewUoW(emptyMetadata(), async () => {
+      await invocation(makeCommandMessage(CreateCourse, { courseId: "c2", name: "Algo" }))
+      const state = processingStateStorage.getStore()!
+      const buffered = state.resources.get(BUFFERED_EVENTS_KEY.symbol) as unknown[]
+      expect(buffered).toHaveLength(1)
+    })
+  })
+})
