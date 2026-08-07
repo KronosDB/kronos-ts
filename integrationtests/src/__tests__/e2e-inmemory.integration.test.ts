@@ -28,8 +28,6 @@ import {
   EventCriteria,
   trackingProcessor,
   subscribingProcessor,
-  emitUpdate,
-  send,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
@@ -37,8 +35,6 @@ import {
   type SnapshotStore,
   createInMemorySnapshotStore,
   afterEvents,
-  load,
-  append,
 } from "@kronos-ts/eventsourcing"
 import { kronos, type RunningApp, type App } from "@kronos-ts/app"
 
@@ -132,44 +128,44 @@ const Course = state({
 
 // -- Command handlers --
 
-const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
-  append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
+  ctx.append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const changeCourseCapacity = commandHandler(ChangeCourseCapacity, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
-  append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
+  ctx.append(CourseCapacityChanged, { courseId: cmd.courseId, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already enrolled")
-  append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
+  ctx.append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
 })
 
 // -- Stateful automation: close enrolment once a course is full --
 //
 // AF5-style stateful event handler: this handler reacts to StudentSubscribed,
 // sources the very Course it affected, and — if the course is now at capacity —
-// issues a CloseEnrollment command via send(). Per the AF5-aligned model that
+// issues a CloseEnrollment command via ctx.send(). Per the AF5-aligned model that
 // command is handled in its own fresh UnitOfWork, independent of the event
 // processor's UnitOfWork that ran the automation.
 
-const closeEnrollment = commandHandler(CloseEnrollment, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const closeEnrollment = commandHandler(CloseEnrollment, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created || course.closed) return
-  append(EnrollmentClosed, { courseId: cmd.courseId })
+  ctx.append(EnrollmentClosed, { courseId: cmd.courseId })
 })
 
-const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload: e }) => {
-  const course = await load(Course, { courseId: e.courseId })
+const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
+  const course = await ctx.load(Course, { courseId: e.courseId })
   if (course.created && !course.closed && course.enrolled.length >= course.capacity) {
-    await send(CloseEnrollment, { courseId: e.courseId })
+    await ctx.send(CloseEnrollment, { courseId: e.courseId })
   }
 })
 
@@ -181,7 +177,7 @@ function createProjection() {
   const courseViews = new Map<string, CourseView>()
 
   const projectionHandlers = [
-    eventHandler(CourseCreated, async ({ payload: e }) => {
+    eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
       const view: CourseView = {
         courseId: e.courseId,
         name: e.name,
@@ -189,20 +185,20 @@ function createProjection() {
         enrolledCount: 0,
       }
       courseViews.set(e.courseId, view)
-      emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+      ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
     }),
-    eventHandler(CourseCapacityChanged, async ({ payload: e }) => {
+    eventHandler(CourseCapacityChanged, async ({ payload: e }, ctx) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.capacity = e.capacity
-        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+        ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
       }
     }),
-    eventHandler(StudentSubscribed, async ({ payload: e }) => {
+    eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.enrolledCount++
-        emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
+        ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
       }
     }),
   ]
@@ -380,7 +376,7 @@ describe("E2E: In-memory full CQRS flow", () => {
   it("subscribing processor delivers events synchronously", async () => {
     // given
     const received: string[] = []
-    const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }) => {
+    const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
       received.push(e.courseId)
     })
 
@@ -406,8 +402,8 @@ describe("E2E: In-memory full CQRS flow", () => {
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
     const auditLog: string[] = []
 
-    const auditOnCourseCreated = eventHandler(CourseCreated, async ({ payload: e }) => { auditLog.push(`created:${e.courseId}`) })
-    const auditOnStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }) => { auditLog.push(`enrolled:${e.studentId}`) })
+    const auditOnCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => { auditLog.push(`created:${e.courseId}`) })
+    const auditOnStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => { auditLog.push(`enrolled:${e.studentId}`) })
 
     running = await kronos({ quiet: true })
       .states(Course)
