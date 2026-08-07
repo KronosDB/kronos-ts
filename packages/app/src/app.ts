@@ -606,6 +606,7 @@ export class AppImpl implements App {
       queryBus: built.queryBus,
       moduleName: "queries",
       handlerEnhancer: composedHandlerEnhancer,
+      config: configShim,
     })
 
     // 5e. Build event processors from explicit `.processors(...)` modules.
@@ -738,6 +739,7 @@ export class AppImpl implements App {
         queryBus: scopedBuilt.queryBus,
         moduleName: scopeLabel,
         handlerEnhancer: composedHandlerEnhancer,
+        config: scopedShim,
       })
       builtProcessors.push(...buildProcessorsFor(scope.processors, scopedBuilt, scopedStateManager))
     }

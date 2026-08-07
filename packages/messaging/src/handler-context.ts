@@ -88,6 +88,22 @@ export interface EventHandlerContext {
 }
 
 /**
+ * Capabilities available to QUERY handlers — read-only by construction.
+ *
+ * Queries already run inside a UnitOfWork (`simple-query-bus` dispatches
+ * through `runInUoW`), so the ambient machinery a context needs is present;
+ * what was missing was only the seeding and the argument. Deliberately narrow:
+ * no `append` (a query must not write), and no `send` (dispatching a command
+ * from a query breaks command/query separation).
+ */
+export interface QueryHandlerContext {
+  /** Load event-sourced state within the active UnitOfWork (cached per UoW). */
+  readonly load: ContextLoadFunction
+  /** The active adapter transaction, so a query can read inside it. */
+  readonly transaction: <T = unknown>() => Promise<T | undefined>
+}
+
+/**
  * Capabilities available to command handlers: everything an event handler has,
  * plus `append` — the command handler is the atomic decide-and-append
  * boundary, and its UnitOfWork flushes buffered events at PREPARE_COMMIT.
@@ -109,6 +125,12 @@ export const EVENT_HANDLER_CONTEXT: EventHandlerContext = Object.freeze({
   cancelSchedule,
   send,
   emitUpdate,
+  transaction: getOrBeginActiveTransaction,
+})
+
+/** Shared query-handler context instance. See {@link EVENT_HANDLER_CONTEXT}. */
+export const QUERY_HANDLER_CONTEXT: QueryHandlerContext = Object.freeze({
+  load,
   transaction: getOrBeginActiveTransaction,
 })
 

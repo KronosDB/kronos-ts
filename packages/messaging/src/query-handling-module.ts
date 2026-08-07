@@ -3,6 +3,10 @@ import type { QueryHandlerDefinition } from "./query-handler.js"
 import type { QueryBus } from "./query-bus.js"
 import type { QueryMessage } from "./message.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
+import { QUERY_HANDLER_CONTEXT } from "./handler-context.js"
+import { setResource } from "./processing-state.js"
+import { STATE_MANAGER_KEY } from "@kronos-ts/eventsourcing"
+import type { MinimalConfiguration } from "./command-handling-module.js"
 
 /**
  * Function-style helper called by AppImpl.start() to subscribe query handlers
@@ -15,9 +19,12 @@ import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
  * the same tracing / timing / cross-cutting treatment as command and event
  * handlers. moduleName defaults to "queries" for HandlerMetadata.handlerGroup.
  *
- * Query handlers do NOT need a Configuration shim — queries don't append
- * events, so no per-invocation ALS resource setup is required at query
- * subscription level.
+ * Queries run inside a UnitOfWork (see `createSimpleQueryBus`), so when a
+ * Configuration shim is supplied the state manager is seeded onto the active
+ * ALS state exactly as the command path does — that is what backs
+ * `ctx.load`. The shim is optional: without it the query context still
+ * carries `transaction` (which needs only the active UoW), and `ctx.load`
+ * throws the usual "no state manager configured" error.
  */
 export function registerQueryHandlersNatively(
   handlers: ReadonlyArray<QueryHandlerDefinition>,
@@ -25,13 +32,19 @@ export function registerQueryHandlersNatively(
     queryBus: QueryBus
     handlerEnhancer?: HandlerEnhancerDefinition
     moduleName?: string
+    config?: MinimalConfiguration
   },
 ): void {
   const moduleName = deps.moduleName ?? "queries"
   for (const reg of handlers) {
     const queryName = qualifiedNameToString(reg.descriptor.name)
-    let invocation = async (message: QueryMessage) =>
-      reg.handler(message)
+    let invocation = async (message: QueryMessage) => {
+      const config = deps.config
+      if (config?.hasComponent("stateManager")) {
+        setResource(STATE_MANAGER_KEY, config.getComponent<never>("stateManager"))
+      }
+      return reg.handler(message, QUERY_HANDLER_CONTEXT)
+    }
     if (deps.handlerEnhancer) {
       invocation = deps.handlerEnhancer.wrapHandler(invocation, {
         messageType: "query",

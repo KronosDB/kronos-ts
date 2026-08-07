@@ -1,6 +1,7 @@
 import type { z } from "zod"
 import type { QueryDescriptor } from "./descriptor.js"
 import type { QueryMessage } from "./message.js"
+import type { QueryHandlerContext } from "./handler-context.js"
 
 // ---------------------------------------------------------------------------
 // Singular factory — mirrors commandHandler / eventHandler.
@@ -23,7 +24,10 @@ export interface QueryHandlerDefinition<
 > {
   readonly kind: "query-handler"
   readonly descriptor: QueryDescriptor<Q, z.ZodType | undefined>
-  readonly handler: (message: QueryMessage<z.infer<Q>>) => Promise<R> | R
+  readonly handler: (
+    message: QueryMessage<z.infer<Q>>,
+    context: QueryHandlerContext,
+  ) => Promise<R> | R
 }
 
 /**
@@ -43,7 +47,7 @@ export interface QueryHandlerDefinition<
  */
 export function queryHandler<Q extends z.ZodType, R>(
   descriptor: QueryDescriptor<Q, z.ZodType | undefined>,
-  handler: (message: QueryMessage<z.infer<Q>>) => Promise<R> | R,
+  handler: (message: QueryMessage<z.infer<Q>>, context: QueryHandlerContext) => Promise<R> | R,
 ): QueryHandlerDefinition<Q, R> {
   return { kind: "query-handler", descriptor, handler }
 }

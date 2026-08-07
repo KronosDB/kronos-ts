@@ -317,3 +317,67 @@ describe("defineModule signature", () => {
     expect(named.moduleName).toBe("support")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Query handler context
+// ---------------------------------------------------------------------------
+
+import { query, queryHandler } from "@kronos-ts/messaging"
+
+const GetThingState = query({
+  name: qn("mod-test", "GetThingState"),
+  payload: z.object({ id: z.string() }),
+})
+
+describe("query handler context", () => {
+  let app: RunningApp | undefined
+  afterEach(async () => {
+    if (app) {
+      await app.stop()
+      app = undefined
+    }
+  })
+
+  it("query handlers can source event-sourced state through ctx.load", async () => {
+    const create = commandHandler(CreateThing, async ({ payload }, ctx) => {
+      ctx.append(ThingCreated, { id: payload.id })
+    })
+    // Reads state the command path wrote — proving the state manager really is
+    // seeded on the query invocation's UnitOfWork, not just typed as present.
+    const read = queryHandler(GetThingState, async ({ payload }, ctx) => {
+      const thing = await ctx.load(Thing, { id: payload.id })
+      return thing.created
+    })
+
+    app = await kronos({ quiet: true }).states(Thing).commands(create).queries(read).start()
+
+    expect(await app.queryGateway.query(GetThingState, { id: "q-1" }, emptyMetadata())).toBe(false)
+    await app.commandGateway.send(CreateThing, { id: "q-1" }, emptyMetadata())
+    expect(await app.queryGateway.query(GetThingState, { id: "q-1" }, emptyMetadata())).toBe(true)
+  })
+
+  it("scoped modules give their query handlers the module's own event store", async () => {
+    const storeA = recordingStore()
+    const db = fakeDb()
+
+    const mod = defineModule((m: ModuleApi<Deps>) => {
+      m.set("eventStore", storeA)
+      m.states(Thing)
+      m.commandHandler(CreateThing, async ({ payload }, ctx) => {
+        ctx.append(ThingCreated, { id: payload.id })
+      })
+      m.queries(
+        queryHandler(GetThingState, async ({ payload }, ctx) => {
+          const thing = await ctx.load(Thing, { id: payload.id })
+          return thing.created
+        }),
+      )
+    })
+
+    app = await kronos({ quiet: true }).use(mod({ db, tenant: "s" })).start()
+    await app.commandGateway.send(CreateThing, { id: "s-1" }, emptyMetadata())
+
+    expect(await app.queryGateway.query(GetThingState, { id: "s-1" }, emptyMetadata())).toBe(true)
+    expect(storeA.appended).toEqual(["mod-test.ThingCreated"])
+  })
+})
