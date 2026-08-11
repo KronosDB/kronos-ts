@@ -114,6 +114,10 @@ export interface SequencedEventBatch {
    * consistency marker for subsequent DCB-conditioned appends. A source
    * with no matching events still ends with one (empty) marker-carrying
    * batch. Absent on Stream responses and non-final Source batches.
+   *
+   * Opaque: pass it back in a ConsistencyCondition, unmodified. It counts
+   * positions GetHead does not, so comparing the two — or doing any
+   * arithmetic against event sequences — yields nonsense.
    */
   consistencyMarker?: bigint | undefined;
 }
@@ -2196,7 +2200,16 @@ export const EventStoreDefinition = {
       responseStream: true,
       options: {},
     },
-    /** Gets the current head of the event store (next position to be assigned). */
+    /**
+     * Gets the current head of the event store: the position just past the last
+     * readable event.
+     *
+     * A cursor that has drained the store equals this value, so `head - cursor`
+     * is a valid measure of how far behind a consumer is, and a poll that waits
+     * for the two to meet terminates. Note that positions are not necessarily
+     * contiguous — reads may skip positions — so advance a cursor by the
+     * positions you actually receive, never by incrementing through the range.
+     */
     getHead: {
       name: "GetHead",
       requestType: GetHeadRequest as typeof GetHeadRequest,
@@ -2260,7 +2273,16 @@ export interface EventStoreServiceImplementation<CallContextExt = {}> {
     request: AsyncIterable<StreamControl>,
     context: CallContext & CallContextExt,
   ): ServerStreamingMethodResult<DeepPartial<StreamResponse>>;
-  /** Gets the current head of the event store (next position to be assigned). */
+  /**
+   * Gets the current head of the event store: the position just past the last
+   * readable event.
+   *
+   * A cursor that has drained the store equals this value, so `head - cursor`
+   * is a valid measure of how far behind a consumer is, and a poll that waits
+   * for the two to meet terminates. Note that positions are not necessarily
+   * contiguous — reads may skip positions — so advance a cursor by the
+   * positions you actually receive, never by incrementing through the range.
+   */
   getHead(request: GetHeadRequest, context: CallContext & CallContextExt): Promise<DeepPartial<GetHeadResponse>>;
   /** Gets the current tail of the event store (first event position). */
   getTail(request: GetTailRequest, context: CallContext & CallContextExt): Promise<DeepPartial<GetTailResponse>>;
@@ -2295,7 +2317,16 @@ export interface EventStoreClient<CallOptionsExt = {}> {
     request: AsyncIterable<DeepPartial<StreamControl>>,
     options?: CallOptions & CallOptionsExt,
   ): AsyncIterable<StreamResponse>;
-  /** Gets the current head of the event store (next position to be assigned). */
+  /**
+   * Gets the current head of the event store: the position just past the last
+   * readable event.
+   *
+   * A cursor that has drained the store equals this value, so `head - cursor`
+   * is a valid measure of how far behind a consumer is, and a poll that waits
+   * for the two to meet terminates. Note that positions are not necessarily
+   * contiguous — reads may skip positions — so advance a cursor by the
+   * positions you actually receive, never by incrementing through the range.
+   */
   getHead(request: DeepPartial<GetHeadRequest>, options?: CallOptions & CallOptionsExt): Promise<GetHeadResponse>;
   /** Gets the current tail of the event store (first event position). */
   getTail(request: DeepPartial<GetTailRequest>, options?: CallOptions & CallOptionsExt): Promise<GetTailResponse>;
