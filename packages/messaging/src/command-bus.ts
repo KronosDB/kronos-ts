@@ -7,6 +7,16 @@ import type { CommandMessage } from "./message.js"
  *
  * Users don't interact with the bus directly — they use the CommandGateway.
  */
+/**
+ * Optional per-subscription routing hints. `group` names the CONSUMER GROUP a
+ * handler joins — distributed transports derive queue names from it so two
+ * replicas of the same group compete, and different groups do not. Absent, the
+ * transport falls back to the app identity (today's behaviour).
+ */
+export interface SubscribeOptions {
+  readonly group?: string
+}
+
 export interface CommandBus {
   /**
    * Dispatch a fully-formed command message to its handler.
@@ -30,5 +40,6 @@ export interface CommandBus {
   subscribe(
     commandName: string,
     handler: (message: CommandMessage) => Promise<unknown>,
+    options?: SubscribeOptions,
   ): void
 }

@@ -33,6 +33,8 @@ export function registerQueryHandlersNatively(
     handlerEnhancer?: HandlerEnhancerDefinition
     moduleName?: string
     config?: MinimalConfiguration
+    /** Consumer group for distributed transports (module identity). */
+    consumerGroup?: string
   },
 ): void {
   const moduleName = deps.moduleName ?? "queries"
@@ -52,6 +54,6 @@ export function registerQueryHandlersNatively(
         handlerGroup: moduleName,
       })
     }
-    deps.queryBus.subscribe(queryName, invocation)
+    deps.queryBus.subscribe(queryName, invocation, { group: deps.consumerGroup })
   }
 }

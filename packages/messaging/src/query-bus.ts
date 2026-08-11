@@ -1,4 +1,6 @@
 import type { QueryMessage } from "./message.js"
+import type { SubscribeOptions } from "./command-bus.js"
+export type { SubscribeOptions }
 import type { SubscriptionQueryResult } from "./subscription-query.js"
 import type { SubscriptionFilter } from "./subscription-filter.js"
 
@@ -25,6 +27,7 @@ export interface QueryBus {
   subscribe(
     queryName: string,
     handler: (message: QueryMessage) => Promise<unknown>,
+    options?: SubscribeOptions,
   ): void
 
   /**

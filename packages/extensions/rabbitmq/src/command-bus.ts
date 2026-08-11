@@ -1,4 +1,4 @@
-import type { CommandBus, CommandMessage } from "@kronos-ts/messaging"
+import type { CommandBus, CommandMessage, SubscribeOptions } from "@kronos-ts/messaging"
 import { qualifiedNameToString } from "@kronos-ts/common"
 import { runInNewUoW } from "@kronos-ts/messaging"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
@@ -27,6 +27,7 @@ export interface RabbitMqCommandTransport {
   subscribe(
     commandName: string,
     handler: (envelope: RabbitMqCommandEnvelope) => Promise<RabbitMqCommandReplyEnvelope>,
+    group?: string,
   ): void | Promise<void>
 }
 
@@ -60,9 +61,9 @@ export function createRabbitMqCommandBus(options: RabbitMqCommandBusOptions): Co
       return reply.result
     },
 
-    subscribe(commandName: string, handler: (message: CommandMessage) => Promise<unknown>): void {
+    subscribe(commandName: string, handler: (message: CommandMessage) => Promise<unknown>, options?: SubscribeOptions): void {
       localHandlers.add(commandName)
-      localSegment.subscribe(commandName, handler)
+      localSegment.subscribe(commandName, handler, options)
       void transport.subscribe(commandName, async (envelope) => {
         try {
           // AF5 parity: an inbound distributed command is handled in its
@@ -75,7 +76,7 @@ export function createRabbitMqCommandBus(options: RabbitMqCommandBusOptions): Co
         } catch (error) {
           return { requestId: envelope.requestId, ok: false, error: serializeError(error) }
         }
-      })
+      }, options?.group)
     },
   }
 }

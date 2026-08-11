@@ -734,12 +734,16 @@ export class AppImpl implements App {
         config: scopedShim,
         moduleName: scopeLabel,
         handlerEnhancer: composedHandlerEnhancer,
+        // The module's name is its CONSUMER GROUP on distributed transports, so
+        // its queues stay stable no matter which service process hosts it.
+        consumerGroup: scope.name,
       })
       registerQueryHandlersNatively(scope.queryHandlers, {
         queryBus: scopedBuilt.queryBus,
         moduleName: scopeLabel,
         handlerEnhancer: composedHandlerEnhancer,
         config: scopedShim,
+        consumerGroup: scope.name,
       })
       builtProcessors.push(...buildProcessorsFor(scope.processors, scopedBuilt, scopedStateManager))
     }

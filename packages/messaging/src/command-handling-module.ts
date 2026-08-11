@@ -162,6 +162,8 @@ export function registerCommandHandlersNatively(
     config: MinimalConfiguration
     handlerEnhancer?: HandlerEnhancerDefinition
     moduleName?: string
+    /** Consumer group for distributed transports (module identity). */
+    consumerGroup?: string
   },
 ): void {
   const moduleName = deps.moduleName ?? "commands"
@@ -177,6 +179,6 @@ export function registerCommandHandlersNatively(
       })
     }
 
-    deps.commandBus.subscribe(commandName, invocation)
+    deps.commandBus.subscribe(commandName, invocation, { group: deps.consumerGroup })
   }
 }

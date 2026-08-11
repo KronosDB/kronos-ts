@@ -1,4 +1,4 @@
-import type { CommandBus } from "./command-bus.js"
+import type { CommandBus , SubscribeOptions } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
 
 /**
@@ -73,8 +73,8 @@ export function createRetryingCommandBus(
       }
     },
 
-    subscribe(commandName: string, handler: (message: CommandMessage) => Promise<unknown>) {
-      delegate.subscribe(commandName, handler)
+    subscribe(commandName: string, handler: (message: CommandMessage) => Promise<unknown>, options?: SubscribeOptions) {
+      delegate.subscribe(commandName, handler, options)
     },
   }
 }

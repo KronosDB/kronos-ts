@@ -281,6 +281,7 @@ export {
 } from "./retrying-command-bus.js"
 
 // Module-level handler helpers (Plan 04-01 / HDL-02 / D-42)
+export type { SubscribeOptions } from "./command-bus.js"
 export { COMMAND_BUS_KEY } from "./send.js"
 export {
   type HandlerContext,

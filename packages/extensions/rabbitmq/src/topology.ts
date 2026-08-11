@@ -16,9 +16,9 @@ export interface RabbitMqTopologyNames {
   readonly subscribersGossipExchange: string
   readonly subscribersDirectExchange: string
   commandRoutingKey(commandName: QualifiedName | string): string
-  commandQueue(commandName: QualifiedName | string): string
+  commandQueue(commandName: QualifiedName | string, group?: string): string
   queryRoutingKey(queryName: QualifiedName | string): string
-  queryQueue(queryName: QualifiedName | string): string
+  queryQueue(queryName: QualifiedName | string, group?: string): string
   subscribersGossipQueue(): string
   subscribersDirectQueue(): string
   commandReplyQueue(): string
@@ -47,14 +47,16 @@ export function createRabbitMqTopologyNames(
     commandRoutingKey(commandName) {
       return messageName(commandName)
     },
-    commandQueue(commandName) {
-      return `${prefix}.commands.${service}.${sanitizeMessageName(messageName(commandName))}`
+    commandQueue(commandName, group) {
+      const owner = group ? sanitizeSegment(group) : service
+      return `${prefix}.commands.${owner}.${sanitizeMessageName(messageName(commandName))}`
     },
     queryRoutingKey(queryName) {
       return messageName(queryName)
     },
-    queryQueue(queryName) {
-      return `${prefix}.queries.${service}.${sanitizeMessageName(messageName(queryName))}`
+    queryQueue(queryName, group) {
+      const owner = group ? sanitizeSegment(group) : service
+      return `${prefix}.queries.${owner}.${sanitizeMessageName(messageName(queryName))}`
     },
     subscribersGossipQueue() {
       return `${prefix}.subscribers.gossip.${service}.${instance}`

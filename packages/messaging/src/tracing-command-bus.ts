@@ -1,4 +1,4 @@
-import type { CommandBus } from "./command-bus.js"
+import type { CommandBus , SubscribeOptions } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
 import type { SpanFactory, Span } from "./span-factory.js"
 
@@ -47,10 +47,11 @@ export function createTracingCommandBus(
     subscribe(
       commandName: string,
       handler: (message: CommandMessage) => Promise<unknown>,
+      options?: SubscribeOptions,
     ): void {
       // Handler-side spans are owned by tracingHandlerEnhancerDefinition; pass
       // the handler through untouched so commands get exactly one handle span.
-      delegate.subscribe(commandName, handler)
+      delegate.subscribe(commandName, handler, options)
     },
   }
 }

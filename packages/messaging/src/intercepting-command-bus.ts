@@ -1,4 +1,4 @@
-import type { CommandBus } from "./command-bus.js"
+import type { CommandBus , SubscribeOptions } from "./command-bus.js"
 import type { CommandMessage } from "./message.js"
 import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
 
@@ -34,6 +34,7 @@ export function createInterceptingCommandBus(
     subscribe(
       commandName: string,
       handler: (message: CommandMessage) => Promise<unknown>,
+      options?: SubscribeOptions,
     ) {
       const wrappedHandler = (message: CommandMessage) => {
         if (handlerInterceptors.length === 0) {
@@ -52,7 +53,7 @@ export function createInterceptingCommandBus(
         return chain(message)
       }
 
-      delegate.subscribe(commandName, wrappedHandler)
+      delegate.subscribe(commandName, wrappedHandler, options)
     },
 
     registerDispatchInterceptor(interceptor) {

@@ -17,6 +17,8 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
   private channel: Channel | undefined
   private replyQueue: string | undefined
   private readonly handlers = new Map<string, (envelope: RabbitMqCommandEnvelope) => Promise<RabbitMqCommandReplyEnvelope>>()
+  /** Consumer group per command — persisted so reconnect re-binds the SAME queue. */
+  private readonly groups = new Map<string, string | undefined>()
   private readonly boundHandlers = new Set<string>()
   private readonly pending = new Map<string, PendingRequest>()
   private connectPromise: Promise<void> | undefined
@@ -109,8 +111,10 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
   subscribe(
     commandName: string,
     handler: (envelope: RabbitMqCommandEnvelope) => Promise<RabbitMqCommandReplyEnvelope>,
+    group?: string,
   ): void {
     this.handlers.set(commandName, handler)
+    this.groups.set(commandName, group)
     if (this.channel) {
       void this.bindCommandHandler(commandName, handler)
     }
@@ -122,7 +126,7 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
   ): Promise<void> {
     if (this.boundHandlers.has(commandName)) return
     const channel = this.requireChannel()
-    const queue = this.config.topology.commandQueue(commandName)
+    const queue = this.config.topology.commandQueue(commandName, this.groups.get(commandName))
     const routingKey = this.config.topology.commandRoutingKey(commandName)
 
     await channel.assertQueue(queue, {

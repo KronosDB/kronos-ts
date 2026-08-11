@@ -1,4 +1,4 @@
-import type { QueryBus } from "./query-bus.js"
+import type { QueryBus , SubscribeOptions } from "./query-bus.js"
 import type { QueryMessage } from "./message.js"
 import type { SubscriptionQueryResult } from "./subscription-query.js"
 import type { SubscriptionFilter } from "./subscription-filter.js"
@@ -35,6 +35,7 @@ export function createInterceptingQueryBus(
     subscribe(
       queryName: string,
       handler: (message: QueryMessage) => Promise<unknown>,
+      options?: SubscribeOptions,
     ) {
       const wrappedHandler = (message: QueryMessage) => {
         if (handlerInterceptors.length === 0) {
@@ -53,7 +54,7 @@ export function createInterceptingQueryBus(
         return chain(message)
       }
 
-      delegate.subscribe(queryName, wrappedHandler)
+      delegate.subscribe(queryName, wrappedHandler, options)
     },
 
     subscriptionQuery(message: QueryMessage, bufferSize?: number): SubscriptionQueryResult {
