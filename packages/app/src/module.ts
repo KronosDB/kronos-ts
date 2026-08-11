@@ -26,12 +26,12 @@ import { createModuleScope } from "./module-scope.js"
 // Module composition — encapsulated dependency injection over the handler
 // context.
 //
-// A module declares its dependency TYPES at definition time and receives the
-// VALUES at the composition root (`app.use(mod.with(deps))`), Fastify-plugin
+// A module declares the TYPE of the dependencies it needs at definition time
+// and receives the VALUES at the composition root (`app.use(mod(dependencies))`), Fastify-plugin
 // style. Every handler declared through the module's factories receives a
 // context that is the frozen merge of the framework capabilities and the
-// module's deps — `HandlerContext & Deps` — built ONCE per configuration.
-// Two modules (or two configurations of the same module) never share deps:
+// module's own — `HandlerContext & Dependencies` — built ONCE per configuration.
+// Two modules (or two configurations of the same module) never share dependencies:
 // isolation is by closure, not by registry, so there is no global mutable
 // state and no name-collision surface between modules.
 // ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ import { createModuleScope } from "./module-scope.js"
 /** Trace/error label for modules defined without an explicit name. */
 const ANONYMOUS_MODULE = "module"
 
-/** Framework capability names — module deps may not shadow these. */
+/** Framework capability names — a module's dependencies may not shadow these. */
 const RESERVED_CONTEXT_KEYS = new Set([
   "append",
   "load",
@@ -51,22 +51,22 @@ const RESERVED_CONTEXT_KEYS = new Set([
   "cancelSchedule",
 ])
 
-/** Thrown when a module's deps would shadow a framework capability. */
+/** Thrown when a module's dependencies would shadow a framework capability. */
 export class ReservedContextKeyError extends Error {
   constructor(moduleName: string, key: string) {
     super(
-      `Module "${moduleName}": dep "${key}" would shadow the framework capability ` +
-        `ctx.${key}. Rename the dep — reserved keys: ${[...RESERVED_CONTEXT_KEYS].join(", ")}.`,
+      `Module "${moduleName}": dependency "${key}" would shadow the framework capability ` +
+        `ctx.${key}. Rename it — reserved keys: ${[...RESERVED_CONTEXT_KEYS].join(", ")}.`,
     )
     this.name = "ReservedContextKeyError"
   }
 }
 
-/** The command-handler context a module hands its handlers: capabilities + deps. */
-export type ModuleHandlerContext<Deps> = HandlerContext & Readonly<Deps>
+/** The command-handler context a module hands its handlers: capabilities + dependencies. */
+export type ModuleHandlerContext<Dependencies> = HandlerContext & Readonly<Dependencies>
 
-/** The event-handler context a module hands its handlers: capabilities + deps. */
-export type ModuleEventHandlerContext<Deps> = EventHandlerContext & Readonly<Deps>
+/** The event-handler context a module hands its handlers: capabilities + dependencies. */
+export type ModuleEventHandlerContext<Dependencies> = EventHandlerContext & Readonly<Dependencies>
 
 /**
  * The registration surface a module's `setup` callback receives. Handler
@@ -74,23 +74,23 @@ export type ModuleEventHandlerContext<Deps> = EventHandlerContext & Readonly<Dep
  * merged context; everything else passes through to the underlying {@link App}
  * so a module is a complete registration scope, not just a handler namespace.
  */
-export interface ModuleApi<Deps> {
+export interface ModuleApi<Dependencies> {
   readonly name: string
-  /** The configured dependency values (frozen). */
-  readonly deps: Readonly<Deps>
+  /** The dependency values this module was configured with (frozen). */
+  readonly dependencies: Readonly<Dependencies>
   /**
-   * Declare and register a command handler whose context carries the module
-   * deps. Registered on the app immediately; also returned for tests.
+   * Declare and register a command handler whose context carries the module's
+   * dependencies. Registered on the app immediately; also returned for tests.
    */
   commandHandler<P extends z.ZodType>(
     descriptor: CommandDescriptor<P, undefined>,
-    handler: (message: CommandMessage<z.infer<P>>, context: ModuleHandlerContext<Deps>) => Promise<void> | void,
+    handler: (message: CommandMessage<z.infer<P>>, context: ModuleHandlerContext<Dependencies>) => Promise<void> | void,
   ): CommandHandlerDefinition<P, undefined>
   commandHandler<P extends z.ZodType, R extends z.ZodType>(
     descriptor: CommandDescriptor<P, R>,
     handler: (
       message: CommandMessage<z.infer<P>>,
-      context: ModuleHandlerContext<Deps>,
+      context: ModuleHandlerContext<Dependencies>,
     ) => Promise<z.infer<R>> | z.infer<R>,
   ): CommandHandlerDefinition<P, R>
   commandHandler<P extends z.ZodType, R extends z.ZodType>(
@@ -98,13 +98,13 @@ export interface ModuleApi<Deps> {
     options: {
       handler: (
         message: CommandMessage<z.infer<P>>,
-        context: ModuleHandlerContext<Deps>,
+        context: ModuleHandlerContext<Dependencies>,
       ) => Promise<z.infer<R>> | z.infer<R>
       appendCondition?: (message: CommandMessage<z.infer<P>>, sourcedCriteria: EventCriteria) => EventCriteria
     },
   ): CommandHandlerDefinition<P, R>
   /**
-   * Declare an event handler whose context carries the module deps. NOT
+   * Declare an event handler whose context carries the module's dependencies. NOT
    * registered on the app — event handlers belong to a processor, so the
    * definition is returned for use in `processors(...)` / `.eventHandlers(...)`.
    */
@@ -112,7 +112,7 @@ export interface ModuleApi<Deps> {
     descriptor: EventDescriptor<P>,
     handler: (
       message: SequencedEventMessage<z.infer<P>>,
-      context: ModuleEventHandlerContext<Deps>,
+      context: ModuleEventHandlerContext<Dependencies>,
     ) => Promise<void> | void,
   ): EventHandlerDefinition<P>
   /**
@@ -147,25 +147,26 @@ export interface ModuleApi<Deps> {
  * compose the way every other closure in the framework does. `moduleName`
  * rides along as a property for diagnostics.
  */
-export type Module<Deps> = ((deps: Deps) => Extension) & { readonly moduleName: string }
+export type Module<Dependencies> = ((dependencies: Dependencies) => Extension) & { readonly moduleName: string }
 
 /**
  * Define a module: a named registration scope with typed, isolated
  * dependency injection.
  *
- * `Deps` is inferred from the setup callback's annotation — there is no type
+ * `Dependencies` is inferred from the setup callback's annotation — there is no type
  * argument to spell out. The name is optional; supply it only to label the
  * module in traces and error messages.
  *
  * ```ts
- * interface SupportDeps { db: Db; storage: Storage }
+ * interface SupportContext { db: Db; storage: Storage }
  *
- * export const supportModule = defineModule((m: ModuleApi<SupportDeps>) => {
- *   m.command(OpenTicket, async ({ payload }, ctx) => {
- *     await ctx.db.insert(messageBodies).values({ ... })   // ctx.db — typed dep
+ * export const supportModule = defineModule((m: ModuleApi<SupportContext>) => {
+ *   m.commandHandler(OpenTicket, async ({ payload }, ctx) => {
+ *     await ctx.db.insert(messageBodies).values({ ... })   // ctx.db — the module's own
  *     ctx.append(TicketOpened, { ticketId: payload.ticketId })
  *   })
  * })
+ * ```
  *
  * A module is also the ENCAPSULATION boundary for framework components: call
  * `m.set(slot, ...)` to scope a slot to this module. Anything not overridden is
@@ -173,7 +174,7 @@ export type Module<Deps> = ((deps: Deps) => Extension) & { readonly moduleName: 
  * while sharing one messaging fabric:
  *
  * ```ts
- * const support = defineModule("support", (m: ModuleApi<SupportDeps>) => {
+ * const support = defineModule("support", (m: ModuleApi<SupportContext>) => {
  *   m.set("eventStore", supportStore)      // own persistence
  *   m.states(TicketExistence)              // wired to supportStore
  *   m.commandHandler(OpenTicket, async ({ payload }, ctx) => { ... })
@@ -185,32 +186,32 @@ export type Module<Deps> = ((deps: Deps) => Extension) & { readonly moduleName: 
  *   .use(billing({ db: billingDb }))       // its own scope again
  * ```
  */
-export function defineModule<Deps extends Record<string, unknown> = Record<never, never>>(
-  setup: (m: ModuleApi<Deps>) => void,
-): Module<Deps>
-export function defineModule<Deps extends Record<string, unknown> = Record<never, never>>(
+export function defineModule<Dependencies extends Record<string, unknown> = Record<never, never>>(
+  setup: (m: ModuleApi<Dependencies>) => void,
+): Module<Dependencies>
+export function defineModule<Dependencies extends Record<string, unknown> = Record<never, never>>(
   name: string,
-  setup: (m: ModuleApi<Deps>) => void,
-): Module<Deps>
-export function defineModule<Deps extends Record<string, unknown> = Record<never, never>>(
-  nameOrSetup: string | ((m: ModuleApi<Deps>) => void),
-  maybeSetup?: (m: ModuleApi<Deps>) => void,
-): Module<Deps> {
+  setup: (m: ModuleApi<Dependencies>) => void,
+): Module<Dependencies>
+export function defineModule<Dependencies extends Record<string, unknown> = Record<never, never>>(
+  nameOrSetup: string | ((m: ModuleApi<Dependencies>) => void),
+  maybeSetup?: (m: ModuleApi<Dependencies>) => void,
+): Module<Dependencies> {
   const name = typeof nameOrSetup === "string" ? nameOrSetup : ANONYMOUS_MODULE
-  const setup = (typeof nameOrSetup === "string" ? maybeSetup : nameOrSetup) as (m: ModuleApi<Deps>) => void
-  const configure = (deps: Deps): Extension => {
-    for (const key of Object.keys(deps)) {
+  const setup = (typeof nameOrSetup === "string" ? maybeSetup : nameOrSetup) as (m: ModuleApi<Dependencies>) => void
+  const configure = (dependencies: Dependencies): Extension => {
+    for (const key of Object.keys(dependencies)) {
       if (RESERVED_CONTEXT_KEYS.has(key)) throw new ReservedContextKeyError(name, key)
     }
     return (app: App) => {
       const scope = createModuleScope(app, name)
-      const frozenDeps = Object.freeze({ ...deps })
-      const commandContext = Object.freeze({ ...HANDLER_CONTEXT, ...frozenDeps }) as ModuleHandlerContext<Deps>
-      const eventContext = Object.freeze({ ...EVENT_HANDLER_CONTEXT, ...frozenDeps }) as ModuleEventHandlerContext<Deps>
+      const frozenDependencies = Object.freeze({ ...dependencies })
+      const commandContext = Object.freeze({ ...HANDLER_CONTEXT, ...frozenDependencies }) as ModuleHandlerContext<Dependencies>
+      const eventContext = Object.freeze({ ...EVENT_HANDLER_CONTEXT, ...frozenDependencies }) as ModuleEventHandlerContext<Dependencies>
 
-      const api: ModuleApi<Deps> = {
+      const api: ModuleApi<Dependencies> = {
         name,
-        deps: frozenDeps,
+        dependencies: frozenDependencies,
         app,
         commandHandler(descriptor: CommandDescriptor<any, any>, handlerOrOptions: any) {
           const bare = typeof handlerOrOptions === "function" ? handlerOrOptions : handlerOrOptions.handler

@@ -29,12 +29,12 @@ const Thing = state({
   evolve: (on) => [on(ThingCreated, (s) => ({ ...s, created: true }))],
 })
 
-interface Deps extends Record<string, unknown> {
+interface SupportDependencies extends Record<string, unknown> {
   db: { insert: (row: string) => void; rows: string[] }
   tenant: string
 }
 
-function fakeDb(): Deps["db"] {
+function fakeDb(): SupportDependencies["db"] {
   const rows: string[] = []
   return { rows, insert: (row) => rows.push(row) }
 }
@@ -48,11 +48,11 @@ describe("defineModule", () => {
     }
   })
 
-  it("handlers receive framework capabilities AND module deps on one context", async () => {
+  it("handlers receive framework capabilities AND the module's context values", async () => {
     const db = fakeDb()
     const seen: string[] = []
 
-    const mod = defineModule<Deps>("alpha", (m) => {
+    const mod = defineModule<SupportDependencies>("alpha", (m) => {
       m.states(Thing)
       m.commandHandler(CreateThing, async ({ payload }, ctx) => {
         const thing = await ctx.load(Thing, { id: payload.id })
@@ -77,9 +77,9 @@ describe("defineModule", () => {
     const dbA = fakeDb()
     const dbB = fakeDb()
 
-    // Same *shape* of module registered twice with different deps and commands.
+    // Same *shape* of module registered twice with different context and commands.
     const makeMod = (label: "A" | "B", trigger: typeof CreateA) =>
-      defineModule<Deps>(`tenant-${label}`, (m) => {
+      defineModule<SupportDependencies>(`tenant-${label}`, (m) => {
         m.commandHandler(trigger, async ({ payload }, ctx) => {
           ctx.db.insert(`${label}:${payload.id}:${ctx.tenant}`)
         })
@@ -97,18 +97,18 @@ describe("defineModule", () => {
     expect(dbB.rows).toEqual(["B:2:globex"])
   })
 
-  it("rejects deps that would shadow framework capabilities", () => {
+  it("rejects context values that would shadow framework capabilities", () => {
     const mod = defineModule<Record<string, unknown>>("bad", () => {})
     expect(() => mod({ load: "shadowed" })).toThrow(ReservedContextKeyError)
     expect(() => mod({ append: () => {} })).toThrow(ReservedContextKeyError)
     expect(() => mod({ transaction: 1 })).toThrow(ReservedContextKeyError)
   })
 
-  it("module event handlers close over the module context (deps included)", async () => {
+  it("module event handlers close over the module context (values included)", async () => {
     const db = fakeDb()
     let observedTenant: string | undefined
 
-    const mod = defineModule<Deps>("with-events", (m) => {
+    const mod = defineModule<SupportDependencies>("with-events", (m) => {
       m.states(Thing)
       m.commandHandler(CreateThing, async ({ payload }, ctx) => {
         ctx.append(ThingCreated, { id: payload.id })
@@ -127,27 +127,27 @@ describe("defineModule", () => {
 
     // The event definition was declared but not attached to a processor in this
     // minimal boot; invoke it directly the way processors do (message + base ctx).
-    // Its closure must supply deps regardless of what the caller passes.
+    // Its closure must supply the values regardless of what the caller passes.
     expect(observedTenant).toBeUndefined()
   })
 
-  it("module contexts are frozen and deps are copied", async () => {
+  it("module contexts are frozen and their values are copied", async () => {
     const db = fakeDb()
-    const depsIn = { db, tenant: "acme" }
+    const valuesIn = { db, tenant: "acme" }
     let ctxRef: any
 
-    const mod = defineModule<Deps>("frozen", (m) => {
+    const mod = defineModule<SupportDependencies>("frozen", (m) => {
       m.commandHandler(CreateThing, async (_msg, ctx) => {
         ctxRef = ctx
       })
     })
 
-    app = await kronos({ quiet: true }).use(mod(depsIn)).start()
+    app = await kronos({ quiet: true }).use(mod(valuesIn)).start()
     await app.commandGateway.send(CreateThing, { id: "f-1" }, emptyMetadata())
 
     expect(Object.isFrozen(ctxRef)).toBe(true)
-    // mutating the original deps object after () must not leak in
-    ;(depsIn as any).tenant = "mutated"
+    // mutating the original object after configuration must not leak in
+    ;(valuesIn as any).tenant = "mutated"
     expect(ctxRef.tenant).toBe("acme")
   })
 })
@@ -198,7 +198,7 @@ describe("module encapsulation", () => {
     const storeB = recordingStore()
     const db = fakeDb()
 
-    const modA = defineModule<Deps>("alpha", (m) => {
+    const modA = defineModule<SupportDependencies>("alpha", (m) => {
       m.set("eventStore", storeA)
       m.states(Thing)
       m.commandHandler(CreateThing, async ({ payload }, ctx) => {
@@ -207,7 +207,7 @@ describe("module encapsulation", () => {
       })
     })
 
-    const modB = defineModule<Deps>("beta", (m) => {
+    const modB = defineModule<SupportDependencies>("beta", (m) => {
       m.set("eventStore", storeB)
       m.states(Thing)
       m.commandHandler(ArchiveThing, async ({ payload }, ctx) => {
@@ -235,7 +235,7 @@ describe("module encapsulation", () => {
     const rootStore = recordingStore()
     const db = fakeDb()
 
-    const mod = defineModule<Deps>("inheritor", (m) => {
+    const mod = defineModule<SupportDependencies>("inheritor", (m) => {
       m.states(Thing)
       m.commandHandler(CreateThing, async ({ payload }, ctx) => {
         ctx.append(ThingCreated, { id: payload.id })
@@ -260,7 +260,7 @@ describe("module encapsulation", () => {
       ctx.append(ThingCreated, { id: payload.id })
     })
 
-    const mod = defineModule<Deps>("scoped", (m) => {
+    const mod = defineModule<SupportDependencies>("scoped", (m) => {
       m.set("eventStore", moduleStore)
       m.commandHandler(ArchiveThing, async ({ payload }, ctx) => {
         ctx.append(ThingArchived, { id: payload.id })
@@ -283,16 +283,16 @@ describe("module encapsulation", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Signature ergonomics — Deps is inferred, the name is optional
+// Signature ergonomics — SupportDependencies is inferred, the name is optional
 // ---------------------------------------------------------------------------
 
 describe("defineModule signature", () => {
-  it("infers Deps from the setup annotation — no type argument needed", async () => {
+  it("infers SupportDependencies from the setup annotation — no type argument needed", async () => {
     const db = fakeDb()
 
-    // No `defineModule<Deps>` and no name: Deps comes from the callback's
-    // ModuleApi<Deps> annotation, which is where the type belongs anyway.
-    const inferred = defineModule((m: ModuleApi<Deps>) => {
+    // No `defineModule<SupportDependencies>` and no name: SupportDependencies comes from the callback's
+    // ModuleApi<SupportDependencies> annotation, which is where the type belongs anyway.
+    const inferred = defineModule((m: ModuleApi<SupportDependencies>) => {
       m.commandHandler(CreateThing, async (_msg, ctx) => {
         const tenant: string = ctx.tenant // typed purely by inference
         ctx.db.insert(tenant)
@@ -301,8 +301,8 @@ describe("defineModule signature", () => {
 
     expect(inferred.moduleName).toBe("module")
 
-    // Inference is real, not `any`: a wrong deps shape must not compile.
-    // @ts-expect-error - deps must match the inferred SupportDeps-like shape
+    // Inference is real, not `any`: a wrong context shape must not compile.
+    // @ts-expect-error - the value must match the inferred SupportDependencies shape
     inferred({ nope: true })
 
     const app = await kronos({ quiet: true }).use(inferred({ db, tenant: "inf" })).start()
@@ -313,7 +313,7 @@ describe("defineModule signature", () => {
   })
 
   it("an explicit name is still accepted, and labels the module", () => {
-    const named = defineModule("support", (_m: ModuleApi<Deps>) => {})
+    const named = defineModule("support", (_m: ModuleApi<SupportDependencies>) => {})
     expect(named.moduleName).toBe("support")
   })
 })
@@ -360,7 +360,7 @@ describe("query handler context", () => {
     const storeA = recordingStore()
     const db = fakeDb()
 
-    const mod = defineModule((m: ModuleApi<Deps>) => {
+    const mod = defineModule((m: ModuleApi<SupportDependencies>) => {
       m.set("eventStore", storeA)
       m.states(Thing)
       m.commandHandler(CreateThing, async ({ payload }, ctx) => {
