@@ -7,6 +7,7 @@ import { CommandServiceDefinition } from "./generated/command.js"
 import { QueryServiceDefinition } from "./generated/query.js"
 import { EventStoreDefinition } from "./generated/eventstore.js"
 import { SnapshotStoreDefinition } from "./generated/snapshot.js"
+import { SchedulerServiceDefinition } from "./generated/scheduler.js"
 
 export const kronosDbServiceDefinitions = {
   platform: PlatformServiceDefinition,
@@ -14,6 +15,7 @@ export const kronosDbServiceDefinitions = {
   queries: QueryServiceDefinition,
   eventStore: EventStoreDefinition,
   snapshotStore: SnapshotStoreDefinition,
+  scheduler: SchedulerServiceDefinition,
 } as const
 
 export {
@@ -22,4 +24,5 @@ export {
   QueryServiceDefinition,
   EventStoreDefinition,
   SnapshotStoreDefinition,
+  SchedulerServiceDefinition,
 }
