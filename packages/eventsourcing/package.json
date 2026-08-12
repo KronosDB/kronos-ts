@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/eventsourcing",
-  "version": "0.3.3",
-  "description": "Event sourcing for Kronos \u2014 dynamic-consistency-boundary event store with load/append.",
+  "version": "0.4.0",
+  "description": "Event sourcing for Kronos — dynamic-consistency-boundary event store with load/append.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",
