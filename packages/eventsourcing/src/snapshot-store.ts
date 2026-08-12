@@ -42,7 +42,7 @@ export interface SnapshotStore {
 /**
  * In-memory snapshot store for testing and standalone usage.
  */
-export function createInMemorySnapshotStore(): SnapshotStore {
+export function inMemorySnapshotStore(): SnapshotStore {
   // Key: "stateName:id"
   const snapshots = new Map<string, Snapshot>()
 

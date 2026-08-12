@@ -11,7 +11,7 @@ import type {
   SequencedEvent,
   StreamingCondition,
 } from "@kronos-ts/messaging"
-import { createMessageStream } from "@kronos-ts/messaging"
+import { messageStream } from "@kronos-ts/messaging"
 import type {
   EventStore,
   SourcingResult,
@@ -24,7 +24,7 @@ import type { TrackingToken } from "@kronos-ts/messaging"
 import { globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/messaging"
 import { markerAt, noMarker } from "@kronos-ts/eventsourcing"
 import type { KronosDbConnection } from "./connection.js"
-import { createKronosMetadata } from "./connection.js"
+import { kronosMetadata } from "./connection.js"
 import { metadataFromStringMap, metadataToStringMap } from "./metadata-conversion.js"
 
 // ---------------------------------------------------------------------------
@@ -139,11 +139,11 @@ function createEventConverters(serializer: Serializer) {
  * - Stream returns `SequencedEvent` directly
  * - Criterion uses flat `names` + `tags` (not TagsAndNamesCriterion wrapper)
  */
-export function createKronosDbEventStore(connection: KronosDbConnection, serializer: Serializer): EventStore {
+export function kronosDbEventStore(connection: KronosDbConnection, serializer: Serializer): EventStore {
   const { eventToProto, eventFromProto } = createEventConverters(serializer)
 
   function getMetadata() {
-    return createKronosMetadata(connection.config)
+    return kronosMetadata(connection.config)
   }
 
   // Push-based subscriber registry (EventBus.subscribe contract). KronosDB's
@@ -346,7 +346,7 @@ export function createKronosDbEventStore(connection: KronosDbConnection, seriali
         }
       }
 
-      return createMessageStream<SequencedEvent>({
+      return messageStream<SequencedEvent>({
         next() {
           const item = buffer.shift()
           if (item) onConsumed()

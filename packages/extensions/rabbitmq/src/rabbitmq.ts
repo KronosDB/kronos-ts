@@ -1,15 +1,15 @@
 import type { CommandBus, QueryBus } from "@kronos-ts/messaging"
 import {
-  createRabbitMqTopologyNames,
+  rabbitMqTopologyNames,
   type RabbitMqIdentity,
   type RabbitMqTopologyConfig,
 } from "./topology.js"
-import { createRabbitMqCommandBus } from "./command-bus.js"
-import { createRabbitMqQueryBus } from "./query-bus.js"
+import { rabbitMqCommandBus } from "./command-bus.js"
+import { rabbitMqQueryBus } from "./query-bus.js"
 import { AmqpRabbitMqCommandTransport } from "./amqp-command-transport.js"
 import { AmqpRabbitMqQueryTransport } from "./amqp-query-transport.js"
 import { AmqpDistributedSubscriberRegistry } from "./distributed-subscriber-registry.js"
-import { createAmqpConnection, type AmqpConnect } from "./connection.js"
+import { amqpConnection, type AmqpConnect } from "./connection.js"
 
 export interface RabbitMqCommandDispatchConfig {
   /** Prefer local handlers when registered; otherwise route through RabbitMQ. Default: true. */
@@ -49,7 +49,7 @@ export interface RabbitMqConfig {
 export interface RabbitMqResolvedConfig {
   readonly identity: RabbitMqIdentity
   readonly url: string
-  readonly topology: ReturnType<typeof createRabbitMqTopologyNames>
+  readonly topology: ReturnType<typeof rabbitMqTopologyNames>
   readonly commands: Required<RabbitMqCommandDispatchConfig>
   readonly queries: Required<RabbitMqQueryDispatchConfig>
   readonly retry: Required<RabbitMqRetryConfig>
@@ -59,7 +59,7 @@ export function resolveRabbitMqConfig(config: RabbitMqConfig): RabbitMqResolvedC
   return {
     identity: config.identity,
     url: config.url,
-    topology: createRabbitMqTopologyNames(config.identity, config.topology),
+    topology: rabbitMqTopologyNames(config.identity, config.topology),
     commands: {
       preferLocalHandlers: config.commands?.preferLocalHandlers ?? true,
       alwaysUseDistributedBus: config.commands?.alwaysUseDistributedBus ?? false,
@@ -150,18 +150,18 @@ export async function rabbitMq(options: RabbitMqOptions): Promise<RabbitMqBacken
   const { localCommandBus, localQueryBus, amqpConnect, ...config } = options
   const resolved = resolveRabbitMqConfig(config)
 
-  const connection = createAmqpConnection(resolved.url, amqpConnect)
+  const connection = amqpConnection(resolved.url, amqpConnect)
   const commandTransport = new AmqpRabbitMqCommandTransport(resolved, connection)
   const queryTransport = new AmqpRabbitMqQueryTransport(resolved, connection)
   const subscriberRegistry = new AmqpDistributedSubscriberRegistry(resolved, connection)
 
-  const commandBus = createRabbitMqCommandBus({
+  const commandBus = rabbitMqCommandBus({
     localSegment: localCommandBus,
     transport: commandTransport,
     config: resolved,
   })
 
-  const queryBus = createRabbitMqQueryBus({
+  const queryBus = rabbitMqQueryBus({
     localSegment: localQueryBus,
     transport: queryTransport,
     subscriberRegistry,

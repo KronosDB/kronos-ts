@@ -2,11 +2,11 @@
  * postgres(config) — Extension factory for @kronos-ts/postgres.
  *
  * Populates five slots:
- *   - eventStore           : EventStorageEngine via createPostgresEventStore
- *   - snapshotStore        : SnapshotStore via createPostgresSnapshotStore
+ *   - eventStore           : EventStorageEngine via postgresEventStore
+ *   - snapshotStore        : SnapshotStore via postgresSnapshotStore
  *   - transactionManager   : postgresTransactionManager(adapter)
  *   - unitOfWorkFactory    : lazyTransactionalUnitOfWorkFactory(runInNewUoW, tm)
- *   - eventScheduler       : createPostgresEventScheduler(...) (durable,
+ *   - eventScheduler       : postgresEventScheduler(...) (durable,
  *                            background worker started in "processors" stage)
  *
  * Setting the last two together is what gives `append() + schedule()` (and
@@ -34,13 +34,13 @@ import {
   runInNewUoW,
 } from "@kronos-ts/messaging"
 import type { PostgresAdapter } from "./adapter.js"
-import { createPostgresEventStore } from "./postgres-event-store.js"
-import { createPostgresSnapshotStore } from "./postgres-snapshot-store.js"
+import { postgresEventStore } from "./postgres-event-store.js"
+import { postgresSnapshotStore } from "./postgres-snapshot-store.js"
 import { postgresTransactionManager } from "./postgres-transaction-manager.js"
 import type { Serializer } from "@kronos-ts/common"
 import type { TagResolver } from "@kronos-ts/eventsourcing"
 import {
-  createPostgresEventScheduler,
+  postgresEventScheduler,
   type PostgresEventScheduler,
 } from "./postgres-event-scheduler.js"
 import { bootstrapSchema, DEFAULT_TABLE_NAMES, type TableNames } from "./schema.js"
@@ -90,8 +90,8 @@ export interface PostgresBackend {
 }
 
 export interface PostgresComponents {
-  eventStore: ReturnType<typeof createPostgresEventStore>
-  snapshotStore: ReturnType<typeof createPostgresSnapshotStore>
+  eventStore: ReturnType<typeof postgresEventStore>
+  snapshotStore: ReturnType<typeof postgresSnapshotStore>
   transactionManager: ReturnType<typeof postgresTransactionManager>
   unitOfWorkFactory: ReturnType<typeof lazyTransactionalUnitOfWorkFactory>
   eventScheduler: PostgresEventScheduler
@@ -117,13 +117,13 @@ export async function postgres(
     })
   }
 
-  const eventStore = createPostgresEventStore({ adapter, serializer, tagResolver, tableNames: tables })
-  const snapshotStore = createPostgresSnapshotStore({ adapter, serializer, tableNames: tables })
+  const eventStore = postgresEventStore({ adapter, serializer, tagResolver, tableNames: tables })
+  const snapshotStore = postgresSnapshotStore({ adapter, serializer, tableNames: tables })
   // Lazy: pure-read UoWs never claim a connection; the first writer begins the
   // tx, and everything in that UoW — events AND co-located writes — commits or
   // rolls back together.
   const unitOfWorkFactory = lazyTransactionalUnitOfWorkFactory(runInNewUoW, transactionManager)
-  const eventScheduler = createPostgresEventScheduler({
+  const eventScheduler = postgresEventScheduler({
     adapter,
     eventStore,
     uowFactory: unitOfWorkFactory,

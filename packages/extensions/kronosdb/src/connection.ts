@@ -88,7 +88,7 @@ export interface KronosDbConnection {
  * Creates gRPC metadata for KronosDB requests.
  * Injects context and optional auth token as headers.
  */
-export function createKronosMetadata(config: { context: string; token: string }): Metadata {
+export function kronosMetadata(config: { context: string; token: string }): Metadata {
   const metadata = new Metadata()
   metadata.set("kronosdb-context", config.context)
   if (config.token) {

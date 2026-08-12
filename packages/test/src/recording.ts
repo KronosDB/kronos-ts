@@ -28,7 +28,7 @@ interface RecordingsInternal extends Recordings {
 }
 
 /** Create a fresh recordings handle to hand to the wrappers below. */
-export function createRecordings(): Recordings {
+export function recordings(): Recordings {
   const recordedEvents: EventMessage[] = []
   const recordedCommands: CommandMessage[] = []
   const internal: RecordingsInternal = {
@@ -54,7 +54,7 @@ function writersOf(recordings: Recordings): RecordingsInternal["_push"] {
   const push = (recordings as RecordingsInternal)._push
   if (!push) {
     throw new Error(
-      "[recording] Recordings handle missing internal writers — pass an instance from createRecordings().",
+      "[recording] Recordings handle missing internal writers — pass an instance from recordings().",
     )
   }
   return push
@@ -101,9 +101,9 @@ export function recordingCommandBus(inner: CommandBus, recordings: Recordings): 
  * else passes through untouched.
  *
  * ```ts
- * const recordings = createRecordings()
+ * const recorded = recordings()
  * const app = kronos({
- *   components: recordingComponents(inMemoryComponents(), recordings),
+ *   components: recordingComponents(inMemoryComponents(), recorded),
  *   modules: [module("courses", ...courses)],
  * })
  * ```

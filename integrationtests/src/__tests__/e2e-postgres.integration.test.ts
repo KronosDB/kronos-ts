@@ -38,7 +38,7 @@ import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
   afterEvents,
-  createEventSourcedRepository,
+  eventSourcedRepository,
   descriptorBasedTagResolver,
 } from "@kronos-ts/eventsourcing"
 import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
@@ -247,7 +247,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       .get("postgres-e2e")!
       .register(
         Course,
-        createEventSourcedRepository(
+        eventSourcedRepository(
           Course,
           backend.components.eventStore,
           backend.components.snapshotStore,

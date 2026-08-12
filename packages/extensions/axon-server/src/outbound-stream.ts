@@ -12,7 +12,7 @@ export interface OutboundStream<T> {
   close(): void
 }
 
-export function createOutboundStream<T>(): OutboundStream<T> {
+export function outboundStream<T>(): OutboundStream<T> {
   let resolve: ((value: IteratorResult<T>) => void) | null = null
   const queue: T[] = []
   let closed = false

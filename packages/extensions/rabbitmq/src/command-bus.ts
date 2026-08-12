@@ -36,7 +36,7 @@ export interface RabbitMqCommandBusOptions {
   readonly config: RabbitMqResolvedConfig
 }
 
-export function createRabbitMqCommandBus(options: RabbitMqCommandBusOptions): CommandBus {
+export function rabbitMqCommandBus(options: RabbitMqCommandBusOptions): CommandBus {
   const localHandlers = new Set<string>()
   const { localSegment, transport, config } = options
 

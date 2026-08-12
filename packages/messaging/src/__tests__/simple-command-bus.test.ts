@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, generateIdentifier, metadataAnd } from "@kronos-ts/common"
 import type { CommandMessage } from "../message.js"
-import { createSimpleCommandBus } from "../simple-command-bus.js"
-import { createInterceptingCommandBus } from "../intercepting-command-bus.js"
+import { simpleCommandBus } from "../simple-command-bus.js"
+import { interceptingCommandBus } from "../intercepting-command-bus.js"
 import {
   onPrepareCommit,
   onCommit,
@@ -32,7 +32,7 @@ function commandMsg(name: string, payload: unknown = {}): CommandMessage {
 describe("SimpleCommandBus", () => {
   describe("dispatching commands to handlers", () => {
     it("dispatches a command to the registered handler", async () => {
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
       const received: CommandMessage[] = []
 
       bus.subscribe("test.DoSomething", async (msg) => {
@@ -49,7 +49,7 @@ describe("SimpleCommandBus", () => {
     })
 
     it("dispatches to the correct handler when multiple are registered", async () => {
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
       const calls: string[] = []
 
       bus.subscribe("test.CreateUser", async () => { calls.push("create"); return undefined })
@@ -63,7 +63,7 @@ describe("SimpleCommandBus", () => {
 
   describe("unknown command handling", () => {
     it("throws a clear error when no handler is registered", async () => {
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
 
       expect(bus.dispatch(commandMsg("Unknown"))).rejects.toThrow(
         'No handler registered for command "test.Unknown"',
@@ -73,7 +73,7 @@ describe("SimpleCommandBus", () => {
 
   describe("UnitOfWork lifecycle", () => {
     it("executes lifecycle phases around handler invocation", async () => {
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
       const phases: string[] = []
 
       // Plan 03-04: handlers receive only the message; lifecycle hooks are
@@ -92,7 +92,7 @@ describe("SimpleCommandBus", () => {
     })
 
     it("runs error handlers when the handler throws", async () => {
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
       const errorsCaught: unknown[] = []
 
       bus.subscribe("test.Cmd", async (_msg) => {
@@ -106,7 +106,7 @@ describe("SimpleCommandBus", () => {
     })
 
     it("runs whenComplete handlers on success", async () => {
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
       let completeCalled = false
 
       bus.subscribe("test.Cmd", async (_msg) => {
@@ -120,7 +120,7 @@ describe("SimpleCommandBus", () => {
     })
 
     it("does NOT run whenComplete handlers on failure", async () => {
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
       let completeCalled = false
 
       bus.subscribe("test.Cmd", async (_msg) => {
@@ -135,7 +135,7 @@ describe("SimpleCommandBus", () => {
 
   describe("handler results and errors", () => {
     it("propagates the handler return value to the caller", async () => {
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
 
       bus.subscribe("test.Cmd", async () => ({ id: 42, name: "created" }))
 
@@ -145,7 +145,7 @@ describe("SimpleCommandBus", () => {
     })
 
     it("propagates handler errors to the caller", async () => {
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
 
       bus.subscribe("test.Cmd", async () => {
         throw new Error("business rule violated")
@@ -162,7 +162,7 @@ describe("SimpleCommandBus", () => {
         }
       }
 
-      const bus = createSimpleCommandBus()
+      const bus = simpleCommandBus()
 
       bus.subscribe("test.Cmd", async () => {
         throw new ValidationError("invalid input")
@@ -182,8 +182,8 @@ describe("SimpleCommandBus", () => {
 describe("InterceptingCommandBus", () => {
   describe("dispatch interceptors", () => {
     it("can transform a command before handling", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       let receivedPayload: unknown
 
       bus.subscribe("test.Cmd", async (msg) => {
@@ -202,8 +202,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("can reject a command by throwing", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       let handlerCalled = false
 
       bus.subscribe("test.Cmd", async () => { handlerCalled = true; return undefined })
@@ -217,8 +217,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("runs dispatch interceptors in registration order", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       const order: number[] = []
 
       bus.subscribe("test.Cmd", async () => undefined)
@@ -233,8 +233,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("chains transformations -- each interceptor sees the previous result", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       let finalMeta: Record<string, unknown> = {}
 
       bus.subscribe("test.Cmd", async (msg) => {
@@ -257,8 +257,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("can be unsubscribed", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       const calls: string[] = []
 
       bus.subscribe("test.Cmd", async () => undefined)
@@ -279,8 +279,8 @@ describe("InterceptingCommandBus", () => {
 
   describe("handler interceptors", () => {
     it("wraps the handler invocation", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       const order: string[] = []
 
       bus.subscribe("test.Cmd", async () => {
@@ -302,8 +302,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("can short-circuit by not calling next()", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       let handlerCalled = false
 
       bus.subscribe("test.Cmd", async () => {
@@ -322,8 +322,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("runs as a chain -- each calls next() to proceed", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       const order: string[] = []
 
       bus.subscribe("test.Cmd", async () => {
@@ -357,8 +357,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("can proceed with a replacement message", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       const seen: Array<Record<string, unknown>> = []
 
       bus.subscribe("test.Cmd", async (msg) => {
@@ -389,8 +389,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("can be unsubscribed", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       const calls: string[] = []
 
       bus.subscribe("test.Cmd", async () => undefined)
@@ -409,8 +409,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("propagates errors thrown by an interceptor", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
 
       bus.subscribe("test.Cmd", async () => "ok")
 
@@ -424,8 +424,8 @@ describe("InterceptingCommandBus", () => {
 
   describe("dispatch and handler interceptors together", () => {
     it("dispatch interceptors run before handler interceptors", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       const order: string[] = []
 
       bus.subscribe("test.Cmd", async () => {
@@ -449,8 +449,8 @@ describe("InterceptingCommandBus", () => {
     })
 
     it("dispatch interceptor transforms are visible to handler interceptors", async () => {
-      const inner = createSimpleCommandBus()
-      const bus = createInterceptingCommandBus(inner)
+      const inner = simpleCommandBus()
+      const bus = interceptingCommandBus(inner)
       let payloadSeenByHandlerInterceptor: unknown
 
       bus.subscribe("test.Cmd", async () => undefined)

@@ -23,7 +23,7 @@ import {
 import type { EventStore } from "@kronos-ts/eventsourcing"
 import type { z } from "zod"
 import {
-  createRecordings,
+  recordings,
   recordingComponents,
   recordingOverrides,
   type Recordings,
@@ -62,7 +62,7 @@ export interface TestFixtureOptions {
  * state modules, command handlers, query handlers, processors, in any order:
  *
  * ```typescript
- * const fixture = createTestFixture(Course, createCourse, subscribeStudent, getCourseView)
+ * const fixture = testFixture(Course, createCourse, subscribeStudent, getCourseView)
  *
  * await fixture
  *   .given()
@@ -76,32 +76,32 @@ export interface TestFixtureOptions {
  * await fixture.stop()
  * ```
  *
- * Whole modules may be passed too — `createTestFixture(billing, ordering)` —
+ * Whole modules may be passed too — `testFixture(billing, ordering)` —
  * and the explicit form takes components and modules by name:
  *
  * ```typescript
- * const fixture = createTestFixture({
+ * const fixture = testFixture({
  *   components: inMemoryComponents({ serializer: avroSerializer() }),
  *   modules: [module("billing", { eventStore: postgresEventStore(pool) }, ...slice)],
  * })
  * ```
  *
- * The result is synchronous; `await createTestFixture(...)` also works, so the
+ * The result is synchronous; `await testFixture(...)` also works, so the
  * awaited call sites of the previous fixture keep compiling.
  */
-export function createTestFixture(...registrations: FixtureRegistration[]): TestFixture
-export function createTestFixture(options: TestFixtureOptions): TestFixture
-export function createTestFixture(
+export function testFixture(...registrations: FixtureRegistration[]): TestFixture
+export function testFixture(options: TestFixtureOptions): TestFixture
+export function testFixture(
   ...args: [TestFixtureOptions] | FixtureRegistration[]
 ): TestFixture {
   const options = normalizeOptions(args)
-  const recordings = createRecordings()
+  const recorded = recordings()
 
   // Recording is composition, not registration: wrap the two traffic-carrying
   // components before handing them to kronos. Because the wrapper IS the
   // component every handler resolves, it sits innermost by construction — no
   // ordering rule to remember.
-  const components = recordingComponents(options.components ?? inMemoryComponents(), recordings)
+  const components = recordingComponents(options.components ?? inMemoryComponents(), recorded)
 
   const modules: AppModule[] = [
     ...(options.register && options.register.length > 0
@@ -111,7 +111,7 @@ export function createTestFixture(
     // stay complete across module-scoped persistence.
     ...(options.modules ?? []).map((m) => ({
       ...m,
-      overrides: recordingOverrides(m.overrides, recordings),
+      overrides: recordingOverrides(m.overrides, recorded),
     })),
   ]
 
@@ -120,9 +120,9 @@ export function createTestFixture(
 
   return {
     app,
-    recordings,
+    recordings: recorded,
     given() {
-      return new GivenPhaseImpl(app, recordings, eventStore)
+      return new GivenPhaseImpl(app, recorded, eventStore)
     },
     async stop() {
       await app.stop()

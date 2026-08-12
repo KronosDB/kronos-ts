@@ -31,9 +31,9 @@ import {
 import { state } from "@kronos-ts/modelling"
 import {
   type SnapshotStore,
-  createEventSourcedRepository,
-  createInMemoryEventStore,
-  createInMemorySnapshotStore,
+  eventSourcedRepository,
+  inMemoryEventStore,
+  inMemorySnapshotStore,
   afterEvents,
 } from "@kronos-ts/eventsourcing"
 import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
@@ -327,8 +327,8 @@ describe("E2E: In-memory full CQRS flow", () => {
   // root says it directly: build the repository you want and register it.
   it("snapshots accelerate entity loading", async () => {
     // given
-    const eventStore = createInMemoryEventStore()
-    const snapshotStore: SnapshotStore = createInMemorySnapshotStore()
+    const eventStore = inMemoryEventStore()
+    const snapshotStore: SnapshotStore = inMemorySnapshotStore()
     const { projectionHandlers, queryHandlers } = createProjection()
 
     running = kronos({
@@ -351,7 +351,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     // the default repository before any command is dispatched.
     running.stateManagers
       .get("university")!
-      .register(Course, createEventSourcedRepository(Course, eventStore, snapshotStore, afterEvents(3)))
+      .register(Course, eventSourcedRepository(Course, eventStore, snapshotStore, afterEvents(3)))
 
     // when — create + 4 capacity changes (5 events total)
     // Snapshot triggers after 3+ events are replayed during a load.
@@ -443,7 +443,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     // Verify that events inherit the command's metadata (basic propagation
     // mechanism). Cross-message correlation is tested via the Axon Server
     // distributed tests.
-    const eventStore = createInMemoryEventStore()
+    const eventStore = inMemoryEventStore()
 
     running = kronos({
       components: inMemoryComponents({ eventStore }),
@@ -502,7 +502,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("stateful automation — an event handler sends a command in its own UoW", async () => {
     // given — a "close enrolment when full" automation on its own processor
-    const eventStore = createInMemoryEventStore()
+    const eventStore = inMemoryEventStore()
 
     running = kronos({
       components: inMemoryComponents({ eventStore }),

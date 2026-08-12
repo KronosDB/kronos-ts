@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
-  createShutdownLatch,
+  shutdownLatch,
   ShutdownInProgressError,
 } from "../shutdown-latch.js"
 import {
@@ -19,20 +19,20 @@ import {
   isTransientError,
 } from "../errors.js"
 import {
-  createMessageSizeValidator,
+  messageSizeValidator,
   MessageSizeExceededError,
 } from "../message-size.js"
 
 describe("ShutdownLatch", () => {
   it("starts with zero active count and not shutting down", () => {
-    const latch = createShutdownLatch()
+    const latch = shutdownLatch()
 
     expect(latch.activeCount).toBe(0)
     expect(latch.shuttingDown).toBe(false)
   })
 
   it("tracks registered activities", () => {
-    const latch = createShutdownLatch()
+    const latch = shutdownLatch()
 
     const h1 = latch.registerActivity()
     expect(latch.activeCount).toBe(1)
@@ -48,7 +48,7 @@ describe("ShutdownLatch", () => {
   })
 
   it("end() is idempotent - calling twice does not double-decrement", () => {
-    const latch = createShutdownLatch()
+    const latch = shutdownLatch()
     const handle = latch.registerActivity()
 
     handle.end()
@@ -58,7 +58,7 @@ describe("ShutdownLatch", () => {
   })
 
   it("initiateShutdown resolves immediately when no active activities", async () => {
-    const latch = createShutdownLatch()
+    const latch = shutdownLatch()
 
     await latch.initiateShutdown()
 
@@ -66,7 +66,7 @@ describe("ShutdownLatch", () => {
   })
 
   it("initiateShutdown drains pending activities before resolving", async () => {
-    const latch = createShutdownLatch()
+    const latch = shutdownLatch()
     const h1 = latch.registerActivity()
     const h2 = latch.registerActivity()
 
@@ -90,7 +90,7 @@ describe("ShutdownLatch", () => {
   })
 
   it("rejects new activities after shutdown is initiated", () => {
-    const latch = createShutdownLatch()
+    const latch = shutdownLatch()
     latch.initiateShutdown()
 
     expect(() => latch.registerActivity()).toThrow(ShutdownInProgressError)
@@ -263,7 +263,7 @@ describe("Error mapping", () => {
 
 describe("MessageSizeValidator", () => {
   it("accepts messages under the limit", () => {
-    const validator = createMessageSizeValidator({ maxMessageSize: 100 })
+    const validator = messageSizeValidator({ maxMessageSize: 100 })
     const data = new Uint8Array(50)
 
     // should not throw
@@ -271,14 +271,14 @@ describe("MessageSizeValidator", () => {
   })
 
   it("throws when message exceeds the limit", () => {
-    const validator = createMessageSizeValidator({ maxMessageSize: 100 })
+    const validator = messageSizeValidator({ maxMessageSize: 100 })
     const data = new Uint8Array(101)
 
     expect(() => validator.validate(data)).toThrow(MessageSizeExceededError)
   })
 
   it("MessageSizeExceededError carries size details", () => {
-    const validator = createMessageSizeValidator({ maxMessageSize: 100 })
+    const validator = messageSizeValidator({ maxMessageSize: 100 })
     const data = new Uint8Array(200)
 
     try {
@@ -296,7 +296,7 @@ describe("MessageSizeValidator", () => {
 
   it("warns when message exceeds warning threshold but not max", () => {
     // Use custom threshold of 0.5 (50%)
-    const validator = createMessageSizeValidator({
+    const validator = messageSizeValidator({
       maxMessageSize: 100,
       warningThreshold: 0.5,
     })
@@ -307,7 +307,7 @@ describe("MessageSizeValidator", () => {
   })
 
   it("does not warn when under the warning threshold", () => {
-    const validator = createMessageSizeValidator({
+    const validator = messageSizeValidator({
       maxMessageSize: 100,
       warningThreshold: 0.75,
     })
@@ -317,13 +317,13 @@ describe("MessageSizeValidator", () => {
   })
 
   it("uses default max size of 4MB", () => {
-    const validator = createMessageSizeValidator()
+    const validator = messageSizeValidator()
 
     expect(validator.maxSize).toBe(4 * 1024 * 1024)
   })
 
   it("estimateSize returns byte length of JSON-serialized payload", () => {
-    const validator = createMessageSizeValidator()
+    const validator = messageSizeValidator()
 
     const size = validator.estimateSize({ key: "value" })
 
@@ -332,7 +332,7 @@ describe("MessageSizeValidator", () => {
   })
 
   it("estimateSize handles nested objects", () => {
-    const validator = createMessageSizeValidator()
+    const validator = messageSizeValidator()
 
     const size = validator.estimateSize({ a: { b: "c" } })
 
@@ -341,21 +341,21 @@ describe("MessageSizeValidator", () => {
 
   it("validate includes context in warning message", () => {
     // This tests that context parameter is accepted without error
-    const validator = createMessageSizeValidator({ maxMessageSize: 100 })
+    const validator = messageSizeValidator({ maxMessageSize: 100 })
     const data = new Uint8Array(10)
 
     expect(() => validator.validate(data, "command-dispatch")).not.toThrow()
   })
 
   it("exactly at max size does not throw", () => {
-    const validator = createMessageSizeValidator({ maxMessageSize: 100 })
+    const validator = messageSizeValidator({ maxMessageSize: 100 })
     const data = new Uint8Array(100)
 
     expect(() => validator.validate(data)).not.toThrow()
   })
 
   it("one byte over max size throws", () => {
-    const validator = createMessageSizeValidator({ maxMessageSize: 100 })
+    const validator = messageSizeValidator({ maxMessageSize: 100 })
     const data = new Uint8Array(101)
 
     expect(() => validator.validate(data)).toThrow(MessageSizeExceededError)

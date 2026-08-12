@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { qn } from "@kronos-ts/common"
 import { AmqpRabbitMqCommandTransport } from "../amqp-command-transport.js"
-import { createAmqpConnection } from "../connection.js"
+import { amqpConnection } from "../connection.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
 import type { RabbitMqCommandEnvelope } from "../command-bus.js"
 
@@ -90,7 +90,7 @@ function envelope(): RabbitMqCommandEnvelope {
 describe("AMQP RabbitMQ command transport", () => {
   it("declares command and dead-letter exchanges", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    const transport = new AmqpRabbitMqCommandTransport(config(), amqpConnection("amqp://test", async () => fake.connection))
     await transport.connect()
 
     expect(fake.exchanges).toContainEqual({
@@ -107,7 +107,7 @@ describe("AMQP RabbitMQ command transport", () => {
 
   it("publishes commands and resolves correlated replies", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    const transport = new AmqpRabbitMqCommandTransport(config(), amqpConnection("amqp://test", async () => fake.connection))
     await transport.connect()
 
     const resultPromise = transport.dispatch(envelope())
@@ -133,7 +133,7 @@ describe("AMQP RabbitMQ command transport", () => {
         url: "amqp://test",
         commands: { defaultTimeoutMs: 1 },
       }),
-      createAmqpConnection("amqp://test", async () => fake.connection),
+      amqpConnection("amqp://test", async () => fake.connection),
     )
     await transport.connect()
 
@@ -144,7 +144,7 @@ describe("AMQP RabbitMQ command transport", () => {
 
   it("declares command queues and sends replies for consumed commands", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    const transport = new AmqpRabbitMqCommandTransport(config(), amqpConnection("amqp://test", async () => fake.connection))
     transport.subscribe("faculty.DoThing", async (incoming) => ({
       requestId: incoming.requestId,
       ok: true,
@@ -189,7 +189,7 @@ describe("AMQP RabbitMQ command transport", () => {
 
   it("sends an error reply and nacks when consumed command handling fails", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    const transport = new AmqpRabbitMqCommandTransport(config(), amqpConnection("amqp://test", async () => fake.connection))
     transport.subscribe("faculty.DoThing", async () => {
       throw new Error("boom")
     })
@@ -214,7 +214,7 @@ describe("AMQP RabbitMQ command transport", () => {
 
   it("does not bind the same command handler more than once", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqCommandTransport(config(), createAmqpConnection("amqp://test", async () => fake.connection))
+    const transport = new AmqpRabbitMqCommandTransport(config(), amqpConnection("amqp://test", async () => fake.connection))
     transport.subscribe("faculty.DoThing", async (incoming) => ({ requestId: incoming.requestId, ok: true }))
     await transport.connect()
     transport.subscribe("faculty.DoThing", async (incoming) => ({ requestId: incoming.requestId, ok: true }))

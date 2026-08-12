@@ -114,7 +114,7 @@ export function hashOf(value: string): number {
  * @param count Number of segments (must be a power of 2)
  * @returns Array of segments that together cover the entire event stream
  */
-export function createSegments(count: number): Segment[] {
+export function segments(count: number): Segment[] {
   if (count <= 0) throw new Error("Segment count must be positive")
   if (count === 1) return [ROOT_SEGMENT]
 
@@ -122,15 +122,15 @@ export function createSegments(count: number): Segment[] {
   const power = Math.ceil(Math.log2(count))
   const actualCount = Math.pow(2, power)
 
-  let segments: Segment[] = [ROOT_SEGMENT]
-  while (segments.length < actualCount) {
+  let result: Segment[] = [ROOT_SEGMENT]
+  while (result.length < actualCount) {
     const next: Segment[] = []
-    for (const seg of segments) {
+    for (const seg of result) {
       const [a, b] = splitSegment(seg)
       next.push(a, b)
     }
-    segments = next
+    result = next
   }
 
-  return segments
+  return result
 }

@@ -3,13 +3,13 @@ import type { CommandHandlerDefinition } from "./command-handler.js"
 import { HANDLER_CONTEXT } from "./handler-context.js"
 
 /**
- * Minimal Configuration shape consumed by createCommandInvocation /
+ * Minimal Configuration shape consumed by commandInvocation /
  * registerCommandHandlersNatively. Phase 8 D-82 reshape: messaging no longer
  * depends on the full @kronos-ts/common Configuration interface (deleted
  * with the configurer trio in Plan 08-04). Callers (kronos() AppImpl.start())
  * pass a shim that satisfies just these methods.
  *
- * The component-key strings used by createCommandInvocation are inlined
+ * The component-key strings used by commandInvocation are inlined
  * below (COMMAND_INVOCATION_KEYS) so this file owns its own key set.
  */
 export interface MinimalConfiguration {
@@ -19,7 +19,7 @@ export interface MinimalConfiguration {
 }
 
 /**
- * Component-key strings consumed by createCommandInvocation. Inlined here
+ * Component-key strings consumed by commandInvocation. Inlined here
  * so this file has no shared-constant dependency. The kronos() AppImpl
  * populates its config-shim with the same string keys.
  */
@@ -63,7 +63,7 @@ import type { EventScheduler } from "./event-scheduler.js"
  * helpers (load/append/send/emitUpdate) and the onPrepareCommit closure all
  * resolve their dependencies from the active UoW state.
  */
-export function createCommandInvocation(
+export function commandInvocation(
   handler: CommandHandlerDefinition<any, any>,
   config: MinimalConfiguration,
 ) {
@@ -103,13 +103,13 @@ export function createCommandInvocation(
  * Plan 08-03a (D-82 reshape): function-style helper called by AppImpl.start()
  * to subscribe command handlers natively, without the configurer's Module shape.
  *
- * Subscribes each handler onto the commandBus with the createCommandInvocation
+ * Subscribes each handler onto the commandBus with the commandInvocation
  * wrapper that does Phase 4 D-44 ALS resource setup at invocation entry.
  *
  * @param handlers Array of handler definitions to register
  * @param deps Resolved dependencies — commandBus to subscribe onto, plus a
  *             Configuration shim (built natively in AppImpl.start()) that
- *             createCommandInvocation reads inside the dispatch hot path.
+ *             commandInvocation reads inside the dispatch hot path.
  *             Optional handlerEnhancer mirrors the legacy module's enhancer
  *             wrap (kept for parity; default-decorator pipeline already
  *             handles framework-default interceptors).
@@ -128,7 +128,7 @@ export function registerCommandHandlersNatively(
   const moduleName = deps.moduleName ?? "commands"
   for (const handler of handlers) {
     const commandName = qualifiedNameToString(handler.descriptor.name)
-    let invocation = createCommandInvocation(handler, deps.config)
+    let invocation = commandInvocation(handler, deps.config)
 
     if (deps.handlerEnhancer) {
       invocation = deps.handlerEnhancer.wrapHandler(invocation, {

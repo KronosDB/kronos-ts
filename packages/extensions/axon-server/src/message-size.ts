@@ -39,7 +39,7 @@ export class MessageSizeExceededError extends Error {
  * - `validate(data)` — throws if over limit, warns if over 75%
  * - `estimateSize(payload)` — quick byte size estimate
  */
-export function createMessageSizeValidator(config?: MessageSizeConfig) {
+export function messageSizeValidator(config?: MessageSizeConfig) {
   const maxSize = config?.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE
   const threshold = config?.warningThreshold ?? WARNING_THRESHOLD
   const warningSize = Math.floor(maxSize * threshold)

@@ -5,7 +5,7 @@ import { type SequencingPolicy, defaultSequencingPolicy } from "./sequencing-pol
 import {
   type SequencedDeadLetterQueue,
   type EnqueuePolicy,
-  createDeadLetter,
+  deadLetter,
   DeadLetterQueueOverflowError,
 } from "./dead-letter-queue.js"
 import { alwaysEnqueuePolicy } from "./enqueue-policy.js"
@@ -45,7 +45,7 @@ export interface DeadLetteringOptions {
  * - The event is automatically dead-lettered (sequence is blocked)
  * - This preserves ordering within the sequence
  */
-export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
+export function deadLetteringDelivery(options: DeadLetteringOptions) {
   const {
     queue,
     policy = alwaysEnqueuePolicy(),
@@ -71,10 +71,10 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
       // If this sequence already has dead letters, block this event too —
       // preserving per-sequence ordering. A full-queue rejection here
       // propagates as backpressure (see enqueue path below).
-      let blockedLetter: ReturnType<typeof createDeadLetter> | undefined
+      let blockedLetter: ReturnType<typeof deadLetter> | undefined
       const blocked = await withOverflowReported(seqId, () =>
         queue.enqueueIfPresent(seqId, () => {
-          blockedLetter = createDeadLetter(
+          blockedLetter = deadLetter(
             event,
             new Error("Blocked: previous event in sequence failed"),
             seqId,
@@ -94,7 +94,7 @@ export function createDeadLetteringDelivery(options: DeadLetteringOptions) {
           await reg.handler({ ...event, sequence: sequencedEvent.sequence }, EVENT_HANDLER_CONTEXT)
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err))
-          const letter = createDeadLetter(event, error, seqId, {
+          const letter = deadLetter(event, error, seqId, {
             position: Number(sequencedEvent.sequence),
             handlerName: qualifiedNameToString(reg.descriptor.name),
           })

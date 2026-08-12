@@ -19,7 +19,7 @@ import type { MinimalConfiguration } from "./command-handling-module.js"
  * the same tracing / timing / cross-cutting treatment as command and event
  * handlers. moduleName defaults to "queries" for HandlerMetadata.handlerGroup.
  *
- * Queries run inside a UnitOfWork (see `createSimpleQueryBus`), so when a
+ * Queries run inside a UnitOfWork (see `simpleQueryBus`), so when a
  * Configuration shim is supplied the state manager is seeded onto the active
  * ALS state exactly as the command path does — that is what backs
  * `ctx.load`. The shim is optional: without it the query context still

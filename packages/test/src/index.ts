@@ -9,13 +9,13 @@ export {
   type FieldFilter,
   allFieldsFilter,
   ignoreFields,
-  createTestFixture,
+  testFixture,
   FixtureAssertionError,
 } from "./fixture.js"
 
 export {
   type Recordings,
-  createRecordings,
+  recordings,
   recordingEventStore,
   recordingCommandBus,
   recordingComponents,

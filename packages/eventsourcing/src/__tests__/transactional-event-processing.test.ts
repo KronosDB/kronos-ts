@@ -19,7 +19,7 @@ import {
   eventHandler,
   EventCriteria,
   trackingProcessor,
-  createInMemoryTokenStore,
+  inMemoryTokenStore,
   type TokenStore,
   type TransactionManager,
 } from "@kronos-ts/messaging"
@@ -27,7 +27,7 @@ import { state } from "@kronos-ts/modelling"
 import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
-import { createInMemoryEventStore } from "../in-memory-event-store.js"
+import { inMemoryEventStore } from "../in-memory-event-store.js"
 
 // ─── Domain ─────────────────────────────────────────────────────────────────
 
@@ -66,7 +66,7 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
 describe("Transactional event processing — tokenStore + transactionManager components", () => {
   it("persists processor position via the app-level TokenStore", async () => {
     // Inject a probe tokenStore as the app's component — no per-module override.
-    const probe = createInMemoryTokenStore()
+    const probe = inMemoryTokenStore()
     const seen: string[] = []
     const onThingCreated = eventHandler(ThingCreated, async ({ payload: e }) => {
       seen.push(e.id)
@@ -100,8 +100,8 @@ describe("Transactional event processing — tokenStore + transactionManager com
     // Same probe token store AND the same event store shared across two app
     // boots — components are values now, so both really are the same instance
     // and the resume can be asserted on behaviour, not just on the stored token.
-    const probe: TokenStore = createInMemoryTokenStore()
-    const eventStore = createInMemoryEventStore()
+    const probe: TokenStore = inMemoryTokenStore()
+    const eventStore = inMemoryEventStore()
     const seenFirst: string[] = []
     const seenSecond: string[] = []
 
@@ -152,7 +152,7 @@ describe("Transactional event processing — tokenStore + transactionManager com
 
     // The per-module override path: a module can run on its OWN token store
     // instead of the app's, and that store is the one the processor writes to.
-    const moduleScoped: TokenStore = createInMemoryTokenStore()
+    const moduleScoped: TokenStore = inMemoryTokenStore()
     const seenThird: string[] = []
     const third = kronos({
       components: inMemoryComponents({ tokenStore: probe }),

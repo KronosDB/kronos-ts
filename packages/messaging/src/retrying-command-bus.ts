@@ -51,7 +51,7 @@ function defaultIsTransient(error: unknown): boolean {
  *
  * Non-transient errors propagate immediately to the caller.
  */
-export function createRetryingCommandBus(
+export function retryingCommandBus(
   delegate: CommandBus,
   policy: RetryPolicy,
 ): CommandBus {

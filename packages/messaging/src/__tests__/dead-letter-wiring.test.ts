@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, type QualifiedName } from "@kronos-ts/common"
-import { createTrackingEventProcessor } from "../tracking-event-processor.js"
+import { trackingEventProcessor } from "../tracking-event-processor.js"
 import type { StreamableEventSource, SequencedEvent } from "../event-source.js"
 import type { EventHandlerRegistration } from "../handler.js"
-import { createInMemoryDeadLetterQueue } from "../dead-letter-queue.js"
+import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
 import { sequentialPerTag } from "../sequencing-policy.js"
 
 // ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ describe("DLQ wiring (tracking processor, Option A)", () => {
       makeEvent({ v: 4 }, 3n, tag("A")),               // still blocked (A has dead letters)
     ]
     const eventSource = createInMemoryEventSource(events)
-    const dlq = createInMemoryDeadLetterQueue()
+    const dlq = inMemoryDeadLetterQueue()
 
     const delivered: number[] = []
     const handler: EventHandlerRegistration<any> = {
@@ -102,7 +102,7 @@ describe("DLQ wiring (tracking processor, Option A)", () => {
       },
     }
 
-    const processor = createTrackingEventProcessor({
+    const processor = trackingEventProcessor({
       name: "dlq-proc",
       eventSource,
       eventHandlers: [handler],
@@ -134,7 +134,7 @@ describe("DLQ wiring (tracking processor, Option A)", () => {
       makeEvent({ v: 1 }, 0n, tag("A")),
       makeEvent({ v: 2 }, 1n, tag("A")),
     ]
-    const dlq = createInMemoryDeadLetterQueue()
+    const dlq = inMemoryDeadLetterQueue()
     const delivered: number[] = []
     const handler: EventHandlerRegistration<any> = {
       kind: "event-handler",
@@ -142,7 +142,7 @@ describe("DLQ wiring (tracking processor, Option A)", () => {
       handler: ({ payload }: { payload: { v: number } }) => { delivered.push(payload.v) },
     }
 
-    const processor = createTrackingEventProcessor({
+    const processor = trackingEventProcessor({
       name: "dlq-proc-clean",
       eventSource: createInMemoryEventSource(events),
       eventHandlers: [handler],

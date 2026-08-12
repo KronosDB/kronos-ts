@@ -3,7 +3,7 @@ import { qn, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import type { EventMessage } from "../message.js"
 import type { EventHandlerRegistration } from "../handler.js"
 import type { SubscribableEventSource } from "../subscribing-event-processor.js"
-import { createSubscribingEventProcessor } from "../subscribing-event-processor.js"
+import { subscribingEventProcessor } from "../subscribing-event-processor.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,7 +44,7 @@ function createInMemorySubscribableSource(): SubscribableEventSource & {
 // ---------------------------------------------------------------------------
 
 describe("SubscribingEventProcessor", () => {
-  let processor: ReturnType<typeof createSubscribingEventProcessor>
+  let processor: ReturnType<typeof subscribingEventProcessor>
 
   afterEach(() => {
     if (processor?.running) processor.stop()
@@ -54,7 +54,7 @@ describe("SubscribingEventProcessor", () => {
     it("starts and stops", () => {
       // given
       const source = createInMemorySubscribableSource()
-      processor = createSubscribingEventProcessor({
+      processor = subscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
         eventHandlers: [],
@@ -72,7 +72,7 @@ describe("SubscribingEventProcessor", () => {
     it("has the configured name", () => {
       // given
       const source = createInMemorySubscribableSource()
-      processor = createSubscribingEventProcessor({
+      processor = subscribingEventProcessor({
         name: "my-projection",
         eventSource: source,
         eventHandlers: [],
@@ -86,7 +86,7 @@ describe("SubscribingEventProcessor", () => {
     it("does not support reset", () => {
       // given
       const source = createInMemorySubscribableSource()
-      processor = createSubscribingEventProcessor({
+      processor = subscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
         eventHandlers: [],
@@ -100,7 +100,7 @@ describe("SubscribingEventProcessor", () => {
     it("start is idempotent", () => {
       // given
       const source = createInMemorySubscribableSource()
-      processor = createSubscribingEventProcessor({
+      processor = subscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
         eventHandlers: [],
@@ -127,7 +127,7 @@ describe("SubscribingEventProcessor", () => {
         handler: async ({ payload }) => { received.push(payload) },
       }
 
-      processor = createSubscribingEventProcessor({
+      processor = subscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
         eventHandlers: [handler],
@@ -153,7 +153,7 @@ describe("SubscribingEventProcessor", () => {
         handler: async ({ payload }) => { received.push(payload) },
       }
 
-      processor = createSubscribingEventProcessor({
+      processor = subscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
         eventHandlers: [handler],
@@ -178,7 +178,7 @@ describe("SubscribingEventProcessor", () => {
         handler: async ({ payload }) => { received.push(payload) },
       }
 
-      processor = createSubscribingEventProcessor({
+      processor = subscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
         eventHandlers: [handler],
@@ -204,7 +204,7 @@ describe("SubscribingEventProcessor", () => {
         handler: async ({ payload }: any) => { received.push(payload.item) },
       }
 
-      processor = createSubscribingEventProcessor({
+      processor = subscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
         eventHandlers: [handler],
@@ -235,7 +235,7 @@ describe("SubscribingEventProcessor", () => {
         handler: async () => { throw new Error("handler failed") },
       }
 
-      processor = createSubscribingEventProcessor({
+      processor = subscribingEventProcessor({
         name: "test-sub",
         eventSource: source,
         eventHandlers: [handler],

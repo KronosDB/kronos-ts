@@ -13,7 +13,7 @@
  *   2. the command bus applies that data to outgoing commands
  *      (`correlationDataDispatchInterceptor()`).
  * `kronos` builds processors with `correlationDataProviders: []` and hands
- * out a bare `createSimpleCommandBus`, so it supplies neither — there is no
+ * out a bare `simpleCommandBus`, so it supplies neither — there is no
  * "framework default" for lineage any more. The test therefore composes the
  * automation explicitly on top of the app's components, which is what the
  * functional root asks for: the app owns the command side, the block below owns
@@ -28,8 +28,8 @@ import {
   commandHandler,
   eventHandler,
   correlationDataDispatchInterceptor,
-  createInterceptingCommandBus,
-  createTrackingEventProcessor,
+  interceptingCommandBus,
+  trackingEventProcessor,
   EventCriteria,
   messageOriginProvider,
   type EventMessage
@@ -94,7 +94,7 @@ describe("Correlation lineage: command -> event -> processor -> command", () => 
     // The app's components, with the command bus wrapped so correlation data
     // collected in the active UoW is applied to outgoing commands.
     const base = inMemoryComponents()
-    const commandBus = createInterceptingCommandBus(base.commandBus)
+    const commandBus = interceptingCommandBus(base.commandBus)
     commandBus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
     const components = { ...base, commandBus }
 
@@ -105,7 +105,7 @@ describe("Correlation lineage: command -> event -> processor -> command", () => 
 
     // The automation, composed by hand on the app's components so it can seed
     // lineage from the triggering event.
-    const automation = createTrackingEventProcessor({
+    const automation = trackingEventProcessor({
       name: "registry-automation",
       eventSource: components.eventStore as never,
       eventHandlers: [onEnrolled],

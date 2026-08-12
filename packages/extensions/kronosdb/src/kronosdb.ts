@@ -38,16 +38,16 @@
  */
 import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer, withRetry, healthCheck, type ResilienceConfig } from "@kronos-ts/common"
 import type { CommandBus, CommandMessage, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
-import { applySubscriptionFilter, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import { applySubscriptionFilter, updateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
 import type { KronosDbConnectionConfig } from "./connection.js"
-import { connectToKronosDb, createKronosMetadata, type KronosDbConnection } from "./connection.js"
+import { connectToKronosDb, kronosMetadata, type KronosDbConnection } from "./connection.js"
 import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
 import { metadataFromProto, metadataToProto } from "./metadata-conversion.js"
-import { createOutboundStream } from "./outbound-stream.js"
-import { createPlatformConnection, type PlatformConnection, type PlatformServiceOptions } from "./platform-service.js"
-import { createKronosDbEventStore } from "./kronosdb-event-store.js"
-import { createKronosDbSnapshotStore } from "./kronosdb-snapshot-store.js"
-import { createShutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
+import { outboundStream } from "./outbound-stream.js"
+import { platformConnection, type PlatformConnection, type PlatformServiceOptions } from "./platform-service.js"
+import { kronosDbEventStore } from "./kronosdb-event-store.js"
+import { kronosDbSnapshotStore } from "./kronosdb-snapshot-store.js"
+import { shutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
 
 const DEFAULT_PERMITS = 5000n
 const DEFAULT_THRESHOLD = 2500n
@@ -127,8 +127,8 @@ export interface KronosDbConfig extends KronosDbConnectionConfig {
  * leaves whatever transport you already had in place.
  */
 export interface KronosDbComponents {
-  eventStore: ReturnType<typeof createKronosDbEventStore>
-  snapshotStore: ReturnType<typeof createKronosDbSnapshotStore>
+  eventStore: ReturnType<typeof kronosDbEventStore>
+  snapshotStore: ReturnType<typeof kronosDbSnapshotStore>
   commandBus?: CommandBus
   queryBus?: QueryBus
 }
@@ -218,19 +218,19 @@ export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBacken
   })
 
   // ---- Platform control plane -------------------------------------------
-  const platform = createPlatformConnection(connection, config.platformService)
+  const platform = platformConnection(connection, config.platformService)
 
 
   // ---- Components --------------------------------------------------------
   // The connection is live by now, so these are the real things: no lazy
   // proxy around the stores, no subscribe()-buffering wrapper around the buses.
   const components: KronosDbComponents = {
-    eventStore: createKronosDbEventStore(connection, serializer),
-    snapshotStore: createKronosDbSnapshotStore(connection, serializer),
+    eventStore: kronosDbEventStore(connection, serializer),
+    snapshotStore: kronosDbSnapshotStore(connection, serializer),
   }
 
   if (config.messaging !== false) {
-    const commandLatch = createShutdownLatch()
+    const commandLatch = shutdownLatch()
     busLatches.push(commandLatch)
     components.commandBus = createDistributedCommandBus(
       connection,
@@ -242,9 +242,9 @@ export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBacken
       resilience,
     )
 
-    const queryLatch = createShutdownLatch()
+    const queryLatch = shutdownLatch()
     busLatches.push(queryLatch)
-    components.queryBus = createDistributedQueryBus(
+    components.queryBus = distributedQueryBus(
       connection,
       unitOfWorkFactory,
       queryLatch,
@@ -322,14 +322,14 @@ function createDistributedCommandBus(
   commandLoadFactor?: number,
   resilience?: Partial<ResilienceConfig>,
 ): CommandBus {
-  const metadata = createKronosMetadata(connection.config)
+  const metadata = kronosMetadata(connection.config)
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
   const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
   const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
 
   const localSegment = new Map<string, (message: CommandMessage) => Promise<unknown>>()
 
-  let outbound = createOutboundStream<any>()
+  let outbound = outboundStream<any>()
   let streamStarted = false
   let permits = 0n
 
@@ -351,7 +351,7 @@ function createDistributedCommandBus(
 
   function reestablishStreamBody() {
     outbound.close()
-    outbound = createOutboundStream<any>()
+    outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
     ensureStreamStarted()
@@ -515,7 +515,7 @@ function createDistributedCommandBus(
 // Distributed Query Bus
 // ---------------------------------------------------------------------------
 
-export function createDistributedQueryBus(
+export function distributedQueryBus(
   connection: KronosDbConnection,
   unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
@@ -525,7 +525,7 @@ export function createDistributedQueryBus(
   queryTimeoutMs?: number,
   resilience?: Partial<ResilienceConfig>,
 ): QueryBus {
-  const metadata = createKronosMetadata(connection.config)
+  const metadata = kronosMetadata(connection.config)
   const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
   const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
@@ -539,7 +539,7 @@ export function createDistributedQueryBus(
   // target. The server then routes each response back to that exact subscriber.
   const handlerSubscriptions = new Map<string, { queryName: string; payload: unknown }>()
 
-  let outbound = createOutboundStream<any>()
+  let outbound = outboundStream<any>()
   let streamStarted = false
   let permits = 0n
 
@@ -561,7 +561,7 @@ export function createDistributedQueryBus(
 
   function reestablishStreamBody() {
     outbound.close()
-    outbound = createOutboundStream<any>()
+    outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
     ensureStreamStarted()
@@ -822,14 +822,14 @@ export function createDistributedQueryBus(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       const queryName = qualifiedNameToString(message.name)
       const subscriptionId = generateIdentifier()
       const serialized = serializePayload(queryName, message.payload)
 
-      const outboundSub = createOutboundStream<any>()
+      const outboundSub = outboundStream<any>()
 
       outboundSub.send({
         subscribe: {
@@ -872,12 +872,12 @@ export function createDistributedQueryBus(
               }
             } else if (response.update) {
               const update = deserializePayload(response.update.payload?.data as Uint8Array | undefined, response.update.payload?.type, response.update.payload?.revision)
-              updateHandler.offer(update)
+              handler.offer(update)
             } else if (response.complete) {
-              updateHandler.complete()
+              handler.complete()
               break
             } else if (response.completeExceptionally) {
-              updateHandler.completeExceptionally(
+              handler.completeExceptionally(
                 new Error(response.completeExceptionally.errorMessage?.message ?? "Subscription query failed"),
               )
               break
@@ -889,7 +889,7 @@ export function createDistributedQueryBus(
             rejectInitial(error)
             initialSettled = true
           }
-          updateHandler.completeExceptionally(error)
+          handler.completeExceptionally(error)
         } finally {
           subscriptions.delete(queryId)
         }
@@ -897,7 +897,7 @@ export function createDistributedQueryBus(
 
       return {
         initialResult,
-        updates: updateHandler.iterable,
+        updates: handler.iterable,
         close: () => {
           outboundSub.send({
             unsubscribe: {
@@ -906,7 +906,7 @@ export function createDistributedQueryBus(
           })
           outboundSub.close()
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },
@@ -917,14 +917,14 @@ export function createDistributedQueryBus(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       return {
-        [Symbol.asyncIterator]: () => updateHandler.iterable[Symbol.asyncIterator](),
+        [Symbol.asyncIterator]: () => handler.iterable[Symbol.asyncIterator](),
         close: () => {
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },

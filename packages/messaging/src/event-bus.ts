@@ -27,7 +27,7 @@ export interface EventBus extends SubscribableEventSource, EventSink {}
  * In-memory event bus for non-event-sourcing scenarios.
  * Publishes events directly to all subscribers.
  */
-export function createSimpleEventBus(): EventBus {
+export function simpleEventBus(): EventBus {
   const subscribers = new Set<(events: ReadonlyArray<EventMessage>) => Promise<void>>()
 
   return {

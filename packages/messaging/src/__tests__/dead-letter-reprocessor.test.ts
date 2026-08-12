@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata } from "@kronos-ts/common"
-import { createTrackingEventProcessor } from "../tracking-event-processor.js"
+import { trackingEventProcessor } from "../tracking-event-processor.js"
 import type { StreamableEventSource, SequencedEvent } from "../event-source.js"
 import type { EventHandlerRegistration } from "../handler.js"
-import { createInMemoryDeadLetterQueue } from "../dead-letter-queue.js"
+import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
 import { sequentialPerTag } from "../sequencing-policy.js"
 import { retryThenEvictPolicy } from "../enqueue-policy.js"
 
@@ -64,7 +64,7 @@ describe("dead-letter reprocessing", () => {
       makeEvent({ v: 2 }, 1n, "A"),
       makeEvent({ v: 3 }, 2n, "B"),
     ]
-    const dlq = createInMemoryDeadLetterQueue()
+    const dlq = inMemoryDeadLetterQueue()
     const delivered: number[] = []
     let broken = true // sequence A's handler fails while broken
 
@@ -78,7 +78,7 @@ describe("dead-letter reprocessing", () => {
       },
     }
 
-    const processor = createTrackingEventProcessor({
+    const processor = trackingEventProcessor({
       name: "reproc",
       eventSource: createInMemoryEventSource(events),
       eventHandlers: [handler],
@@ -108,7 +108,7 @@ describe("dead-letter reprocessing", () => {
 
   it("gives up and evicts after the retry budget is exhausted", async () => {
     const events = [makeEvent({ v: 1 }, 0n, "A")]
-    const dlq = createInMemoryDeadLetterQueue()
+    const dlq = inMemoryDeadLetterQueue()
 
     const handler: EventHandlerRegistration<any> = {
       kind: "event-handler",
@@ -116,7 +116,7 @@ describe("dead-letter reprocessing", () => {
       handler: () => { throw new Error("always fails") },
     }
 
-    const processor = createTrackingEventProcessor({
+    const processor = trackingEventProcessor({
       name: "reproc-cap",
       eventSource: createInMemoryEventSource(events),
       eventHandlers: [handler],

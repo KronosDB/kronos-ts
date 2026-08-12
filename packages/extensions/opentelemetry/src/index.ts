@@ -1,21 +1,21 @@
 export {
-  createOpenTelemetrySpanFactory,
+  openTelemetrySpanFactory,
   type OpenTelemetrySpanFactoryOptions,
 } from "./opentelemetry-span-factory.js"
 
 export {
   openTelemetry,
   openTelemetryMetrics,
-  tracingCommandBus,
   type OpenTelemetryTracing,
 } from "./opentelemetry.js"
 
 export {
-  createOpenTelemetryMetricsRecorder,
+  openTelemetryMetricsRecorder,
   type OpenTelemetryMetricsRecorderOptions,
 } from "./opentelemetry-metrics-recorder.js"
 
-export { createOpenTelemetryDeadLetterListener } from "./opentelemetry-dead-letter-listener.js"
+export { openTelemetryDeadLetterListener } from "./opentelemetry-dead-letter-listener.js"
 
-// Re-export tracing command bus for convenience
-export { createTracingCommandBus } from "@kronos-ts/messaging"
+// The tracing command-bus decorator lives in messaging; re-exported here so the
+// OpenTelemetry surface is a single import.
+export { tracingCommandBus } from "@kronos-ts/messaging"

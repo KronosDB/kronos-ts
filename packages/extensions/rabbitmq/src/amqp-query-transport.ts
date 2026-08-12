@@ -78,7 +78,7 @@ export class AmqpRabbitMqQueryTransport implements RabbitMqQueryTransport {
 
   /**
    * Close this transport's channel and fail any in-flight requests. The shared
-   * connection is owned by its creator (see {@link createAmqpConnection}) and is
+   * connection is owned by its creator (see {@link amqpConnection}) and is
    * not closed here.
    */
   async close(): Promise<void> {

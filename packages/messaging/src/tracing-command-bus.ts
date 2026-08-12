@@ -22,7 +22,7 @@ function runActive<R>(span: Span, fn: () => R): R {
  * @param spanFactory  The span factory for creating tracing spans.
  * @returns A decorated command bus with dispatch tracing.
  */
-export function createTracingCommandBus(
+export function tracingCommandBus(
   delegate: CommandBus,
   spanFactory: SpanFactory,
 ): CommandBus {

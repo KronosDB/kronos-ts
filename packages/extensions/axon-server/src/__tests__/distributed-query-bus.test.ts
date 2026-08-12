@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { type Serializer, type SerializedObject } from "@kronos-ts/common"
 import { payloadEquals } from "@kronos-ts/messaging"
-import { createDistributedQueryBus } from "../axon-server.js"
-import { createShutdownLatch } from "../shutdown-latch.js"
+import { distributedQueryBus } from "../axon-server.js"
+import { shutdownLatch } from "../shutdown-latch.js"
 import type { AxonServerConnection } from "../connection.js"
 
 const jsonSerializer: Serializer = {
@@ -100,7 +100,7 @@ async function flush(ms = 10) { await new Promise((r) => setTimeout(r, ms)) }
 describe("axon-server distributed query bus — subscription queries", () => {
   let inbound: ReturnType<typeof controllableInbound>
   let captured: { outbound: any[]; outboundIter?: AsyncIterable<any> }
-  let latch: ReturnType<typeof createShutdownLatch>
+  let latch: ReturnType<typeof shutdownLatch>
 
   afterEach(() => {
     inbound?.close()
@@ -110,9 +110,9 @@ describe("axon-server distributed query bus — subscription queries", () => {
   function setupBus(opts?: { handlerResult?: unknown; handlerError?: Error }) {
     inbound = controllableInbound()
     captured = { outbound: [] }
-    latch = createShutdownLatch()
+    latch = shutdownLatch()
 
-    const bus = createDistributedQueryBus(
+    const bus = distributedQueryBus(
       fakeConnection(captured, inbound.iterable),
       async (_metadata, run) => run(),
       latch,

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test"
 import { emptyMetadata, qn } from "@kronos-ts/common"
-import { createInMemoryEventStore } from "@kronos-ts/eventsourcing"
+import { inMemoryEventStore } from "@kronos-ts/eventsourcing"
 import { command, commandHandler, EventCriteria, event } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { z } from "zod"
 import { kronos, inMemoryComponents, module } from "../kronos.js"
-import { createInMemoryTokenStore, createSimpleCommandBus } from "@kronos-ts/messaging"
+import { inMemoryTokenStore, simpleCommandBus } from "@kronos-ts/messaging"
 
 // ===========================================================================
 // The DOMAIN — identical for both composition styles. Nothing below this line
@@ -65,8 +65,8 @@ const billLine = (ledger: Ledger) =>
 
 /** Local test convenience — the framework deliberately ships no such bundle. */
 const inMemoryStores = () => ({
-  eventStore: createInMemoryEventStore(),
-  tokenStore: createInMemoryTokenStore(),
+  eventStore: inMemoryEventStore(),
+  tokenStore: inMemoryTokenStore(),
 })
 
 /** A slice is a LIST of registrations. Deps are closure arguments. */
@@ -144,7 +144,7 @@ describe("billing", () => {
     // This module runs on its own command bus as well as its own store, so its
     // handlers are NOT reachable from the app-level gateway. Nothing about the
     // override mechanism privileges persistence.
-    const ownBus = createSimpleCommandBus()
+    const ownBus = simpleCommandBus()
     const app = kronos({
       components: inMemoryComponents(),
       modules: [
@@ -187,7 +187,7 @@ import { runInNewUoW } from "@kronos-ts/messaging"
 
 describe("component resolution", () => {
   it("a supplied unitOfWorkFactory reaches the default command bus", async () => {
-    // The trap: createSimpleCommandBus captures the UoW factory when BUILT.
+    // The trap: simpleCommandBus captures the UoW factory when BUILT.
     // Spreading a fully-built record under a backend used to leave the bus on
     // runInNewUoW while unitOfWorkFactory said otherwise — handlers then ran
     // outside the transaction and a rollback silently kept its row.

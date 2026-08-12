@@ -78,7 +78,7 @@ per-module state managers.
 ### The string-keyed shim is the last container residue, and it should go
 
 `createApp` still builds a `getComponent<T>(type: string): T` shim, because
-`createCommandInvocation` reads its dependencies that way. It is the one place in
+`commandInvocation` reads its dependencies that way. It is the one place in
 the functional root that is an unchecked cast keyed by a string. It exists only
 to satisfy the invocation path's current signature — passing a typed record
 directly would delete it. **That is the next thing to fix, and it is independent

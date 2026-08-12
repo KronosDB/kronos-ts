@@ -8,10 +8,10 @@ import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
  * A query bus decorator that adds dispatch and handler interceptor chains
  * to any {@link QueryBus} implementation.
  *
- * {@link createSimpleQueryBus} handles dispatch + subscribe only;
+ * {@link simpleQueryBus} handles dispatch + subscribe only;
  * this decorator layers interceptor support on top.
  */
-export function createInterceptingQueryBus(
+export function interceptingQueryBus(
   delegate: QueryBus,
 ): QueryBus & {
   /** Register a dispatch interceptor. Returns an unsubscribe function. */

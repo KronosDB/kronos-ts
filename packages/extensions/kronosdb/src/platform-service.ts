@@ -1,6 +1,6 @@
 import type { KronosDbConnection } from "./connection.js"
-import { createKronosMetadata } from "./connection.js"
-import { createOutboundStream } from "./outbound-stream.js"
+import { kronosMetadata } from "./connection.js"
+import { outboundStream } from "./outbound-stream.js"
 import type { PlatformInbound } from "./generated/platform.js"
 import type { ProcessorStatusSupplier } from "./event-processor-info.js"
 import { toEventProcessorInfo } from "./event-processor-info.js"
@@ -120,7 +120,7 @@ export function parseInstruction(message: any): PlatformInstruction | null {
  * 3. Receives instructions from KronosDB (split, merge, pause, resume)
  * 4. Reports event processor status periodically
  */
-export function createPlatformConnection(
+export function platformConnection(
   connection: KronosDbConnection,
   options?: PlatformServiceOptions,
 ): PlatformConnection {
@@ -147,7 +147,7 @@ export function createPlatformConnection(
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
   let lastHeartbeatResponse = Date.now()
-  let outbound: ReturnType<typeof createOutboundStream<PlatformInbound>> | null = null
+  let outbound: ReturnType<typeof outboundStream<PlatformInbound>> | null = null
   /**
    * Latches once KronosDB sends its first inbound message after registration
    * — the earliest observable signal that the platform stream is fully wired
@@ -156,7 +156,7 @@ export function createPlatformConnection(
    */
   let acked = false
 
-  const grpcMetadata = createKronosMetadata(connection.config)
+  const grpcMetadata = kronosMetadata(connection.config)
 
   async function processInboundInstructions(inbound: AsyncIterable<any>) {
     try {
@@ -256,7 +256,7 @@ export function createPlatformConnection(
 
       // Re-arm the ack latch so a stop/start cycle correctly re-waits.
       acked = false
-      outbound = createOutboundStream<PlatformInbound>()
+      outbound = outboundStream<PlatformInbound>()
 
       // Register with KronosDB — first message must be ClientIdentification
       outbound.send({

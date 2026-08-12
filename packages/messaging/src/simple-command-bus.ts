@@ -27,9 +27,9 @@ import { qualifiedNameToString } from "@kronos-ts/common"
  * not change AF5 isolation, only whether that fresh UoW has a transaction.
  *
  * Interceptor support is provided by wrapping with
- * {@link createInterceptingCommandBus}.
+ * {@link interceptingCommandBus}.
  */
-export function createSimpleCommandBus(unitOfWorkRunner: UoWRunner = runInNewUoW): CommandBus {
+export function simpleCommandBus(unitOfWorkRunner: UoWRunner = runInNewUoW): CommandBus {
   const handlers = new Map<string, (message: CommandMessage) => Promise<unknown>>()
 
   return {

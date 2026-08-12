@@ -21,7 +21,7 @@ import { state } from "@kronos-ts/modelling"
 import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
-import { createInMemoryEventStore } from "../in-memory-event-store.js"
+import { inMemoryEventStore } from "../in-memory-event-store.js"
 import type { EventStore } from "../event-store.js"
 import type { AppendCondition } from "../append-condition.js"
 
@@ -56,7 +56,7 @@ interface AppendRecord {
 }
 
 function probeEventStore(): EventStore & { records: AppendRecord[] } {
-  const inner = createInMemoryEventStore()
+  const inner = inMemoryEventStore()
   const records: AppendRecord[] = []
   const wrapped: EventStore & { records: AppendRecord[] } = {
     records,

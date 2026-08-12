@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn } from "@kronos-ts/common"
 import { command } from "@kronos-ts/messaging"
-import { createSimpleCommandBus } from "@kronos-ts/messaging"
-import { createRabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
+import { simpleCommandBus } from "@kronos-ts/messaging"
+import { rabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
 import { resolveRabbitMqConfig, type RabbitMqConfig } from "../rabbitmq.js"
 import type { RabbitMqIdentity } from "../topology.js"
 
@@ -38,9 +38,9 @@ function recordingTransport() {
 
 describe("RabbitMQ command bus", () => {
   it("prefers local handlers by default", async () => {
-    const local = createSimpleCommandBus()
+    const local = simpleCommandBus()
     const { transport, dispatched } = recordingTransport()
-    const bus = createRabbitMqCommandBus({
+    const bus = rabbitMqCommandBus({
       localSegment: local,
       transport,
       config: rabbitConfig({ url: "amqp://test" }),
@@ -61,9 +61,9 @@ describe("RabbitMQ command bus", () => {
   })
 
   it("routes through transport when distributed routing is forced", async () => {
-    const local = createSimpleCommandBus()
+    const local = simpleCommandBus()
     const { transport, dispatched } = recordingTransport()
-    const bus = createRabbitMqCommandBus({
+    const bus = rabbitMqCommandBus({
       localSegment: local,
       transport,
       config: rabbitConfig({
@@ -87,9 +87,9 @@ describe("RabbitMQ command bus", () => {
   })
 
   it("carries command metadata across the transport envelope", async () => {
-    const local = createSimpleCommandBus()
+    const local = simpleCommandBus()
     const { transport, dispatched } = recordingTransport()
-    const bus = createRabbitMqCommandBus({
+    const bus = rabbitMqCommandBus({
       localSegment: local,
       transport,
       config: rabbitConfig({
@@ -115,9 +115,9 @@ describe("RabbitMQ command bus", () => {
   })
 
   it("handles an inbound command in its own UnitOfWork", async () => {
-    const local = createSimpleCommandBus()
+    const local = simpleCommandBus()
     const { transport, subscriptions } = recordingTransport()
-    const bus = createRabbitMqCommandBus({
+    const bus = rabbitMqCommandBus({
       localSegment: local,
       transport,
       config: rabbitConfig({ url: "amqp://test" }),

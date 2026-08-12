@@ -1,18 +1,16 @@
 import {
-  createTracingCommandBus,
   tracingHandlerEnhancerDefinition,
   meteringHandlerEnhancerDefinition,
-  type CommandBus,
   type HandlerEnhancerDefinition,
   type MeteringOptions,
   type SpanFactory,
 } from "@kronos-ts/messaging"
 import {
-  createOpenTelemetrySpanFactory,
+  openTelemetrySpanFactory,
   type OpenTelemetrySpanFactoryOptions,
 } from "./opentelemetry-span-factory.js"
 import {
-  createOpenTelemetryMetricsRecorder,
+  openTelemetryMetricsRecorder,
   type OpenTelemetryMetricsRecorderOptions,
 } from "./opentelemetry-metrics-recorder.js"
 
@@ -26,7 +24,7 @@ import {
  * ```typescript
  * const { spanFactory, handlerEnhancer } = openTelemetry()
  *
- * const commandBus = createTracingCommandBus(baseCommandBus, spanFactory)
+ * const commandBus = tracingCommandBus(baseCommandBus, spanFactory)
  *
  * registerCommandHandlersNatively(commands, {
  *   commandBus,
@@ -38,12 +36,12 @@ import {
  *
  * ## Ordering invariant — wrap tracing AFTER any distributed-bus decoration
  *
- * For tracing to wrap the distributed bus, apply `createTracingCommandBus`
+ * For tracing to wrap the distributed bus, apply `tracingCommandBus`
  * AFTER wrapping with a distributed-bus adapter (e.g. `kronosDb` / `axonServer`),
  * so tracing is the outermost wrapper:
  *
  * ```typescript
- * const commandBus = createTracingCommandBus(
+ * const commandBus = tracingCommandBus(
  *   distributedCommandBus(baseCommandBus, ...),
  *   spanFactory,
  * )
@@ -53,7 +51,7 @@ import {
  * is applied, no spans are emitted on the wire.
  */
 export interface OpenTelemetryTracing {
-  /** The underlying SpanFactory — pass to `createTracingCommandBus` or reuse directly. */
+  /** The underlying SpanFactory — pass to `tracingCommandBus` or reuse directly. */
   readonly spanFactory: SpanFactory
   /** Handler-side tracing — pass as `handlerEnhancer` to the native registration helpers. */
   readonly handlerEnhancer: HandlerEnhancerDefinition
@@ -62,19 +60,11 @@ export interface OpenTelemetryTracing {
 export function openTelemetry(
   options: OpenTelemetrySpanFactoryOptions = {},
 ): OpenTelemetryTracing {
-  const spanFactory = createOpenTelemetrySpanFactory(options)
+  const spanFactory = openTelemetrySpanFactory(options)
   return {
     spanFactory,
     handlerEnhancer: tracingHandlerEnhancerDefinition(spanFactory),
   }
-}
-
-/** Convenience: wrap a command bus with tracing using a freshly built span factory. */
-export function tracingCommandBus(
-  delegate: CommandBus,
-  spanFactory: SpanFactory,
-): CommandBus {
-  return createTracingCommandBus(delegate, spanFactory)
 }
 
 /**
@@ -100,6 +90,6 @@ export function tracingCommandBus(
 export function openTelemetryMetrics(
   options: OpenTelemetryMetricsRecorderOptions & MeteringOptions = {},
 ): HandlerEnhancerDefinition {
-  const recorder = createOpenTelemetryMetricsRecorder(options)
+  const recorder = openTelemetryMetricsRecorder(options)
   return meteringHandlerEnhancerDefinition(recorder, options)
 }

@@ -38,7 +38,7 @@ export interface RabbitMqTopologyNames {
   queryReplyQueue(): string
 }
 
-export function createRabbitMqTopologyNames(
+export function rabbitMqTopologyNames(
   identity: RabbitMqIdentity,
   config: RabbitMqTopologyConfig = {},
 ): RabbitMqTopologyNames {

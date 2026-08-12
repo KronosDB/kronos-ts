@@ -70,18 +70,18 @@ import type {
   UoWRunner,
   UpdateHandler,
 } from "@kronos-ts/messaging"
-import { applySubscriptionFilter, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import { applySubscriptionFilter, updateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
 import { Metadata } from "nice-grpc"
 import type { AxonServerConnectionConfig } from "./connection.js"
 import { connectToAxonServer, type AxonServerConnection } from "./connection.js"
-import { createAxonServerEventStore } from "./axon-server-event-store.js"
-import { createAxonServerSnapshotStore } from "./axon-server-snapshot-store.js"
+import { axonServerEventStore } from "./axon-server-event-store.js"
+import { axonServerSnapshotStore } from "./axon-server-snapshot-store.js"
 import { metadataToProto, metadataFromProto } from "./metadata-conversion.js"
-import { createOutboundStream } from "./outbound-stream.js"
+import { outboundStream } from "./outbound-stream.js"
 import { mapErrorCode, AxonServerErrorCode } from "./errors.js"
-import { createShutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
+import { shutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
 import {
-  createPlatformConnection,
+  platformConnection,
   type PlatformConnection,
   type PlatformServiceOptions,
 } from "./platform-service.js"
@@ -222,8 +222,8 @@ export interface AxonServerConfig extends AxonServerConnectionConfig {
 
 /** The components an Axon Server backend provides. Spread into `kronos`. */
 export interface AxonServerComponents {
-  eventStore: ReturnType<typeof createAxonServerEventStore>
-  snapshotStore: ReturnType<typeof createAxonServerSnapshotStore>
+  eventStore: ReturnType<typeof axonServerEventStore>
+  snapshotStore: ReturnType<typeof axonServerSnapshotStore>
   commandBus: CommandBus
   queryBus: QueryBus
 }
@@ -293,16 +293,16 @@ export async function axonServer(
   })
 
   // One latch per bus, drained in close() before the transport goes away.
-  const commandLatch = createShutdownLatch()
-  const queryLatch = createShutdownLatch()
+  const commandLatch = shutdownLatch()
+  const queryLatch = shutdownLatch()
   const busLatches: ShutdownLatch[] = [commandLatch, queryLatch]
 
   // The connection is live before anything below is built, so the buses open
   // their gRPC streams for real and `subscribe()` reaches the wire immediately —
   // no lazy proxy, no subscription buffering, no readiness promise.
   const components: AxonServerComponents = {
-    eventStore: createAxonServerEventStore(connection, serializer),
-    snapshotStore: createAxonServerSnapshotStore(connection, serializer),
+    eventStore: axonServerEventStore(connection, serializer),
+    snapshotStore: axonServerSnapshotStore(connection, serializer),
     commandBus: createDistributedCommandBus(
       connection,
       unitOfWorkFactory,
@@ -312,7 +312,7 @@ export async function axonServer(
       config.commandLoadFactor,
       resilience,
     ),
-    queryBus: createDistributedQueryBus(
+    queryBus: distributedQueryBus(
       connection,
       unitOfWorkFactory,
       queryLatch,
@@ -328,7 +328,7 @@ export async function axonServer(
   // eagerly is what lets the control plane be a separate object at all — and it
   // keeps `platformService` tuning and `stop()` ownership in one place, so the
   // documented shutdown order below holds whether or not anyone opted in.
-  const platform = createPlatformConnection(connection, config.platformService)
+  const platform = platformConnection(connection, config.platformService)
 
   return {
     components,
@@ -418,7 +418,7 @@ function createDistributedCommandBus(
   const localSegment = new Map<string, (message: CommandMessage) => Promise<unknown>>()
 
   // Bidirectional stream for handler registration + inbound command handling
-  let outbound = createOutboundStream<any>()
+  let outbound = outboundStream<any>()
   let streamStarted = false
   let permits = 0n
 
@@ -449,7 +449,7 @@ function createDistributedCommandBus(
    */
   function reestablishStreamBody() {
     outbound.close()
-    outbound = createOutboundStream<any>()
+    outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
     ensureStreamStarted()
@@ -627,7 +627,7 @@ function createDistributedCommandBus(
  *   registered with Axon Server for inbound routing. Inbound queries
  *   are executed within a UnitOfWork.
  */
-export function createDistributedQueryBus(
+export function distributedQueryBus(
   connection: AxonServerConnection,
   unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
@@ -655,7 +655,7 @@ export function createDistributedQueryBus(
   // exact subscriber.
   const handlerSubscriptions = new Map<string, { queryName: string; payload: unknown }>()
 
-  let outbound = createOutboundStream<any>()
+  let outbound = outboundStream<any>()
   let streamStarted = false
   let permits = 0n
 
@@ -684,7 +684,7 @@ export function createDistributedQueryBus(
    */
   function reestablishStreamBody() {
     outbound.close()
-    outbound = createOutboundStream<any>()
+    outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
     ensureStreamStarted()
@@ -944,13 +944,13 @@ export function createDistributedQueryBus(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       const queryName = qualifiedNameToString(message.name)
       const subscriptionId = generateIdentifier()
 
-      const outboundSub = createOutboundStream<any>()
+      const outboundSub = outboundStream<any>()
 
       outboundSub.send({
         subscribe: {
@@ -1011,12 +1011,12 @@ export function createDistributedQueryBus(
               }
             } else if (response.update) {
               const update = deserializePayload(response.update.payload?.data as Uint8Array | undefined)
-              updateHandler.offer(update)
+              handler.offer(update)
             } else if (response.complete) {
-              updateHandler.complete()
+              handler.complete()
               break
             } else if (response.completeExceptionally) {
-              updateHandler.completeExceptionally(
+              handler.completeExceptionally(
                 new Error(response.completeExceptionally.errorMessage?.message ?? "Subscription query failed"),
               )
               break
@@ -1028,7 +1028,7 @@ export function createDistributedQueryBus(
             rejectInitial(error)
             initialSettled = true
           }
-          updateHandler.completeExceptionally(error)
+          handler.completeExceptionally(error)
         } finally {
           subscriptions.delete(queryId)
         }
@@ -1036,7 +1036,7 @@ export function createDistributedQueryBus(
 
       return {
         initialResult,
-        updates: updateHandler.iterable,
+        updates: handler.iterable,
         close: () => {
           outboundSub.send({
             unsubscribe: {
@@ -1045,7 +1045,7 @@ export function createDistributedQueryBus(
           })
           outboundSub.close()
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },
@@ -1056,14 +1056,14 @@ export function createDistributedQueryBus(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       return {
-        [Symbol.asyncIterator]: () => updateHandler.iterable[Symbol.asyncIterator](),
+        [Symbol.asyncIterator]: () => handler.iterable[Symbol.asyncIterator](),
         close: () => {
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },

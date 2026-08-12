@@ -11,11 +11,11 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
-  createInMemoryEventStore,
+  inMemoryEventStore,
   type EventStore,
   type AppendCondition
 } from "@kronos-ts/eventsourcing"
-import { createRabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
+import { rabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
 
 const Start = command({
@@ -71,7 +71,7 @@ class LoopbackTransport implements RabbitMqCommandTransport {
 }
 
 function probeEventStore() {
-  const inner = createInMemoryEventStore()
+  const inner = inMemoryEventStore()
   const records: Array<{ condition: AppendCondition | undefined }> = []
   const wrapped: EventStore = {
     ...inner,
@@ -90,7 +90,7 @@ function probeEventStore() {
  * inbound distributed command gets.
  */
 function loopbackCommandBus(transport: LoopbackTransport, localSegment: CommandBus): CommandBus {
-  return createRabbitMqCommandBus({
+  return rabbitMqCommandBus({
     localSegment,
     transport,
     config: resolveRabbitMqConfig({

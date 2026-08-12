@@ -10,7 +10,7 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
-  createInMemoryEventStore,
+  inMemoryEventStore,
   type AppendCondition,
   type EventStore
 } from "@kronos-ts/eventsourcing"
@@ -56,7 +56,7 @@ const StateB = state({
 })
 
 function probeEventStore() {
-  const inner = createInMemoryEventStore()
+  const inner = inMemoryEventStore()
   const records: Array<{ condition: AppendCondition | undefined }> = []
   const wrapped: EventStore = {
     ...inner,

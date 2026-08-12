@@ -1,5 +1,5 @@
 /**
- * createPostgresEventStore — full EventStorageEngine + EventBus implementation.
+ * postgresEventStore — full EventStorageEngine + EventBus implementation.
  *
  * Plan 12-04 delivered: source, appendEvents, append.
  * Plan 12-05 adds: open (gap-free tailing via xid8 + pg_snapshot_xmin),
@@ -45,7 +45,7 @@ import type {
   TrackingToken,
 } from "@kronos-ts/messaging"
 import {
-  createMessageStream,
+  messageStream,
   globalSequenceToken,
   gapAwareToken,
   isGapAwareToken,
@@ -77,7 +77,7 @@ export interface PostgresEventStoreConfig {
   readonly tableNames?: TableNames
 }
 
-export function createPostgresEventStore(
+export function postgresEventStore(
   config: PostgresEventStoreConfig,
 ): EventStore {
   const { adapter, tagResolver } = config
@@ -589,7 +589,7 @@ export function createPostgresEventStore(
       // Also run an immediate fetch to pick up any pre-existing events
       void pump()
 
-      return createMessageStream<SequencedEvent>({
+      return messageStream<SequencedEvent>({
         next() {
           return buffer.shift()
         },

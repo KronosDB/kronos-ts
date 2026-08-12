@@ -3,8 +3,8 @@ import { z } from "zod"
 import { qn, tag, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import { event, EventCriteria, type EventMessage } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createInMemoryEventStore } from "../in-memory-event-store.js"
-import { createEventSourcedRepository } from "../event-sourced-repository.js"
+import { inMemoryEventStore } from "../in-memory-event-store.js"
+import { eventSourcedRepository } from "../event-sourced-repository.js"
 
 // -- Fixtures --
 
@@ -62,12 +62,12 @@ describe("Entity Lifecycle Hooks", () => {
         },
       })
 
-      const eventStore = createInMemoryEventStore()
+      const eventStore = inMemoryEventStore()
       await eventStore.append([
         eventMsg(ItemCreated, { itemId: "i-1", name: "Widget" }),
       ])
 
-      const repo = createEventSourcedRepository(Item, eventStore)
+      const repo = eventSourcedRepository(Item, eventStore)
 
       // when
       await repo.load({ itemId: "i-1" })
@@ -100,13 +100,13 @@ describe("Entity Lifecycle Hooks", () => {
         },
       })
 
-      const eventStore = createInMemoryEventStore()
+      const eventStore = inMemoryEventStore()
       await eventStore.append([
         eventMsg(ItemCreated, { itemId: "i-1", name: "Widget" }),
         eventMsg(ItemRenamed, { itemId: "i-1", name: "Gadget" }),
       ])
 
-      const repo = createEventSourcedRepository(Item, eventStore)
+      const repo = eventSourcedRepository(Item, eventStore)
 
       // when
       await repo.load({ itemId: "i-1" })
@@ -138,13 +138,13 @@ describe("Entity Lifecycle Hooks", () => {
         },
       })
 
-      const eventStore = createInMemoryEventStore()
+      const eventStore = inMemoryEventStore()
       await eventStore.append([
         eventMsg(ItemCreated, { itemId: "i-1", name: "Widget" }),
         eventMsg(ItemDeleted, { itemId: "i-1" }),
       ])
 
-      const repo = createEventSourcedRepository(Item, eventStore)
+      const repo = eventSourcedRepository(Item, eventStore)
 
       // when
       await repo.load({ itemId: "i-1" })
@@ -172,14 +172,14 @@ describe("Entity Lifecycle Hooks", () => {
         },
       })
 
-      const eventStore = createInMemoryEventStore()
+      const eventStore = inMemoryEventStore()
       await eventStore.append([
         eventMsg(ItemCreated, { itemId: "i-1", name: "Widget" }),
         eventMsg(ItemDeleted, { itemId: "i-1" }),
         eventMsg(ItemDeleted, { itemId: "i-1" }), // duplicate delete
       ])
 
-      const repo = createEventSourcedRepository(Item, eventStore)
+      const repo = eventSourcedRepository(Item, eventStore)
 
       // when
       await repo.load({ itemId: "i-1" })
@@ -203,12 +203,12 @@ describe("Entity Lifecycle Hooks", () => {
         // no lifecycle
       })
 
-      const eventStore = createInMemoryEventStore()
+      const eventStore = inMemoryEventStore()
       await eventStore.append([
         eventMsg(ItemCreated, { itemId: "i-1", name: "Widget" }),
       ])
 
-      const repo = createEventSourcedRepository(Item, eventStore)
+      const repo = eventSourcedRepository(Item, eventStore)
 
       // when
       const result = await repo.load({ itemId: "i-1" })

@@ -10,12 +10,13 @@
  *   that flows dispatch through to the delegate
  * - the SAME spanFactory instance flows into both the command bus wrapper
  *   and the handler enhancer (closure capture)
- * - options thread through to `createOpenTelemetrySpanFactory`
+ * - options thread through to `openTelemetrySpanFactory`
  * - `openTelemetryMetrics()` returns a plain HandlerEnhancerDefinition
  */
 import { describe, expect, it } from "bun:test"
+import { tracingCommandBus } from "@kronos-ts/messaging"
 import type { CommandBus } from "@kronos-ts/messaging"
-import { openTelemetry, openTelemetryMetrics, tracingCommandBus } from "../opentelemetry.js"
+import { openTelemetry, openTelemetryMetrics } from "../opentelemetry.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,7 +106,7 @@ describe("openTelemetry() factory", () => {
     expect(result).toBe("ok")
   })
 
-  it("threads options through to createOpenTelemetrySpanFactory", () => {
+  it("threads options through to openTelemetrySpanFactory", () => {
     // given
     const customAttrProvider = {
       provideAttributes: () => ({ "custom.attr": "v" }),

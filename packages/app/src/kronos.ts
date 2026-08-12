@@ -1,7 +1,7 @@
 import {
-  createEventSourcedRepository,
-  createInMemoryEventStore,
-  createInMemorySnapshotStore,
+  eventSourcedRepository,
+  inMemoryEventStore,
+  inMemorySnapshotStore,
   descriptorBasedTagResolver,
   type EventStore,
   type SnapshotStore,
@@ -11,14 +11,14 @@ import {
   type CommandBus,
   type CommandGateway,
   type CommandHandlerDefinition,
-  createCommandGateway,
-  createInMemoryTokenStore,
-  createQueryGateway,
-  createSimpleCommandBus,
-  createSimpleQueryBus,
-  createTrackingEventProcessor,
-  createSubscribingEventProcessor,
-  createInterceptingCommandBus,
+  commandGateway,
+  inMemoryTokenStore,
+  queryGateway,
+  simpleCommandBus,
+  simpleQueryBus,
+  trackingEventProcessor,
+  subscribingEventProcessor,
+  interceptingCommandBus,
   correlationDataDispatchInterceptor,
   messageOriginProvider,
   type CorrelationDataProvider,
@@ -34,7 +34,7 @@ import {
   type TokenStore,
   type UoWRunner,
 } from "@kronos-ts/messaging"
-import { createStateManager, type StateManager, type StateModule } from "@kronos-ts/modelling"
+import { stateManager, type StateManager, type StateModule } from "@kronos-ts/modelling"
 
 // ---------------------------------------------------------------------------
 // A functional app builder. No registry, no slots, no decorator pipeline, no
@@ -67,7 +67,7 @@ export interface Components {
 /**
  * Fill in whatever a caller did not supply, IN DEPENDENCY ORDER.
  *
- * This exists because component construction is ordered: `createSimpleCommandBus`
+ * This exists because component construction is ordered: `simpleCommandBus`
  * captures the UoW factory when it is built. Spreading a fully-built record under
  * a backend — `{ ...inMemoryComponents(), ...pg.components }` — therefore leaves
  * the bus holding the in-memory `runInNewUoW` even though `pg.components` supplied
@@ -78,14 +78,14 @@ export interface Components {
 function resolveComponents(supplied: Partial<Components>): Components {
   const unitOfWorkFactory = supplied.unitOfWorkFactory ?? runInNewUoW
   return {
-    eventStore: supplied.eventStore ?? createInMemoryEventStore(),
-    snapshotStore: supplied.snapshotStore ?? createInMemorySnapshotStore(),
+    eventStore: supplied.eventStore ?? inMemoryEventStore(),
+    snapshotStore: supplied.snapshotStore ?? inMemorySnapshotStore(),
     // Built LAST of the bus-adjacent components, so it sees the final UoW factory.
     commandBus: supplied.commandBus ?? defaultCommandBus(unitOfWorkFactory),
-    queryBus: supplied.queryBus ?? createSimpleQueryBus(),
+    queryBus: supplied.queryBus ?? simpleQueryBus(),
     unitOfWorkFactory,
     tagResolver: supplied.tagResolver ?? descriptorBasedTagResolver(),
-    tokenStore: supplied.tokenStore ?? createInMemoryTokenStore(),
+    tokenStore: supplied.tokenStore ?? inMemoryTokenStore(),
   }
 }
 
@@ -111,7 +111,7 @@ export type Registration =
 
 /** The in-memory command bus with correlation lineage applied, as the container had. */
 function defaultCommandBus(unitOfWorkFactory: UoWRunner): CommandBus {
-  const bus = createInterceptingCommandBus(createSimpleCommandBus(unitOfWorkFactory))
+  const bus = interceptingCommandBus(simpleCommandBus(unitOfWorkFactory))
   bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
   return bus
 }
@@ -216,7 +216,7 @@ export interface App {
 
 /** The config shim the command/query invocation path reads at dispatch. */
 function shimFor(components: Components, eventStore: EventStore, stateManager: StateManager) {
-  // EXACTLY the keys createCommandInvocation / registerQueryHandlersNatively
+  // EXACTLY the keys commandInvocation / registerQueryHandlersNatively
   // read. The container's shim mirrored every slot "for parity"; those extra
   // entries were never read, and carrying them made Components look like it
   // owned things it does not.
@@ -261,16 +261,16 @@ export function kronos(opts: {
 
     const { states, commands, queries, processors } = partition(module.register)
 
-    const stateManager = createStateManager()
+    const manager = stateManager()
     for (const state of states) {
-      stateManager.register(
+      manager.register(
         state,
-        createEventSourcedRepository(state, c.eventStore, c.snapshotStore, undefined),
+        eventSourcedRepository(state, c.eventStore, c.snapshotStore, undefined),
       )
     }
-    stateManagers.set(module.name, stateManager)
+    stateManagers.set(module.name, manager)
 
-    const config = shimFor(c, c.eventStore, stateManager)
+    const config = shimFor(c, c.eventStore, manager)
 
     registerCommandHandlersNatively(commands, {
       commandBus: c.commandBus,
@@ -295,11 +295,11 @@ export function kronos(opts: {
           )
         }
         built.push(
-          createSubscribingEventProcessor({
+          subscribingEventProcessor({
             name: proc.name,
             eventSource: c.eventStore as never,
             eventHandlers: proc.eventHandlers,
-            stateManager,
+            stateManager: manager,
             commandBus: c.commandBus,
             queryBus: c.queryBus,
             correlationDataProviders,
@@ -311,11 +311,11 @@ export function kronos(opts: {
         continue
       }
       built.push(
-        createTrackingEventProcessor({
+        trackingEventProcessor({
           name: proc.name,
           eventSource: c.eventStore as never,
           eventHandlers: proc.eventHandlers,
-          stateManager,
+          stateManager: manager,
           commandBus: c.commandBus,
           queryBus: c.queryBus,
           correlationDataProviders,
@@ -366,8 +366,8 @@ export function kronos(opts: {
   }
 
   return {
-    commandGateway: createCommandGateway(components.commandBus),
-    queryGateway: createQueryGateway(components.queryBus, components.unitOfWorkFactory),
+    commandGateway: commandGateway(components.commandBus),
+    queryGateway: queryGateway(components.queryBus, components.unitOfWorkFactory),
     stateManagers,
     processors: processorsByName,
     async stop() {

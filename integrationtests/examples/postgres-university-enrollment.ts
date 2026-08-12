@@ -32,7 +32,7 @@ import {
 import { state } from "@kronos-ts/modelling"
 import {
   afterEvents,
-  createEventSourcedRepository,
+  eventSourcedRepository,
   descriptorBasedTagResolver,
 } from "@kronos-ts/eventsourcing"
 import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
@@ -238,11 +238,11 @@ async function main(): Promise<void> {
     const states = app.stateManagers.get("university")!
     states.register(
       Course,
-      createEventSourcedRepository(Course, pg.components.eventStore, pg.components.snapshotStore, afterEvents(1)),
+      eventSourcedRepository(Course, pg.components.eventStore, pg.components.snapshotStore, afterEvents(1)),
     )
     states.register(
       Student,
-      createEventSourcedRepository(Student, pg.components.eventStore, pg.components.snapshotStore, afterEvents(1)),
+      eventSourcedRepository(Student, pg.components.eventStore, pg.components.snapshotStore, afterEvents(1)),
     )
 
     // Background workers (the durable scheduler), once handlers are subscribed.

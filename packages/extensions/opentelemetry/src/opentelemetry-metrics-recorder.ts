@@ -20,7 +20,7 @@ export interface OpenTelemetryMetricsRecorderOptions {
  * OpenTelemetry MeterProvider configured (e.g. via the OTel SDK or java agent)
  * for measurements to be exported — otherwise this is effectively a no-op.
  */
-export function createOpenTelemetryMetricsRecorder(
+export function openTelemetryMetricsRecorder(
   options: OpenTelemetryMetricsRecorderOptions = {},
 ): MetricsRecorder {
   const meter = options.meter ?? metrics.getMeter("kronos-framework")

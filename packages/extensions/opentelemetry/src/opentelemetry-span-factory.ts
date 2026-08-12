@@ -84,7 +84,7 @@ export interface OpenTelemetrySpanFactoryOptions {
  * await kronos().use(openTelemetry()).start()
  * ```
  */
-export function createOpenTelemetrySpanFactory(
+export function openTelemetrySpanFactory(
   options: OpenTelemetrySpanFactoryOptions = {},
 ): SpanFactory {
   const tracer = options.tracer ?? trace.getTracer("kronos-framework")

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { qn, tag, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import { EventCriteria, type EventMessage } from "@kronos-ts/messaging"
-import { createInMemoryEventStore, AppendConditionError } from "../in-memory-event-store.js"
+import { inMemoryEventStore, AppendConditionError } from "../in-memory-event-store.js"
 import { sourcingCondition } from "../sourcing-condition.js"
 import { appendCondition } from "../append-condition.js"
 
@@ -20,7 +20,7 @@ function eventMessage(name: string, payload: unknown, tags: Array<{ key: string;
 describe("InMemoryEventStore", () => {
   describe("append and source", () => {
     it("appends events and sources them back by tag criteria", async () => {
-      const store = createInMemoryEventStore()
+      const store = inMemoryEventStore()
 
       // given
       const event1 = eventMessage("CourseCreated", { courseId: "cs-101" }, [tag("courseId", "cs-101")])
@@ -38,7 +38,7 @@ describe("InMemoryEventStore", () => {
     })
 
     it("returns empty events when nothing matches", async () => {
-      const store = createInMemoryEventStore()
+      const store = inMemoryEventStore()
 
       // when
       const result = await store.source(
@@ -50,7 +50,7 @@ describe("InMemoryEventStore", () => {
     })
 
     it("sources events matching either criteria", async () => {
-      const store = createInMemoryEventStore()
+      const store = inMemoryEventStore()
 
       // given
       const courseEvent = eventMessage("CourseCreated", {}, [tag("courseId", "cs-101")])
@@ -73,7 +73,7 @@ describe("InMemoryEventStore", () => {
     })
 
     it("sources events with type restriction", async () => {
-      const store = createInMemoryEventStore()
+      const store = inMemoryEventStore()
 
       // given
       const created = eventMessage("CourseCreated", {}, [tag("courseId", "cs-101")])
@@ -97,7 +97,7 @@ describe("InMemoryEventStore", () => {
 
   describe("append condition", () => {
     it("succeeds when no conflicting events exist", async () => {
-      const store = createInMemoryEventStore()
+      const store = inMemoryEventStore()
 
       // given
       const event1 = eventMessage("CourseCreated", {}, [tag("courseId", "cs-101")])
@@ -119,7 +119,7 @@ describe("InMemoryEventStore", () => {
     })
 
     it("fails when conflicting events exist after marker", async () => {
-      const store = createInMemoryEventStore()
+      const store = inMemoryEventStore()
 
       // given
       const event1 = eventMessage("CourseCreated", {}, [tag("courseId", "cs-101")])
@@ -145,7 +145,7 @@ describe("InMemoryEventStore", () => {
     })
 
     it("succeeds when conflicting events are outside the criteria", async () => {
-      const store = createInMemoryEventStore()
+      const store = inMemoryEventStore()
 
       // given
       const event1 = eventMessage("CourseCreated", {}, [tag("courseId", "cs-101")])

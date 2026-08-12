@@ -85,7 +85,7 @@ export interface SubscribingEventProcessorOptions {
  * within a UnitOfWork as they arrive. Events are delivered on the
  * publisher's call stack (synchronous with append).
  */
-export function createSubscribingEventProcessor(
+export function subscribingEventProcessor(
   options: SubscribingEventProcessorOptions,
 ): SubscribingEventProcessor {
   const {

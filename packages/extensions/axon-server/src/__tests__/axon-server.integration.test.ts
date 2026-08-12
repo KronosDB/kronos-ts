@@ -12,7 +12,7 @@
  *   3. sources events by tag criteria
  *   4. enforces capacity limits (multi-event entity load)
  *   5. prevents duplicate enrollment
- *   6. snapshot store roundtrip via createAxonServerSnapshotStore
+ *   6. snapshot store roundtrip via axonServerSnapshotStore
  *
  * Reconnect / failover scenarios are covered by the integrationtests-suite
  * e2e (e2e-axonserver-http.integration.test.ts) where the full HTTP stack
@@ -43,7 +43,7 @@ import {
   connectToAxonServer,
   type AxonServerConnection,
 } from "../connection.js"
-import { createAxonServerSnapshotStore } from "../axon-server-snapshot-store.js"
+import { axonServerSnapshotStore } from "../axon-server-snapshot-store.js"
 
 // ============================================================================
 // Domain — Course / Student enrollment (mirror of the integrationtests e2e)
@@ -294,7 +294,7 @@ describe("Axon Server integration — axonServer() backend", () => {
     expect(axon.platform.connected).toBe(false)
   }, 60_000)
 
-  it("snapshot store roundtrip via createAxonServerSnapshotStore", async () => {
+  it("snapshot store roundtrip via axonServerSnapshotStore", async () => {
     // Use a dedicated direct connection so the snapshot test does not depend
     // on the app wiring at all — this exercises the same snapshot-store factory
     // contract that `axonServer()` calls into for `components.snapshotStore`.
@@ -305,7 +305,7 @@ describe("Axon Server integration — axonServer() backend", () => {
       context: "default",
     })
     try {
-      const snapshotStore = createAxonServerSnapshotStore(directConnection, jsonSerializer())
+      const snapshotStore = axonServerSnapshotStore(directConnection, jsonSerializer())
       const snapshot: Snapshot = {
         position: 42n,
         payload: { name: "Snapshotted Course", capacity: 17, enrolled: ["alice", "bob"] },

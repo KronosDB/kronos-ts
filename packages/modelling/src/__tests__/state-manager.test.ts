@@ -3,7 +3,7 @@ import { z } from "zod"
 import { tag } from "@kronos-ts/common"
 import { EventCriteria } from "@kronos-ts/messaging"
 import { state } from "../state.js"
-import { createStateManager } from "../state-manager.js"
+import { stateManager } from "../state-manager.js"
 import type { StateRepository } from "../state-manager.js"
 
 // -- Fixtures --
@@ -20,7 +20,7 @@ const Course = state({
 
 describe("StateManager", () => {
   it("loads state from a registered repository", async () => {
-    const stateManager = createStateManager()
+    const manager = stateManager()
 
     const stubRepo: StateRepository<{ courseId: string }, CourseState> = {
       stateName: "Course",
@@ -33,17 +33,17 @@ describe("StateManager", () => {
       }),
     }
 
-    stateManager.register(Course, stubRepo)
+    manager.register(Course, stubRepo)
 
-    const result = await stateManager.load(Course, { courseId: "cs-101" })
+    const result = await manager.load(Course, { courseId: "cs-101" })
 
     expect(result.state).toEqual({ created: true, name: "Course cs-101" })
   })
 
   it("throws when no repository is registered for state", async () => {
-    const stateManager = createStateManager()
+    const manager = stateManager()
 
-    expect(stateManager.load(Course, { courseId: "cs-101" })).rejects.toThrow(
+    expect(manager.load(Course, { courseId: "cs-101" })).rejects.toThrow(
       'No repository registered for state "Course"',
     )
   })

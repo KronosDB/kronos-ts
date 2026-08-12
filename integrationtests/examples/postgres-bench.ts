@@ -1,7 +1,7 @@
 /**
  * @kronos-ts/postgres conditional-append bench.
  *
- * Drives the event store directly via createPostgresEventStore — no framework
+ * Drives the event store directly via postgresEventStore — no framework
  * overhead, no command gateway, no projections. Measures the storage layer's
  * `source → append (with DCB precondition)` round-trip in four scenarios:
  *
@@ -30,7 +30,7 @@ import { EventCriteria } from "@kronos-ts/messaging"
 import type { EventMessage } from "@kronos-ts/messaging"
 import type { EventStore } from "@kronos-ts/eventsourcing"
 import { descriptorBasedTagResolver } from "@kronos-ts/eventsourcing"
-import { createPostgresEventStore } from "@kronos-ts/postgres"
+import { postgresEventStore } from "@kronos-ts/postgres"
 import type { PostgresAdapter } from "@kronos-ts/postgres"
 import { bootstrapSchema, DEFAULT_TABLE_NAMES } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
@@ -82,7 +82,7 @@ function percentile(sortedMs: number[], p: number): number {
 async function buildStore(adapter: PostgresAdapter): Promise<EventStore> {
   await adapter.connect()
   await bootstrapSchema(adapter)
-  return createPostgresEventStore({
+  return postgresEventStore({
     adapter,
     serializer: { serialize: () => new Uint8Array(), deserialize: <T>() => null as T },
     tagResolver: descriptorBasedTagResolver(),

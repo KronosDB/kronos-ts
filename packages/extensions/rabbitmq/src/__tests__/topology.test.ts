@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { createRabbitMqTopologyNames } from "../topology.js"
+import { rabbitMqTopologyNames } from "../topology.js"
 
 describe("RabbitMQ topology names", () => {
   it("uses serviceName for durable command queues and instanceId for reply queues", () => {
-    const topology = createRabbitMqTopologyNames({
+    const topology = rabbitMqTopologyNames({
       serviceName: "faculty-service",
       instanceId: "pod-1",
     })
@@ -31,7 +31,7 @@ describe("RabbitMQ topology names", () => {
   })
 
   it("sanitizes queue segments", () => {
-    const topology = createRabbitMqTopologyNames({
+    const topology = rabbitMqTopologyNames({
       serviceName: "faculty service",
       instanceId: "pod/1",
     })

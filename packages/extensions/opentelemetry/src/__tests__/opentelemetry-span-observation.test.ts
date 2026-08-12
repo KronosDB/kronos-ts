@@ -37,11 +37,11 @@ import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-tr
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
 import { z } from "zod"
 import { qn, tag, emptyMetadata } from "@kronos-ts/common"
-import { command, event, commandHandler, EventCriteria } from "@kronos-ts/messaging"
+import { command, event, commandHandler, EventCriteria, tracingCommandBus } from "@kronos-ts/messaging"
 import type { CommandBus, CommandMessage, EventMessage } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
-import { openTelemetry, tracingCommandBus } from "../opentelemetry.js"
+import { openTelemetry } from "../opentelemetry.js"
 
 // ---------------------------------------------------------------------------
 // In-memory exporter setup

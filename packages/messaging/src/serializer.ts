@@ -46,17 +46,17 @@ export interface SchemaRegistry {
 }
 
 /** Schema registry for event payloads. */
-export function createEventSchemaRegistry(): SchemaRegistry {
+export function eventSchemaRegistry(): SchemaRegistry {
   return createSchemaRegistry()
 }
 
 /** Schema registry for command payloads. */
-export function createCommandSchemaRegistry(): SchemaRegistry {
+export function commandSchemaRegistry(): SchemaRegistry {
   return createSchemaRegistry()
 }
 
 /** Schema registry for query payloads. */
-export function createQuerySchemaRegistry(): SchemaRegistry {
+export function querySchemaRegistry(): SchemaRegistry {
   return createSchemaRegistry()
 }
 

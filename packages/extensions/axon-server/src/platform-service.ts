@@ -1,5 +1,5 @@
 import type { AxonServerConnection } from "./connection.js"
-import { createOutboundStream } from "./outbound-stream.js"
+import { outboundStream } from "./outbound-stream.js"
 import type { PlatformInboundInstruction } from "./generated/control.js"
 import { Metadata } from "nice-grpc"
 import type { ProcessorStatusSupplier } from "./event-processor-info.js"
@@ -98,7 +98,7 @@ export interface PlatformServiceOptions {
  * 2. Sends periodic heartbeats to verify connectivity
  * 3. Receives instructions from Axon Server (split, merge, pause, resume)
  */
-export function createPlatformConnection(
+export function platformConnection(
   connection: AxonServerConnection,
   options?: PlatformServiceOptions,
 ): PlatformConnection {
@@ -114,7 +114,7 @@ export function createPlatformConnection(
   let heartbeatTimeoutTimer: ReturnType<typeof setTimeout> | null = null
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
   let lastHeartbeatResponse = Date.now()
-  let outbound: ReturnType<typeof createOutboundStream<PlatformInboundInstruction>> | null = null
+  let outbound: ReturnType<typeof outboundStream<PlatformInboundInstruction>> | null = null
   /**
    * Latches once Axon Server sends its first inbound message after
    * registration — the earliest observable signal that the platform stream
@@ -279,7 +279,7 @@ export function createPlatformConnection(
 
       // Re-arm the ack latch so a stop/start cycle correctly re-waits.
       acked = false
-      outbound = createOutboundStream<PlatformInboundInstruction>()
+      outbound = outboundStream<PlatformInboundInstruction>()
 
       // Register with Axon Server
       outbound.send({

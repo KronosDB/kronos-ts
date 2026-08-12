@@ -3,20 +3,20 @@ export {
   type KronosDbConnection,
   type ConnectionState,
   connectToKronosDb,
-  createKronosMetadata,
+  kronosMetadata,
 } from "./connection.js"
 
 export {
-  createKronosDbEventStore,
+  kronosDbEventStore,
 } from "./kronosdb-event-store.js"
 
 export {
-  createKronosDbSnapshotStore,
+  kronosDbSnapshotStore,
 } from "./kronosdb-snapshot-store.js"
 
 export {
   kronosDb,
-  createDistributedQueryBus,
+  distributedQueryBus,
   type KronosDbConfig,
   type KronosDbDependencies,
   type KronosDbComponents,
@@ -37,7 +37,7 @@ export {
   type PlatformInstruction,
   type InstructionHandler,
   type PlatformServiceOptions,
-  createPlatformConnection,
+  platformConnection,
 } from "./platform-service.js"
 
 export {
@@ -49,14 +49,14 @@ export {
 
 export {
   type FlowControlledSender,
-  createFlowControlledSender,
+  flowControlledSender,
 } from "./flow-controlled-sender.js"
 
 export {
   type ShutdownLatch,
   type ActivityHandle,
   ShutdownInProgressError,
-  createShutdownLatch,
+  shutdownLatch,
 } from "./shutdown-latch.js"
 
 export {
@@ -78,7 +78,7 @@ export {
 
 export {
   type OutboundStream,
-  createOutboundStream,
+  outboundStream,
 } from "./outbound-stream.js"
 
 export {

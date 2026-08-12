@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, type QualifiedName } from "@kronos-ts/common"
-import { createStreamingEventProcessor } from "../streaming-event-processor.js"
+import { streamingEventProcessor } from "../streaming-event-processor.js"
 import { propagatingErrorHandler } from "../tracking-event-processor.js"
 import type { StreamableEventSource, SequencedEvent } from "../event-source.js"
 import type { EventHandlerRegistration } from "../handler.js"
@@ -102,7 +102,7 @@ describe("StreamingEventProcessor", () => {
       handler: ({ payload }: any) => { delivered.push(payload) },
     }
 
-    const processor = createStreamingEventProcessor({
+    const processor = streamingEventProcessor({
       name: "test-processor",
       eventSource,
       eventHandlers: [handler],
@@ -142,7 +142,7 @@ describe("StreamingEventProcessor", () => {
       },
     }
 
-    const processor = createStreamingEventProcessor({
+    const processor = streamingEventProcessor({
       name: "test-processor",
       eventSource,
       eventHandlers: [handler],

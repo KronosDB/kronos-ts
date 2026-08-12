@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { emptyMetadata, generateIdentifier, qn } from "@kronos-ts/common"
 import type { QueryMessage } from "../message.js"
-import { createInterceptingQueryBus } from "../intercepting-query-bus.js"
-import { createSimpleQueryBus } from "../simple-query-bus.js"
+import { interceptingQueryBus } from "../intercepting-query-bus.js"
+import { simpleQueryBus } from "../simple-query-bus.js"
 
 function queryMsg(name: string, payload: unknown = {}): QueryMessage {
   return {
@@ -16,8 +16,8 @@ function queryMsg(name: string, payload: unknown = {}): QueryMessage {
 
 describe("InterceptingQueryBus", () => {
   it("handler interceptors can proceed with a replacement message", async () => {
-    const inner = createSimpleQueryBus()
-    const bus = createInterceptingQueryBus(inner)
+    const inner = simpleQueryBus()
+    const bus = interceptingQueryBus(inner)
     const seen: Array<Record<string, unknown>> = []
 
     bus.subscribe("test.Query", async (msg) => {

@@ -83,7 +83,7 @@ export function runAfterCommitOrImmediately(task: () => void): void {
  * @param query The subscription query message
  * @param bufferSize Maximum number of buffered updates (default: 256)
  */
-export function createUpdateHandler(
+export function updateHandler(
   query: QueryMessage,
   bufferSize: number = 256,
 ): UpdateHandler & { iterable: AsyncIterable<unknown> } {

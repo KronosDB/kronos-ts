@@ -5,7 +5,7 @@ import { command, commandHandler, EventCriteria, event } from "@kronos-ts/messag
 import { state } from "@kronos-ts/modelling"
 import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import {
-  createRecordings,
+  recordings,
   recordingComponents,
   recordingEventStore,
   type Recordings,
@@ -54,22 +54,22 @@ function bootWithRecording(recordings: Recordings) {
 
 describe("recording wrappers", () => {
   it("starts with empty recordings", async () => {
-    const recordings = createRecordings()
-    const app = bootWithRecording(recordings)
+    const rec = recordings()
+    const app = bootWithRecording(rec)
     try {
-      expect(recordings.events()).toHaveLength(0)
-      expect(recordings.commands()).toHaveLength(0)
+      expect(rec.events()).toHaveLength(0)
+      expect(rec.commands()).toHaveLength(0)
     } finally {
       await app.stop()
     }
   })
 
   it("records events appended via the event store after a command dispatch", async () => {
-    const recordings = createRecordings()
-    const app = bootWithRecording(recordings)
+    const rec = recordings()
+    const app = bootWithRecording(rec)
     try {
       await app.commandGateway.send(DoTestThing, { id: "thing-1" }, emptyMetadata())
-      const recorded = recordings.events()
+      const recorded = rec.events()
       expect(recorded.length).toBeGreaterThanOrEqual(1)
       const evt = recorded[0]!
       expect(evt.name.name).toBe("TestThingHappened")
@@ -80,11 +80,11 @@ describe("recording wrappers", () => {
   })
 
   it("records dispatched commands", async () => {
-    const recordings = createRecordings()
-    const app = bootWithRecording(recordings)
+    const rec = recordings()
+    const app = bootWithRecording(rec)
     try {
       await app.commandGateway.send(DoTestThing, { id: "thing-2" }, emptyMetadata())
-      const recordedCmds = recordings.commands()
+      const recordedCmds = rec.commands()
       expect(recordedCmds.length).toBeGreaterThanOrEqual(1)
       const cmd = recordedCmds[recordedCmds.length - 1]!
       expect(cmd.name.name).toBe("DoTestThing")
@@ -95,40 +95,40 @@ describe("recording wrappers", () => {
   })
 
   it("reset() clears both events and commands", async () => {
-    const recordings = createRecordings()
-    const app = bootWithRecording(recordings)
+    const rec = recordings()
+    const app = bootWithRecording(rec)
     try {
       await app.commandGateway.send(DoTestThing, { id: "thing-3" }, emptyMetadata())
-      expect(recordings.events().length).toBeGreaterThan(0)
-      expect(recordings.commands().length).toBeGreaterThan(0)
+      expect(rec.events().length).toBeGreaterThan(0)
+      expect(rec.commands().length).toBeGreaterThan(0)
 
-      recordings.reset()
-      expect(recordings.events()).toHaveLength(0)
-      expect(recordings.commands()).toHaveLength(0)
+      rec.reset()
+      expect(rec.events()).toHaveLength(0)
+      expect(rec.commands()).toHaveLength(0)
 
       // Subsequent activity records into a clean array
       await app.commandGateway.send(DoTestThing, { id: "thing-4" }, emptyMetadata())
-      expect(recordings.events().length).toBeGreaterThan(0)
-      expect(recordings.commands().length).toBeGreaterThan(0)
+      expect(rec.events().length).toBeGreaterThan(0)
+      expect(rec.commands().length).toBeGreaterThan(0)
     } finally {
       await app.stop()
     }
   })
 
   it("recording sits INNERMOST: a store wrapped around the recording store sees it record", async () => {
-    const recordings = createRecordings()
+    const rec = recordings()
     let observedInnerRecords = false
 
     const base = inMemoryComponents()
     // Recording first (innermost), then the probe on top — wrapping order IS
     // the composition order; there is no registry deciding it for you.
-    const recorded = recordingEventStore(base.eventStore, recordings)
+    const recorded = recordingEventStore(base.eventStore, rec)
     const probed = {
       ...recorded,
       async append(events: any, condition?: any) {
-        const before = recordings.events().length
+        const before = rec.events().length
         const marker = await recorded.append(events, condition)
-        if (recordings.events().length > before) observedInnerRecords = true
+        if (rec.events().length > before) observedInnerRecords = true
         return marker
       },
     }
@@ -145,7 +145,7 @@ describe("recording wrappers", () => {
     }
   })
 
-  it("rejects a recordings handle that did not come from createRecordings()", () => {
+  it("rejects a recordings handle that did not come from recordings()", () => {
     const fake = { events: () => [], commands: () => [], reset: () => {} }
     expect(() => recordingEventStore(inMemoryComponents().eventStore, fake)).toThrow(
       /missing internal writers/,

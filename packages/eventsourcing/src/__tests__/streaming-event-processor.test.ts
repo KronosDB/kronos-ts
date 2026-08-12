@@ -7,14 +7,14 @@ import {
   commandHandler,
   eventHandler,
   EventCriteria,
-  createInMemoryTokenStore,
+  inMemoryTokenStore,
   globalSequenceToken,
-  createStreamingEventProcessor,
+  streamingEventProcessor,
   type StreamableEventSource,
   isReplay,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createInMemoryEventStore } from "../in-memory-event-store.js"
+import { inMemoryEventStore } from "../in-memory-event-store.js"
 import { append } from "../append.js"
 import { load } from "../load.js"
 
@@ -61,7 +61,7 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
 describe("StreamingEventProcessor", () => {
   describe("push-based streaming", () => {
     it("receives events via push notification from InMemoryEventStore", async () => {
-      const eventStore = createInMemoryEventStore()
+      const eventStore = inMemoryEventStore()
       const processed: string[] = []
 
       const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }) => {
@@ -69,7 +69,7 @@ describe("StreamingEventProcessor", () => {
       })
 
       // Create processor directly using the streaming API
-      const processor = createStreamingEventProcessor({
+      const processor = streamingEventProcessor({
         name: "course-projection",
         eventSource: eventStore as StreamableEventSource,
         eventHandlers: [onCourseCreated],
@@ -111,8 +111,8 @@ describe("StreamingEventProcessor", () => {
 
   describe("replay support", () => {
     it("replays events and detects replay state in handlers", async () => {
-      const eventStore = createInMemoryEventStore()
-      const tokenStore = createInMemoryTokenStore()
+      const eventStore = inMemoryEventStore()
+      const tokenStore = inMemoryTokenStore()
       const processed: Array<{ courseId: string; replayed: boolean }> = []
 
       // Store some events first
@@ -145,7 +145,7 @@ describe("StreamingEventProcessor", () => {
         })
       })
 
-      const processor = createStreamingEventProcessor({
+      const processor = streamingEventProcessor({
         name: "course-projection",
         eventSource: eventStore as StreamableEventSource,
         eventHandlers: [onCourseCreated],
@@ -170,12 +170,12 @@ describe("StreamingEventProcessor", () => {
     })
 
     it("calls onReset handlers when resetting", async () => {
-      const eventStore = createInMemoryEventStore()
+      const eventStore = inMemoryEventStore()
       let resetCalled = false
 
       const onCourseCreated = eventHandler(CourseCreated, async () => {})
 
-      const processor = createStreamingEventProcessor({
+      const processor = streamingEventProcessor({
         name: "resettable",
         eventSource: eventStore as StreamableEventSource,
         eventHandlers: [onCourseCreated],
@@ -188,9 +188,9 @@ describe("StreamingEventProcessor", () => {
     })
 
     it("throws if reset called while running", async () => {
-      const eventStore = createInMemoryEventStore()
+      const eventStore = inMemoryEventStore()
 
-      const processor = createStreamingEventProcessor({
+      const processor = streamingEventProcessor({
         name: "test",
         eventSource: eventStore as StreamableEventSource,
         eventHandlers: [],
