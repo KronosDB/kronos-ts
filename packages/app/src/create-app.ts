@@ -125,6 +125,7 @@ export function createApp(opts: { components?: Components; modules: ReadonlyArra
   const components = opts.components ?? inMemoryComponents()
   const stateManagers = new Map<string, StateManager>()
   const started: Array<{ start(): void; stop(): void }> = []
+  const built: Array<{ start(): void; stop(): void }> = []
 
   for (const module of opts.modules) {
     // A module's own store, or the app's. This one line is the whole of what
@@ -154,21 +155,33 @@ export function createApp(opts: { components?: Components; modules: ReadonlyArra
       config,
     })
 
+    // Processors are BUILT here but not started — see the two-phase note below.
     for (const proc of module.processors ?? []) {
-      const built = createTrackingEventProcessor({
-        name: proc.name,
-        eventSource: eventStore as never,
-        eventHandlers: proc.eventHandlers,
-        stateManager,
-        commandBus: components.commandBus,
-        queryBus: components.queryBus,
-        correlationDataProviders: [],
-        unitOfWorkRunner: proc.unitOfWorkRunner ?? components.unitOfWorkFactory,
-        tokenStore,
-      })
-      built.start()
-      started.push(built)
+      built.push(
+        createTrackingEventProcessor({
+          name: proc.name,
+          eventSource: eventStore as never,
+          eventHandlers: proc.eventHandlers,
+          stateManager,
+          commandBus: components.commandBus,
+          queryBus: components.queryBus,
+          correlationDataProviders: [],
+          unitOfWorkRunner: proc.unitOfWorkRunner ?? components.unitOfWorkFactory,
+          tokenStore,
+        }),
+      )
     }
+  }
+
+  // TWO-PHASE START. Every module's handlers are subscribed before ANY
+  // processor runs, so an automation replaying from a cold store can never
+  // dispatch to a command that is not yet registered. With one app per process
+  // this removes module boot-ordering as a concern entirely: N-instance setups
+  // need a consumer-first topological order precisely because each instance
+  // starts replaying the moment it boots.
+  for (const processor of built) {
+    processor.start()
+    started.push(processor)
   }
 
   return {
