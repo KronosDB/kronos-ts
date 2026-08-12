@@ -88,7 +88,11 @@ describe("KronosDB scheduler (e2e)", () => {
   beforeAll(async () => {
     container = await new GenericContainer(IMAGE)
       .withExposedPorts(50051, 9240)
-      .withWaitStrategy(Wait.forLogMessage(/KronosDB starting/))
+      // /ready is claim-aware: 200 only once the node can execute writes.
+      // The startup log line prints BEFORE the leader claim commits, so
+      // waiting on it lets the first ScheduleAppend race the claim and
+      // bounce with UNAVAILABLE ("must be directed to the leader").
+      .withWaitStrategy(Wait.forHttp("/ready", 9240).forStatusCode(200))
       .start()
 
     connection = await connectToKronosDb({
