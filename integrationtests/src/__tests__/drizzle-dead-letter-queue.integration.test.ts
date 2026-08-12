@@ -3,7 +3,7 @@ import { GenericContainer, type StartedTestContainer, Wait } from "testcontainer
 import { drizzle } from "drizzle-orm/postgres-js"
 import postgres from "postgres"
 import { pgTable, varchar, integer, text } from "drizzle-orm/pg-core"
-import { eq, and, asc } from "drizzle-orm"
+
 import { emptyMetadata } from "@kronos-ts/common"
 import {
   Decisions,
@@ -44,9 +44,6 @@ describe("Drizzle SequencedDeadLetterQueue (PostgreSQL)", () => {
       db,
       table: kronosDeadLetters,
       processingGroup: GROUP,
-      eq,
-      and,
-      asc,
       ...opts,
     })
 
