@@ -1,5 +1,12 @@
 # @kronos-ts/kysely
 
+## 0.2.9
+
+### Patch Changes
+
+- Updated dependencies [b46a045]
+  - @kronos-ts/messaging@0.10.0
+
 ## 0.2.8
 
 ### Patch Changes
