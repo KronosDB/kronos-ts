@@ -1,5 +1,11 @@
 # @kronos-ts/drizzle
 
+## 0.4.1
+
+### Patch Changes
+
+- @kronos-ts/messaging@0.10.1
+
 ## 0.4.0
 
 ### Minor Changes

@@ -1,5 +1,16 @@
 # @kronos-ts/eventsourcing
 
+## 0.4.1
+
+### Patch Changes
+
+- 9ad1a3c: Restore the `./append`, `./load` and `./schedule` subpath exports.
+  `@kronos-ts/messaging`'s handler context imports them; without the exports
+  map entries every `import ... from "@kronos-ts/messaging"` fails at runtime
+  with ERR_PACKAGE_PATH_NOT_EXPORTED while typechecking clean.
+  - @kronos-ts/messaging@0.10.1
+  - @kronos-ts/modelling@0.3.1
+
 ## 0.4.0
 
 ### Minor Changes
