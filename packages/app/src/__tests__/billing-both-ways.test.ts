@@ -91,11 +91,13 @@ const billLine = (ledger: Ledger) =>
     ctx.append(LineBilled, { billId: payload.billId, amount: payload.amount })
   })
 
+/** A slice is a LIST of registrations. Deps are closure arguments. */
+const billLinesSlice = (ledger: Ledger) => [Bill, openBill, billLine(ledger)]
+
 const billingModule = (ledger: Ledger, eventStore: ReturnType<typeof createInMemoryEventStore>) => ({
   name: "billing",
   eventStore,
-  states: [Bill],
-  commands: [openBill, billLine(ledger)],
+  register: [...billLinesSlice(ledger)],
 })
 
 // ===========================================================================
@@ -157,7 +159,7 @@ describe("billing, both ways", () => {
       components: inMemoryComponents(),
       modules: [
         billingModule(billingLedger, billingStore),
-        { name: "ordering", eventStore: orderingStore, commands: [placeOrder] },
+        { name: "ordering", eventStore: orderingStore, register: [placeOrder] },
       ],
     })
 
