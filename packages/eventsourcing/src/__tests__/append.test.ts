@@ -4,7 +4,7 @@ import { qn, emptyMetadata } from "@kronos-ts/common"
 import { event } from "@kronos-ts/messaging"
 import { runInNewUoW, NoActiveUnitOfWork, WrongUoWPhase, onPrepareCommit, Phase } from "@kronos-ts/messaging"
 import { processingStateStorage } from "@kronos-ts/messaging/processing-state"
-import { append, BUFFERED_EVENTS_KEY, STATE_CACHE_KEY, STATE_MODULES_KEY } from "../append.js"
+import { append, evt, BUFFERED_EVENTS_KEY, STATE_CACHE_KEY, STATE_MODULES_KEY } from "../append.js"
 
 // ---------------------------------------------------------------------------
 // Test descriptors
@@ -153,5 +153,45 @@ describe("append", () => {
       append(CourseCreated, { courseId: "c1", name: "Intro" })
       expect(evolverFn).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe("append — batch form", () => {
+  it("buffers a list identically to N single calls", async () => {
+    await runInNewUoW(emptyMetadata(), async () => {
+      append([
+        evt(CourseCreated, { courseId: "c1", name: "Intro" }),
+        evt(CourseCapacityChanged, { courseId: "c1", capacity: 30 }),
+      ])
+      const state = processingStateStorage.getStore()!
+      const buffered = state.resources.get(BUFFERED_EVENTS_KEY.symbol) as any[]
+      expect(buffered).toHaveLength(2)
+      expect(buffered[0].payload).toEqual({ courseId: "c1", name: "Intro" })
+      // tags still derive from the descriptor, i.e. the batch path is not a shortcut
+      expect(buffered[0].tags).toEqual([{ key: "courseId", value: "c1" }])
+      expect(buffered[1].payload).toEqual({ courseId: "c1", capacity: 30 })
+    })
+  })
+
+  it("carries per-event metadata", async () => {
+    await runInNewUoW(emptyMetadata(), async () => {
+      append([evt(CourseCreated, { courseId: "c2", name: "Algo" }, { tenant: "acme" } as never)])
+      const state = processingStateStorage.getStore()!
+      const buffered = state.resources.get(BUFFERED_EVENTS_KEY.symbol) as any[]
+      expect(buffered[0].metadata).toMatchObject({ tenant: "acme" })
+    })
+  })
+
+  it("an empty list is a no-op", async () => {
+    await runInNewUoW(emptyMetadata(), async () => {
+      append([])
+      const state = processingStateStorage.getStore()!
+      expect(state.resources.get(BUFFERED_EVENTS_KEY.symbol)).toBeUndefined()
+    })
+  })
+
+  it("still type-checks each pair", () => {
+    // @ts-expect-error - payload must match the descriptor it is paired with
+    evt(CourseCreated, { courseId: "c3", capacity: 10 })
   })
 })

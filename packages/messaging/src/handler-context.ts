@@ -31,6 +31,8 @@ import { getOrBeginActiveTransaction } from "./transaction.js"
 export interface ContextAppendFunction {
   <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>): void
   <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>, metadata: Metadata): void
+  /** Batch form — `ctx.append([evt(A, a), evt(B, b)])`. Same atomic flush. */
+  (events: ReadonlyArray<{ descriptor: EventDescriptor<any>; payload: unknown; metadata?: Metadata }>): void
 }
 
 /**
