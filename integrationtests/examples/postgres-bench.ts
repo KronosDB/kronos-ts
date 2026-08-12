@@ -21,12 +21,16 @@
  *       Replays a short S1 against pgAdapter, postgresAdapter, bunSqlAdapter
  *       to expose driver-level overhead.
  *
+ * This remains a Postgres adapter diagnostic. For the canonical durable
+ * KronosDB-versus-Postgres event-sourcing and processing comparison, run
+ * `bun run benchmark:kronosdb-postgres` from the repository root.
+ *
  * Run: bun run integrationtests/examples/postgres-bench.ts
  * Requires docker for testcontainers and Bun >= 1.2 for bunSqlAdapter.
  */
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { qn, tag, type Metadata } from "@kronos-ts/common"
-import { EventCriteria } from "@kronos-ts/messaging"
+import { EventCriteria, jsonSerializer } from "@kronos-ts/messaging"
 import type { EventMessage } from "@kronos-ts/messaging"
 import type { EventStore } from "@kronos-ts/eventsourcing"
 import { descriptorBasedTagResolver } from "@kronos-ts/eventsourcing"
@@ -84,7 +88,7 @@ async function buildStore(adapter: PostgresAdapter): Promise<EventStore> {
   await bootstrapSchema(adapter)
   return postgresEventStore({
     adapter,
-    serializer: { serialize: () => new Uint8Array(), deserialize: <T>() => null as T },
+    serializer: jsonSerializer(),
     tagResolver: descriptorBasedTagResolver(),
   })
 }

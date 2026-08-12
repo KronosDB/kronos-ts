@@ -15,6 +15,16 @@ export {
 } from "./kronosdb-snapshot-store.js"
 
 export {
+  type KronosDbScheduler,
+  type PendingSchedule,
+  type ScheduleOptions,
+  ScheduleAlreadyExistsError,
+  ScheduleAlreadyResolvedError,
+  ScheduleNotFoundError,
+  createKronosDbScheduler,
+} from "./kronosdb-scheduler.js"
+
+export {
   kronosDb,
   distributedCommandBus,
   distributedQueryBus,
@@ -96,5 +106,6 @@ export {
   QueryServiceDefinition,
   EventStoreDefinition,
   SnapshotStoreDefinition,
+  SchedulerServiceDefinition,
 } from "./service-definitions.js"
 export type { KronosDbOptions } from "./kronosdb.js"
