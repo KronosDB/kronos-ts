@@ -4,6 +4,7 @@ import type { QueryBus } from "./query-bus.js"
 import type { QueryMessage } from "./message.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import { QUERY_HANDLER_CONTEXT } from "./handler-context.js"
+import { applyCorrelationData, type CorrelationDataProvider } from "./correlation-data.js"
 import { setResource } from "./processing-state.js"
 import { STATE_MANAGER_KEY } from "@kronos-ts/eventsourcing"
 import type { MinimalConfiguration } from "./command-handling-module.js"
@@ -33,6 +34,8 @@ export function registerQueryHandlersNatively(
     handlerEnhancer?: HandlerEnhancerDefinition
     moduleName?: string
     config?: MinimalConfiguration
+    /** Seeds CORRELATION_DATA_KEY from each incoming query (the "extract" half). */
+    correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>
   },
 ): void {
   const moduleName = deps.moduleName ?? "queries"
@@ -40,6 +43,9 @@ export function registerQueryHandlersNatively(
     const queryName = qualifiedNameToString(reg.descriptor.name)
     let invocation = async (message: QueryMessage) => {
       const config = deps.config
+      if (deps.correlationDataProviders && deps.correlationDataProviders.length > 0) {
+        applyCorrelationData(message, deps.correlationDataProviders)
+      }
       if (config?.hasComponent("stateManager")) {
         setResource(STATE_MANAGER_KEY, config.getComponent<never>("stateManager"))
       }

@@ -4,6 +4,7 @@ import {
   inMemorySnapshotStore,
   descriptorBasedTagResolver,
   type EventStore,
+  type SnapshotPolicy,
   type SnapshotStore,
   type TagResolver,
 } from "@kronos-ts/eventsourcing"
@@ -19,6 +20,7 @@ import {
   trackingEventProcessor,
   subscribingEventProcessor,
   interceptingCommandBus,
+  interceptingQueryBus,
   correlationDataDispatchInterceptor,
   messageOriginProvider,
   type CorrelationDataProvider,
@@ -82,7 +84,7 @@ function resolveComponents(supplied: Partial<Components>): Components {
     snapshotStore: supplied.snapshotStore ?? inMemorySnapshotStore(),
     // Built LAST of the bus-adjacent components, so it sees the final UoW factory.
     commandBus: supplied.commandBus ?? defaultCommandBus(unitOfWorkFactory),
-    queryBus: supplied.queryBus ?? simpleQueryBus(),
+    queryBus: supplied.queryBus ?? defaultQueryBus(),
     unitOfWorkFactory,
     tagResolver: supplied.tagResolver ?? descriptorBasedTagResolver(),
     tokenStore: supplied.tokenStore ?? inMemoryTokenStore(),
@@ -99,15 +101,69 @@ export function inMemoryComponents(overrides: Partial<Components> = {}): Compone
 }
 
 /**
- * Anything a module can register. Every one of these already carries a `kind`
+ * Per-state persistence options. Everything here is about how ONE state's
+ * repository is built, which is precisely what cannot be expressed by a
+ * module-level override: two states in the same module legitimately want
+ * different snapshot policies, because they have different event volumes.
+ *
+ * Omit it and the state runs on the module's snapshot store with no policy —
+ * i.e. snapshots are never written, which is the safe default.
+ */
+export interface StateOptions {
+  /** When to write a snapshot for this state. Default: never. */
+  readonly snapshotPolicy?: SnapshotPolicy
+  /** A snapshot store for THIS state only. Defaults to the module's/app's. */
+  readonly snapshotStore?: SnapshotStore
+}
+
+/**
+ * A state with its own repository options, written as a tuple in the flat
+ * registration list:
+ *
+ * ```ts
+ * module("uni",
+ *   [Course, { snapshotPolicy: afterEvents(3) }],  // tuple = state + options
+ *   Student,                                       // bare state still fine
+ *   createCourse,
+ * )
+ * ```
+ */
+export type StateRegistration<Id = any, S = any> = readonly [
+  state: StateModule<Id, S>,
+  options: StateOptions,
+]
+
+/**
+ * Anything a module can register. All but one of these carry a `kind`
  * discriminator, so the author never has to sort them into buckets — the values
- * describe themselves and `kronos` partitions them.
+ * describe themselves and `kronos` partitions them. The exception is the
+ * `[state, options]` tuple, which is an ARRAY and therefore has no `kind`;
+ * {@link isStateRegistration} is what tells it apart, everywhere it matters.
  */
 export type Registration =
   | StateModule<any, any>
+  | StateRegistration
   | CommandHandlerDefinition<any, any>
   | QueryHandlerDefinition
   | EventProcessorModule
+
+/**
+ * The one registration that is not self-describing via `kind`.
+ *
+ * A type predicate rather than a cast, so both branches narrow honestly:
+ * `Array.isArray` alone does not narrow a READONLY tuple out of a union (it is
+ * typed `arg is any[]`, and `readonly [A, B]` is not assignable to `any[]`).
+ */
+function isStateRegistration(value: unknown): value is StateRegistration {
+  return Array.isArray(value)
+}
+
+/** The in-memory query bus with correlation lineage on dispatch, mirroring the command side. */
+function defaultQueryBus(): QueryBus {
+  const bus = interceptingQueryBus(simpleQueryBus())
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
+}
 
 /** The in-memory command bus with correlation lineage applied, as the container had. */
 function defaultCommandBus(unitOfWorkFactory: UoWRunner): CommandBus {
@@ -161,6 +217,17 @@ export type ModuleOverrides = Partial<Components>
  * )
  * ```
  *
+ * A state that wants its own repository options is written as a tuple; a bare
+ * state is the same thing with `{}`:
+ *
+ * ```ts
+ * module("uni",
+ *   [Course, { snapshotPolicy: afterEvents(3) }],
+ *   Student,
+ *   createCourse,
+ * )
+ * ```
+ *
  * Persistence is optional — `module("ordering", ...registrations)` inherits the
  * app's stores — and is told apart from registrations by the `kind`
  * discriminator every registration carries.
@@ -176,22 +243,48 @@ export function module(
   optionsOrFirst?: ModuleOverrides | Registration,
   ...rest: Registration[]
 ): AppModule {
-  const hasOptions =
-    optionsOrFirst !== undefined && !("kind" in (optionsOrFirst as { kind?: unknown }))
-  const overrides = (hasOptions ? optionsOrFirst : {}) as ModuleOverrides
-  const register = hasOptions ? rest : ([optionsOrFirst, ...rest].filter(Boolean) as Registration[])
+  const hasOverrides = optionsOrFirst !== undefined && !looksLikeRegistration(optionsOrFirst)
+  const overrides = (hasOverrides ? optionsOrFirst : {}) as ModuleOverrides
+  const register = hasOverrides
+    ? rest
+    : ([optionsOrFirst, ...rest].filter(Boolean) as Registration[])
   return { name, overrides, register }
+}
+
+/**
+ * Is this first argument a registration, or the optional overrides record?
+ *
+ * The ARRAY CHECK MUST COME FIRST. A `[state, options]` tuple has no `kind`,
+ * so a `"kind" in first` test alone reads `module("uni", [Course, {...}], ...)`
+ * as an overrides record — silently dropping the state AND treating a tuple as
+ * a component record. Every registration is either an array (the state tuple)
+ * or carries `kind`; an overrides record is neither.
+ */
+function looksLikeRegistration(value: ModuleOverrides | Registration): value is Registration {
+  return isStateRegistration(value) || "kind" in value
+}
+
+/** A state paired with the options its repository is built from. */
+interface PartitionedState {
+  readonly state: StateModule<any, any>
+  readonly options: StateOptions
 }
 
 /** Partition a flat registration list by the discriminator each value carries. */
 function partition(register: ReadonlyArray<Registration>) {
-  const states: StateModule<any, any>[] = []
+  const states: PartitionedState[] = []
   const commands: CommandHandlerDefinition<any, any>[] = []
   const queries: QueryHandlerDefinition[] = []
   const processors: EventProcessorModule[] = []
   for (const item of register) {
-    switch ((item as { kind: string }).kind) {
-      case "state-module": states.push(item as StateModule<any, any>); break
+    // A tuple carries no `kind`, so it has to be taken out before the switch —
+    // otherwise it falls through `default` and is built as a processor.
+    if (isStateRegistration(item)) {
+      states.push({ state: item[0], options: item[1] ?? {} })
+      continue
+    }
+    switch (item.kind) {
+      case "state-module": states.push({ state: item as StateModule<any, any>, options: {} }); break
       case "command-handler": commands.push(item as CommandHandlerDefinition<any, any>); break
       case "query-handler": queries.push(item as QueryHandlerDefinition); break
       default: processors.push(item as EventProcessorModule); break
@@ -262,10 +355,19 @@ export function kronos(opts: {
     const { states, commands, queries, processors } = partition(module.register)
 
     const manager = stateManager()
-    for (const state of states) {
+    for (const { state, options } of states) {
+      // Per-state options win over the module's, which win over the app's.
+      // `snapshotPolicy` has no component-level counterpart on purpose: "how
+      // often does THIS state snapshot" is a property of the state's event
+      // volume, not of the store it happens to be written to.
       manager.register(
         state,
-        eventSourcedRepository(state, c.eventStore, c.snapshotStore, undefined),
+        eventSourcedRepository(
+          state,
+          c.eventStore,
+          options.snapshotStore ?? c.snapshotStore,
+          options.snapshotPolicy,
+        ),
       )
     }
     stateManagers.set(module.name, manager)
@@ -277,12 +379,14 @@ export function kronos(opts: {
       config,
       moduleName: module.name,
       ...(handlerEnhancer ? { handlerEnhancer } : {}),
+      correlationDataProviders,
     })
     registerQueryHandlersNatively(queries, {
       queryBus: c.queryBus,
       moduleName: module.name,
       config,
       ...(handlerEnhancer ? { handlerEnhancer } : {}),
+      correlationDataProviders,
     })
 
     // Processors are BUILT here but not started — see the two-phase note below.

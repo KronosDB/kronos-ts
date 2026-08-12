@@ -36,6 +36,7 @@ import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import { setResource } from "./processing-state.js"
+import { applyCorrelationData, type CorrelationDataProvider } from "./correlation-data.js"
 import { registerEventFlush } from "./event-flush.js"
 import type { EventCriteria } from "./event-criteria.js"
 import { COMMAND_BUS_KEY } from "./send.js"
@@ -66,6 +67,7 @@ import type { EventScheduler } from "./event-scheduler.js"
 export function commandInvocation(
   handler: CommandHandlerDefinition<any, any>,
   config: MinimalConfiguration,
+  correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>,
 ) {
   return async (message: CommandMessage): Promise<unknown> => {
     // D-82 — full ALS resource setup at command invocation entry.
@@ -82,6 +84,14 @@ export function commandInvocation(
     }
     if (config.hasComponent(COMMAND_INVOCATION_KEYS.EVENT_SCHEDULER)) {
       setResource(EVENT_SCHEDULER_KEY, config.getComponent<EventScheduler>(COMMAND_INVOCATION_KEYS.EVENT_SCHEDULER))
+    }
+
+    // Extract phase: seed correlation data from the INCOMING command so the
+    // dispatch interceptor can stamp it onto anything this handler sends or
+    // appends. This is the invocation wrapper because every bus — local or
+    // distributed inbound — funnels handler execution through here.
+    if (correlationDataProviders && correlationDataProviders.length > 0) {
+      applyCorrelationData(message, correlationDataProviders)
     }
 
     // One flush per UnitOfWork (nested dispatch re-enters this wrapper).
@@ -123,12 +133,14 @@ export function registerCommandHandlersNatively(
     config: MinimalConfiguration
     handlerEnhancer?: HandlerEnhancerDefinition
     moduleName?: string
+    /** Seeds CORRELATION_DATA_KEY from each incoming command (the "extract" half). */
+    correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>
   },
 ): void {
   const moduleName = deps.moduleName ?? "commands"
   for (const handler of handlers) {
     const commandName = qualifiedNameToString(handler.descriptor.name)
-    let invocation = commandInvocation(handler, deps.config)
+    let invocation = commandInvocation(handler, deps.config, deps.correlationDataProviders)
 
     if (deps.handlerEnhancer) {
       invocation = deps.handlerEnhancer.wrapHandler(invocation, {

@@ -32,7 +32,6 @@ import {
 import { state } from "@kronos-ts/modelling"
 import {
   afterEvents,
-  eventSourcedRepository,
   descriptorBasedTagResolver,
 } from "@kronos-ts/eventsourcing"
 import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
@@ -225,25 +224,14 @@ async function main(): Promise<void> {
       modules: [
         module(
           "university",
-          Course, Student,
+          // Per-state snapshot config, declared where the state is registered.
+          [Course, { snapshotPolicy: afterEvents(1) }],
+          [Student, { snapshotPolicy: afterEvents(1) }],
           openCourse, registerStudent, enrollStudent,
           buildProjector(db),
         ),
       ],
     })
-
-    // Snapshotting is per-state and `kronos` builds repositories without a
-    // policy, so each state that wants one names it here: same event store,
-    // postgres's snapshot store, afterEvents(1).
-    const states = app.stateManagers.get("university")!
-    states.register(
-      Course,
-      eventSourcedRepository(Course, pg.components.eventStore, pg.components.snapshotStore, afterEvents(1)),
-    )
-    states.register(
-      Student,
-      eventSourcedRepository(Student, pg.components.eventStore, pg.components.snapshotStore, afterEvents(1)),
-    )
 
     // Background workers (the durable scheduler), once handlers are subscribed.
     await pg.start()

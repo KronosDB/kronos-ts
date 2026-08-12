@@ -31,7 +31,6 @@ import {
 import { state } from "@kronos-ts/modelling"
 import {
   type SnapshotStore,
-  eventSourcedRepository,
   inMemoryEventStore,
   inMemorySnapshotStore,
   afterEvents,
@@ -320,11 +319,8 @@ describe("E2E: In-memory full CQRS flow", () => {
     ).rejects.toThrow("Course is full")
   })
 
-  // Per-STATE snapshot config (policy + its own store). `kronos` builds
-  // every state's repository with `snapshotPolicy: undefined`, so there is no
-  // declarative way to attach a policy to one state today. The repository is a
-  // plain value and the module's StateManager is public, so the composition
-  // root says it directly: build the repository you want and register it.
+  // Per-STATE snapshot config (policy + its own store), declared as a
+  // [state, options] tuple in the registration list.
   it("snapshots accelerate entity loading", async () => {
     // given
     const eventStore = inMemoryEventStore()
@@ -336,7 +332,7 @@ describe("E2E: In-memory full CQRS flow", () => {
       modules: [
         module(
           "university",
-          Course,
+          [Course, { snapshotPolicy: afterEvents(3), snapshotStore }],
           createCourse, changeCourseCapacity,
           ...queryHandlers,
           trackingProcessor("course-projection")
@@ -345,13 +341,6 @@ describe("E2E: In-memory full CQRS flow", () => {
         ),
       ],
     })
-
-    // Course gets a snapshotting repository: same event store, the test's own
-    // snapshot store, and afterEvents(3). Re-registering by state name replaces
-    // the default repository before any command is dispatched.
-    running.stateManagers
-      .get("university")!
-      .register(Course, eventSourcedRepository(Course, eventStore, snapshotStore, afterEvents(3)))
 
     // when — create + 4 capacity changes (5 events total)
     // Snapshot triggers after 3+ events are replayed during a load.

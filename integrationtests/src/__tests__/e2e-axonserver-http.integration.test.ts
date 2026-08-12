@@ -33,6 +33,7 @@ import {
 import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
+  afterEvents,
 } from "@kronos-ts/eventsourcing"
 import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import {
@@ -262,7 +263,10 @@ describe("E2E: Axon Server full stack", () => {
       modules: [
         module(
           "e2e",
-          Course,
+          // Per-state repository options, declared in the registration list.
+          // The tuple is the state plus how ITS repository is built — the
+          // stores still come from the module's components, i.e. Axon's.
+          [Course, { snapshotPolicy: afterEvents(1) }],
           createCourse, subscribeStudent,
           getCourse,
           courseProjection,
@@ -353,6 +357,25 @@ describe("E2E: Axon Server full stack", () => {
     await expect(
       app.commandGateway.send(CreateCourse, { courseId: "e2e-101", name: "Duplicate", capacity: 5 }),
     ).rejects.toThrow()
+  }, 60_000)
+
+  it("the declared snapshot policy writes to Axon's snapshot store", async () => {
+    // The Course repository was declared as `[Course, { snapshotPolicy:
+    // afterEvents(1) }]` — no hand-registration through app.stateManagers. The
+    // store it writes to is the module's, which is Axon Server's.
+    //
+    // afterEvents(1) fires on a load that observes MORE THAN ONE event: the
+    // duplicate-create above sourced e2e-101's two events, so it triggered
+    // there. Snapshot writes are fire-and-forget, hence the poll.
+    const snapshotStore = backend.components.snapshotStore
+    await waitFor(async () => (await snapshotStore.load("Course", { courseId: "e2e-101" })) !== undefined)
+
+    const snapshot = await snapshotStore.load("Course", { courseId: "e2e-101" })
+    expect(snapshot).toBeDefined()
+    expect(snapshot!.position).toBeGreaterThan(0n)
+    // The snapshot is the folded state, not the raw events.
+    expect((snapshot!.payload as CourseState).name).toBe("Full Stack Course")
+    expect((snapshot!.payload as CourseState).enrolled).toEqual(["stu-1"])
   }, 60_000)
 
   it("enrollment with capacity enforcement via event-sourced state", async () => {

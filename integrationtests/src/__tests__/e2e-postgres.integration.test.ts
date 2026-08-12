@@ -38,7 +38,6 @@ import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
   afterEvents,
-  eventSourcedRepository,
   descriptorBasedTagResolver,
 } from "@kronos-ts/eventsourcing"
 import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
@@ -230,7 +229,11 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       modules: [
         module(
           "postgres-e2e",
-          Course,
+          // Per-state snapshot policy, declared in the registration list — see
+          // the "snapshot store" test below. The tuple is the state plus the
+          // options its repository is built from; the stores come from the
+          // module's components, i.e. postgres's.
+          [Course, { snapshotPolicy: afterEvents(1) }],
           createCourse, subscribeStudent,
           getCourse,
           trackingProcessor("postgres-course-projection")
@@ -239,21 +242,6 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
         ),
       ],
     })
-
-    // Per-state snapshot policy — see the "snapshot store" test below.
-    // `kronos` builds repositories with no policy, so Course gets one
-    // explicitly, on postgres's event + snapshot stores.
-    app.stateManagers
-      .get("postgres-e2e")!
-      .register(
-        Course,
-        eventSourcedRepository(
-          Course,
-          backend.components.eventStore,
-          backend.components.snapshotStore,
-          afterEvents(1),
-        ),
-      )
 
     // 4. Background workers (the durable scheduler) — after handlers subscribe.
     await backend.start()
@@ -371,9 +359,9 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
   })
 
   it("snapshots land in kronos_snapshots — the postgres snapshot store is what the state runs on", async () => {
-    // The Course repository registered in beforeAll uses postgres's snapshot
-    // store (there is no slot to fall back to any more — the store is spread
-    // into the app's components and named again on the repository), so
+    // The Course repository declared in beforeAll — `[Course, {
+    // snapshotPolicy: afterEvents(1) }]` — is built on the module's snapshot
+    // store, which is postgres's (spread into the app's components), so
     // snapshots must land in kronos_snapshots.
     const courseId = id("cs-snap")
 

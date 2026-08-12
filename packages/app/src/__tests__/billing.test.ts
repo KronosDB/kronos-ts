@@ -220,3 +220,39 @@ describe("component resolution", () => {
     await app.stop()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Correlation lineage — end-to-end through the DEFAULTS, nothing seeded by hand
+// ---------------------------------------------------------------------------
+
+const BillClosed = event({
+  name: qn("billing", "BillClosed"),
+  payload: z.object({ billId: z.string() }),
+  tags: (p) => [{ key: "billId", value: p.billId }],
+})
+
+describe("correlation lineage", () => {
+  it("a command sent from a handler inherits the incoming command's lineage", async () => {
+    const CloseBill = command({ name: qn("billing", "CloseBill"), payload: z.object({ billId: z.string() }) })
+    const seen: Array<Record<string, unknown>> = []
+
+    const closeBill = commandHandler(CloseBill, async ({ payload, metadata }, ctx) => {
+      seen.push(metadata as Record<string, unknown>)
+      ctx.append(BillClosed, { billId: payload.billId })
+    })
+    const openAndClose = commandHandler(OpenBill, async ({ payload }, ctx) => {
+      ctx.append(BillOpened, { billId: payload.billId })
+      await ctx.send(CloseBill, { billId: payload.billId })   // nested dispatch
+    })
+
+    const app = kronos({ modules: [module("billing", inMemoryStores(), Bill, openAndClose, closeBill)] })
+    await app.commandGateway.send(OpenBill, { billId: "lin-1" }, emptyMetadata())
+
+    // The nested command carries the ORIGIN of the first — extract (invocation)
+    // + apply (dispatch interceptor), both running on the framework defaults.
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.correlationId).toBeDefined()
+    expect(seen[0]!.causationId).toBeDefined()
+    await app.stop()
+  })
+})
