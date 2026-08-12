@@ -65,11 +65,12 @@ export interface ContextSendFunction {
  * Capabilities available to event handlers running inside a processor's
  * UnitOfWork.
  *
- * Deliberately does NOT include `append`: processor UoWs register no
- * event-flush hook, so an appended event would be silently dropped at commit.
- * Automations that need to produce new events dispatch a command via
- * {@link EventHandlerContext.send} — the command handler is its own atomic
- * append boundary.
+ * Deliberately does NOT include `append`. An automation is a STATEFUL REACTOR:
+ * it loads decision state (`ctx.load`) and expresses intent as a COMMAND
+ * (`ctx.send`) — and `dispatch` always opens a fresh UnitOfWork, so the command
+ * handler is its own atomic decide-and-append boundary with the full DCB
+ * treatment. Appending from inside a processor's UnitOfWork would bypass that
+ * boundary; the type makes it unrepresentable rather than discouraged.
  */
 export interface EventHandlerContext {
   /** Load event-sourced state within the active UnitOfWork (cached per UoW). */
@@ -115,7 +116,7 @@ export interface QueryHandlerContext {
  * boundary, and its UnitOfWork flushes buffered events at PREPARE_COMMIT.
  */
 export interface HandlerContext extends EventHandlerContext {
-  /** Append an event to the active UnitOfWork, buffered until commit. */
+  /** Append events to the active UnitOfWork, buffered until commit. */
   readonly append: ContextAppendFunction
 }
 

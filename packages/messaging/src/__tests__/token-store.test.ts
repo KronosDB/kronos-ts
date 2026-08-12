@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test"
-import { createInMemoryTokenStore } from "../token-store.js"
+import { inMemoryTokenStore } from "../token-store.js"
 import { globalSequenceToken, replayToken } from "../tracking-token.js"
 
 describe("InMemoryTokenStore", () => {
   it("returns undefined for uninitialized processor", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
 
     const token = await store.get("my-processor", 0)
 
@@ -12,7 +12,7 @@ describe("InMemoryTokenStore", () => {
   })
 
   it("stores and retrieves GlobalSequenceToken", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
 
     await store.store("my-processor", 0, globalSequenceToken(42n))
 
@@ -22,7 +22,7 @@ describe("InMemoryTokenStore", () => {
   })
 
   it("stores and retrieves ReplayToken", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
 
     const replay = replayToken(globalSequenceToken(100n), globalSequenceToken(25n))
     await store.store("my-processor", 0, replay)
@@ -34,7 +34,7 @@ describe("InMemoryTokenStore", () => {
   })
 
   it("isolates positions by processor name", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
 
     await store.store("processor-a", 0, globalSequenceToken(10n))
     await store.store("processor-b", 0, globalSequenceToken(20n))
@@ -44,7 +44,7 @@ describe("InMemoryTokenStore", () => {
   })
 
   it("isolates positions by segment", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
 
     await store.store("my-processor", 0, globalSequenceToken(10n))
     await store.store("my-processor", 1, globalSequenceToken(20n))
@@ -54,7 +54,7 @@ describe("InMemoryTokenStore", () => {
   })
 
   it("updates existing token", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
 
     await store.store("my-processor", 0, globalSequenceToken(10n))
     await store.store("my-processor", 0, globalSequenceToken(50n))
@@ -63,7 +63,7 @@ describe("InMemoryTokenStore", () => {
   })
 
   it("initializeSegments does not overwrite existing tokens", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
 
     await store.store("my-processor", 0, globalSequenceToken(42n))
     await store.initializeSegments("my-processor", 2)
@@ -75,7 +75,7 @@ describe("InMemoryTokenStore", () => {
   })
 
   it("claims and releases tokens", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
     await store.initializeSegments("my-processor", 2)
 
     // Claim segment 0
@@ -95,7 +95,7 @@ describe("InMemoryTokenStore", () => {
   })
 
   it("fetchSegments returns all initialized segments", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
     await store.initializeSegments("my-processor", 4)
 
     const segments = await store.fetchSegments("my-processor")
@@ -103,7 +103,7 @@ describe("InMemoryTokenStore", () => {
   })
 
   it("deleteToken removes a segment", async () => {
-    const store = createInMemoryTokenStore()
+    const store = inMemoryTokenStore()
     await store.initializeSegments("my-processor", 2)
     await store.store("my-processor", 1, globalSequenceToken(10n))
 

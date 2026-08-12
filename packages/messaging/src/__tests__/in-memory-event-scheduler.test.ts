@@ -3,7 +3,7 @@ import { qn, type Metadata } from "@kronos-ts/common"
 import type { EventMessage } from "../message.js"
 import type { EventSink } from "../event-sink.js"
 import { runInNewUoW } from "../unit-of-work.js"
-import { createInMemoryEventScheduler } from "../in-memory-event-scheduler.js"
+import { inMemoryEventScheduler } from "../in-memory-event-scheduler.js"
 
 function makeEvent(payload: unknown = { ok: true }): EventMessage {
   return {
@@ -27,10 +27,10 @@ function makeRecordingSink(): { sink: EventSink; published: EventMessage[] } {
   return { sink, published }
 }
 
-describe("createInMemoryEventScheduler", () => {
+describe("inMemoryEventScheduler", () => {
   it("schedule() outside a UoW throws (must be called from INVOCATION phase)", async () => {
     const { sink } = makeRecordingSink()
-    const scheduler = createInMemoryEventScheduler({ eventSink: sink })
+    const scheduler = inMemoryEventScheduler({ eventSink: sink })
 
     await expect(scheduler.schedule(makeEvent(), new Date())).rejects.toThrow()
     await scheduler.stop()
@@ -38,7 +38,7 @@ describe("createInMemoryEventScheduler", () => {
 
   it("fires an event approximately at the requested time", async () => {
     const { sink, published } = makeRecordingSink()
-    const scheduler = createInMemoryEventScheduler({ eventSink: sink })
+    const scheduler = inMemoryEventScheduler({ eventSink: sink })
     const event = makeEvent({ id: 1 })
 
     await runInNewUoW(undefined, async () => {
@@ -55,7 +55,7 @@ describe("createInMemoryEventScheduler", () => {
 
   it("cancel() before fire returns 'cancelled' and the event never publishes", async () => {
     const { sink, published } = makeRecordingSink()
-    const scheduler = createInMemoryEventScheduler({ eventSink: sink })
+    const scheduler = inMemoryEventScheduler({ eventSink: sink })
     const event = makeEvent()
 
     const token = await runInNewUoW(undefined, async () => {
@@ -72,7 +72,7 @@ describe("createInMemoryEventScheduler", () => {
 
   it("cancel() after fire returns 'already-appended'", async () => {
     const { sink } = makeRecordingSink()
-    const scheduler = createInMemoryEventScheduler({ eventSink: sink })
+    const scheduler = inMemoryEventScheduler({ eventSink: sink })
 
     const token = await runInNewUoW(undefined, async () => {
       return scheduler.schedule(makeEvent(), new Date(Date.now()))
@@ -87,7 +87,7 @@ describe("createInMemoryEventScheduler", () => {
 
   it("cancel() with an unknown token returns 'not-found'", async () => {
     const { sink } = makeRecordingSink()
-    const scheduler = createInMemoryEventScheduler({ eventSink: sink })
+    const scheduler = inMemoryEventScheduler({ eventSink: sink })
 
     const result = await scheduler.cancel({ id: "no-such-token" })
     expect(result).toEqual({ kind: "not-found" })
@@ -97,7 +97,7 @@ describe("createInMemoryEventScheduler", () => {
 
   it("rolling back the UoW that schedule()d drops the schedule (token resolves 'not-found')", async () => {
     const { sink, published } = makeRecordingSink()
-    const scheduler = createInMemoryEventScheduler({ eventSink: sink })
+    const scheduler = inMemoryEventScheduler({ eventSink: sink })
     const event = makeEvent()
     let captured: { id: string } | undefined
 
@@ -122,7 +122,7 @@ describe("createInMemoryEventScheduler", () => {
     // the row as effectively gone — distinguishing this from the 'cancelled'
     // case would require a fourth result kind, which the design rejects.
     const { sink } = makeRecordingSink()
-    const scheduler = createInMemoryEventScheduler({ eventSink: sink })
+    const scheduler = inMemoryEventScheduler({ eventSink: sink })
 
     const token = await runInNewUoW(undefined, async () => {
       return scheduler.schedule(makeEvent(), new Date(Date.now() + 1000))
@@ -136,7 +136,7 @@ describe("createInMemoryEventScheduler", () => {
 
   it("stop() clears armed timers — events do not fire after stop", async () => {
     const { sink, published } = makeRecordingSink()
-    const scheduler = createInMemoryEventScheduler({ eventSink: sink })
+    const scheduler = inMemoryEventScheduler({ eventSink: sink })
 
     await runInNewUoW(undefined, async () => {
       await scheduler.schedule(makeEvent(), new Date(Date.now() + 20))

@@ -93,7 +93,7 @@ export class UnableToClaimTokenError extends Error {
  *
  * @param claimTimeoutMs How long a claim lasts before it can be stolen (default: 10000ms)
  */
-export function createInMemoryTokenStore(claimTimeoutMs: number = 10000): TokenStore {
+export function inMemoryTokenStore(claimTimeoutMs: number = 10000): TokenStore {
   interface TokenEntry {
     token: TrackingToken | undefined
     ownerId: string | null

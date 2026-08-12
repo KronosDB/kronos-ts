@@ -1,11 +1,10 @@
 /**
- * Axon Server integration test — exercises the native axonServer(...)
- * extension (Plan 09-04, D-95) against a real Axon Server container.
+ * Axon Server integration test — exercises the `axonServer(...)` backend
+ * factory against a real Axon Server container.
  *
- * Originally Phase 8 deferred (the legacy body drove the deleted configurer
- * + legacy enhancer trio). Rewritten here on the native (app: App) => void
- * shape; closes the last entry in
- * .planning/phases/08-configurer-deletion/deferred-items.md.
+ * Written on the functional composition shape: `axonServer()` connects, its
+ * components are spread into `kronos`, and `start()` waits for the server's
+ * routing tables. Requires docker (testcontainers).
  *
  * Coverage parity with the original deferred suite:
  *   1. dispatches a command through Axon Server and sources state
@@ -13,7 +12,7 @@
  *   3. sources events by tag criteria
  *   4. enforces capacity limits (multi-event entity load)
  *   5. prevents duplicate enrollment
- *   6. snapshot store roundtrip via createAxonServerSnapshotStore
+ *   6. snapshot store roundtrip via axonServerSnapshotStore
  *
  * Reconnect / failover scenarios are covered by the integrationtests-suite
  * e2e (e2e-axonserver-http.integration.test.ts) where the full HTTP stack
@@ -30,19 +29,21 @@ import {
   commandHandler,
   EventCriteria,
   jsonSerializer,
+  runInNewUoW,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
   type Snapshot
 } from "@kronos-ts/eventsourcing"
-import { kronos, type App, type RunningApp } from "@kronos-ts/app"
-import { axonServer } from "../axon-server.js"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { axonServer, type AxonServerBackend } from "../axon-server.js"
+import { axonServerControlPlane, type ManagedEventProcessor } from "../control-plane.js"
 import {
   connectToAxonServer,
   type AxonServerConnection,
 } from "../connection.js"
-import { createAxonServerSnapshotStore } from "../axon-server-snapshot-store.js"
+import { axonServerSnapshotStore } from "../axon-server-snapshot-store.js"
 
 // ============================================================================
 // Domain — Course / Student enrollment (mirror of the integrationtests e2e)
@@ -123,10 +124,10 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 // Tests
 // ============================================================================
 
-describe("Axon Server integration — native axonServer() extension", () => {
+describe("Axon Server integration — axonServer() backend", () => {
   let container: StartedTestContainer
-  let app: RunningApp
-  let capturedEventStore: EventStore | undefined
+  let app: App
+  let axon: AxonServerBackend
   let host: string
   let grpcPort: number
 
@@ -145,37 +146,45 @@ describe("Axon Server integration — native axonServer() extension", () => {
     // Extra delay for DCB event store stream endpoint initialization.
     await new Promise((r) => setTimeout(r, 3000))
 
-    // Capture eventStore via probe decorator (RunningApp has no eventStore field).
-    const captureExtension = (kronosApp: App) => {
-      kronosApp.decorate("eventStore", (inner) => {
-        capturedEventStore = inner
-        return inner
-      })
-    }
+    // The backend connects eagerly; its components are the app's. No probe
+    // decorator is needed to see the event store — it is a property.
+    const serializer = jsonSerializer()
+    axon = await axonServer({
+      componentName: "axon-it-suite",
+      host,
+      port: grpcPort,
+      context: "default",
+      serializer,
+      unitOfWorkFactory: runInNewUoW,
+    })
 
-    app = await kronos({ quiet: true })
-      .states(Course)
-      .commands(handleCreateCourse, handleEnrollStudent)
-      .use(captureExtension)
-      .use(
-        axonServer({
-          componentName: "axon-it-suite",
-          host,
-          port: grpcPort,
-          context: "default",
-        }),
-      )
-      .start()
+    app = kronos({
+      components: {
+        ...inMemoryComponents({ serializer, unitOfWorkFactory: runInNewUoW }),
+        ...axon.components,
+      },
+      modules: [module("axon-it", Course, handleCreateCourse, handleEnrollStudent)],
+    })
+
+    // Handlers are subscribed by now — wait until the server can route to them.
+    // NOTE: this is the DATA PATH only. `start()` arms heartbeat-driven
+    // reconnect detection on the platform stream and waits for bus routability;
+    // it arms NO remote administration. No `axonServerControlPlane` is built
+    // until the dedicated test below, so every command/query/event test in
+    // between runs with instruction routing and processor status reporting
+    // switched off — which is what proves remote administration is genuinely
+    // orthogonal to the data path.
+    await axon.start()
   }, 120_000)
 
   afterAll(async () => {
     await app?.stop()
+    await axon?.close()
     await container?.stop()
   })
 
   function eventStore(): EventStore {
-    if (!capturedEventStore) throw new Error("eventStore capture failed — start() did not run probe decorator")
-    return capturedEventStore
+    return axon.components.eventStore
   }
 
   it("dispatches a command through Axon Server and sources state", async () => {
@@ -271,11 +280,31 @@ describe("Axon Server integration — native axonServer() extension", () => {
     ).rejects.toThrow()
   }, 60_000)
 
-  it("snapshot store roundtrip via createAxonServerSnapshotStore", async () => {
+  it("start() arms the data path's platform stream; the control plane layers admin on top", async () => {
+    // The data path owns reconnect detection, so `axon.start()` has the platform
+    // stream up already — a service nobody administers still notices a dead
+    // channel. What it does NOT have is instruction routing or status
+    // reporting; those arrive with the control plane, on this same stream.
+    expect(axon.platform.connected).toBe(true)
+
+    const proc: ManagedEventProcessor = { name: "course-projection", running: true, position: 3n }
+    const control = await axonServerControlPlane(axon.platform, [proc])
+    try {
+      // start() over an already-armed stream is a no-op for the stream itself.
+      expect(axon.platform.connected).toBe(true)
+      expect(await axon.platform.subscriptionsAcked()).toBe(true)
+      expect(control.processors.get("course-projection")).toBe(proc)
+    } finally {
+      await control.close()
+    }
+    // close() tears down the SHARED stream — see the note on PlatformConnection.stop().
+    expect(axon.platform.connected).toBe(false)
+  }, 60_000)
+
+  it("snapshot store roundtrip via axonServerSnapshotStore", async () => {
     // Use a dedicated direct connection so the snapshot test does not depend
-    // on the framework wiring beyond the slot factory itself. This exercises
-    // the snapshot-store factory contract that the native extension's
-    // app.set("snapshotStore", ...) closure calls into.
+    // on the app wiring at all — this exercises the same snapshot-store factory
+    // contract that `axonServer()` calls into for `components.snapshotStore`.
     const directConnection: AxonServerConnection = connectToAxonServer({
       componentName: "axon-it-snapshot",
       host,
@@ -283,7 +312,7 @@ describe("Axon Server integration — native axonServer() extension", () => {
       context: "default",
     })
     try {
-      const snapshotStore = createAxonServerSnapshotStore(directConnection, jsonSerializer())
+      const snapshotStore = axonServerSnapshotStore(directConnection, jsonSerializer())
       const snapshot: Snapshot = {
         position: 42n,
         payload: { name: "Snapshotted Course", capacity: 17, enrolled: ["alice", "bob"] },

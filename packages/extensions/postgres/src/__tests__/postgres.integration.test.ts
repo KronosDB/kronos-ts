@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
-import { kronos } from "@kronos-ts/app"
+import { kronos, inMemoryComponents } from "@kronos-ts/app"
+import { descriptorBasedTagResolver } from "@kronos-ts/eventsourcing"
+import { jsonSerializer } from "@kronos-ts/messaging"
 import { pgAdapter } from "../adapters/pg.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
 import { postgres } from "../postgres.js"
@@ -14,36 +16,41 @@ afterAll(async () => {
   await pg.stop()
 }, 30_000)
 
-describe("postgres() extension", () => {
-  it("populates eventStore + snapshotStore slots and runs connect/disconnect lifecycle", async () => {
+describe("postgres() backend", () => {
+  it("provides eventStore + snapshotStore components and connects on construction", async () => {
     const adapter = pgAdapter({ connectionString: pg.connectionString })
 
-    // Capture the resolved slot factories to verify they are wired
-    let capturedEventStore: unknown
-    let capturedSnapshotStore: unknown
-
-    const app = kronos({ quiet: true })
-    app.use(postgres({ adapter }))
-    // Register a onStart hook to inspect the built slots (via decorate)
-    app.decorate("eventStore", (inner) => {
-      capturedEventStore = inner
-      return inner
+    // The factory IS the lifecycle: it connects (and bootstraps) eagerly and
+    // hands back the components it provides. No slot registry, no decorators —
+    // the components are a value the composition root spreads over the defaults.
+    const backend = await postgres({
+      adapter,
+      serializer: jsonSerializer(),
+      tagResolver: descriptorBasedTagResolver(),
     })
-    app.decorate("snapshotStore", (inner) => {
-      capturedSnapshotStore = inner
-      return inner
+    const app = kronos({
+      components: { ...inMemoryComponents(), ...backend.components },
+      modules: [],
     })
+    await backend.start()
 
-    const running = await app.start()
+    try {
+      const { eventStore, snapshotStore } = backend.components
+      expect(typeof (eventStore as { append: unknown }).append).toBe("function")
+      expect(typeof (eventStore as { source: unknown }).source).toBe("function")
+      expect(typeof (eventStore as { open: unknown }).open).toBe("function")
+      expect(typeof (snapshotStore as { store: unknown }).store).toBe("function")
+      expect(typeof (snapshotStore as { load: unknown }).load).toBe("function")
 
-    // Slots should be populated with objects that have the expected methods
-    expect(typeof (capturedEventStore as { append: unknown })?.append).toBe("function")
-    expect(typeof (capturedEventStore as { source: unknown })?.source).toBe("function")
-    expect(typeof (capturedEventStore as { open: unknown })?.open).toBe("function")
-    expect(typeof (capturedSnapshotStore as { store: unknown })?.store).toBe("function")
-    expect(typeof (capturedSnapshotStore as { load: unknown })?.load).toBe("function")
-
-    await running.stop()
+      // The connect + bootstrap lifecycle really ran: the schema is there.
+      const row = await adapter.queryOne<{ exists: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'kronos_events') AS exists`,
+      )
+      expect(row!.exists).toBe(true)
+    } finally {
+      await app.stop()
+      await backend.close()
+    }
   })
 
   it("with bootstrap: false does not create the schema (consumer owns migrations)", async () => {
@@ -55,18 +62,26 @@ describe("postgres() extension", () => {
     await adapter.query(`DROP TABLE IF EXISTS kronos_snapshots CASCADE`)
     await adapter.disconnect()
 
-    const app = kronos({ quiet: true })
-    app.use(postgres({ adapter, bootstrap: false }))
-    const running = await app.start()
+    const backend = await postgres({
+      adapter,
+      bootstrap: false,
+      serializer: jsonSerializer(),
+      tagResolver: descriptorBasedTagResolver(),
+    })
+    const app = kronos({
+      components: { ...inMemoryComponents(), ...backend.components },
+      modules: [],
+    })
 
-    // Tables should NOT exist (bootstrap was skipped)
-    await adapter.connect()
-    const row = await adapter.queryOne<{ exists: boolean }>(
-      `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'kronos_events') AS exists`,
-    )
-    expect(row!.exists).toBe(false)
-    await adapter.disconnect()
-
-    await running.stop()
+    try {
+      // Tables should NOT exist (bootstrap was skipped)
+      const row = await adapter.queryOne<{ exists: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'kronos_events') AS exists`,
+      )
+      expect(row!.exists).toBe(false)
+    } finally {
+      await app.stop()
+      await backend.close()
+    }
   })
 })

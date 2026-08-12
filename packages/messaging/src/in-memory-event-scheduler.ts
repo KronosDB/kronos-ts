@@ -62,7 +62,7 @@ export interface InMemoryEventScheduler extends EventScheduler {
   stop(): Promise<void>
 }
 
-export function createInMemoryEventScheduler(
+export function inMemoryEventScheduler(
   options: InMemoryEventSchedulerOptions,
 ): InMemoryEventScheduler {
   const { eventSink } = options

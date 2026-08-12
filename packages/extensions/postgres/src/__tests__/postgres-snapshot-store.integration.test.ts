@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test"
 import { pgAdapter } from "../adapters/pg.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
 import { bootstrapSchema, DEFAULT_TABLE_NAMES } from "../schema.js"
-import { createPostgresSnapshotStore } from "../postgres-snapshot-store.js"
+import { postgresSnapshotStore } from "../postgres-snapshot-store.js"
 import type { Snapshot } from "@kronos-ts/eventsourcing"
 import type { Serializer, SerializedObject } from "@kronos-ts/common"
 
@@ -26,14 +26,14 @@ const COUNTING_SERIALIZER: Serializer = {
     return true
   },
 }
-let store: ReturnType<typeof createPostgresSnapshotStore>
+let store: ReturnType<typeof postgresSnapshotStore>
 
 beforeAll(async () => {
   pg = await startPostgresContainer()
   adapter = pgAdapter({ connectionString: pg.connectionString })
   await adapter.connect()
   await bootstrapSchema(adapter)
-  store = createPostgresSnapshotStore({ adapter, serializer: COUNTING_SERIALIZER })
+  store = postgresSnapshotStore({ adapter, serializer: COUNTING_SERIALIZER })
 }, 60_000)
 
 afterAll(async () => {
@@ -53,7 +53,7 @@ const sampleSnapshot = (position: bigint): Snapshot => ({
   metadata: { causation: "test" },
 })
 
-describe("createPostgresSnapshotStore", () => {
+describe("postgresSnapshotStore", () => {
   it("stores and loads a snapshot roundtrip-stable", async () => {
     await store.store("Order", "1", sampleSnapshot(42n))
     const loaded = await store.load("Order", "1")

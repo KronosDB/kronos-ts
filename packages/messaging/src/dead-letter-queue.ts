@@ -137,7 +137,7 @@ export interface SequencedDeadLetterQueue {
  * @param options.maxSequences Maximum number of sequences (default: 1024)
  * @param options.maxSequenceSize Maximum letters per sequence (default: 1024)
  */
-export function createInMemoryDeadLetterQueue(options?: {
+export function inMemoryDeadLetterQueue(options?: {
   maxSequences?: number
   maxSequenceSize?: number
 }): SequencedDeadLetterQueue {
@@ -303,7 +303,7 @@ export class DeadLetterQueueOverflowError extends Error {
 /**
  * Creates a DeadLetter from a failed event.
  */
-export function createDeadLetter(
+export function deadLetter(
   message: EventMessage,
   cause: Error,
   sequenceIdentifier: string,

@@ -3,7 +3,7 @@ import { z } from "zod"
 import {
   jsonSerializer,
   zodValidatingSerializer,
-  createEventSchemaRegistry,
+  eventSchemaRegistry,
 } from "../serializer.js"
 
 describe("JsonSerializer", () => {
@@ -61,7 +61,7 @@ describe("JsonSerializer", () => {
 
 describe("ZodValidatingSerializer", () => {
   it("validates deserialized data against registered schema", () => {
-    const registry = createEventSchemaRegistry()
+    const registry = eventSchemaRegistry()
     const schema = z.object({
       courseId: z.string(),
       name: z.string(),
@@ -81,7 +81,7 @@ describe("ZodValidatingSerializer", () => {
   })
 
   it("throws on invalid data when schema exists", () => {
-    const registry = createEventSchemaRegistry()
+    const registry = eventSchemaRegistry()
     registry.register(
       "CourseCreated",
       "1.0",
@@ -102,7 +102,7 @@ describe("ZodValidatingSerializer", () => {
   })
 
   it("passes through when no schema is registered", () => {
-    const registry = createEventSchemaRegistry()
+    const registry = eventSchemaRegistry()
     const serializer = zodValidatingSerializer(jsonSerializer(), registry)
 
     const serialized = serializer.serialize(
@@ -116,7 +116,7 @@ describe("ZodValidatingSerializer", () => {
   })
 
   it("falls back to no-revision schema", () => {
-    const registry = createEventSchemaRegistry()
+    const registry = eventSchemaRegistry()
     registry.register(
       "CourseCreated",
       "",
@@ -139,7 +139,7 @@ describe("ZodValidatingSerializer", () => {
 
 describe("SchemaRegistry", () => {
   it("isolates by type name", () => {
-    const registry = createEventSchemaRegistry()
+    const registry = eventSchemaRegistry()
     const schema1 = z.object({ a: z.string() })
     const schema2 = z.object({ b: z.number() })
 
@@ -151,7 +151,7 @@ describe("SchemaRegistry", () => {
   })
 
   it("isolates by revision", () => {
-    const registry = createEventSchemaRegistry()
+    const registry = eventSchemaRegistry()
     const v1 = z.object({ name: z.string() })
     const v2 = z.object({ name: z.string(), capacity: z.number() })
 
@@ -163,7 +163,7 @@ describe("SchemaRegistry", () => {
   })
 
   it("returns undefined for unknown types", () => {
-    const registry = createEventSchemaRegistry()
+    const registry = eventSchemaRegistry()
     expect(registry.get("Unknown", "1.0")).toBeUndefined()
   })
 })

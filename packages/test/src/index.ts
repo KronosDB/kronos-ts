@@ -1,5 +1,7 @@
 export {
   type TestFixture,
+  type TestFixtureOptions,
+  type FixtureRegistration,
   type GivenPhase,
   type WhenPhase,
   type WhenResult,
@@ -7,12 +9,15 @@ export {
   type FieldFilter,
   allFieldsFilter,
   ignoreFields,
-  createTestFixture,
+  testFixture,
   FixtureAssertionError,
 } from "./fixture.js"
 
 export {
   type Recordings,
-  createRecordings,
-  testRecordingExtension,
-} from "./recording-enhancer.js"
+  recordings,
+  recordingEventStore,
+  recordingCommandBus,
+  recordingComponents,
+  recordingOverrides,
+} from "./recording.js"

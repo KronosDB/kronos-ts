@@ -9,7 +9,7 @@ export interface FlowControlledSender<T> {
   readonly active: boolean
 }
 
-export function createFlowControlledSender<T>(
+export function flowControlledSender<T>(
   send: (value: T) => void,
   onComplete?: () => void,
   onError?: (error: Error) => void,

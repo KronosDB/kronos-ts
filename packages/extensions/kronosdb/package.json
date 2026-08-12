@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/kronosdb",
   "version": "0.3.1",
-  "description": "KronosDB extension for Kronos — native event store transport.",
+  "description": "KronosDB extension for Kronos \u2014 native event store transport.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",
@@ -50,7 +50,6 @@
   },
   "dependencies": {
     "@kronos-ts/common": "workspace:*",
-    "@kronos-ts/app": "workspace:*",
     "@kronos-ts/eventsourcing": "workspace:*",
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/modelling": "workspace:*",
@@ -61,6 +60,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@kronos-ts/app": "workspace:*",
     "grpc-tools": "^1.12",
     "grpc_tools_node_protoc_ts": "^5.3",
     "testcontainers": "^11.13.0",

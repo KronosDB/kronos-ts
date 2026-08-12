@@ -1,7 +1,7 @@
 import type { QueryBus } from "./query-bus.js"
 import type { QueryMessage } from "./message.js"
 import type { SubscriptionQueryResult, UpdateHandler } from "./subscription-query.js"
-import { createUpdateHandler, runAfterCommitOrImmediately } from "./subscription-query.js"
+import { updateHandler, runAfterCommitOrImmediately } from "./subscription-query.js"
 import type { SubscriptionFilter } from "./subscription-filter.js"
 import { applySubscriptionFilter } from "./subscription-filter.js"
 import { runInUoW } from "./unit-of-work.js"
@@ -18,9 +18,9 @@ import { qualifiedNameToString } from "@kronos-ts/common"
  * parameter and branch are gone. `runInUoW` is the only codepath.
  *
  * Interceptor support is provided by wrapping with
- * {@link createInterceptingQueryBus}.
+ * {@link interceptingQueryBus}.
  */
-export function createSimpleQueryBus(): QueryBus {
+export function simpleQueryBus(): QueryBus {
   const handlers = new Map<string, (message: QueryMessage) => Promise<unknown>>()
 
   // Active subscription query handlers, keyed by query identifier
@@ -61,17 +61,17 @@ export function createSimpleQueryBus(): QueryBus {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       const initialResult = bus.query(message)
 
       return {
         initialResult,
-        updates: updateHandler.iterable,
+        updates: handler.iterable,
         close: () => {
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },
@@ -83,14 +83,14 @@ export function createSimpleQueryBus(): QueryBus {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       return {
-        [Symbol.asyncIterator]: () => updateHandler.iterable[Symbol.asyncIterator](),
+        [Symbol.asyncIterator]: () => handler.iterable[Symbol.asyncIterator](),
         close: () => {
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },

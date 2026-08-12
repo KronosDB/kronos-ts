@@ -56,7 +56,7 @@ function encodeKey(stateName: string, id: unknown): Uint8Array {
  * state snapshots. Payload serialization uses the configured
  * Serializer (defaults to JSON).
  */
-export function createAxonServerSnapshotStore(
+export function axonServerSnapshotStore(
   connection: AxonServerConnection,
   serializer: Serializer,
 ): SnapshotStore {

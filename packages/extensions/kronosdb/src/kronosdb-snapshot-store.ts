@@ -1,7 +1,7 @@
 import type { SnapshotStore, Snapshot } from "@kronos-ts/eventsourcing"
 import type { Serializer } from "@kronos-ts/common"
 import type { KronosDbConnection } from "./connection.js"
-import { createKronosMetadata } from "./connection.js"
+import { kronosMetadata } from "./connection.js"
 
 const encoder = new TextEncoder()
 
@@ -47,14 +47,14 @@ function createSnapshotConverters(serializer: Serializer) {
  *
  * Uses NUL-separated keys (stateName\0id).
  */
-export function createKronosDbSnapshotStore(
+export function kronosDbSnapshotStore(
   connection: KronosDbConnection,
   serializer: Serializer,
 ): SnapshotStore {
   const { snapshotToProto, snapshotFromProto } = createSnapshotConverters(serializer)
 
   function getMetadata() {
-    return createKronosMetadata(connection.config)
+    return kronosMetadata(connection.config)
   }
 
   return {

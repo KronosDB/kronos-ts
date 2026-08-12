@@ -4,8 +4,20 @@
  * When an event handler (an automation) reacts to an event and dispatches a
  * command, the command — and any events it produces — must inherit the
  * triggering event's correlationId, with causationId pointing at the event.
- * This proves the chain spans command -> event -> processor -> command, with no
- * explicit correlation configuration (the framework default applies).
+ * This proves the chain spans command -> event -> processor -> command.
+ *
+ * NOTE ON COMPOSITION. Lineage across the processor boundary needs two pieces
+ * wired together:
+ *   1. the processor seeds correlation data from the triggering event
+ *      (`correlationDataProviders: [messageOriginProvider()]`), and
+ *   2. the command bus applies that data to outgoing commands
+ *      (`correlationDataDispatchInterceptor()`).
+ * `kronos` builds processors with `correlationDataProviders: []` and hands
+ * out a bare `simpleCommandBus`, so it supplies neither — there is no
+ * "framework default" for lineage any more. The test therefore composes the
+ * automation explicitly on top of the app's components, which is what the
+ * functional root asks for: the app owns the command side, the block below owns
+ * the automation. The assertions are unchanged.
  */
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
@@ -15,12 +27,15 @@ import {
   event,
   commandHandler,
   eventHandler,
+  correlationDataDispatchInterceptor,
+  interceptingCommandBus,
+  trackingEventProcessor,
   EventCriteria,
-  trackingProcessor,
+  messageOriginProvider,
   type EventMessage
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { kronos } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
 
@@ -76,14 +91,36 @@ describe("Correlation lineage: command -> event -> processor -> command", () => 
       notifyMetadata = metadata
     })
 
-    const running = await kronos({ quiet: true })
-      .states(Student)
-      .commands(enrollStudent, notifyRegistry)
-      .processors(trackingProcessor("registry-automation").eventHandlers(onEnrolled).build())
-      .start()
+    // The app's components, with the command bus wrapped so correlation data
+    // collected in the active UoW is applied to outgoing commands.
+    const base = inMemoryComponents()
+    const commandBus = interceptingCommandBus(base.commandBus)
+    commandBus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+    const components = { ...base, commandBus }
+
+    const app = kronos({
+      components,
+      modules: [module("uni", Student, enrollStudent, notifyRegistry)],
+    })
+
+    // The automation, composed by hand on the app's components so it can seed
+    // lineage from the triggering event.
+    const automation = trackingEventProcessor({
+      name: "registry-automation",
+      eventSource: components.eventStore as never,
+      eventHandlers: [onEnrolled],
+      stateManager: app.stateManagers.get("uni"),
+      commandBus,
+      queryBus: components.queryBus,
+      correlationDataProviders: [messageOriginProvider()],
+      unitOfWorkRunner: components.unitOfWorkFactory,
+      tokenStore: components.tokenStore,
+    })
+    await automation.start()
+
     try {
       // Originating command carries a correlationId from the edge (e.g. an HTTP boundary).
-      await running.commandGateway.send(
+      await app.commandGateway.send(
         EnrollStudent,
         { studentId: "s-1", name: "Alice" },
         { correlationId: "corr-root" },
@@ -100,7 +137,8 @@ describe("Correlation lineage: command -> event -> processor -> command", () => 
       expect(notifyMetadata?.correlationId).toBe("corr-root")
       expect(notifyMetadata?.causationId).toBe(triggeringEvent?.identifier)
     } finally {
-      await running.stop()
+      automation.stop()
+      await app.stop()
     }
   })
 })

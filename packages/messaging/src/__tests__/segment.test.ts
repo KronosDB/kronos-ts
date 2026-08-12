@@ -8,7 +8,7 @@ import {
   isMergeable,
   segmentCount,
   hashOf,
-  createSegments,
+  segments,
 } from "../segment.js"
 
 describe("Segment", () => {
@@ -105,22 +105,22 @@ describe("Segment", () => {
     })
   })
 
-  describe("createSegments", () => {
+  describe("segments", () => {
     it("creates 1 segment (root)", () => {
-      const segs = createSegments(1)
+      const segs = segments(1)
       expect(segs).toHaveLength(1)
       expect(segs[0]).toEqual(ROOT_SEGMENT)
     })
 
     it("creates 2 segments", () => {
-      const segs = createSegments(2)
+      const segs = segments(2)
       expect(segs).toHaveLength(2)
       expect(segs[0]!.mask).toBe(1)
       expect(segs[1]!.mask).toBe(1)
     })
 
     it("creates 4 segments", () => {
-      const segs = createSegments(4)
+      const segs = segments(4)
       expect(segs).toHaveLength(4)
 
       // All should have the same mask
@@ -137,7 +137,7 @@ describe("Segment", () => {
     })
 
     it("rounds up to nearest power of 2", () => {
-      const segs = createSegments(3)
+      const segs = segments(3)
       expect(segs).toHaveLength(4) // Rounded up
     })
   })
@@ -152,7 +152,7 @@ describe("Segment", () => {
     })
 
     it("distributes across segments", () => {
-      const segs = createSegments(4)
+      const segs = segments(4)
       const counts = new Map<number, number>()
 
       for (let i = 0; i < 1000; i++) {

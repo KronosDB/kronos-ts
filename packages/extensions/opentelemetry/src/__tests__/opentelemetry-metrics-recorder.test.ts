@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import type { Meter } from "@opentelemetry/api"
-import { createOpenTelemetryMetricsRecorder } from "../opentelemetry-metrics-recorder.js"
+import { openTelemetryMetricsRecorder } from "../opentelemetry-metrics-recorder.js"
 
 interface Recorded {
   kind: "counter" | "histogram"
@@ -22,10 +22,10 @@ function fakeMeter() {
   return { meter, recorded }
 }
 
-describe("createOpenTelemetryMetricsRecorder", () => {
+describe("openTelemetryMetricsRecorder", () => {
   it("delegates counter.add and histogram.record to the OTel meter instruments", () => {
     const { meter, recorded } = fakeMeter()
-    const recorder = createOpenTelemetryMetricsRecorder({ meter })
+    const recorder = openTelemetryMetricsRecorder({ meter })
 
     recorder.counter("kronos.messages.handled", { unit: "1" }).add(1, { outcome: "success" })
     recorder.histogram("kronos.message.handler.duration", { unit: "ms" }).record(12.5, { message_name: "t.C" })

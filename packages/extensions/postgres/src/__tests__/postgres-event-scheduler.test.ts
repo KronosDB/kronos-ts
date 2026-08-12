@@ -1,5 +1,5 @@
 /**
- * Unit tests for createPostgresEventScheduler.
+ * Unit tests for postgresEventScheduler.
  *
  * Uses a fake adapter whose `transaction(fn)` snapshots its in-memory
  * "kronos_scheduled_events" table before calling fn and reverts on
@@ -24,7 +24,7 @@ import type {
 } from "../adapter.js"
 import { IsolationLevel } from "../adapter.js"
 import { postgresTransactionManager } from "../postgres-transaction-manager.js"
-import { createPostgresEventScheduler } from "../postgres-event-scheduler.js"
+import { postgresEventScheduler } from "../postgres-event-scheduler.js"
 import type { TagResolver } from "../postgres-event-store.js"
 
 // ── Fake adapter ────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ function makeEvent(over: Partial<EventMessage> = {}): EventMessage {
 function wire(opts: { adapter: PostgresAdapter; store: import("@kronos-ts/eventsourcing").EventStore }) {
   const tm = postgresTransactionManager(opts.adapter)
   const uowFactory = lazyTransactionalUnitOfWorkFactory(runInNewUoW, tm)
-  const scheduler = createPostgresEventScheduler({
+  const scheduler = postgresEventScheduler({
     adapter: opts.adapter,
     eventStore: opts.store,
     uowFactory,
@@ -209,7 +209,7 @@ function wire(opts: { adapter: PostgresAdapter; store: import("@kronos-ts/events
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-describe("createPostgresEventScheduler", () => {
+describe("postgresEventScheduler", () => {
   describe("schedule()", () => {
     it("inserts a pending row when called inside a UoW and the UoW commits", async () => {
       const fake = createFakeAdapter()

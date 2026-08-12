@@ -245,7 +245,7 @@ export function withOverride<T, R>(
  * Inference preserves D-13 (the type remains non-exported) while allowing `.d.ts`
  * emission.
  */
-export function createInitialProcessingState(metadata: Metadata) {
+export function initialProcessingState(metadata: Metadata) {
   return {
     resources: new Map<symbol, unknown>(),
     phaseActions: new Map<PhaseValue, PhaseAction[]>(),

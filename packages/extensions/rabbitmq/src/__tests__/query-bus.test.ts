@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn } from "@kronos-ts/common"
 import { query, payloadEquals } from "@kronos-ts/messaging"
-import { createSimpleQueryBus } from "@kronos-ts/messaging"
+import { simpleQueryBus } from "@kronos-ts/messaging"
 import {
-  createRabbitMqQueryBus,
+  rabbitMqQueryBus,
   type RabbitMqQueryEnvelope,
   type RabbitMqQueryTransport,
 } from "../query-bus.js"
@@ -13,18 +13,21 @@ import type {
   DistributedSubscriberRegistry,
   SubscriberRecord,
 } from "../distributed-subscriber-registry.js"
-import { resolveRabbitMqConfig } from "../rabbitmq.js"
+import { resolveRabbitMqConfig, type RabbitMqConfig } from "../rabbitmq.js"
+import type { RabbitMqIdentity } from "../topology.js"
 
 const GetThing = query({
   name: qn("test", "GetThing"),
   payload: z.object({ id: z.string() }),
 })
 
-function appStub(overrides: any = {}) {
-  return {
-    identity: { serviceName: "svc", instanceId: "inst" },
-    ...overrides,
-  } as any
+const DEFAULT_IDENTITY: RabbitMqIdentity = { serviceName: "svc", instanceId: "inst" }
+
+function rabbitConfig(
+  config: Omit<RabbitMqConfig, "identity">,
+  identity: RabbitMqIdentity = DEFAULT_IDENTITY,
+) {
+  return resolveRabbitMqConfig({ identity, ...config })
 }
 
 function recordingTransport() {
@@ -44,12 +47,12 @@ function recordingTransport() {
 
 describe("RabbitMQ query bus", () => {
   it("prefers local handlers by default", async () => {
-    const local = createSimpleQueryBus()
+    const local = simpleQueryBus()
     const { transport, dispatched } = recordingTransport()
-    const bus = createRabbitMqQueryBus({
+    const bus = rabbitMqQueryBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
+      config: rabbitConfig({ url: "amqp://test" }),
     })
 
     bus.subscribe("test.GetThing", async () => "local-ok")
@@ -67,12 +70,12 @@ describe("RabbitMQ query bus", () => {
   })
 
   it("routes through transport when distributed routing is forced", async () => {
-    const local = createSimpleQueryBus()
+    const local = simpleQueryBus()
     const { transport, dispatched } = recordingTransport()
-    const bus = createRabbitMqQueryBus({
+    const bus = rabbitMqQueryBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), {
+      config: rabbitConfig({
         url: "amqp://test",
         queries: { alwaysUseDistributedBus: true },
       }),
@@ -93,12 +96,12 @@ describe("RabbitMQ query bus", () => {
   })
 
   it("carries query metadata across the transport envelope", async () => {
-    const local = createSimpleQueryBus()
+    const local = simpleQueryBus()
     const { transport, dispatched } = recordingTransport()
-    const bus = createRabbitMqQueryBus({
+    const bus = rabbitMqQueryBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), {
+      config: rabbitConfig({
         url: "amqp://test",
         queries: { alwaysUseDistributedBus: true },
       }),
@@ -119,7 +122,7 @@ describe("RabbitMQ query bus", () => {
   })
 
   it("propagates a remote query failure as a thrown error", async () => {
-    const local = createSimpleQueryBus()
+    const local = simpleQueryBus()
     const subscriptions = new Map<string, (envelope: RabbitMqQueryEnvelope) => Promise<any>>()
     const transport: RabbitMqQueryTransport = {
       async dispatch(envelope) {
@@ -133,10 +136,10 @@ describe("RabbitMQ query bus", () => {
         subscriptions.set(name, handler)
       },
     }
-    const bus = createRabbitMqQueryBus({
+    const bus = rabbitMqQueryBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), {
+      config: rabbitConfig({
         url: "amqp://test",
         queries: { alwaysUseDistributedBus: true },
       }),
@@ -154,12 +157,12 @@ describe("RabbitMQ query bus", () => {
   })
 
   it("handles an inbound query in its own UnitOfWork", async () => {
-    const local = createSimpleQueryBus()
+    const local = simpleQueryBus()
     const { transport, subscriptions } = recordingTransport()
-    const bus = createRabbitMqQueryBus({
+    const bus = rabbitMqQueryBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
+      config: rabbitConfig({ url: "amqp://test" }),
     })
 
     bus.subscribe("test.GetThing", async (message) => `answered:${(message.payload as { id: string }).id}`)
@@ -182,12 +185,12 @@ describe("RabbitMQ query bus", () => {
   })
 
   it("returns initial result via the existing query transport when starting a subscription", async () => {
-    const local = createSimpleQueryBus()
+    const local = simpleQueryBus()
     const { transport } = recordingTransport()
-    const bus = createRabbitMqQueryBus({
+    const bus = rabbitMqQueryBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
+      config: rabbitConfig({ url: "amqp://test" }),
     })
 
     bus.subscribe("test.GetThing", async () => "initial")
@@ -206,13 +209,13 @@ describe("RabbitMQ query bus", () => {
 
   it("delivers a local emit to a local subscriber via the registry mirror", async () => {
     const mesh = createInProcessRegistryMesh()
-    const local = createSimpleQueryBus()
+    const local = simpleQueryBus()
     const { transport } = recordingTransport()
-    const bus = createRabbitMqQueryBus({
+    const bus = rabbitMqQueryBus({
       localSegment: local,
       transport,
       subscriberRegistry: mesh.join("inst-A"),
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
+      config: rabbitConfig({ url: "amqp://test" }),
     })
 
     bus.subscribe("test.GetThing", async () => "initial")
@@ -237,17 +240,14 @@ describe("RabbitMQ query bus", () => {
     const mesh = createInProcessRegistryMesh()
 
     // Instance B owns the subscriber.
-    const localB = createSimpleQueryBus()
+    const localB = simpleQueryBus()
     const transportB = recordingTransport().transport
     const registryB = mesh.join("inst-B")
-    const busB = createRabbitMqQueryBus({
+    const busB = rabbitMqQueryBus({
       localSegment: localB,
       transport: transportB,
       subscriberRegistry: registryB,
-      config: resolveRabbitMqConfig(
-        appStub({ identity: { serviceName: "svc", instanceId: "inst-B" } }),
-        { url: "amqp://test" },
-      ),
+      config: rabbitConfig({ url: "amqp://test" }, { serviceName: "svc", instanceId: "inst-B" }),
     })
     busB.subscribe("test.GetThing", async () => "initial-B")
     const sub = busB.subscriptionQuery({
@@ -260,17 +260,14 @@ describe("RabbitMQ query bus", () => {
     await sub.initialResult
 
     // Instance C emits — it has no local subscriber but should route to B.
-    const localC = createSimpleQueryBus()
+    const localC = simpleQueryBus()
     const transportC = recordingTransport().transport
     const registryC = mesh.join("inst-C")
-    const busC = createRabbitMqQueryBus({
+    const busC = rabbitMqQueryBus({
       localSegment: localC,
       transport: transportC,
       subscriberRegistry: registryC,
-      config: resolveRabbitMqConfig(
-        appStub({ identity: { serviceName: "svc", instanceId: "inst-C" } }),
-        { url: "amqp://test" },
-      ),
+      config: rabbitConfig({ url: "amqp://test" }, { serviceName: "svc", instanceId: "inst-C" }),
     })
 
     void busC.emitUpdate("test.GetThing", payloadEquals({ id: "x" }), "from-C")
@@ -285,16 +282,13 @@ describe("RabbitMQ query bus", () => {
     const mesh = createInProcessRegistryMesh()
 
     // Two subscribers on instance B with different payloads.
-    const localB = createSimpleQueryBus()
+    const localB = simpleQueryBus()
     const registryB = mesh.join("inst-B")
-    const busB = createRabbitMqQueryBus({
+    const busB = rabbitMqQueryBus({
       localSegment: localB,
       transport: recordingTransport().transport,
       subscriberRegistry: registryB,
-      config: resolveRabbitMqConfig(
-        appStub({ identity: { serviceName: "svc", instanceId: "inst-B" } }),
-        { url: "amqp://test" },
-      ),
+      config: rabbitConfig({ url: "amqp://test" }, { serviceName: "svc", instanceId: "inst-B" }),
     })
     busB.subscribe("test.GetThing", async () => "initial")
     const sub1 = busB.subscriptionQuery({
@@ -314,16 +308,13 @@ describe("RabbitMQ query bus", () => {
     await Promise.all([sub1.initialResult, sub2.initialResult])
 
     // Emit from C with a function filter — only "9" matches.
-    const localC = createSimpleQueryBus()
+    const localC = simpleQueryBus()
     const registryC = mesh.join("inst-C")
-    const busC = createRabbitMqQueryBus({
+    const busC = rabbitMqQueryBus({
       localSegment: localC,
       transport: recordingTransport().transport,
       subscriberRegistry: registryC,
-      config: resolveRabbitMqConfig(
-        appStub({ identity: { serviceName: "svc", instanceId: "inst-C" } }),
-        { url: "amqp://test" },
-      ),
+      config: rabbitConfig({ url: "amqp://test" }, { serviceName: "svc", instanceId: "inst-C" }),
     })
 
     void busC.emitUpdate(
@@ -345,14 +336,11 @@ describe("RabbitMQ query bus", () => {
 
     // B subscribes first.
     const registryB = mesh.join("inst-B")
-    const busB = createRabbitMqQueryBus({
-      localSegment: createSimpleQueryBus(),
+    const busB = rabbitMqQueryBus({
+      localSegment: simpleQueryBus(),
       transport: recordingTransport().transport,
       subscriberRegistry: registryB,
-      config: resolveRabbitMqConfig(
-        appStub({ identity: { serviceName: "svc", instanceId: "inst-B" } }),
-        { url: "amqp://test" },
-      ),
+      config: rabbitConfig({ url: "amqp://test" }, { serviceName: "svc", instanceId: "inst-B" }),
     })
     busB.subscribe("test.GetThing", async () => "initial")
     const sub = busB.subscriptionQuery({
@@ -366,14 +354,11 @@ describe("RabbitMQ query bus", () => {
 
     // C joins later — its mirror starts empty, then fills via sync reply.
     const registryC = mesh.join("inst-C")
-    const busC = createRabbitMqQueryBus({
-      localSegment: createSimpleQueryBus(),
+    const busC = rabbitMqQueryBus({
+      localSegment: simpleQueryBus(),
       transport: recordingTransport().transport,
       subscriberRegistry: registryC,
-      config: resolveRabbitMqConfig(
-        appStub({ identity: { serviceName: "svc", instanceId: "inst-C" } }),
-        { url: "amqp://test" },
-      ),
+      config: rabbitConfig({ url: "amqp://test" }, { serviceName: "svc", instanceId: "inst-C" }),
     })
 
     void busC.emitUpdate("test.GetThing", payloadEquals({ id: "z" }), "late-update")
@@ -387,14 +372,11 @@ describe("RabbitMQ query bus", () => {
   it("release on unsubscribe removes the record from peer mirrors", async () => {
     const mesh = createInProcessRegistryMesh()
     const registryB = mesh.join("inst-B")
-    const busB = createRabbitMqQueryBus({
-      localSegment: createSimpleQueryBus(),
+    const busB = rabbitMqQueryBus({
+      localSegment: simpleQueryBus(),
       transport: recordingTransport().transport,
       subscriberRegistry: registryB,
-      config: resolveRabbitMqConfig(
-        appStub({ identity: { serviceName: "svc", instanceId: "inst-B" } }),
-        { url: "amqp://test" },
-      ),
+      config: rabbitConfig({ url: "amqp://test" }, { serviceName: "svc", instanceId: "inst-B" }),
     })
     busB.subscribe("test.GetThing", async () => "initial")
     const sub = busB.subscriptionQuery({

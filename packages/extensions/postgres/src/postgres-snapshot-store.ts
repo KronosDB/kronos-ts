@@ -17,7 +17,7 @@
  *          .data goes to BYTEA, .type/.revision plus user metadata into JSONB.
  *   load:  BYTEA + JSONB -> reconstruct SerializedObject -> Serializer.deserialize.
  *
- * State id stringification matches createInMemorySnapshotStore: objects are
+ * State id stringification matches inMemorySnapshotStore: objects are
  * JSON-stringified, everything else gets String(). The eventsourcing protocol
  * passes `unknown` ids, and the kronos_snapshots.state_id column is TEXT.
  */
@@ -43,7 +43,7 @@ function stateIdToString(id: unknown): string {
 const SERIALIZER_TYPE_KEY = "__kr_serializer_type"
 const SERIALIZER_REVISION_KEY = "__kr_serializer_revision"
 
-export function createPostgresSnapshotStore(
+export function postgresSnapshotStore(
   config: PostgresSnapshotStoreConfig,
 ): SnapshotStore {
   const { adapter, serializer } = config

@@ -19,6 +19,7 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
   private readonly handlers = new Map<string, (envelope: RabbitMqCommandEnvelope) => Promise<RabbitMqCommandReplyEnvelope>>()
   private readonly boundHandlers = new Set<string>()
   private readonly pending = new Map<string, PendingRequest>()
+  private readonly pendingBinds = new Set<Promise<void>>()
   private connectPromise: Promise<void> | undefined
   private closed = false
 
@@ -56,8 +57,21 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
   }
 
   /**
+   * Resolve once the connection is up and every handler subscribed so far is
+   * bound to its queue and consuming. `subscribe` is synchronous (the bus API
+   * gives it nowhere to await), so binding runs in the background; this is the
+   * join point for a caller that wants to know the process is really listening.
+   */
+  async ready(): Promise<void> {
+    await this.connect()
+    while (this.pendingBinds.size > 0) {
+      await Promise.all([...this.pendingBinds])
+    }
+  }
+
+  /**
    * Close this transport's channel and fail any in-flight requests. The shared
-   * connection is owned by its creator (see {@link createAmqpConnection}) and is
+   * connection is owned by its creator (see {@link amqpConnection}) and is
    * not closed here.
    */
   async close(): Promise<void> {
@@ -112,8 +126,17 @@ export class AmqpRabbitMqCommandTransport implements RabbitMqCommandTransport {
   ): void {
     this.handlers.set(commandName, handler)
     if (this.channel) {
-      void this.bindCommandHandler(commandName, handler)
+      this.trackBind(this.bindCommandHandler(commandName, handler))
     }
+  }
+
+  /** Keep a background bind awaitable by {@link ready} without leaving it unhandled. */
+  private trackBind(bind: Promise<void>): void {
+    this.pendingBinds.add(bind)
+    const forget = () => {
+      this.pendingBinds.delete(bind)
+    }
+    bind.then(forget, forget)
   }
 
   private async bindCommandHandler(

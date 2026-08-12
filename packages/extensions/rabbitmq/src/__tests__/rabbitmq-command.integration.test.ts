@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn, tag } from "@kronos-ts/common"
-import { kronos, type RunningApp } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type Registration } from "@kronos-ts/app"
 import {
   command,
   commandHandler,
@@ -10,7 +10,7 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
-  createInMemoryEventStore,
+  inMemoryEventStore,
   type AppendCondition,
   type EventStore
 } from "@kronos-ts/eventsourcing"
@@ -56,7 +56,7 @@ const StateB = state({
 })
 
 function probeEventStore() {
-  const inner = createInMemoryEventStore()
+  const inner = inMemoryEventStore()
   const records: Array<{ condition: AppendCondition | undefined }> = []
   const wrapped: EventStore = {
     ...inner,
@@ -73,55 +73,93 @@ function conditionJson(records: Array<{ condition: AppendCondition | undefined }
 }
 
 describe("RabbitMQ command transport integration", () => {
-  let rabbit: RunningRabbitMq
+  let broker: RunningRabbitMq
 
   beforeAll(async () => {
-    rabbit = await startRabbitMqContainer()
+    broker = await startRabbitMqContainer()
   }, 60_000)
 
   afterAll(async () => {
-    await rabbit?.stop()
+    await broker?.stop()
   }, 30_000)
 
-  async function startApps(prefix: string, probe: ReturnType<typeof probeEventStore>): Promise<RunningApp[]> {
-    const worker = await kronos({ serviceName: "worker", instanceId: `${prefix}-worker`, quiet: true })
-      .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
-      .set("eventStore", () => probe.eventStore)
-      .states(StateA, StateB)
-      .commands(
-        commandHandler(Finish, async ({ payload: cmd }, ctx) => {
-          await ctx.load(StateB, { bId: cmd.bId })
-          ctx.append(BFinished, { bId: cmd.bId })
-        }),
-      )
-      .start()
-
-    const starter = await kronos({ serviceName: "starter", instanceId: `${prefix}-starter`, quiet: true })
-      .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
-      .set("eventStore", () => probe.eventStore)
-      .states(StateA, StateB)
-      .commands(
-        commandHandler(StartWithSend, async ({ payload: cmd }, ctx) => {
-          await ctx.load(StateA, { aId: cmd.aId })
-          await ctx.send(Finish, { bId: cmd.bId })
-        }),
-      )
-      .start()
-
-    return [starter, worker]
+  /**
+   * One process, composed by hand: in-memory components, the RabbitMQ backend
+   * wrapping their buses, then the app on top of the merged record. `start()`
+   * after `kronos` is what the "processors" lifecycle stage used to be — it
+   * waits until every handler registered above is bound and consuming.
+   */
+  async function startNode(params: {
+    serviceName: string
+    prefix: string
+    eventStore: EventStore
+    registrations: Registration[]
+  }) {
+    const base = inMemoryComponents({ eventStore: params.eventStore })
+    const backend = await rabbitMq({
+      url: broker.url,
+      identity: { serviceName: params.serviceName, instanceId: `${params.prefix}-${params.serviceName}` },
+      topology: { prefix: params.prefix },
+      localCommandBus: base.commandBus,
+      localQueryBus: base.queryBus,
+    })
+    const app = kronos({
+      components: { ...base, ...backend.components },
+      modules: [module(params.serviceName, ...params.registrations)],
+    })
+    await backend.start()
+    return {
+      app,
+      async stop() {
+        await app.stop()
+        await backend.close()
+      },
+    }
   }
 
   it("a remote command handler appends against only its own loaded state", async () => {
     const prefix = `kronos.it.${Date.now()}.send`
     const probe = probeEventStore()
-    const apps = await startApps(prefix, probe)
+
+    const worker = await startNode({
+      serviceName: "worker",
+      prefix,
+      eventStore: probe.eventStore,
+      registrations: [
+        StateA,
+        StateB,
+        commandHandler(Finish, async ({ payload: cmd }, ctx) => {
+          await ctx.load(StateB, { bId: cmd.bId })
+          ctx.append(BFinished, { bId: cmd.bId })
+        }),
+      ],
+    })
+
+    const starter = await startNode({
+      serviceName: "starter",
+      prefix,
+      eventStore: probe.eventStore,
+      registrations: [
+        StateA,
+        StateB,
+        commandHandler(StartWithSend, async ({ payload: cmd }, ctx) => {
+          await ctx.load(StateA, { aId: cmd.aId })
+          await ctx.send(Finish, { bId: cmd.bId })
+        }),
+      ],
+    })
+
     try {
-      await apps[0]!.commandGateway.send(StartWithSend, { aId: "a-real", bId: "b-real" }, emptyMetadata())
+      await starter.app.commandGateway.send(
+        StartWithSend,
+        { aId: "a-real", bId: "b-real" },
+        emptyMetadata(),
+      )
       const json = conditionJson(probe.records)
       expect(json).not.toContain("a-real")
       expect(json).toContain("b-real")
     } finally {
-      await Promise.all(apps.map((app) => app.stop()))
+      await Promise.all([starter.stop(), worker.stop()])
     }
   }, 30_000)
 })

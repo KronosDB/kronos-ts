@@ -12,5 +12,5 @@ export {
   type LoadResult,
   type StateRepository,
   type StateManager,
-  createStateManager,
+  stateManager,
 } from "./state-manager.js"

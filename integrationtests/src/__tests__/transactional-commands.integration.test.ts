@@ -9,8 +9,10 @@
  *
  * Two framework pieces make this work, and NOTHING ELSE is framework-provided:
  *   1. The command bus runs handlers through the configured unitOfWorkFactory,
- *      and postgres() sets a LAZY transactional one — so the command's UoW
- *      carries a postgres transaction, opened on the first writer.
+ *      and postgres() provides a LAZY transactional one — so the command's UoW
+ *      carries a postgres transaction, opened on the first writer. The
+ *      composition root below builds the bus around THAT factory; spreading it
+ *      on afterwards would leave the bus on a plain non-transactional UoW.
  *   2. getOrBeginActiveTransaction() + PostgresAdapterTransaction.unwrap() —
  *      hands back the live driver connection so a user's own query builder
  *      (or raw `tx.query(...)`) rides the same tx.
@@ -26,12 +28,22 @@ import { Pool, type PoolClient } from "pg"
 import { drizzle } from "drizzle-orm/node-postgres"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { qn, tag } from "@kronos-ts/common"
-import { command, event, commandHandler, EventCriteria, getOrBeginActiveTransaction } from "@kronos-ts/messaging"
+import {
+  command,
+  event,
+  commandHandler,
+  EventCriteria,
+  getOrBeginActiveTransaction,
+  jsonSerializer,
+} from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { type EventStore } from "@kronos-ts/eventsourcing"
-import { kronos, type App, type RunningApp } from "@kronos-ts/app"
+import { type EventStore, descriptorBasedTagResolver } from "@kronos-ts/eventsourcing"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import { postgres, type PostgresAdapterTransaction } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
+
+/** The backend handle `postgres()` returns — its type is not re-exported. */
+type PostgresBackend = Awaited<ReturnType<typeof postgres>>
 
 // ============================================================================
 // User-owned Drizzle schema + the few lines a user writes to bind Drizzle to
@@ -110,8 +122,8 @@ describe("transactional commands — user CRUD atomic with appended events", () 
   let container: StartedTestContainer
   let connectionString: string
   let pool: Pool
-  let app: RunningApp
-  let capturedEventStore: EventStore | undefined
+  let app: App
+  let backend: PostgresBackend
 
   beforeAll(async () => {
     container = await new GenericContainer("postgres:16-alpine")
@@ -129,31 +141,34 @@ describe("transactional commands — user CRUD atomic with appended events", () 
     pool = new Pool({ connectionString })
     await pool.query("CREATE TABLE IF NOT EXISTS widgets (id text PRIMARY KEY, name text NOT NULL)")
 
-    const captureExtension = (a: App) => {
-      a.decorate("eventStore", (inner) => {
-        capturedEventStore = inner
-        return inner
-      })
-    }
+    backend = await postgres({
+      adapter: pgAdapter({ connectionString }),
+      serializer: jsonSerializer(),
+      tagResolver: descriptorBasedTagResolver(),
+    })
 
-    // transactionalCommands defaults to true — no flag needed.
-    app = await kronos({ quiet: true })
-      .states(Widget)
-      .commands(editWidget)
-      .use(captureExtension)
-      .use(postgres({ adapter: pgAdapter({ connectionString }) }))
-      .start()
+    // The whole point of this file: the command bus is built around postgres's
+    // lazy transactional UoW factory, so a handler's appends and its own CRUD
+    // ride the same transaction.
+    app = kronos({
+      components: {
+        ...inMemoryComponents({ unitOfWorkFactory: backend.components.unitOfWorkFactory }),
+        ...backend.components,
+      },
+      modules: [module("tx-commands", Widget, editWidget)],
+    })
+    await backend.start()
   }, 60_000)
 
   afterAll(async () => {
     await app?.stop()
+    await backend?.close()
     await pool?.end()
     await container?.stop()
   })
 
   function eventStore(): EventStore {
-    if (!capturedEventStore) throw new Error("eventStore capture failed")
-    return capturedEventStore
+    return backend.components.eventStore
   }
 
   async function widgetRow(id: string): Promise<{ name: string } | undefined> {

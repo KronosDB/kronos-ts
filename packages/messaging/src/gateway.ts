@@ -77,11 +77,11 @@ export interface QueryGateway {
  * AF5-aligned (CLAUDE.md command model): the gateway is a thin message-builder
  * and does NOT establish a UnitOfWork. The command bus owns the single
  * per-command UoW (and, via the configured `unitOfWorkFactory`, its
- * transaction) — see `createSimpleCommandBus`. Dispatch interceptors run on
+ * transaction) — see `simpleCommandBus`. Dispatch interceptors run on
  * the message before it crosses into that UoW; the dispatch-side hook channel
  * is ALS, not a threaded ProcessingContext.
  */
-export function createCommandGateway(bus: CommandBus): CommandGateway {
+export function commandGateway(bus: CommandBus): CommandGateway {
   return {
     async send(descriptor, payload, metadata) {
       const resolvedMetadata = metadata ?? emptyMetadata()
@@ -100,9 +100,9 @@ export function createCommandGateway(bus: CommandBus): CommandGateway {
 /**
  * Creates a query gateway backed by a query bus.
  *
- * See `createCommandGateway` for the `unitOfWorkRunner` injection contract.
+ * See `commandGateway` for the `unitOfWorkRunner` injection contract.
  */
-export function createQueryGateway(
+export function queryGateway(
   bus: QueryBus,
   unitOfWorkRunner: UoWRunner = runInNewUoW,
 ): QueryGateway {

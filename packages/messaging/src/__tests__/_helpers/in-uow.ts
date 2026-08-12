@@ -9,7 +9,7 @@
 import { emptyMetadata, type Metadata } from "@kronos-ts/common"
 import {
   processingStateStorage,
-  createInitialProcessingState,
+  initialProcessingState,
 } from "../../processing-state.js"
 
 export function inUoW<R>(
@@ -17,7 +17,7 @@ export function inUoW<R>(
   metadata: Metadata = emptyMetadata(),
 ): Promise<R> {
   return processingStateStorage.run(
-    createInitialProcessingState(metadata),
+    initialProcessingState(metadata),
     async () => fn(),
   )
 }

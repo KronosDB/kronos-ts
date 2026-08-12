@@ -1,12 +1,12 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata } from "@kronos-ts/common"
-import { createTrackingEventProcessor } from "../tracking-event-processor.js"
-import { createDeadLetteringDelivery } from "../dead-lettering-handler.js"
-import { createInMemoryDeadLetterQueue, DeadLetterQueueOverflowError } from "../dead-letter-queue.js"
+import { trackingEventProcessor } from "../tracking-event-processor.js"
+import { deadLetteringDelivery } from "../dead-lettering-handler.js"
+import { inMemoryDeadLetterQueue, DeadLetterQueueOverflowError } from "../dead-letter-queue.js"
 import { sequentialPerTag } from "../sequencing-policy.js"
 import type { DeadLetterListener } from "../dead-letter-listener.js"
 import type { StreamableEventSource, SequencedEvent } from "../event-source.js"
-import type { EventHandlerRegistration } from "../handler.js"
+import type { EventHandlerDefinition } from "../event-handler.js"
 
 const EVENT_NAME = qn("test", "SomethingHappened")
 
@@ -38,7 +38,7 @@ function recordingListener() {
   return { calls, listener }
 }
 
-const failingHandler: EventHandlerRegistration<any> = {
+const failingHandler: EventHandlerDefinition<any> = {
   kind: "event-handler",
   descriptor: { kind: "event", name: EVENT_NAME, version: "1.0", payload: {} as any },
   handler: () => { throw new Error("boom") },
@@ -48,8 +48,8 @@ describe("DLQ observability + reset", () => {
   it("notifies the listener on fresh enqueue, blocked enqueue, and overflow backpressure", async () => {
     const { calls, listener } = recordingListener()
     // maxSequenceSize 1 -> the second letter in a sequence overflows.
-    const dlq = createInMemoryDeadLetterQueue({ maxSequenceSize: 1 })
-    const delivery = createDeadLetteringDelivery({
+    const dlq = inMemoryDeadLetterQueue({ maxSequenceSize: 1 })
+    const delivery = deadLetteringDelivery({
       queue: dlq,
       sequencingPolicy: sequentialPerTag("id"),
       listener,
@@ -68,8 +68,8 @@ describe("DLQ observability + reset", () => {
 
   it("blocks subsequent events in a failed sequence and reports it", async () => {
     const { calls, listener } = recordingListener()
-    const dlq = createInMemoryDeadLetterQueue() // default capacity
-    const delivery = createDeadLetteringDelivery({
+    const dlq = inMemoryDeadLetterQueue() // default capacity
+    const delivery = deadLetteringDelivery({
       queue: dlq,
       sequencingPolicy: sequentialPerTag("id"),
       listener,
@@ -103,9 +103,9 @@ describe("DLQ observability + reset", () => {
       },
       async getHeadPosition() { return 1n },
     }
-    const dlq = createInMemoryDeadLetterQueue()
+    const dlq = inMemoryDeadLetterQueue()
 
-    const processor = createTrackingEventProcessor({
+    const processor = trackingEventProcessor({
       name: "reset-proc",
       eventSource: source,
       eventHandlers: [failingHandler],

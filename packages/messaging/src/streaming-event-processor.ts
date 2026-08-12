@@ -1,5 +1,4 @@
 import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
-import type { EventHandlerRegistration } from "./handler.js"
 import type { EventHandlerDefinition } from "./event-handler.js"
 import type { StreamableEventSource, MessageStream, SequencedEvent } from "./event-source.js"
 import type { UoWRunner } from "./unit-of-work.js"
@@ -7,11 +6,11 @@ import { runInNewUoW } from "./unit-of-work.js"
 import type { TokenStore } from "./token-store.js"
 import type { SequencedDeadLetterQueue, EnqueuePolicy, DeadLetter } from "./dead-letter-queue.js"
 import type { SequencingPolicy } from "./sequencing-policy.js"
-import { createDeadLetteringDelivery } from "./dead-lettering-handler.js"
+import { deadLetteringDelivery } from "./dead-lettering-handler.js"
 import { type DeadLetterListener, noOpDeadLetterListener } from "./dead-letter-listener.js"
 import {
   type DeadLetterReprocessor,
-  createDeadLetterReprocessor,
+  deadLetterReprocessor,
 } from "./dead-letter-reprocessor.js"
 import type { EventProcessingErrorHandler } from "./tracking-event-processor.js"
 import { propagatingErrorHandler } from "./tracking-event-processor.js"
@@ -125,7 +124,7 @@ export interface StreamingEventProcessorOptions {
   onReset?: () => Promise<void> | void
 }
 
-export function createStreamingEventProcessor(
+export function streamingEventProcessor(
   options: StreamingEventProcessorOptions,
 ): StreamingEventProcessor {
   const {
@@ -159,7 +158,7 @@ export function createStreamingEventProcessor(
   // (not propagated), so the batch commits and the token advances past the
   // poison pill. Built once; invoked inside the batch UnitOfWork by deliverEvent.
   const deadLetterDelivery = deadLetterQueue
-    ? createDeadLetteringDelivery({
+    ? deadLetteringDelivery({
         queue: deadLetterQueue,
         policy: enqueuePolicy,
         sequencingPolicy,
@@ -170,7 +169,7 @@ export function createStreamingEventProcessor(
   // Reprocessor: replays a parked letter through the same handlers, with the
   // same ALS resources as live delivery, so dependencies resolve identically.
   const reprocessor: DeadLetterReprocessor | undefined = deadLetterQueue
-    ? createDeadLetterReprocessor({
+    ? deadLetterReprocessor({
         queue: deadLetterQueue,
         policy: enqueuePolicy,
         unitOfWorkRunner,
@@ -180,7 +179,7 @@ export function createStreamingEventProcessor(
     : undefined
   let dlqRetryTimer: ReturnType<typeof setInterval> | null = null
 
-  const handlerMap = new Map<string, Array<EventHandlerRegistration<any>>>()
+  const handlerMap = new Map<string, Array<EventHandlerDefinition<any>>>()
   for (const reg of eventHandlers) {
     const eventName = qualifiedNameToString(reg.descriptor.name)
     if (!handlerMap.has(eventName)) {
@@ -196,7 +195,7 @@ export function createStreamingEventProcessor(
           }),
         }
       : reg
-    handlerMap.get(eventName)!.push(enhanced as EventHandlerRegistration<any>)
+    handlerMap.get(eventName)!.push(enhanced)
   }
 
   let token: TrackingToken = globalSequenceToken(0n)

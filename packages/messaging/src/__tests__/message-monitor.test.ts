@@ -3,7 +3,7 @@ import { qn, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import type { CommandMessage } from "../message.js"
 import type { MessageMonitor, MonitorCallback } from "../message-monitor.js"
 import { noOpMessageMonitor, multiMessageMonitor } from "../message-monitor.js"
-import { createMessageMonitorRegistry } from "../message-monitor-registry.js"
+import { messageMonitorRegistry } from "../message-monitor-registry.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,7 +80,7 @@ describe("MessageMonitorRegistry", () => {
   it("combines generic and typed monitors", () => {
     // given
     const events: string[] = []
-    const registry = createMessageMonitorRegistry()
+    const registry = messageMonitorRegistry()
 
     registry.registerMonitor({
       onMessageIngested: () => ({
@@ -106,7 +106,7 @@ describe("MessageMonitorRegistry", () => {
   it("command monitor does not fire for event monitor", () => {
     // given
     const events: string[] = []
-    const registry = createMessageMonitorRegistry()
+    const registry = messageMonitorRegistry()
 
     registry.registerCommandMonitor({
       onMessageIngested: () => ({
@@ -125,7 +125,7 @@ describe("MessageMonitorRegistry", () => {
 
   it("returns noOp when no monitors registered", () => {
     // given
-    const registry = createMessageMonitorRegistry()
+    const registry = messageMonitorRegistry()
 
     // when
     const monitor = registry.commandMonitor()

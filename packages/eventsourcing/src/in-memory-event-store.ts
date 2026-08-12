@@ -1,5 +1,5 @@
 import type { EventMessage, EventCriteria, TagCriteria, TypeRestrictedCriteria, EitherCriteria, MessageStream, SequencedEvent, StreamingCondition, TrackingToken } from "@kronos-ts/messaging"
-import { createMessageStream, globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/messaging"
+import { messageStream, globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/messaging"
 import { qualifiedNameToString } from "@kronos-ts/common"
 import type { EventStore, SourcingResult } from "./event-store.js"
 import type { AppendTransaction } from "./event-storage-engine.js"
@@ -13,7 +13,7 @@ import type { ConsistencyMarker } from "./consistency-marker.js"
  * Events are stored in an ordered array with a global sequence position.
  * Supports push-based streaming via open().
  */
-export function createInMemoryEventStore(): EventStore {
+export function inMemoryEventStore(): EventStore {
   const events: Array<{ position: bigint; event: EventMessage }> = []
   let nextPosition = 0n
 
@@ -189,7 +189,7 @@ export function createInMemoryEventStore(): EventStore {
         return undefined
       }
 
-      return createMessageStream<SequencedEvent>({
+      return messageStream<SequencedEvent>({
         next() {
           const item = findNext()
           if (item) {

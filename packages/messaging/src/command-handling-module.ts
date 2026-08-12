@@ -1,15 +1,15 @@
-import { qualifiedNameToString, resourceKey } from "@kronos-ts/common"
+import { qualifiedNameToString } from "@kronos-ts/common"
 import type { CommandHandlerDefinition } from "./command-handler.js"
 import { HANDLER_CONTEXT } from "./handler-context.js"
 
 /**
- * Minimal Configuration shape consumed by createCommandInvocation /
+ * Minimal Configuration shape consumed by commandInvocation /
  * registerCommandHandlersNatively. Phase 8 D-82 reshape: messaging no longer
  * depends on the full @kronos-ts/common Configuration interface (deleted
  * with the configurer trio in Plan 08-04). Callers (kronos() AppImpl.start())
  * pass a shim that satisfies just these methods.
  *
- * The component-key strings used by createCommandInvocation are inlined
+ * The component-key strings used by commandInvocation are inlined
  * below (COMMAND_INVOCATION_KEYS) so this file owns its own key set.
  */
 export interface MinimalConfiguration {
@@ -19,7 +19,7 @@ export interface MinimalConfiguration {
 }
 
 /**
- * Component-key strings consumed by createCommandInvocation. Inlined here
+ * Component-key strings consumed by commandInvocation. Inlined here
  * so this file has no shared-constant dependency. The kronos() AppImpl
  * populates its config-shim with the same string keys.
  */
@@ -32,11 +32,13 @@ const COMMAND_INVOCATION_KEYS = {
   TAG_RESOLVER: "tagResolver",
 } as const
 
-const EVENT_FLUSH_REGISTERED_KEY = resourceKey<boolean>("commandInvocationEventFlushRegistered")
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
-import { getResource, setResource, onPrepareCommit, hasResource } from "./processing-state.js"
+import { setResource } from "./processing-state.js"
+import { applyCorrelationData, type CorrelationDataProvider } from "./correlation-data.js"
+import { registerEventFlush } from "./event-flush.js"
+import type { EventCriteria } from "./event-criteria.js"
 import { COMMAND_BUS_KEY } from "./send.js"
 import { QUERY_BUS_KEY } from "./emit-update.js"
 import type { CommandMessage, EventMessage } from "./message.js"
@@ -62,9 +64,10 @@ import type { EventScheduler } from "./event-scheduler.js"
  * helpers (load/append/send/emitUpdate) and the onPrepareCommit closure all
  * resolve their dependencies from the active UoW state.
  */
-export function createCommandInvocation(
+export function commandInvocation(
   handler: CommandHandlerDefinition<any, any>,
   config: MinimalConfiguration,
+  correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>,
 ) {
   return async (message: CommandMessage): Promise<unknown> => {
     // D-82 — full ALS resource setup at command invocation entry.
@@ -83,54 +86,22 @@ export function createCommandInvocation(
       setResource(EVENT_SCHEDULER_KEY, config.getComponent<EventScheduler>(COMMAND_INVOCATION_KEYS.EVENT_SCHEDULER))
     }
 
-    // Register event flush in PREPARE_COMMIT phase once per UnitOfWork.
-    // Nested context-aware dispatch re-enters createCommandInvocation inside
-    // the same ALS state; without this guard every nested command registers an
-    // additional flush and the same buffered events are appended repeatedly.
-    if (!hasResource(EVENT_FLUSH_REGISTERED_KEY)) {
-      setResource(EVENT_FLUSH_REGISTERED_KEY, true)
-      onPrepareCommit(async () => {
-        const buffered = getResource(BUFFERED_EVENTS_KEY)
-        if (!buffered || buffered.length === 0) return
-        if (!config.hasComponent(COMMAND_INVOCATION_KEYS.EVENT_STORE)) return
+    // Extract phase: seed correlation data from the INCOMING command so the
+    // dispatch interceptor can stamp it onto anything this handler sends or
+    // appends. This is the invocation wrapper because every bus — local or
+    // distributed inbound — funnels handler execution through here.
+    if (correlationDataProviders && correlationDataProviders.length > 0) {
+      applyCorrelationData(message, correlationDataProviders)
+    }
 
-        const eventStore = config.getComponent<{ append: (events: ReadonlyArray<EventMessage>, condition?: any) => Promise<unknown> }>(COMMAND_INVOCATION_KEYS.EVENT_STORE)
-
-        // Correlation data is applied to each event when it is appended (see
-        // append()), so buffered events already carry the active lineage here.
-
-        // Resolve tags via TagResolver (if configured)
-        const tagResolver = config.getOptionalComponent<{ resolve: (event: EventMessage) => Array<{ key: string; value: string }> }>(COMMAND_INVOCATION_KEYS.TAG_RESOLVER)
-        const resolvedEvents = tagResolver
-          ? buffered.map(event => ({
-              ...event,
-              tags: [...event.tags, ...tagResolver.resolve(event)],
-            }))
-          : buffered
-        const sourcingInfos = getResource(SOURCING_INFOS_KEY) ?? []
-
-        let appendCondition: any = undefined
-        if (sourcingInfos.length > 0) {
-          const combinedCriteria = sourcingInfos.length === 1
-            ? sourcingInfos[0]!.criteria
-            : { kind: "either" as const, criteria: sourcingInfos.map((s) => s.criteria) }
-
-          const maxMarker = sourcingInfos.reduce(
-            (max, s) => s.markerPosition > max ? s.markerPosition : max,
-            -1n,
-          )
-
-          const finalCriteria = handler.appendCondition
-            ? handler.appendCondition(message, combinedCriteria)
-            : combinedCriteria
-
-          appendCondition = {
-            criteria: finalCriteria,
-            marker: { position: maxMarker },
-          }
-        }
-
-        await eventStore.append(resolvedEvents, appendCondition)
+    // One flush per UnitOfWork (nested dispatch re-enters this wrapper).
+    if (config.hasComponent(COMMAND_INVOCATION_KEYS.EVENT_STORE)) {
+      registerEventFlush({
+        eventStore: config.getComponent(COMMAND_INVOCATION_KEYS.EVENT_STORE),
+        tagResolver: config.getOptionalComponent(COMMAND_INVOCATION_KEYS.TAG_RESOLVER),
+        ...(handler.appendCondition
+          ? { appendCondition: (criteria: EventCriteria) => handler.appendCondition!(message, criteria) }
+          : {}),
       })
     }
 
@@ -142,13 +113,13 @@ export function createCommandInvocation(
  * Plan 08-03a (D-82 reshape): function-style helper called by AppImpl.start()
  * to subscribe command handlers natively, without the configurer's Module shape.
  *
- * Subscribes each handler onto the commandBus with the createCommandInvocation
+ * Subscribes each handler onto the commandBus with the commandInvocation
  * wrapper that does Phase 4 D-44 ALS resource setup at invocation entry.
  *
  * @param handlers Array of handler definitions to register
  * @param deps Resolved dependencies — commandBus to subscribe onto, plus a
  *             Configuration shim (built natively in AppImpl.start()) that
- *             createCommandInvocation reads inside the dispatch hot path.
+ *             commandInvocation reads inside the dispatch hot path.
  *             Optional handlerEnhancer mirrors the legacy module's enhancer
  *             wrap (kept for parity; default-decorator pipeline already
  *             handles framework-default interceptors).
@@ -162,12 +133,14 @@ export function registerCommandHandlersNatively(
     config: MinimalConfiguration
     handlerEnhancer?: HandlerEnhancerDefinition
     moduleName?: string
+    /** Seeds CORRELATION_DATA_KEY from each incoming command (the "extract" half). */
+    correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>
   },
 ): void {
   const moduleName = deps.moduleName ?? "commands"
   for (const handler of handlers) {
     const commandName = qualifiedNameToString(handler.descriptor.name)
-    let invocation = createCommandInvocation(handler, deps.config)
+    let invocation = commandInvocation(handler, deps.config, deps.correlationDataProviders)
 
     if (deps.handlerEnhancer) {
       invocation = deps.handlerEnhancer.wrapHandler(invocation, {

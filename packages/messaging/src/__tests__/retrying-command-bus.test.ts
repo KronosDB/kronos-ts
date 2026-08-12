@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, generateIdentifier } from "@kronos-ts/common"
 import type { CommandMessage } from "../message.js"
-import { createRetryingCommandBus, exponentialBackoffRetryPolicy } from "../retrying-command-bus.js"
+import { retryingCommandBus, exponentialBackoffRetryPolicy } from "../retrying-command-bus.js"
 import type { CommandBus } from "../command-bus.js"
 
 class AppendConditionError extends Error {
@@ -29,7 +29,7 @@ describe("RetryingCommandBus", () => {
       subscribe() {},
     }
 
-    const bus = createRetryingCommandBus(delegate, exponentialBackoffRetryPolicy())
+    const bus = retryingCommandBus(delegate, exponentialBackoffRetryPolicy())
     const result = await bus.dispatch(commandMsg("TestCommand"))
 
     expect(result).toBe("ok")
@@ -47,7 +47,7 @@ describe("RetryingCommandBus", () => {
       subscribe() {},
     }
 
-    const bus = createRetryingCommandBus(delegate, exponentialBackoffRetryPolicy({ initialDelayMs: 1 }))
+    const bus = retryingCommandBus(delegate, exponentialBackoffRetryPolicy({ initialDelayMs: 1 }))
     const result = await bus.dispatch(commandMsg("TestCommand"))
 
     expect(result).toBe("ok")
@@ -64,7 +64,7 @@ describe("RetryingCommandBus", () => {
       subscribe() {},
     }
 
-    const bus = createRetryingCommandBus(delegate, exponentialBackoffRetryPolicy({ initialDelayMs: 1 }))
+    const bus = retryingCommandBus(delegate, exponentialBackoffRetryPolicy({ initialDelayMs: 1 }))
 
     expect(bus.dispatch(commandMsg("TestCommand"))).rejects.toThrow("permanent failure")
     // Wait a tick for the promise to settle
@@ -82,7 +82,7 @@ describe("RetryingCommandBus", () => {
       subscribe() {},
     }
 
-    const bus = createRetryingCommandBus(delegate, exponentialBackoffRetryPolicy({ maxRetries: 3, initialDelayMs: 1 }))
+    const bus = retryingCommandBus(delegate, exponentialBackoffRetryPolicy({ maxRetries: 3, initialDelayMs: 1 }))
 
     expect(bus.dispatch(commandMsg("TestCommand"))).rejects.toThrow("always conflicts")
     await new Promise((r) => setTimeout(r, 50))
@@ -96,7 +96,7 @@ describe("RetryingCommandBus", () => {
       subscribe(name) { subscribed.push(name) },
     }
 
-    const bus = createRetryingCommandBus(delegate, exponentialBackoffRetryPolicy())
+    const bus = retryingCommandBus(delegate, exponentialBackoffRetryPolicy())
     bus.subscribe("test.Command", async (_msg: CommandMessage) => undefined)
 
     expect(subscribed).toEqual(["test.Command"])

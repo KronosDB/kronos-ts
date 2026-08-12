@@ -6,28 +6,38 @@ export {
 
 export {
   type AxonServerConnectionManager,
-  createConnectionManager,
+  connectionManager,
 } from "./connection-manager.js"
 
 export {
-  createAxonServerEventStore,
+  axonServerEventStore,
 } from "./axon-server-event-store.js"
 
 export {
-  createAxonServerSnapshotStore,
+  axonServerSnapshotStore,
 } from "./axon-server-snapshot-store.js"
 
 export {
   axonServer,
-  type AxonServerExtensionConfig,
+  distributedCommandBus,
+  distributedQueryBus,
+  type AxonServerConfig,
+  type AxonServerBackend,
+  type AxonServerComponents,
   type FlowControlConfig,
   type ProcessingInstructions,
 } from "./axon-server.js"
 
 export {
+  axonServerControlPlane,
+  type AxonServerControlPlane,
+  type ManagedEventProcessor,
+} from "./control-plane.js"
+
+export {
   type MessageSizeConfig,
   MessageSizeExceededError,
-  createMessageSizeValidator,
+  messageSizeValidator,
 } from "./message-size.js"
 
 export {
@@ -42,19 +52,19 @@ export {
   type PlatformInstruction,
   type InstructionHandler,
   type PlatformServiceOptions,
-  createPlatformConnection,
+  platformConnection,
 } from "./platform-service.js"
 
 export {
   type FlowControlledSender,
-  createFlowControlledSender,
+  flowControlledSender,
 } from "./flow-controlled-sender.js"
 
 export {
   type ShutdownLatch,
   type ActivityHandle,
   ShutdownInProgressError,
-  createShutdownLatch,
+  shutdownLatch,
 } from "./shutdown-latch.js"
 
 export {
@@ -73,3 +83,4 @@ export {
   mapErrorCode,
   isTransientError,
 } from "./errors.js"
+export type { AxonServerOptions } from "./axon-server.js"

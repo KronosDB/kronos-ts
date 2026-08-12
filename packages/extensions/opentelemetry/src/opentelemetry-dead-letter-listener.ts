@@ -1,6 +1,6 @@
 import type { DeadLetterListener, SpanFactory } from "@kronos-ts/messaging"
 import {
-  createOpenTelemetrySpanFactory,
+  openTelemetrySpanFactory,
   type OpenTelemetrySpanFactoryOptions,
 } from "./opentelemetry-span-factory.js"
 
@@ -13,7 +13,7 @@ import {
  * ```typescript
  * trackingProcessor("balances")
  *   .deadLetterQueue(dlq)
- *   .deadLetterListener(createOpenTelemetryDeadLetterListener())
+ *   .deadLetterListener(openTelemetryDeadLetterListener())
  * ```
  *
  * Unlike {@link openTelemetry} (which decorates the command bus and enhances
@@ -21,9 +21,9 @@ import {
  * standalone factory. Pass a shared `spanFactory` to correlate with the rest of
  * your tracing, or let it build one from `options`.
  */
-export function createOpenTelemetryDeadLetterListener(
+export function openTelemetryDeadLetterListener(
   options: OpenTelemetrySpanFactoryOptions = {},
-  spanFactory: SpanFactory = createOpenTelemetrySpanFactory(options),
+  spanFactory: SpanFactory = openTelemetrySpanFactory(options),
 ): DeadLetterListener {
   const emit = (name: string, error?: Error) => {
     const span = spanFactory.createInternalSpan(name).start()

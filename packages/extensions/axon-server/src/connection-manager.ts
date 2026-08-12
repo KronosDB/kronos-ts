@@ -10,7 +10,7 @@ import { connectToAxonServer } from "./connection.js"
  * Aligned with Java's `AxonServerConnectionManager`.
  *
  * ```typescript
- * const manager = createConnectionManager({
+ * const manager = connectionManager({
  *   componentName: "my-app",
  *   host: "axon-server",
  *   port: 8124,
@@ -51,7 +51,7 @@ export interface AxonServerConnectionManager {
  * The base config (host, port, SSL, etc.) is shared across all contexts.
  * Only the `context` field varies per connection.
  */
-export function createConnectionManager(
+export function connectionManager(
   baseConfig: Omit<AxonServerConnectionConfig, "context">,
 ): AxonServerConnectionManager {
   const connections = new Map<string, AxonServerConnection>()

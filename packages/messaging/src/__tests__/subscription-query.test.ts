@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, generateIdentifier } from "@kronos-ts/common"
-import { createSimpleQueryBus } from "../simple-query-bus.js"
+import { simpleQueryBus } from "../simple-query-bus.js"
 import { onCommit } from "../processing-state.js"
 import { runInNewUoW } from "../unit-of-work.js"
 import type { QueryMessage } from "../message.js"
-import { createUpdateHandler } from "../subscription-query.js"
+import { updateHandler } from "../subscription-query.js"
 
 function queryMsg(name: string, payload: unknown = {}): QueryMessage {
   return {
@@ -18,7 +18,7 @@ function queryMsg(name: string, payload: unknown = {}): QueryMessage {
 
 describe("UpdateHandler", () => {
   it("buffers updates for async iteration", async () => {
-    const handler = createUpdateHandler(queryMsg("TestQuery"))
+    const handler = updateHandler(queryMsg("TestQuery"))
 
     handler.offer("update-1")
     handler.offer("update-2")
@@ -33,7 +33,7 @@ describe("UpdateHandler", () => {
   })
 
   it("waits for updates when buffer is empty", async () => {
-    const handler = createUpdateHandler(queryMsg("TestQuery"))
+    const handler = updateHandler(queryMsg("TestQuery"))
 
     const collected: unknown[] = []
     const consumer = (async () => {
@@ -59,7 +59,7 @@ describe("UpdateHandler", () => {
   })
 
   it("rejects offer when buffer is full", () => {
-    const handler = createUpdateHandler(queryMsg("TestQuery"), 2)
+    const handler = updateHandler(queryMsg("TestQuery"), 2)
 
     expect(handler.offer("a")).toBe(true)
     expect(handler.offer("b")).toBe(true)
@@ -67,7 +67,7 @@ describe("UpdateHandler", () => {
   })
 
   it("completes the iterable on complete()", async () => {
-    const handler = createUpdateHandler(queryMsg("TestQuery"))
+    const handler = updateHandler(queryMsg("TestQuery"))
 
     handler.complete()
 
@@ -80,7 +80,7 @@ describe("UpdateHandler", () => {
   })
 
   it("propagates error on completeExceptionally()", async () => {
-    const handler = createUpdateHandler(queryMsg("TestQuery"))
+    const handler = updateHandler(queryMsg("TestQuery"))
 
     handler.completeExceptionally(new Error("boom"))
 
@@ -93,7 +93,7 @@ describe("UpdateHandler", () => {
   })
 
   it("is not active after completion", () => {
-    const handler = createUpdateHandler(queryMsg("TestQuery"))
+    const handler = updateHandler(queryMsg("TestQuery"))
     expect(handler.active).toBe(true)
 
     handler.complete()
@@ -103,7 +103,7 @@ describe("UpdateHandler", () => {
 
 describe("SimpleQueryBus subscription queries", () => {
   it("returns initial result from regular query handler", async () => {
-    const bus = createSimpleQueryBus()
+    const bus = simpleQueryBus()
 
     bus.subscribe("test.GetCourse", async (msg) => {
       return { id: msg.payload.courseId, name: "Intro" }
@@ -120,7 +120,7 @@ describe("SimpleQueryBus subscription queries", () => {
   })
 
   it("receives updates via emitUpdate", async () => {
-    const bus = createSimpleQueryBus()
+    const bus = simpleQueryBus()
 
     bus.subscribe("test.GetCourse", async (msg) => {
       return { id: msg.payload.courseId, name: "Intro" }
@@ -153,7 +153,7 @@ describe("SimpleQueryBus subscription queries", () => {
   })
 
   it("filters updates by query payload", async () => {
-    const bus = createSimpleQueryBus()
+    const bus = simpleQueryBus()
 
     bus.subscribe("test.GetCourse", async (msg) => {
       return { id: msg.payload.courseId }
@@ -194,7 +194,7 @@ describe("SimpleQueryBus subscription queries", () => {
   })
 
   it("defers updates to AFTER_COMMIT when ProcessingContext is provided", async () => {
-    const bus = createSimpleQueryBus()
+    const bus = simpleQueryBus()
     const log: string[] = []
 
     bus.subscribe("test.GetCourse", async () => ({ id: "cs-101" }))
@@ -230,7 +230,7 @@ describe("SimpleQueryBus subscription queries", () => {
   })
 
   it("completes subscription via completeSubscription", async () => {
-    const bus = createSimpleQueryBus()
+    const bus = simpleQueryBus()
 
     bus.subscribe("test.GetCourse", async () => ({ id: "cs-101" }))
 
@@ -250,7 +250,7 @@ describe("SimpleQueryBus subscription queries", () => {
   })
 
   it("throws on duplicate subscription", async () => {
-    const bus = createSimpleQueryBus()
+    const bus = simpleQueryBus()
     bus.subscribe("test.GetCourse", async () => ({}))
 
     const msg = queryMsg("GetCourse")

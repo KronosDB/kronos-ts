@@ -11,14 +11,23 @@ import type {
   CommandMessage,
 } from "@kronos-ts/messaging"
 import { runInNewUoW } from "@kronos-ts/messaging"
-import { kronos, type App, type RunningApp } from "@kronos-ts/app"
+import {
+  kronos,
+  inMemoryComponents,
+  module as appModule,
+  type App,
+  type AppModule,
+  type Components,
+  type Registration,
+} from "@kronos-ts/app"
 import type { EventStore } from "@kronos-ts/eventsourcing"
 import type { z } from "zod"
 import {
-  createRecordings,
-  testRecordingExtension,
+  recordings,
+  recordingComponents,
+  recordingOverrides,
   type Recordings,
-} from "./recording-enhancer.js"
+} from "./recording.js"
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -31,19 +40,29 @@ type CommandPair = [CommandDescriptor<any>, unknown]
 // Fixture entry point
 // ---------------------------------------------------------------------------
 
+/** Anything the variadic form accepts: a bare registration, or a whole module. */
+export type FixtureRegistration = Registration | AppModule
+
+/** The explicit form, for when the defaults are not what you want. */
+export interface TestFixtureOptions {
+  /** Components to run on. Defaults to `inMemoryComponents()`. */
+  components?: Components
+  /** Modules to boot, each with its own overrides. */
+  modules?: ReadonlyArray<AppModule>
+  /** Loose registrations, booted as a single module named `"test"`. */
+  register?: ReadonlyArray<Registration>
+}
+
 /**
- * Creates a BDD test fixture that runs your REAL application code
- * against an in-memory event store with recording decorators.
+ * Creates a BDD test fixture that runs your REAL application code against
+ * in-memory components, with the event store and command bus wrapped so the
+ * `then()` phase can assert on what was appended and dispatched.
  *
- * Pass a configuration function that sets up the same domain
- * as your production app via the kronos() App fluent surface.
+ * Pass the same registrations you would pass to `module(...)` in production —
+ * state modules, command handlers, query handlers, processors, in any order:
  *
  * ```typescript
- * const fixture = await createTestFixture((app) => {
- *   app.states(Course)
- *   app.commands(createCourse, subscribeStudent)
- *   app.queries(getCourseView, getAllCourses)
- * })
+ * const fixture = testFixture(Course, createCourse, subscribeStudent, getCourseView)
  *
  * await fixture
  *   .given()
@@ -56,50 +75,90 @@ type CommandPair = [CommandDescriptor<any>, unknown]
  *
  * await fixture.stop()
  * ```
+ *
+ * Whole modules may be passed too — `testFixture(billing, ordering)` —
+ * and the explicit form takes components and modules by name:
+ *
+ * ```typescript
+ * const fixture = testFixture({
+ *   components: inMemoryComponents({ serializer: avroSerializer() }),
+ *   modules: [module("billing", { eventStore: postgresEventStore(pool) }, ...slice)],
+ * })
+ * ```
+ *
+ * The result is synchronous; `await testFixture(...)` also works, so the
+ * awaited call sites of the previous fixture keep compiling.
  */
-export async function createTestFixture(
-  configureFn: (app: App) => void,
-): Promise<TestFixture> {
-  const recordings = createRecordings()
-  const app = kronos({ quiet: true })
+export function testFixture(...registrations: FixtureRegistration[]): TestFixture
+export function testFixture(options: TestFixtureOptions): TestFixture
+export function testFixture(
+  ...args: [TestFixtureOptions] | FixtureRegistration[]
+): TestFixture {
+  const options = normalizeOptions(args)
+  const recorded = recordings()
 
-  // Apply testRecordingExtension synchronously BEFORE configureFn so its
-  // decorators land FIRST in the registration order — Phase 6 D-62: first
-  // registered = innermost wrap. Recording must be innermost so it captures
-  // messages AFTER all interceptors have enriched them.
-  testRecordingExtension(recordings)(app)
+  // Recording is composition, not registration: wrap the two traffic-carrying
+  // components before handing them to kronos. Because the wrapper IS the
+  // component every handler resolves, it sits innermost by construction — no
+  // ordering rule to remember.
+  const components = recordingComponents(options.components ?? inMemoryComponents(), recorded)
 
-  // Capture the eventStore reference via an identity decorator so the BDD
-  // given/when paths can append events directly. The decorator runs as
-  // part of the user-decorator pass at .start(), so it sees whatever
-  // (recording-wrapped) store the framework resolved.
-  let capturedEventStore: EventStore | undefined
-  app.decorate("eventStore", (inner) => {
-    capturedEventStore = inner
-    return inner
-  })
+  const modules: AppModule[] = [
+    ...(options.register && options.register.length > 0
+      ? [appModule("test", ...options.register)]
+      : []),
+    // A module bringing its OWN store/bus gets its own wrapper, so recordings
+    // stay complete across module-scoped persistence.
+    ...(options.modules ?? []).map((m) => ({
+      ...m,
+      overrides: recordingOverrides(m.overrides, recorded),
+    })),
+  ]
 
-  configureFn(app)
-
-  const running = await app.start()
-
-  if (!capturedEventStore) {
-    throw new Error("Test fixture: eventStore capture failed (start() did not run probe decorator).")
-  }
-  const eventStore = capturedEventStore
+  const app = kronos({ components, modules })
+  const eventStore = components.eventStore
 
   return {
+    app,
+    recordings: recorded,
     given() {
-      return new GivenPhaseImpl(running, recordings, eventStore)
+      return new GivenPhaseImpl(app, recorded, eventStore)
     },
-
     async stop() {
-      await running.stop()
+      await app.stop()
     },
   }
 }
 
+function normalizeOptions(
+  args: [TestFixtureOptions] | FixtureRegistration[],
+): TestFixtureOptions {
+  const first = args[0] as Record<string, unknown> | undefined
+  const isOptions =
+    args.length === 1 &&
+    first !== undefined &&
+    !("kind" in first) &&
+    !("register" in first) &&
+    ("components" in first || "modules" in first)
+  if (isOptions) return args[0] as TestFixtureOptions
+
+  const register: Registration[] = []
+  const modules: AppModule[] = []
+  for (const item of args as FixtureRegistration[]) {
+    if (item && !("kind" in item) && Array.isArray((item as AppModule).register)) {
+      modules.push(item as AppModule)
+    } else {
+      register.push(item as Registration)
+    }
+  }
+  return { register, modules }
+}
+
 export interface TestFixture {
+  /** The running app — gateways and per-module state managers. */
+  readonly app: App
+  /** What the wrapped store and bus have seen since the last reset. */
+  readonly recordings: Recordings
   given(): GivenPhase
   stop(): Promise<void>
 }
@@ -109,9 +168,16 @@ export interface TestFixture {
 // ---------------------------------------------------------------------------
 
 export interface GivenPhase {
+  /**
+   * Seed history by appending straight to the app-level event store.
+   *
+   * Note: a module that brings its OWN `eventStore` override reads from that
+   * store, not this one — seed such a module through `commands(...)` (which
+   * goes via the bus and lands in the right store) rather than `events(...)`.
+   */
   events(...pairs: EventPair[]): GivenPhase
   commands(...pairs: CommandPair[]): GivenPhase
-  execute(fn: (app: RunningApp) => void | Promise<void>): GivenPhase
+  execute(fn: (app: App) => void | Promise<void>): GivenPhase
   noPriorActivity(): GivenPhase
   when(): WhenPhase
 }
@@ -119,11 +185,11 @@ export interface GivenPhase {
 class GivenPhaseImpl implements GivenPhase {
   private readonly givenEvents: EventPair[] = []
   private readonly givenCommands: CommandPair[] = []
-  private readonly givenSetupFns: Array<(app: RunningApp) => void | Promise<void>> = []
+  private readonly givenSetupFns: Array<(app: App) => void | Promise<void>> = []
   _prerequisite: Promise<void> | undefined
 
   constructor(
-    private readonly app: RunningApp,
+    private readonly app: App,
     private readonly recordings: Recordings,
     private readonly eventStore: EventStore,
   ) {}
@@ -138,7 +204,7 @@ class GivenPhaseImpl implements GivenPhase {
     return this
   }
 
-  execute(fn: (app: RunningApp) => void | Promise<void>): GivenPhase {
+  execute(fn: (app: App) => void | Promise<void>): GivenPhase {
     this.givenSetupFns.push(fn)
     return this
   }
@@ -172,12 +238,12 @@ export interface WhenResult {
 
 class WhenPhaseImpl implements WhenPhase {
   constructor(
-    private readonly app: RunningApp,
+    private readonly app: App,
     private readonly recordings: Recordings,
     private readonly eventStore: EventStore,
     private readonly givenEvents: EventPair[],
     private readonly givenCommands: CommandPair[],
-    private readonly givenSetupFns: Array<(app: RunningApp) => void | Promise<void>>,
+    private readonly givenSetupFns: Array<(app: App) => void | Promise<void>>,
     private readonly prerequisite?: Promise<void>,
   ) {}
 
@@ -235,8 +301,8 @@ export interface ThenPhase extends PromiseLike<void> {
   expectCommands(...pairs: CommandPair[]): ThenPhase
   expectNoCommands(): ThenPhase
   expectCommandsSatisfying(fn: (commands: ReadonlyArray<CommandMessage>) => void): ThenPhase
-  expect(fn: (app: RunningApp) => void | Promise<void>): ThenPhase
-  await(assertion: (app: RunningApp) => void | Promise<void>, timeoutMs?: number, intervalMs?: number): ThenPhase
+  expect(fn: (app: App) => void | Promise<void>): ThenPhase
+  await(assertion: (app: App) => void | Promise<void>, timeoutMs?: number, intervalMs?: number): ThenPhase
   and(): TestFixture
 }
 
@@ -245,12 +311,12 @@ class ThenPhaseImpl implements ThenPhase {
   private executionPromise: Promise<void> | null = null
 
   constructor(
-    private readonly app: RunningApp,
+    private readonly app: App,
     private readonly recordings: Recordings,
     private readonly eventStore: EventStore,
     private readonly givenEvents: EventPair[],
     private readonly givenCommands: CommandPair[],
-    private readonly givenSetupFns: Array<(app: RunningApp) => void | Promise<void>>,
+    private readonly givenSetupFns: Array<(app: App) => void | Promise<void>>,
     private readonly whenAction: WhenAction,
     private readonly prerequisite?: Promise<void>,
   ) {}
@@ -390,12 +456,12 @@ class ThenPhaseImpl implements ThenPhase {
     return this
   }
 
-  expect(fn: (app: RunningApp) => void | Promise<void>): ThenPhase {
+  expect(fn: (app: App) => void | Promise<void>): ThenPhase {
     this.assertions.push(async () => { await fn(this.app) })
     return this
   }
 
-  await(assertion: (app: RunningApp) => void | Promise<void>, timeoutMs: number = 5000, intervalMs: number = 50): ThenPhase {
+  await(assertion: (app: App) => void | Promise<void>, timeoutMs: number = 5000, intervalMs: number = 50): ThenPhase {
     this.assertions.push(async () => {
       const start = Date.now()
       let lastError: unknown
@@ -410,6 +476,8 @@ class ThenPhaseImpl implements ThenPhase {
   and(): TestFixture {
     const prerequisite = this.getExecutionPromise()
     return {
+      app: this.app,
+      recordings: this.recordings,
       given: () => {
         const given = new GivenPhaseImpl(this.app, this.recordings, this.eventStore)
         given._prerequisite = prerequisite

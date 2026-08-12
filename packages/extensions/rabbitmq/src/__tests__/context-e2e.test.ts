@@ -1,21 +1,21 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn, tag } from "@kronos-ts/common"
-import { kronos } from "@kronos-ts/app"
-import type { App } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import {
   command,
   event,
   commandHandler,
   EventCriteria,
+  type CommandBus,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
-  createInMemoryEventStore,
+  inMemoryEventStore,
   type EventStore,
   type AppendCondition
 } from "@kronos-ts/eventsourcing"
-import { createRabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
+import { rabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
 
 const Start = command({
@@ -71,7 +71,7 @@ class LoopbackTransport implements RabbitMqCommandTransport {
 }
 
 function probeEventStore() {
-  const inner = createInMemoryEventStore()
+  const inner = inMemoryEventStore()
   const records: Array<{ condition: AppendCondition | undefined }> = []
   const wrapped: EventStore = {
     ...inner,
@@ -83,16 +83,22 @@ function probeEventStore() {
   return { eventStore: wrapped, records }
 }
 
-function installLoopbackRabbit(transport: LoopbackTransport): (app: App) => void {
-  return (app) => {
-    const resolved = resolveRabbitMqConfig(app, {
+/**
+ * The loopback stand-in for the real backend: same wrapped command bus, a
+ * transport that hands the envelope straight back to the subscribed handler.
+ * Every command is forced through it, so each handler runs in the fresh UoW an
+ * inbound distributed command gets.
+ */
+function loopbackCommandBus(transport: LoopbackTransport, localSegment: CommandBus): CommandBus {
+  return rabbitMqCommandBus({
+    localSegment,
+    transport,
+    config: resolveRabbitMqConfig({
+      identity: { serviceName: "ctx-test", instanceId: "inst-1" },
       url: "amqp://loopback",
       commands: { alwaysUseDistributedBus: true },
-    })
-    app.decorate("commandBus", (localSegment) =>
-      createRabbitMqCommandBus({ localSegment, transport, config: resolved }),
-    )
-  }
+    }),
+  })
 }
 
 describe("RabbitMQ remote command handling e2e", () => {
@@ -110,20 +116,19 @@ describe("RabbitMQ remote command handling e2e", () => {
       ctx.append(BFinished, { bId: cmd.bId })
     })
 
-    const running = await kronos({ serviceName: "ctx-test", quiet: true })
-      .use(installLoopbackRabbit(transport))
-      .set("eventStore", () => probe.eventStore)
-      .states(StateA, StateB)
-      .commands(start, finish)
-      .start()
+    const base = inMemoryComponents({ eventStore: probe.eventStore })
+    const app = kronos({
+      components: { ...base, commandBus: loopbackCommandBus(transport, base.commandBus) },
+      modules: [module("ctx", StateA, StateB, start, finish)],
+    })
 
     try {
-      await running.commandGateway.send(Start, { aId: "a-1", bId: "b-1" }, emptyMetadata())
+      await app.commandGateway.send(Start, { aId: "a-1", bId: "b-1" }, emptyMetadata())
       const json = JSON.stringify(probe.records.at(-1)?.condition?.criteria)
       expect(json).not.toContain("a-1")
       expect(json).toContain("b-1")
     } finally {
-      await running.stop()
+      await app.stop()
     }
   })
 })

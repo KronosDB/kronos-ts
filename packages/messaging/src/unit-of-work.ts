@@ -1,7 +1,7 @@
 import { emptyMetadata, type Metadata } from "@kronos-ts/common"
 import {
   processingStateStorage,
-  createInitialProcessingState,
+  initialProcessingState,
   Phase,
   type PhaseValue,
 } from "./processing-state.js"
@@ -33,7 +33,7 @@ export function runInNewUoW<R>(
   action: () => Promise<R>,
 ): Promise<R> {
   const resolvedMetadata = metadata ?? emptyMetadata()
-  const state = createInitialProcessingState(resolvedMetadata)
+  const state = initialProcessingState(resolvedMetadata)
   return processingStateStorage.run(state, () => drivePhases(state, action))
 }
 
@@ -54,7 +54,7 @@ export function runInNewUoW<R>(
  *
  * NOTE: `commandBus.dispatch` deliberately does NOT use this — for AF5
  * parity every command gets its own fresh UnitOfWork via `runInNewUoW`,
- * nested or not. See `createSimpleCommandBus`.
+ * nested or not. See `simpleCommandBus`.
  */
 export function runInUoW<R>(
   metadata: Metadata | undefined,
@@ -79,7 +79,7 @@ export function runInUoW<R>(
 // a phase finishes, the outer loop re-reads `phaseActions.keys()` so any
 // new LATER phase entries are picked up in order.
 
-type State = ReturnType<typeof createInitialProcessingState>
+type State = ReturnType<typeof initialProcessingState>
 
 async function drivePhases<R>(state: State, action: () => Promise<R>): Promise<R> {
   state.status = "started"

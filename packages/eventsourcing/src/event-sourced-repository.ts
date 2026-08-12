@@ -24,7 +24,7 @@ export interface EventSourcedRepositoryOptions<Id, S> {
  * 5. Optionally creates a new snapshot if the policy triggers
  * 6. Returns the state AND sourcing info (criteria + marker)
  */
-export function createEventSourcedRepository<Id, S>(
+export function eventSourcedRepository<Id, S>(
   module: StateModule<Id, S>,
   eventStore: EventStore,
   snapshotStore?: SnapshotStore,

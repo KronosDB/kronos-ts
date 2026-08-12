@@ -6,7 +6,7 @@ import type { EventMessage } from "./message.js"
  *
  * Events sharing a sequence identifier are processed in order; if one is
  * dead-lettered, subsequent events in the same sequence are parked behind it
- * (see {@link createDeadLetteringDelivery}). This is the minimal analog of
+ * (see {@link deadLetteringDelivery}). This is the minimal analog of
  * Axon's `SequencingPolicy` — a plain function rather than a class hierarchy,
  * because Kronos does not (yet) do segmented parallel processing where the
  * policy would also drive segment assignment. When/if it does, this same type
