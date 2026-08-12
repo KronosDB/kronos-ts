@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/eventsourcing",
   "version": "0.4.0",
-  "description": "Event sourcing for Kronos — dynamic-consistency-boundary event store with load/append.",
+  "description": "Event sourcing for Kronos \u2014 dynamic-consistency-boundary event store with load/append.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",
@@ -43,6 +43,18 @@
       ".": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
+      },
+      "./append": {
+        "types": "./dist/append.d.ts",
+        "default": "./dist/append.js"
+      },
+      "./load": {
+        "types": "./dist/load.d.ts",
+        "default": "./dist/load.js"
+      },
+      "./schedule": {
+        "types": "./dist/schedule.d.ts",
+        "default": "./dist/schedule.js"
       }
     }
   },
