@@ -98,6 +98,46 @@ export interface AppModule {
   readonly register: ReadonlyArray<Registration>
 }
 
+/** Per-module persistence. Omit either to inherit the app's. */
+export interface ModuleOptions {
+  readonly eventStore?: EventStore
+  readonly tokenStore?: TokenStore
+}
+
+/**
+ * Declare a module. A factory like `commandHandler` / `state` are factories —
+ * name, optional persistence, then everything it registers, variadically:
+ *
+ * ```ts
+ * const billing = module("billing", { eventStore: postgresEventStore(pool) },
+ *   ...billLinesSlice(deps),
+ *   ...creditLineSlice(deps),
+ * )
+ * ```
+ *
+ * The options object is optional — `module("ordering", ...registrations)` works
+ * and inherits the app's stores. Options are told apart from registrations by
+ * the `kind` discriminator every registration carries.
+ */
+export function module(name: string, ...register: Registration[]): AppModule
+export function module(name: string, options: ModuleOptions, ...register: Registration[]): AppModule
+export function module(
+  name: string,
+  optionsOrFirst?: ModuleOptions | Registration,
+  ...rest: Registration[]
+): AppModule {
+  const hasOptions =
+    optionsOrFirst !== undefined && !("kind" in (optionsOrFirst as { kind?: unknown }))
+  const options = (hasOptions ? optionsOrFirst : {}) as ModuleOptions
+  const register = hasOptions ? rest : ([optionsOrFirst, ...rest].filter(Boolean) as Registration[])
+  return {
+    name,
+    ...(options.eventStore ? { eventStore: options.eventStore } : {}),
+    ...(options.tokenStore ? { tokenStore: options.tokenStore } : {}),
+    register,
+  }
+}
+
 /** Partition a flat registration list by the discriminator each value carries. */
 function partition(register: ReadonlyArray<Registration>) {
   const states: StateModule<any, any>[] = []

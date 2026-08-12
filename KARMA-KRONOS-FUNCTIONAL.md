@@ -40,36 +40,49 @@ ordinary field on an ordinary record — which also means `config/router.ts` can
 merge fragments by reading `.rpc` off the slice list with no `Slice` type
 gymnastics.
 
-## 2. A module is its slices plus its own persistence
+## 2. A module is a factory call, not a config record
 
 ```ts
 // modules/billing/src/index.ts
+import { module } from "@kronos-ts/app"
 import { postgresEventStore, postgresTokenStore } from "@kronos-ts/postgres"
 
 export const billingModule = (env: KarmaEnv) => {
   const pool = pgPool(env.databaseUrlFor("billing"))     // karma_billing
-  const db = drizzle(pool)
-  const deps = { db, uowDb: uowDbFor(pool) }
+  const deps = { db: drizzle(pool), uowDb: uowDbFor(pool) }
 
-  const slices = [billLines(deps), creditBilledLine(deps), chargeBill(deps), ...]
-
-  return {
-    name: "billing",
-    eventStore: postgresEventStore(pool),
-    tokenStore: postgresTokenStore(pool),      // carries its own transaction manager
-    states:     slices.flatMap((s) => s.states ?? []),
-    commands:   slices.flatMap((s) => s.commands ?? []),
-    queries:    slices.flatMap((s) => s.queries ?? []),
-    processors: slices.flatMap((s) => s.processors ?? []),
-    rpc:        slices.map((s) => s.rpc).filter(Boolean),
-    migrate:    () => migrate(db, { migrationsFolder: billingMigrations }),
-  }
+  return module(
+    "billing",
+    {
+      eventStore: postgresEventStore(pool),
+      tokenStore: postgresTokenStore(pool),   // carries its own transaction manager
+    },
+    ...billLines(deps),
+    ...creditBilledLine(deps),
+    ...chargeBill(deps),
+    ...creditBill(deps),
+    ...recordApplied(deps),
+  )
 }
 ```
 
-What disappeared: `createModuleRuntime`, the `ModuleRuntime` interface, per-module
-`boot()`, `defineModule`, the `KarmaModule` type. What replaced them: a function
-returning a record.
+Same shape as every other factory in the framework — `commandHandler(descriptor,
+fn)`, `state({...})`, `module(name, options, ...registrations)`. The options
+object is optional: `module("ordering", ...registrations)` inherits the app's
+stores, and options are told apart from registrations by the `kind` every
+registration carries.
+
+What disappeared: `createModuleRuntime`, the `ModuleRuntime` interface,
+per-module `boot()`, module-kit's `defineModule`, the `KarmaModule` type, and the
+four categorised arrays. What replaced them: one function call.
+
+Migrations stay a plain function the deployment manifest calls — they are not a
+framework concern:
+
+```ts
+export const billingMigrate = (env: KarmaEnv) =>
+  migrate(drizzle(pgPool(env.databaseUrlFor("billing"))), { migrationsFolder: billingMigrations })
+```
 
 ## 3. `services/main` — one app, 19 modules
 
@@ -87,7 +100,7 @@ const modules = [
   paymentsModule(env),        pricingModule(env),    /* … 19 total */
 ]
 
-await Promise.all(modules.map((m) => m.migrate()))
+await Promise.all(migrations.map((run) => run(env)))
 
 const rabbit = await connectRabbit(env.RABBITMQ_URL)
 

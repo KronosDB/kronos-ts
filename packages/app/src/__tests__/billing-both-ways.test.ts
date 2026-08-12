@@ -4,7 +4,7 @@ import { createInMemoryEventStore } from "@kronos-ts/eventsourcing"
 import { command, commandHandler, EventCriteria, event } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { z } from "zod"
-import { createApp, inMemoryComponents } from "../create-app.js"
+import { createApp, inMemoryComponents, module } from "../create-app.js"
 import { kronos } from "../kronos.js"
 import { defineModule, type ModuleApi } from "../module.js"
 
@@ -94,11 +94,8 @@ const billLine = (ledger: Ledger) =>
 /** A slice is a LIST of registrations. Deps are closure arguments. */
 const billLinesSlice = (ledger: Ledger) => [Bill, openBill, billLine(ledger)]
 
-const billingModule = (ledger: Ledger, eventStore: ReturnType<typeof createInMemoryEventStore>) => ({
-  name: "billing",
-  eventStore,
-  register: [...billLinesSlice(ledger)],
-})
+const billingModule = (ledger: Ledger, eventStore: ReturnType<typeof createInMemoryEventStore>) =>
+  module("billing", { eventStore }, ...billLinesSlice(ledger))
 
 // ===========================================================================
 
@@ -159,7 +156,7 @@ describe("billing, both ways", () => {
       components: inMemoryComponents(),
       modules: [
         billingModule(billingLedger, billingStore),
-        { name: "ordering", eventStore: orderingStore, register: [placeOrder] },
+        module("ordering", { eventStore: orderingStore }, placeOrder),
       ],
     })
 

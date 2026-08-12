@@ -46,7 +46,10 @@ export {
 } from "./module.js"
 export {
   createApp,
+  module,
   inMemoryComponents,
   type Components,
   type AppModule,
+  type ModuleOptions,
+  type Registration,
 } from "./create-app.js"
