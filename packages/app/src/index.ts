@@ -48,7 +48,6 @@ export {
   createApp,
   module,
   inMemoryComponents,
-  inMemory,
   type Components,
   type AppModule,
   type ModuleOverrides,

@@ -100,27 +100,29 @@ export interface AppModule {
  * Whatever a module wants to run on instead of the app's. ANY component is
  * overridable — nothing here privileges persistence. Messaging trickling down
  * from the app while the event store is module-scoped is the *common* shape,
- * not the only one: a module may equally bring its own command bus, serializer
- * or tag resolver.
+ * not the only one.
  *
- *   module("billing", postgres(pool), ...slices)                       // own database
- *   module("legacy", { ...postgres(pool), commandBus: ownBus }, ...)   // and own bus
+ *   module("billing", {
+ *     eventStore: postgresEventStore(pool),
+ *     tokenStore: postgresTokenStore(pool),
+ *   }, ...slices)
  *
- * Omit it and the module inherits everything.
+ * Each component is named on its own. There is deliberately no `postgres(pool)`
+ * bundle: an event store and a token store are different things with different
+ * schemas and lifecycles, and they are separable — cursors in Postgres while the
+ * log lives in KronosDB is a legitimate arrangement. Naming both costs one line
+ * and keeps that true.
+ *
+ * Omit the record and the module inherits everything.
  */
 export type ModuleOverrides = Partial<Components>
-
-/** In-memory persistence for a module — the dev/test backend, as one call. */
-export function inMemory(): ModuleOverrides {
-  return { eventStore: createInMemoryEventStore(), tokenStore: createInMemoryTokenStore() }
-}
 
 /**
  * Declare a module. A factory like `commandHandler` / `state` are factories —
  * name, optional persistence, then everything it registers, variadically:
  *
  * ```ts
- * const billing = module("billing", postgres(pool),
+ * const billing = module("billing", { eventStore: postgresEventStore(pool) },
  *   ...billLinesSlice(deps),
  *   ...creditLineSlice(deps),
  * )

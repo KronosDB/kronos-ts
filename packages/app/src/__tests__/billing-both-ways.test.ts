@@ -4,8 +4,8 @@ import { createInMemoryEventStore } from "@kronos-ts/eventsourcing"
 import { command, commandHandler, EventCriteria, event } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { z } from "zod"
-import { createApp, inMemory, inMemoryComponents, module } from "../create-app.js"
-import { createSimpleCommandBus } from "@kronos-ts/messaging"
+import { createApp, inMemoryComponents, module } from "../create-app.js"
+import { createInMemoryTokenStore, createSimpleCommandBus } from "@kronos-ts/messaging"
 import { kronos } from "../kronos.js"
 import { defineModule, type ModuleApi } from "../module.js"
 
@@ -92,10 +92,16 @@ const billLine = (ledger: Ledger) =>
     ctx.append(LineBilled, { billId: payload.billId, amount: payload.amount })
   })
 
+/** Local test convenience — the framework deliberately ships no such bundle. */
+const inMemoryStores = () => ({
+  eventStore: createInMemoryEventStore(),
+  tokenStore: createInMemoryTokenStore(),
+})
+
 /** A slice is a LIST of registrations. Deps are closure arguments. */
 const billLinesSlice = (ledger: Ledger) => [Bill, openBill, billLine(ledger)]
 
-const billingModule = (ledger: Ledger, persistence: ReturnType<typeof inMemory>) =>
+const billingModule = (ledger: Ledger, persistence: ReturnType<typeof inMemoryStores>) =>
   module("billing", persistence, ...billLinesSlice(ledger))
 
 // ===========================================================================
@@ -118,7 +124,7 @@ describe("billing, both ways", () => {
 
   it("functional style: same behaviour, assembly is a record", async () => {
     const ledger = newLedger()
-    const persistence = inMemory()
+    const persistence = inMemoryStores()
 
     // --- composition root (functional) ---
     const app = createApp({
@@ -136,8 +142,8 @@ describe("billing, both ways", () => {
 
   it("functional style: two modules, two event stores, one bus", async () => {
     const billingLedger = newLedger()
-    const billingPersistence = inMemory()
-    const orderingPersistence = inMemory()
+    const billingPersistence = inMemoryStores()
+    const orderingPersistence = inMemoryStores()
 
     // A second module with its OWN command + event, so the shared bus stays valid.
     const OrderPlaced = event({
@@ -170,7 +176,7 @@ describe("billing, both ways", () => {
     expect(app.stateManagers.get("billing")).not.toBe(app.stateManagers.get("ordering"))
 
     // And the stores really are separate.
-    const billingEvents = await billingPersistence.eventStore!.source({
+    const billingEvents = await billingPersistence.eventStore.source({
       criteria: EventCriteria.havingTags({ billId: "b-9" }),
     } as never)
     expect((billingEvents as { events: unknown[] }).events.length).toBeGreaterThan(0)
@@ -186,7 +192,7 @@ describe("billing, both ways", () => {
     const app = createApp({
       components: inMemoryComponents(),
       modules: [
-        module("billing", { ...inMemory(), commandBus: ownBus }, ...billLinesSlice(ledger)),
+        module("billing", { ...inMemoryStores(), commandBus: ownBus }, ...billLinesSlice(ledger)),
       ],
     })
 
