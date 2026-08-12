@@ -1,6 +1,8 @@
 # Container cutover — status
 
-**Branch state: WIP, does not compile (55 type errors). Deliberate checkpoint.**
+**Branch state: WIP. 55 type errors, all in the 4 unconverted extensions + test
+harness. `test:unit` is 748 pass / 6 fail — the 6 are those same extensions'
+tests importing the deleted `kronos()`.**
 No backwards compatibility anywhere: `kronos()`, the slot registry, decorators,
 extensions-as-mutators and `defineModule` are deleted, not deprecated.
 

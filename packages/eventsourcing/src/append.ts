@@ -16,30 +16,22 @@ import type { z } from "zod"
 import type { EventDescriptor, EventMessage, EventCriteria } from "@kronos-ts/messaging"
 
 /**
- * A descriptor paired with a payload it validates. Build these with
- * {@link evt} so each pair is checked independently — an array of loose tuples
- * would widen the descriptor/payload relationship and stop catching mismatches.
+ * A list of `[descriptor, payload]` (optionally `[descriptor, payload, metadata]`)
+ * pairs. The descriptors are inferred as a tuple and each payload is mapped from
+ * ITS OWN element, so a payload that does not match the descriptor beside it is
+ * a compile error — no pairing helper needed.
  */
-export interface PendingEvent {
-  readonly descriptor: EventDescriptor<any>
-  readonly payload: unknown
-  readonly metadata?: Metadata
-}
-
-/** Pair an event descriptor with its payload, for the batch form of `append`. */
-export function evt<P extends z.ZodType>(
-  descriptor: EventDescriptor<P>,
-  payload: z.infer<P>,
-  metadata?: Metadata,
-): PendingEvent {
-  return metadata === undefined ? { descriptor, payload } : { descriptor, payload, metadata }
+export type EventList<T extends readonly EventDescriptor<any>[]> = {
+  [K in keyof T]:
+    | readonly [T[K], z.infer<T[K] extends EventDescriptor<infer P> ? P : never>]
+    | readonly [T[K], z.infer<T[K] extends EventDescriptor<infer P> ? P : never>, Metadata]
 }
 
 /**
  * Append events to the active unit of work, buffered until commit.
  *
  * Single:  `append(TicketOpened, { ticketId })`
- * Batch:   `append([evt(TicketOpened, { ticketId }), evt(MessageSent, { messageId })])`
+ * Batch:   `append([[TicketOpened, { ticketId }], [MessageSent, { messageId }]])`
  *
  * Both forms are equivalent — every append in a UnitOfWork already flushes as
  * one atomic write at PREPARE_COMMIT, so the batch form is ergonomics, not a
@@ -48,7 +40,7 @@ export function evt<P extends z.ZodType>(
 export interface AppendFunction {
   <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>): void
   <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>, metadata: Metadata): void
-  (events: ReadonlyArray<PendingEvent>): void
+  <T extends readonly EventDescriptor<any>[]>(events: EventList<T>): void
 }
 
 // ---------------------------------------------------------------------------
@@ -83,19 +75,15 @@ export const STATE_MODULES_KEY: ResourceKey<Map<string, { module: any; id: unkno
  * matching evolvers (same logic as command-handling-module.ts appendFn).
  */
 export const append: AppendFunction = ((
-  eventDescriptorOrList: EventDescriptor<any> | ReadonlyArray<PendingEvent>,
+  eventDescriptorOrList: EventDescriptor<any> | ReadonlyArray<readonly [EventDescriptor<any>, unknown, Metadata?]>,
   eventPayload?: unknown,
   eventMetadata?: Metadata,
 ) => {
   // Batch form: fan out to the single form so buffering, tag derivation,
   // correlation stamping and cached-state evolution stay in ONE place.
   if (Array.isArray(eventDescriptorOrList)) {
-    for (const pending of eventDescriptorOrList) {
-      ;(append as (d: EventDescriptor<any>, p: unknown, m?: Metadata) => void)(
-        pending.descriptor,
-        pending.payload,
-        pending.metadata,
-      )
+    for (const [descriptor, payload, metadata] of eventDescriptorOrList) {
+      ;(append as (d: EventDescriptor<any>, p: unknown, m?: Metadata) => void)(descriptor, payload, metadata)
     }
     return
   }

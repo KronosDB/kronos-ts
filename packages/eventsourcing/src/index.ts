@@ -72,7 +72,7 @@ export {
   type ScheduleFunction,
   type ScheduleAfterFunction,
 } from "./schedule.js"
-export { evt, type PendingEvent } from "./append.js"
+export type { EventList } from "./append.js"
 export {
   BUFFERED_EVENTS_KEY,
   SOURCING_INFOS_KEY,

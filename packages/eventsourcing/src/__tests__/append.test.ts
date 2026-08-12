@@ -4,7 +4,7 @@ import { qn, emptyMetadata } from "@kronos-ts/common"
 import { event } from "@kronos-ts/messaging"
 import { runInNewUoW, NoActiveUnitOfWork, WrongUoWPhase, onPrepareCommit, Phase } from "@kronos-ts/messaging"
 import { processingStateStorage } from "@kronos-ts/messaging/processing-state"
-import { append, evt, BUFFERED_EVENTS_KEY, STATE_CACHE_KEY, STATE_MODULES_KEY } from "../append.js"
+import { append, BUFFERED_EVENTS_KEY, STATE_CACHE_KEY, STATE_MODULES_KEY } from "../append.js"
 
 // ---------------------------------------------------------------------------
 // Test descriptors
@@ -160,8 +160,8 @@ describe("append — batch form", () => {
   it("buffers a list identically to N single calls", async () => {
     await runInNewUoW(emptyMetadata(), async () => {
       append([
-        evt(CourseCreated, { courseId: "c1", name: "Intro" }),
-        evt(CourseCapacityChanged, { courseId: "c1", capacity: 30 }),
+        [CourseCreated, { courseId: "c1", name: "Intro" }],
+        [CourseCapacityChanged, { courseId: "c1", capacity: 30 }],
       ])
       const state = processingStateStorage.getStore()!
       const buffered = state.resources.get(BUFFERED_EVENTS_KEY.symbol) as any[]
@@ -175,7 +175,7 @@ describe("append — batch form", () => {
 
   it("carries per-event metadata", async () => {
     await runInNewUoW(emptyMetadata(), async () => {
-      append([evt(CourseCreated, { courseId: "c2", name: "Algo" }, { tenant: "acme" } as never)])
+      append([[CourseCreated, { courseId: "c2", name: "Algo" }, { tenant: "acme" } as never]])
       const state = processingStateStorage.getStore()!
       const buffered = state.resources.get(BUFFERED_EVENTS_KEY.symbol) as any[]
       expect(buffered[0].metadata).toMatchObject({ tenant: "acme" })
@@ -191,7 +191,15 @@ describe("append — batch form", () => {
   })
 
   it("still type-checks each pair", () => {
-    // @ts-expect-error - payload must match the descriptor it is paired with
-    evt(CourseCreated, { courseId: "c3", capacity: 10 })
+    // Compile-time assertions only — never invoked, since append() outside a
+    // UnitOfWork throws. The @ts-expect-error directives fail the BUILD if the
+    // mismatches below stop being errors.
+    const _typeOnly = () => {
+      // @ts-expect-error - payload must match the descriptor beside it in the tuple
+      append([[CourseCreated, { courseId: "c3", capacity: 10 }]])
+      // @ts-expect-error - a mismatch in the SECOND element is caught too
+      append([[CourseCreated, { courseId: "c3", name: "ok" }], [CourseCapacityChanged, { nope: 1 }]])
+    }
+    expect(typeof _typeOnly).toBe("function")
   })
 })
