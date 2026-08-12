@@ -5,6 +5,7 @@ import { command, commandHandler, EventCriteria, event } from "@kronos-ts/messag
 import { state } from "@kronos-ts/modelling"
 import { z } from "zod"
 import { createApp, inMemory, inMemoryComponents, module } from "../create-app.js"
+import { createSimpleCommandBus } from "@kronos-ts/messaging"
 import { kronos } from "../kronos.js"
 import { defineModule, type ModuleApi } from "../module.js"
 
@@ -173,6 +174,45 @@ describe("billing, both ways", () => {
       criteria: EventCriteria.havingTags({ billId: "b-9" }),
     } as never)
     expect((billingEvents as { events: unknown[] }).events.length).toBeGreaterThan(0)
+    await app.stop()
+  })
+
+  it("a module can override ANY component, not just persistence", async () => {
+    const ledger = newLedger()
+    // This module runs on its own command bus as well as its own store, so its
+    // handlers are NOT reachable from the app-level gateway. Nothing about the
+    // override mechanism privileges persistence.
+    const ownBus = createSimpleCommandBus()
+    const app = createApp({
+      components: inMemoryComponents(),
+      modules: [
+        module("billing", { ...inMemory(), commandBus: ownBus }, ...billLinesSlice(ledger)),
+      ],
+    })
+
+    // The app gateway has no handler for it — the module took its own bus.
+    await expect(
+      app.commandGateway.send(OpenBill, { billId: "x" }, emptyMetadata()),
+    ).rejects.toThrow()
+
+    // Dispatched on the module's OWN bus, it works.
+    await ownBus.dispatch({
+      kind: "command",
+      identifier: "c-1",
+      name: OpenBill.name,
+      payload: { billId: "x" },
+      metadata: emptyMetadata(),
+      timestamp: 1,
+    })
+    await ownBus.dispatch({
+      kind: "command",
+      identifier: "c-2",
+      name: BillLine.name,
+      payload: { billId: "x", amount: 7 },
+      metadata: emptyMetadata(),
+      timestamp: 2,
+    })
+    expect(ledger.lines).toEqual(["x:7"])
     await app.stop()
   })
 })

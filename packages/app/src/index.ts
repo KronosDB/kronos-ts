@@ -51,6 +51,6 @@ export {
   inMemory,
   type Components,
   type AppModule,
-  type ModulePersistence,
+  type ModuleOverrides,
   type Registration,
 } from "./create-app.js"

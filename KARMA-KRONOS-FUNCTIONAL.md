@@ -71,8 +71,17 @@ is optional: `module("ordering", ...registrations)` inherits the app's stores,
 and it is told apart from registrations by the `kind` every registration carries.
 
 A module owns a *database*, not a list of stores, so backends ship one factory
-(`postgres(pool)`, `inMemory()`) returning both. You only hand-build
-`{ eventStore, tokenStore }` when genuinely mixing backends.
+(`postgres(pool)`, `inMemory()`) returning both. But the slot is
+`Partial<Components>` — **nothing is capped to persistence**. Messaging trickling
+down from the app while the event store is module-scoped is the common shape, not
+a rule:
+
+```ts
+module("legacy", { ...postgres(pool), commandBus: ownBus }, ...slices)
+```
+
+A module that takes its own bus simply is not reachable from the app gateway,
+which is exactly what taking your own bus means.
 
 What disappeared: `createModuleRuntime`, the `ModuleRuntime` interface,
 per-module `boot()`, module-kit's `defineModule`, the `KarmaModule` type, and the

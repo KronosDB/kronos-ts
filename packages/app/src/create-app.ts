@@ -90,31 +90,28 @@ export type Registration =
  */
 export interface AppModule {
   readonly name: string
-  /** The module's own event store. Falls back to the app's. */
-  readonly eventStore?: EventStore
-  /** The module's own token store (processor cursors). Falls back to the app's. */
-  readonly tokenStore?: TokenStore
+  /** Components this module runs on instead of the app's. Any of them. */
+  readonly overrides: ModuleOverrides
   /** Everything the module contributes, in any order. */
   readonly register: ReadonlyArray<Registration>
 }
 
 /**
- * Where a module's events and processor cursors live. Both are derived from
- * ONE backing database, so backends ship a single factory rather than making
- * callers name each store:
+ * Whatever a module wants to run on instead of the app's. ANY component is
+ * overridable — nothing here privileges persistence. Messaging trickling down
+ * from the app while the event store is module-scoped is the *common* shape,
+ * not the only one: a module may equally bring its own command bus, serializer
+ * or tag resolver.
  *
- *   module("billing", postgres(pool), ...slices)   // not { eventStore: …, tokenStore: … }
+ *   module("billing", postgres(pool), ...slices)                       // own database
+ *   module("legacy", { ...postgres(pool), commandBus: ownBus }, ...)   // and own bus
  *
- * Omit it entirely and the module inherits the app's stores. Hand-build the
- * record only when genuinely mixing backends.
+ * Omit it and the module inherits everything.
  */
-export interface ModulePersistence {
-  readonly eventStore?: EventStore
-  readonly tokenStore?: TokenStore
-}
+export type ModuleOverrides = Partial<Components>
 
 /** In-memory persistence for a module — the dev/test backend, as one call. */
-export function inMemory(): ModulePersistence {
+export function inMemory(): ModuleOverrides {
   return { eventStore: createInMemoryEventStore(), tokenStore: createInMemoryTokenStore() }
 }
 
@@ -136,24 +133,19 @@ export function inMemory(): ModulePersistence {
 export function module(name: string, ...register: Registration[]): AppModule
 export function module(
   name: string,
-  persistence: ModulePersistence,
+  overrides: ModuleOverrides,
   ...register: Registration[]
 ): AppModule
 export function module(
   name: string,
-  optionsOrFirst?: ModulePersistence | Registration,
+  optionsOrFirst?: ModuleOverrides | Registration,
   ...rest: Registration[]
 ): AppModule {
   const hasOptions =
     optionsOrFirst !== undefined && !("kind" in (optionsOrFirst as { kind?: unknown }))
-  const options = (hasOptions ? optionsOrFirst : {}) as ModulePersistence
+  const overrides = (hasOptions ? optionsOrFirst : {}) as ModuleOverrides
   const register = hasOptions ? rest : ([optionsOrFirst, ...rest].filter(Boolean) as Registration[])
-  return {
-    name,
-    ...(options.eventStore ? { eventStore: options.eventStore } : {}),
-    ...(options.tokenStore ? { tokenStore: options.tokenStore } : {}),
-    register,
-  }
+  return { name, overrides, register }
 }
 
 /** Partition a flat registration list by the discriminator each value carries. */
@@ -212,10 +204,10 @@ export function createApp(opts: { components?: Components; modules: ReadonlyArra
   const built: Array<{ start(): void; stop(): void }> = []
 
   for (const module of opts.modules) {
-    // A module's own store, or the app's. This one line is the whole of what
-    // slot scoping + resolution existed to express.
-    const eventStore = module.eventStore ?? components.eventStore
-    const tokenStore = module.tokenStore ?? components.tokenStore
+    // The module's component record: the app's, with its overrides on top. One
+    // spread is the whole of what slot scoping + resolution existed to express,
+    // and it caps nothing — every component is overridable.
+    const c: Components = { ...components, ...module.overrides }
 
     const { states, commands, queries, processors } = partition(module.register)
 
@@ -223,20 +215,20 @@ export function createApp(opts: { components?: Components; modules: ReadonlyArra
     for (const state of states) {
       stateManager.register(
         state,
-        createEventSourcedRepository(state, eventStore, components.snapshotStore, undefined),
+        createEventSourcedRepository(state, c.eventStore, c.snapshotStore, undefined),
       )
     }
     stateManagers.set(module.name, stateManager)
 
-    const config = shimFor(components, eventStore, stateManager)
+    const config = shimFor(c, c.eventStore, stateManager)
 
     registerCommandHandlersNatively(commands, {
-      commandBus: components.commandBus,
+      commandBus: c.commandBus,
       config,
       moduleName: module.name,
     })
     registerQueryHandlersNatively(queries, {
-      queryBus: components.queryBus,
+      queryBus: c.queryBus,
       moduleName: module.name,
       config,
     })
@@ -246,14 +238,14 @@ export function createApp(opts: { components?: Components; modules: ReadonlyArra
       built.push(
         createTrackingEventProcessor({
           name: proc.name,
-          eventSource: eventStore as never,
+          eventSource: c.eventStore as never,
           eventHandlers: proc.eventHandlers,
           stateManager,
-          commandBus: components.commandBus,
-          queryBus: components.queryBus,
+          commandBus: c.commandBus,
+          queryBus: c.queryBus,
           correlationDataProviders: [],
-          unitOfWorkRunner: proc.unitOfWorkRunner ?? components.unitOfWorkFactory,
-          tokenStore,
+          unitOfWorkRunner: proc.unitOfWorkRunner ?? c.unitOfWorkFactory,
+          tokenStore: c.tokenStore,
         }),
       )
     }
