@@ -1,5 +1,24 @@
 # @kronos-ts/kronosdb
 
+## 0.4.0
+
+### Minor Changes
+
+- 440b453: Event scheduler client for KronosDB's server-side scheduled appends.
+
+  `createKronosDbScheduler(connection, serializer)` exposes `schedule`, `cancel`,
+  and `list`. The store appends the event when due — no client-side timers or
+  polling — and the schedule is durable once `schedule()` resolves. Supply your
+  own token to make retried schedule calls idempotent. gRPC failures map to
+  typed errors: `ScheduleAlreadyExistsError`, `ScheduleAlreadyResolvedError`,
+  `ScheduleNotFoundError`.
+
+### Patch Changes
+
+- 1c86acb: Reconnect backoff now applies ±25% jitter so scaled-out service instances
+  that lose their connection together (server restart, failover) don't
+  reconnect as one synchronized wave.
+
 ## 0.3.1
 
 ### Patch Changes

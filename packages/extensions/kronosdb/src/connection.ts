@@ -9,6 +9,7 @@ import {
   QueryServiceDefinition,
   EventStoreDefinition,
   SnapshotStoreDefinition,
+  SchedulerServiceDefinition,
 } from "./service-definitions.js"
 
 /**
@@ -72,6 +73,8 @@ export interface KronosDbConnection {
   readonly eventStore: Client<typeof EventStoreDefinition>
   /** Snapshot store client. */
   readonly snapshotStore: Client<typeof SnapshotStoreDefinition>
+  /** Scheduler client — server-side scheduled appends. */
+  readonly scheduler: Client<typeof SchedulerServiceDefinition>
   /** The resolved configuration. `servers` and `ssl` stay optional — they have no defaults. */
   readonly config: Omit<Required<KronosDbConnectionConfig>, "servers" | "ssl"> & {
     servers?: KronosDbConnectionConfig["servers"]
@@ -162,6 +165,7 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
       queries: createClient(serviceDefinitions.queries, channel),
       eventStore: createClient(serviceDefinitions.eventStore, channel),
       snapshotStore: createClient(serviceDefinitions.snapshotStore, channel),
+      scheduler: createClient(serviceDefinitions.scheduler, channel),
     }
   }
 
@@ -174,6 +178,7 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
     get queries() { return clients.queries },
     get eventStore() { return clients.eventStore },
     get snapshotStore() { return clients.snapshotStore },
+    get scheduler() { return clients.scheduler },
     config: resolvedConfig,
 
     get state() { return state },
@@ -221,10 +226,14 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
             )
           }
 
-          const delay = Math.min(
+          const backoff = Math.min(
             resolvedConfig.reconnectIntervalMs * Math.pow(2, attempt - 1),
             30000,
           )
+          // ±25% jitter: after a server restart every instance of a scaled-out
+          // service loses its connection at the same instant, and identical
+          // backoff schedules would reconnect them as one synchronized wave.
+          const delay = backoff * (0.75 + Math.random() * 0.5)
           await new Promise((r) => setTimeout(r, delay))
         }
       }
