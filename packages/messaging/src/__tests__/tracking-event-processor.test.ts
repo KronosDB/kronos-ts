@@ -1,13 +1,13 @@
 import { describe, expect, it, beforeEach } from "bun:test"
 import { qn, emptyMetadata, type QualifiedName } from "@kronos-ts/common"
 import {
-  createTrackingEventProcessor,
+  trackingEventProcessor,
   propagatingErrorHandler,
   type TrackingEventProcessorOptions,
 } from "../tracking-event-processor.js"
 import type { StreamableEventSource, SequencedEvent, MessageStream } from "../event-source.js"
 import type { EventMessage } from "../message.js"
-import type { EventHandlerRegistration } from "../handler.js"
+import type { EventHandlerDefinition } from "../event-handler.js"
 import type { TokenStore } from "../token-store.js"
 import type { TrackingToken } from "../tracking-token.js"
 import { globalSequenceToken } from "../tracking-token.js"
@@ -130,13 +130,13 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ payload }) => { delivered.push(payload) },
       }
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [handler],
@@ -163,13 +163,13 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ payload }) => { delivered.push(payload) },
       }
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [handler],
@@ -197,7 +197,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [{
@@ -230,7 +230,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [{
@@ -270,7 +270,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [{
@@ -306,7 +306,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ payload }) => {
@@ -315,7 +315,7 @@ describe("TrackingEventProcessor", () => {
         },
       }
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [handler],
@@ -346,7 +346,7 @@ describe("TrackingEventProcessor", () => {
       const eventSource = createInMemoryEventSource(events)
 
       let thrown = false
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ sequence }: any) => {
@@ -358,7 +358,7 @@ describe("TrackingEventProcessor", () => {
         },
       }
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [handler],
@@ -416,13 +416,13 @@ describe("TrackingEventProcessor", () => {
         },
       }
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ payload }) => { delivered.push(payload) },
       }
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [handler],
@@ -462,7 +462,7 @@ describe("TrackingEventProcessor", () => {
       const tokenStore = createRecordingTokenStore()
       const eventSource = createInMemoryEventSource(events)
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [{
@@ -494,7 +494,7 @@ describe("TrackingEventProcessor", () => {
     it("throws when resetting while running", async () => {
       // given
       const eventSource = createInMemoryEventSource([])
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [],
@@ -520,7 +520,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: (_payload) => {
@@ -528,7 +528,7 @@ describe("TrackingEventProcessor", () => {
         },
       }
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [handler],
@@ -562,7 +562,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [{
@@ -599,7 +599,7 @@ describe("TrackingEventProcessor", () => {
     it("exposes name and running state", async () => {
       // given
       const eventSource = createInMemoryEventSource([])
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "my-processor",
         eventSource,
         eventHandlers: [],
@@ -620,7 +620,7 @@ describe("TrackingEventProcessor", () => {
     it("is not replaying when freshly created", () => {
       // given
       const eventSource = createInMemoryEventSource([])
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "test-processor",
         eventSource,
         eventHandlers: [],
@@ -639,12 +639,12 @@ describe("TrackingEventProcessor", () => {
         makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
       ]
       const eventSource = createInMemoryEventSource(events)
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: () => {},
       }
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "balances",
         eventSource,
         eventHandlers: [handler],
@@ -669,7 +669,7 @@ describe("TrackingEventProcessor", () => {
       let failOnce = true
       const events = [makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n)]
       const eventSource = createInMemoryEventSource(events)
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: () => {
@@ -681,7 +681,7 @@ describe("TrackingEventProcessor", () => {
       }
       // No DLQ + propagating handler → the batch rolls back and redelivers, so
       // the first failure surfaces in status().error, then clears on the retry.
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "balances",
         eventSource,
         eventHandlers: [handler],
@@ -700,7 +700,7 @@ describe("TrackingEventProcessor", () => {
     })
 
     it("reports not-running before start", () => {
-      const processor = createTrackingEventProcessor({
+      const processor = trackingEventProcessor({
         name: "balances",
         eventSource: createInMemoryEventSource([]),
         eventHandlers: [],

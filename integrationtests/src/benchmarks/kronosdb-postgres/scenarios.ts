@@ -2,7 +2,7 @@ import { z } from "zod"
 import { emptyMetadata, qn, tag, type Metadata } from "@kronos-ts/common"
 import {
   EventCriteria,
-  createTrackingEventProcessor,
+  trackingEventProcessor,
   event,
   eventHandler,
   type EventMessage,
@@ -503,7 +503,7 @@ async function catchupPass(
     deliveries++
     seen.add(payload.ordinal)
   })
-  const processor = createTrackingEventProcessor({
+  const processor = trackingEventProcessor({
     name,
     eventSource: store,
     eventHandlers: [handler],
@@ -590,7 +590,7 @@ async function runLive(harness: BackendHarness, options: BenchmarkOptions): Prom
     pending.delete(identifier)
     entry.resolve(performance.now() - entry.startedAt)
   })
-  const processor = createTrackingEventProcessor({
+  const processor = trackingEventProcessor({
     name: `live-${harness.name}`,
     eventSource: harness.store,
     eventHandlers: [handler],

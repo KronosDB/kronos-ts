@@ -4,10 +4,10 @@ import { GenericContainer, Wait, type StartedTestContainer } from "testcontainer
 import { jsonSerializer } from "@kronos-ts/messaging"
 import type { EventStore } from "@kronos-ts/eventsourcing"
 import { descriptorBasedTagResolver } from "@kronos-ts/eventsourcing"
-import { connectToKronosDb, createKronosDbEventStore, type KronosDbConnection } from "@kronos-ts/kronosdb"
+import { connectToKronosDb, kronosDbEventStore, type KronosDbConnection } from "@kronos-ts/kronosdb"
 import {
   bootstrapSchema,
-  createPostgresEventStore,
+  postgresEventStore,
   type PostgresAdapter,
 } from "@kronos-ts/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
@@ -101,7 +101,7 @@ async function startKronosDb(options: BenchmarkOptions): Promise<BackendHarness>
       port: container.getMappedPort(50051),
       context: "default",
     })
-    const store = createKronosDbEventStore(connection, jsonSerializer())
+    const store = kronosDbEventStore(connection, jsonSerializer())
     const metadata: BackendMetadata = {
       backend: "kronosdb",
       image: options.kronosdbImage,
@@ -161,7 +161,7 @@ async function startPostgres(options: BenchmarkOptions): Promise<BackendHarness>
       throw new Error(`Postgres durability is not strict: fsync=${fsync}, synchronous_commit=${synchronousCommit}`)
     }
 
-    const store = createPostgresEventStore({
+    const store = postgresEventStore({
       adapter,
       serializer: jsonSerializer(),
       tagResolver: descriptorBasedTagResolver(),

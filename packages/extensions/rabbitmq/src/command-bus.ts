@@ -1,6 +1,10 @@
 import type { CommandBus, CommandMessage } from "@kronos-ts/messaging"
 import { qualifiedNameToString } from "@kronos-ts/common"
-import { runInNewUoW } from "@kronos-ts/messaging"
+import {
+  correlationDataDispatchInterceptor,
+  interceptingCommandBus,
+  runInNewUoW,
+} from "@kronos-ts/messaging"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
 
 export interface RabbitMqCommandEnvelope {
@@ -36,11 +40,50 @@ export interface RabbitMqCommandBusOptions {
   readonly config: RabbitMqResolvedConfig
 }
 
-export function createRabbitMqCommandBus(options: RabbitMqCommandBusOptions): CommandBus {
+/**
+ * A RabbitMQ-routed command bus.
+ *
+ * ## Correlation lineage and the interceptor layer
+ *
+ * The returned bus is wrapped in {@link interceptingCommandBus} carrying
+ * {@link correlationDataDispatchInterceptor}, so the interceptor chain sits
+ * OUTSIDE the local-vs-remote routing decision below.
+ *
+ * That ordering is AxonFramework's, not an invention here. In AF4,
+ * `DistributedCommandBus.dispatch` reads
+ * `CommandMessage<? extends C> interceptedCommand = intercept(command);`
+ * and only then calls `commandRouter.findDestination(...)`; `AxonServerCommandBus.dispatch`
+ * is literally `doDispatch(dispatchInterceptors.intercept(commandMessage), cb)`.
+ * In AF5 the same property is expressed by decorator order —
+ * `InterceptingCommandBus.DECORATION_ORDER` vs
+ * `DistributedCommandBusConfigurationEnhancer.DISTRIBUTED_COMMAND_BUS_ORDER =
+ * DECORATION_ORDER - 50` — which stacks the buses as
+ * `InterceptingCommandBus → DistributedCommandBus → SimpleCommandBus`.
+ * Interception happens once, at the top, and therefore covers BOTH branches.
+ *
+ * Wrapping outside is what fixes the lineage defect: `dispatch()` routes either
+ * to `localSegment` or to the broker, and only the local branch used to reach an
+ * interceptor (the app's default bus is an intercepting one). A command routed
+ * over the broker left with no `correlationId` / `causationId` at all.
+ *
+ * Double application is harmless. When `localSegment` is the app's default bus
+ * the interceptor runs a second time inside it, but
+ * `correlationDataDispatchInterceptor` reads the SAME correlation data off the
+ * SAME active UnitOfWork and merges it with `mergeMetadata`, which is
+ * `{ ...base, ...override }` — re-merging identical keys with identical values
+ * is a no-op. AF makes the same trade: `AxonServerCommandBus` deliberately does
+ * not propagate `registerDispatchInterceptor` to its local segment, but nothing
+ * guards a user who registers on both.
+ *
+ * Note that handler interceptors are NOT part of this wrap — inbound commands
+ * from the broker are handled through `localSegment.subscribe`, which keeps
+ * whatever handler interception the app installed.
+ */
+export function rabbitMqCommandBus(options: RabbitMqCommandBusOptions): CommandBus {
   const localHandlers = new Set<string>()
   const { localSegment, transport, config } = options
 
-  return {
+  const routing: CommandBus = {
     async dispatch(message: CommandMessage): Promise<unknown> {
       const commandName = qualifiedNameToString(message.name)
       const preferLocal = config.commands.preferLocalHandlers && !config.commands.alwaysUseDistributedBus
@@ -78,6 +121,10 @@ export function createRabbitMqCommandBus(options: RabbitMqCommandBusOptions): Co
       })
     },
   }
+
+  const bus = interceptingCommandBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
 }
 
 function serializeError(error: unknown): RabbitMqCommandReplyEnvelope["error"] {

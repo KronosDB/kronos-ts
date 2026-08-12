@@ -49,7 +49,7 @@ export interface StateManager {
   ): Promise<LoadResult<S>>
 }
 
-export function createStateManager(): StateManager {
+export function stateManager(): StateManager {
   const repositories = new Map<string, StateRepository>()
 
   return {

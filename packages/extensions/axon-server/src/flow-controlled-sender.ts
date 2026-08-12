@@ -27,7 +27,7 @@ export interface FlowControlledSender<T> {
  * @param send Function called to actually send an update downstream.
  * @param maxBufferSize Maximum number of updates to buffer. Default: 256.
  */
-export function createFlowControlledSender<T>(
+export function flowControlledSender<T>(
   send: (value: T) => void,
   onComplete?: () => void,
   onError?: (error: Error) => void,

@@ -31,7 +31,7 @@ export interface EventStoreTransaction {
  * Creates an EventStoreTransaction that buffers events and notifies
  * registered callbacks.
  */
-export function createEventStoreTransaction(): EventStoreTransaction {
+export function eventStoreTransaction(): EventStoreTransaction {
   const events: EventMessage[] = []
   const appendCallbacks: Array<(event: EventMessage) => void> = []
 

@@ -13,7 +13,7 @@ import type { SourcingResult } from "./event-store.js"
  * Read operations (source, open, getHeadPosition) pass through to
  * the delegate without interception.
  */
-export function createInterceptingEventStore(
+export function interceptingEventStore(
   delegate: EventStore,
   dispatchInterceptors: ReadonlyArray<DispatchInterceptor<EventMessage>>,
 ): EventStore {

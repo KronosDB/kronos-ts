@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn } from "@kronos-ts/common"
 import { event, query, command } from "../descriptor.js"
-import { on, onEvent } from "../handler.js"
+import { on } from "../handler.js"
 import { commandHandler } from "../command-handler.js"
 import { eventHandler } from "../event-handler.js"
 import { queryHandler } from "../query-handler.js"
@@ -24,16 +24,47 @@ const GetCourse = query({
   payload: z.object({ courseId: z.string() }),
 })
 
+// `on()` registers TWO things and only two: evolvers (event descriptor) and
+// query handlers (query descriptor). Event handlers are declared with
+// `eventHandler(...)` — see the eventHandler() block below.
 describe("on()", () => {
-  it("creates an event handler registration", () => {
-    const reg = on(CourseCreated, async ({ payload }) => {
-      // event is typed as { courseId: string, name: string }
-      payload.courseId
-      payload.name
-    })
+  type CourseState = { name: string; capacity: number }
 
-    expect(reg.kind).toBe("event-handler")
+  const courseCreatedMessage = {
+    kind: "event" as const,
+    identifier: "evt-1",
+    name: CourseCreated.name,
+    version: CourseCreated.version,
+    payload: { courseId: "cs-101", name: "Intro" },
+    metadata: {},
+    timestamp: Date.now(),
+    tags: [],
+  }
+
+  it("creates an evolver registration for an event descriptor", () => {
+    const reg = on(CourseCreated, (state: CourseState, { payload }) => ({
+      ...state,
+      name: payload.name,
+    }))
+
+    expect(reg.kind).toBe("evolver")
     expect(reg.descriptor).toBe(CourseCreated)
+
+    const evolved = reg.evolve({ name: "", capacity: 0 }, courseCreatedMessage)
+    expect(evolved).toEqual({ name: "Intro", capacity: 0 })
+  })
+
+  it("supports async evolvers", async () => {
+    const reg = on(CourseCreated, async (state: CourseState, { payload }) => ({
+      ...state,
+      name: payload.name,
+    }))
+
+    expect(reg.kind).toBe("evolver")
+    await expect(reg.evolve({ name: "", capacity: 0 }, courseCreatedMessage)).resolves.toEqual({
+      name: "Intro",
+      capacity: 0,
+    })
   })
 
   it("creates a query handler registration", () => {
@@ -44,33 +75,21 @@ describe("on()", () => {
     expect(reg.kind).toBe("query-handler")
     expect(reg.descriptor).toBe(GetCourse)
   })
-})
 
-describe("onEvent()", () => {
-  it("creates an evolver registration", () => {
-    type CourseState = { name: string; capacity: number }
-
-    const reg = onEvent<CourseState, typeof CourseCreated.payload>(
-      CourseCreated,
-      (state, { payload }) => ({ ...state, name: payload.name }),
-    )
+  it("never produces an event handler — an event descriptor always yields an evolver", () => {
+    // The single-parameter callback that used to select the (now deleted)
+    // event-handler overload produces an evolver like any other: kind
+    // "evolver", an `evolve` function, and NO `handler` property. The old
+    // implementation returned a chimera carrying both — that hack is gone.
+    // @ts-expect-error — `on()` has no event-handler overload; a one-param
+    // callback no longer typechecks as an evolver.
+    const reg = on(CourseCreated, async ({ payload }) => {
+      void payload
+    })
 
     expect(reg.kind).toBe("evolver")
-    expect(reg.descriptor).toBe(CourseCreated)
-
-    const evolved = reg.evolve(
-      { name: "", capacity: 0 },
-      {
-        identifier: "evt-1",
-        name: CourseCreated.name,
-        version: CourseCreated.version,
-        payload: { courseId: "cs-101", name: "Intro" },
-        metadata: {},
-        timestamp: Date.now(),
-        tags: [],
-      },
-    )
-    expect(evolved.name).toBe("Intro")
+    expect("handler" in reg).toBe(false)
+    expect(typeof (reg as { evolve: unknown }).evolve).toBe("function")
   })
 })
 

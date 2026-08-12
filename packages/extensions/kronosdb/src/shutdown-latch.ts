@@ -20,7 +20,7 @@ export class ShutdownInProgressError extends Error {
   }
 }
 
-export function createShutdownLatch(): ShutdownLatch {
+export function shutdownLatch(): ShutdownLatch {
   let activeCount = 0
   let shuttingDown = false
   let drainResolve: (() => void) | null = null

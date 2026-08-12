@@ -26,11 +26,11 @@ export {
 
 export {
   type EventStoreTransaction,
-  createEventStoreTransaction,
+  eventStoreTransaction,
 } from "./event-store-transaction.js"
 
 export {
-  createInMemoryEventStore,
+  inMemoryEventStore,
   AppendConditionError,
 } from "./in-memory-event-store.js"
 
@@ -43,7 +43,7 @@ export {
   multiTagResolver,
 } from "./tag-resolver.js"
 
-export { createEventSourcedRepository } from "./event-sourced-repository.js"
+export { eventSourcedRepository } from "./event-sourced-repository.js"
 export type { EventSourcedRepositoryOptions } from "./event-sourced-repository.js"
 
 export {
@@ -57,10 +57,10 @@ export {
 export {
   type Snapshot,
   type SnapshotStore,
-  createInMemorySnapshotStore,
+  inMemorySnapshotStore,
 } from "./snapshot-store.js"
 
-export { createInterceptingEventStore } from "./intercepting-event-store.js"
+export { interceptingEventStore } from "./intercepting-event-store.js"
 
 // Handler capabilities are reached via the HandlerContext (second handler
 // argument in @kronos-ts/messaging). The implementations stay in this package

@@ -1,5 +1,5 @@
 /**
- * createPostgresEventScheduler — durable {@link EventScheduler} backed by
+ * postgresEventScheduler — durable {@link EventScheduler} backed by
  * the kronos_scheduled_events table, plus a polling worker that fires
  * due schedules into the event store.
  *
@@ -113,7 +113,7 @@ interface ScheduleRow {
   [key: string]: unknown
 }
 
-export function createPostgresEventScheduler(
+export function postgresEventScheduler(
   config: PostgresEventSchedulerConfig,
 ): PostgresEventScheduler {
   const { adapter, eventStore, uowFactory, tagResolver } = config

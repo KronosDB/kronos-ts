@@ -25,3 +25,27 @@ jobs:
 
       - name: Unit tests
         run: bun run test:unit
+
+  integration:
+    runs-on: ubuntu-latest
+    # The gate that was missing all along: integrationtests/** is excluded from
+    # both tsconfig and test:unit, so without this job a broken integration
+    # test ships green. Runs real backends via testcontainers.
+    permissions:
+      contents: read
+      packages: read   # ghcr.io/kronosdb/kronosdb image pull
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Log in to GHCR (kronosdb image)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - run: bun install --frozen-lockfile
+
+      - name: Integration tests (live postgres, RabbitMQ, Axon Server, KronosDB)
+        run: bun test integrationtests
+        timeout-minutes: 15

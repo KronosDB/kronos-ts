@@ -1,13 +1,10 @@
 /**
- * Plan 09-01 Task 3 — unskips the original Plan 08-04 deferred coverage.
- *
- * Original test (deleted with EventSourcingConfigurer.messaging(...)
- * legacy handler-registration chain in Plan 08-04) covered the full flow:
+ * The full flow:
  *   command -> event store -> tracking processor -> projection -> query handler.
  *
- * Resolution path: kronos() exposes the full primitive set required —
- * `app.processors(trackingProcessor(...).build())` for the explicit
- * processor module surface.
+ * Composition: one `module(...)` whose flat registration list carries the state,
+ * the command handlers, the query handler and the processor module — each is
+ * told apart by the `kind` it already carries, so there are no typed buckets.
  */
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
@@ -23,7 +20,7 @@ import {
   trackingProcessor,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { kronos } from "@kronos-ts/app"
+import { kronos, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
 
@@ -77,31 +74,32 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
     })
     const getStudent = queryHandler(GetStudent, async ({ payload: p }) => view.get(p.studentId))
 
-    const running = await kronos({ quiet: true })
-      .states(Student)
-      .commands(enrollStudent)
-      .queries(getStudent)
-      .processors(
-        trackingProcessor("student-projection")
-          .eventHandlers(onStudentEnrolled)
-          .build(),
-      )
-      .start()
+    const app = kronos({
+      modules: [
+        module(
+          "uni",
+          Student,
+          enrollStudent,
+          getStudent,
+          trackingProcessor("student-projection").eventHandlers(onStudentEnrolled).build(),
+        ),
+      ],
+    })
     try {
-      await running.commandGateway.send(
+      await app.commandGateway.send(
         EnrollStudent,
         { studentId: "s-1", name: "Alice" },
         emptyMetadata(),
       )
       await waitFor(() => view.has("s-1"))
-      const result = await running.queryGateway.query(
+      const result = await app.queryGateway.query(
         GetStudent,
         { studentId: "s-1" },
         emptyMetadata(),
       )
       expect(result).toEqual({ studentId: "s-1", name: "Alice" })
     } finally {
-      await running.stop()
+      await app.stop()
     }
   })
 
@@ -111,25 +109,26 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
       view.set(e.studentId, { studentId: e.studentId, name: e.name })
     })
 
-    const running = await kronos({ quiet: true })
-      .states(Student)
-      .commands(enrollStudent)
-      .processors(
-        trackingProcessor("student-projection")
-          .eventHandlers(onStudentEnrolled)
-          .build(),
-      )
-      .start()
+    const app = kronos({
+      modules: [
+        module(
+          "uni",
+          Student,
+          enrollStudent,
+          trackingProcessor("student-projection").eventHandlers(onStudentEnrolled).build(),
+        ),
+      ],
+    })
     try {
-      await running.commandGateway.send(EnrollStudent, { studentId: "s-1", name: "Alice" }, emptyMetadata())
-      await running.commandGateway.send(EnrollStudent, { studentId: "s-2", name: "Bob" }, emptyMetadata())
-      await running.commandGateway.send(EnrollStudent, { studentId: "s-3", name: "Carol" }, emptyMetadata())
+      await app.commandGateway.send(EnrollStudent, { studentId: "s-1", name: "Alice" }, emptyMetadata())
+      await app.commandGateway.send(EnrollStudent, { studentId: "s-2", name: "Bob" }, emptyMetadata())
+      await app.commandGateway.send(EnrollStudent, { studentId: "s-3", name: "Carol" }, emptyMetadata())
       await waitFor(() => view.size === 3)
       expect(view.get("s-1")?.name).toBe("Alice")
       expect(view.get("s-2")?.name).toBe("Bob")
       expect(view.get("s-3")?.name).toBe("Carol")
     } finally {
-      await running.stop()
+      await app.stop()
     }
   })
 
@@ -157,23 +156,27 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
       renamed.push(e.studentId)
     })
 
-    const running = await kronos({ quiet: true })
-      .states(Student)
-      .commands(enrollStudent, renameStudent)
-      .processors(
-        trackingProcessor("multi-slice-projection")
-          .eventHandlers(onStudentEnrolled, onStudentRenamed)
-          .build(),
-      )
-      .start()
+    const app = kronos({
+      modules: [
+        module(
+          "uni",
+          Student,
+          enrollStudent,
+          renameStudent,
+          trackingProcessor("multi-slice-projection")
+            .eventHandlers(onStudentEnrolled, onStudentRenamed)
+            .build(),
+        ),
+      ],
+    })
     try {
-      await running.commandGateway.send(EnrollStudent, { studentId: "m-1", name: "Mia" }, emptyMetadata())
-      await running.commandGateway.send(SecondCmd, { studentId: "m-1", newName: "Maria" }, emptyMetadata())
+      await app.commandGateway.send(EnrollStudent, { studentId: "m-1", name: "Mia" }, emptyMetadata())
+      await app.commandGateway.send(SecondCmd, { studentId: "m-1", newName: "Maria" }, emptyMetadata())
       await waitFor(() => enrolled.includes("m-1") && renamed.includes("m-1"))
       expect(enrolled).toContain("m-1")
       expect(renamed).toContain("m-1")
     } finally {
-      await running.stop()
+      await app.stop()
     }
   })
 })

@@ -60,11 +60,9 @@ export {
 // Handler capabilities (load/append/send/emitUpdate/schedule/transaction) are
 // reached via the HandlerContext passed to every handler — see handler-context.ts.
 export {
-  type EventHandlerRegistration,
   type EvolverRegistration,
   type QueryHandlerRegistration,
   on,
-  onEvent,
 } from "./handler.js"
 
 // Command handlers
@@ -135,29 +133,29 @@ export { type CommandBus } from "./command-bus.js"
 export { type QueryBus } from "./query-bus.js"
 
 // Bus implementations
-export { createSimpleCommandBus } from "./simple-command-bus.js"
-export { createSimpleQueryBus } from "./simple-query-bus.js"
+export { simpleCommandBus } from "./simple-command-bus.js"
+export { simpleQueryBus } from "./simple-query-bus.js"
 
 // Intercepting bus decorators
-export { createInterceptingCommandBus } from "./intercepting-command-bus.js"
-export { createInterceptingQueryBus } from "./intercepting-query-bus.js"
+export { interceptingCommandBus } from "./intercepting-command-bus.js"
+export { interceptingQueryBus } from "./intercepting-query-bus.js"
 
 // Tracing bus decorators
-export { createTracingCommandBus } from "./tracing-command-bus.js"
+export { tracingCommandBus } from "./tracing-command-bus.js"
 
 // Gateways
 export {
   type CommandGateway,
   type QueryGateway,
-  createCommandGateway,
-  createQueryGateway,
+  commandGateway,
+  queryGateway,
 } from "./gateway.js"
 
 // Subscription queries
 export {
   type SubscriptionQueryResult,
   type UpdateHandler,
-  createUpdateHandler,
+  updateHandler,
   runAfterCommitOrImmediately,
 } from "./subscription-query.js"
 
@@ -176,16 +174,16 @@ export { type EventSink } from "./event-sink.js"
 export {
   type SubscribableEventSource,
   type EventBus,
-  createSimpleEventBus,
+  simpleEventBus,
 } from "./event-bus.js"
 
 // Intercepting event bus decorator
-export { createInterceptingEventBus } from "./intercepting-event-bus.js"
+export { interceptingEventBus } from "./intercepting-event-bus.js"
 
 // Event gateway
 export {
   type EventGateway,
-  createEventGateway,
+  eventGateway,
 } from "./event-gateway.js"
 
 // Event processor common control + status surface (AF5 EventProcessor analog)
@@ -197,7 +195,7 @@ export {
   type StreamableEventSource,
   type StreamingCondition,
   type MessageStream,
-  createMessageStream,
+  messageStream,
   emptyMessageStream,
   failedMessageStream,
 } from "./event-source.js"
@@ -208,7 +206,7 @@ export {
   type TrackingEventProcessorOptions,
   type EventProcessingErrorHandler,
   propagatingErrorHandler,
-  createTrackingEventProcessor,
+  trackingEventProcessor,
 } from "./tracking-event-processor.js"
 
 // Segments
@@ -222,14 +220,14 @@ export {
   isMergeable,
   segmentCount,
   hashOf,
-  createSegments,
+  segments,
 } from "./segment.js"
 
 // Token store
 export {
   type TokenStore,
   UnableToClaimTokenError,
-  createInMemoryTokenStore,
+  inMemoryTokenStore,
 } from "./token-store.js"
 
 // Tracking tokens
@@ -277,7 +275,7 @@ export {
 export {
   type RetryPolicy,
   exponentialBackoffRetryPolicy,
-  createRetryingCommandBus,
+  retryingCommandBus,
 } from "./retrying-command-bus.js"
 
 // Module-level handler helpers (Plan 04-01 / HDL-02 / D-42)
@@ -304,13 +302,13 @@ export {
 export {
   type InMemoryEventScheduler,
   type InMemoryEventSchedulerOptions,
-  createInMemoryEventScheduler,
+  inMemoryEventScheduler,
 } from "./in-memory-event-scheduler.js"
 
 // Modules — Plan 08-03a (D-82): function-style helpers replace Module-shape factories
 export {
   registerCommandHandlersNatively,
-  createCommandInvocation,
+  commandInvocation,
   type MinimalConfiguration,
 } from "./command-handling-module.js"
 export { registerQueryHandlersNatively } from "./query-handling-module.js"
@@ -319,14 +317,14 @@ export { registerQueryHandlersNatively } from "./query-handling-module.js"
 export {
   type SubscribingEventProcessor,
   type SubscribingEventProcessorOptions,
-  createSubscribingEventProcessor,
+  subscribingEventProcessor,
 } from "./subscribing-event-processor.js"
 
 // Streaming event processor
 export {
   type StreamingEventProcessor,
   type StreamingEventProcessorOptions,
-  createStreamingEventProcessor,
+  streamingEventProcessor,
 } from "./streaming-event-processor.js"
 
 // Dead letter queue
@@ -335,8 +333,8 @@ export {
   type EnqueueDecision,
   type EnqueuePolicy,
   type SequencedDeadLetterQueue,
-  createDeadLetter,
-  createInMemoryDeadLetterQueue,
+  deadLetter,
+  inMemoryDeadLetterQueue,
   DeadLetterQueueOverflowError,
 } from "./dead-letter-queue.js"
 
@@ -352,7 +350,7 @@ export {
 // Dead-lettering event delivery
 export {
   type DeadLetteringOptions,
-  createDeadLetteringDelivery,
+  deadLetteringDelivery,
 } from "./dead-lettering-handler.js"
 
 // Dead-letter reprocessing
@@ -360,7 +358,7 @@ export {
   type DeadLetterReprocessor,
   type DeadLetterReprocessorOptions,
   type DeadLetterReplay,
-  createDeadLetterReprocessor,
+  deadLetterReprocessor,
 } from "./dead-letter-reprocessor.js"
 
 // Dead-letter observability
@@ -393,9 +391,9 @@ export {
   type SchemaRegistry,
   jsonSerializer,
   zodValidatingSerializer,
-  createEventSchemaRegistry,
-  createCommandSchemaRegistry,
-  createQuerySchemaRegistry,
+  eventSchemaRegistry,
+  commandSchemaRegistry,
+  querySchemaRegistry,
 } from "./serializer.js"
 
 // Message monitors
@@ -408,7 +406,7 @@ export {
 
 export {
   type MessageMonitorRegistry,
-  createMessageMonitorRegistry,
+  messageMonitorRegistry,
 } from "./message-monitor-registry.js"
 
 // Tracing (core abstractions)

@@ -2,20 +2,23 @@ import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn } from "@kronos-ts/common"
 import { command } from "@kronos-ts/messaging"
-import { createSimpleCommandBus } from "@kronos-ts/messaging"
-import { createRabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
-import { resolveRabbitMqConfig } from "../rabbitmq.js"
+import { simpleCommandBus } from "@kronos-ts/messaging"
+import { rabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
+import { resolveRabbitMqConfig, type RabbitMqConfig } from "../rabbitmq.js"
+import type { RabbitMqIdentity } from "../topology.js"
 
 const DoThing = command({
   name: qn("test", "DoThing"),
   payload: z.object({ id: z.string() }),
 })
 
-function appStub(overrides: any = {}) {
-  return {
-    identity: { serviceName: "svc", instanceId: "inst" },
-    ...overrides,
-  } as any
+const DEFAULT_IDENTITY: RabbitMqIdentity = { serviceName: "svc", instanceId: "inst" }
+
+function rabbitConfig(
+  config: Omit<RabbitMqConfig, "identity">,
+  identity: RabbitMqIdentity = DEFAULT_IDENTITY,
+) {
+  return resolveRabbitMqConfig({ identity, ...config })
 }
 
 function recordingTransport() {
@@ -35,12 +38,12 @@ function recordingTransport() {
 
 describe("RabbitMQ command bus", () => {
   it("prefers local handlers by default", async () => {
-    const local = createSimpleCommandBus()
+    const local = simpleCommandBus()
     const { transport, dispatched } = recordingTransport()
-    const bus = createRabbitMqCommandBus({
+    const bus = rabbitMqCommandBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
+      config: rabbitConfig({ url: "amqp://test" }),
     })
 
     bus.subscribe("test.DoThing", async () => "local-ok")
@@ -58,12 +61,12 @@ describe("RabbitMQ command bus", () => {
   })
 
   it("routes through transport when distributed routing is forced", async () => {
-    const local = createSimpleCommandBus()
+    const local = simpleCommandBus()
     const { transport, dispatched } = recordingTransport()
-    const bus = createRabbitMqCommandBus({
+    const bus = rabbitMqCommandBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), {
+      config: rabbitConfig({
         url: "amqp://test",
         commands: { alwaysUseDistributedBus: true },
       }),
@@ -84,12 +87,12 @@ describe("RabbitMQ command bus", () => {
   })
 
   it("carries command metadata across the transport envelope", async () => {
-    const local = createSimpleCommandBus()
+    const local = simpleCommandBus()
     const { transport, dispatched } = recordingTransport()
-    const bus = createRabbitMqCommandBus({
+    const bus = rabbitMqCommandBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), {
+      config: rabbitConfig({
         url: "amqp://test",
         commands: { alwaysUseDistributedBus: true },
       }),
@@ -112,12 +115,12 @@ describe("RabbitMQ command bus", () => {
   })
 
   it("handles an inbound command in its own UnitOfWork", async () => {
-    const local = createSimpleCommandBus()
+    const local = simpleCommandBus()
     const { transport, subscriptions } = recordingTransport()
-    const bus = createRabbitMqCommandBus({
+    const bus = rabbitMqCommandBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
+      config: rabbitConfig({ url: "amqp://test" }),
     })
 
     bus.subscribe("test.DoThing", async (message) => `handled:${(message.payload as { id: string }).id}`)

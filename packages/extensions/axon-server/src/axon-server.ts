@@ -1,34 +1,55 @@
 /**
- * Native Axon Server extension (Phase 9, D-95 / D-101 / D-102).
+ * Axon Server backend for kronos.
  *
- * Replaces the legacy enhancer surface (now deleted) with a
- * `(app: App) => void` extension that:
+ * `axonServer(config)` is an async factory: it connects eagerly, hands back
+ * the four components it provides (eventStore, snapshotStore, commandBus,
+ * queryBus), and gives you a `start`/`close` pair. There is no lifecycle
+ * framework — the ordering that used to be encoded as `onStart("connect")` /
+ * `onStart("processors")` / `onStop("connect")` is now three lines you write
+ * in your composition root:
  *
- *   - populates four typed slots (eventStore, snapshotStore, commandBus,
- *     queryBus) via app.set(...) using the canonical Resolved slot names
- *     (in particular `resolved.unitOfWorkFactory`, NOT `unitOfWorkRunner`);
- *   - wires connect-stage transport bring-up under the @kronos-ts/common
- *     resilience helper (initial-connect + health-check + platform setup +
- *     instruction handlers + platform.start);
- *   - wires processors-stage subscription-ack wait via withRetry against
- *     `platform.subscriptionsAcked()` — REPLACES the 1-second sleep hack
- *     that lived at line 264 of the legacy file (D-102 — Axon equivalent);
- *   - reverses shutdown deterministically in a single onStop('connect') hook
- *     (busLatches → platform.stop → connection.close — D-101.b).
+ * ```ts
+ * const axon = await axonServer({
+ *   componentName: "university-service",
+ *   serializer,
+ *   unitOfWorkFactory,
+ * })
+ * const app = kronos({
+ *   components: { ...inMemoryComponents({ serializer, unitOfWorkFactory }), ...axon.components },
+ *   modules,
+ * })
+ * await axon.start()   // readiness barrier: the server can route to our handlers
+ * // …
+ * await app.stop(); await axon.close()
+ * ```
  *
- * Mirrors `kronosdb.ts` (Plan 09-03) STRUCTURALLY — same slot+lifecycle
- * pattern, same resilience helper, same shutdown ordering, same
- * subscription-ack derivation strategy — but preserves Axon-specific
- * protocol invariants byte-for-byte:
+ * Connecting before the app is built is what removes the lazy proxies and
+ * subscribe-buffering wrappers the container version needed: by the time
+ * `kronos` subscribes a handler, the gRPC streams are already live.
+ *
+ * REMOTE ADMINISTRATION IS NOT IN HERE. Processor instructions (pause / start /
+ * release / split / merge) and processor status reporting are the platform
+ * CONTROL PLANE — they are neither persistence nor transport, and lived here
+ * only because they share this gRPC connection. They are now an opt-in second
+ * object built on the platform stream this backend exposes:
+ *
+ * ```ts
+ * const control = await axonServerControlPlane(axon.platform, app.processors.values())
+ * ```
+ *
+ * `start()` therefore takes NO arguments and does exactly one thing: the
+ * data-path readiness barrier. See `control-plane.ts`.
+ *
+ * Axon-specific protocol invariants are preserved byte-for-byte:
  *
  *   - CLIENT_SUPPORTS_STREAMING capability advertised on every dispatched
  *     query via `defaultQueryInstructions(...)`;
  *   - AxonIQ-Context + AxonIQ-Access-Token gRPC metadata headers built by
  *     `createAxonMetadata(...)` and attached to every outbound stream/RPC;
  *   - permits-AFTER-subscriptions stream ordering preserved on the initial
- *     handshake AND on reconnect (legacy semantics in `ensureStreamStarted`
- *     issued permits before subscriptions; this implementation matches that
- *     exact ordering — see `ensureStreamStarted` / `reestablishStreamBody`).
+ *     handshake AND on reconnect (see `ensureStreamStarted` /
+ *     `reestablishStreamBody`);
+ *   - shutdown ordering: busLatches → platform.stop → connection.close.
  */
 import {
   qualifiedNameToString,
@@ -39,11 +60,9 @@ import {
   healthCheck,
   type ResilienceConfig,
 } from "@kronos-ts/common"
-import type { App } from "@kronos-ts/app"
 import type {
   CommandBus,
   CommandMessage,
-  EventProcessorModule,
   QueryBus,
   QueryMessage,
   SubscriptionFilter,
@@ -51,18 +70,25 @@ import type {
   UoWRunner,
   UpdateHandler,
 } from "@kronos-ts/messaging"
-import { applySubscriptionFilter, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import {
+  applySubscriptionFilter,
+  correlationDataDispatchInterceptor,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  updateHandler,
+  runAfterCommitOrImmediately,
+} from "@kronos-ts/messaging"
 import { Metadata } from "nice-grpc"
 import type { AxonServerConnectionConfig } from "./connection.js"
 import { connectToAxonServer, type AxonServerConnection } from "./connection.js"
-import { createAxonServerEventStore } from "./axon-server-event-store.js"
-import { createAxonServerSnapshotStore } from "./axon-server-snapshot-store.js"
+import { axonServerEventStore } from "./axon-server-event-store.js"
+import { axonServerSnapshotStore } from "./axon-server-snapshot-store.js"
 import { metadataToProto, metadataFromProto } from "./metadata-conversion.js"
-import { createOutboundStream } from "./outbound-stream.js"
+import { outboundStream } from "./outbound-stream.js"
 import { mapErrorCode, AxonServerErrorCode } from "./errors.js"
-import { createShutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
+import { shutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
 import {
-  createPlatformConnection,
+  platformConnection,
   type PlatformConnection,
   type PlatformServiceOptions,
 } from "./platform-service.js"
@@ -150,7 +176,7 @@ function createAxonMetadata(config: { context: string; token: string }): Metadat
   return metadata
 }
 
-export interface AxonServerExtensionConfig extends AxonServerConnectionConfig {
+export interface AxonServerConfig extends AxonServerConnectionConfig {
   /** Flow control for the command bus channel. */
   commandFlowControl?: FlowControlConfig
   /** Flow control for the query bus channel. */
@@ -187,336 +213,176 @@ export interface AxonServerExtensionConfig extends AxonServerConnectionConfig {
   /** Per-extension resilience config (D-100 / D-101). */
   resilience?: Partial<ResilienceConfig>
   /**
-   * Delay in ms after the platform-stream ack to give Axon Server's
-   * routing tables time to register the subscribe frames sent on the
-   * command/query streams. The platform stream cannot observe these (they
-   * travel on different streams). Default: 1000 — matches the legacy
-   * enhancer's wait. Tests against a freshly-booted server can tighten
-   * this once subscriptions are observed to land faster.
+   * How long `start()` waits for Axon Server's routing tables to register the
+   * subscribe frames sent on the command/query streams. This is the entire
+   * data-path readiness barrier.
+   *
+   * It is a timed wait rather than an observed signal because nothing on the
+   * client can observe it: subscribes travel on the bus streams, and the
+   * platform stream — which is where an ack would arrive — is a different
+   * stream that Axon Server holds open silently after `register`. Default:
+   * 1000, matching the legacy enhancer. Tests against a freshly-booted server
+   * can tighten this once subscriptions are observed to land faster.
    */
   busSubscriptionAckDelayMs?: number
 }
 
+/** The components an Axon Server backend provides. Spread into `kronos`. */
+export interface AxonServerComponents {
+  eventStore: ReturnType<typeof axonServerEventStore>
+  snapshotStore: ReturnType<typeof axonServerSnapshotStore>
+  commandBus: CommandBus
+  queryBus: QueryBus
+}
+
 /**
- * Native Axon Server extension factory. Returns an Extension closure shaped
- * as `(app: App) => void` per D-95.
- *
- * ```ts
- * await kronos()
- *   .use(axonServer({ componentName: "university-service" }))
- *   .start()
- * ```
+ * A live Axon Server backend: the components it provides plus the two calls
+ * that used to be lifecycle stages.
  */
-export function axonServer(serverConfig: AxonServerExtensionConfig): (app: App) => void {
-  return (app) => {
-    let connection: AxonServerConnection | undefined
-    let platform: PlatformConnection | undefined
-    const busLatches: ShutdownLatch[] = []
+/** Everything axonServer() needs: its own config plus the framework values it borrows. */
+export type AxonServerOptions = AxonServerConfig & { serializer: Serializer; unitOfWorkFactory: UoWRunner }
 
-    function getConnection(): AxonServerConnection {
-      if (!connection) {
-        throw new Error(
-          "[kronos:axon-server] connection not yet established — wait for onStart('connect')",
-        )
-      }
-      return connection
-    }
+export interface AxonServerBackend {
+  readonly components: AxonServerComponents
+  /**
+   * The platform stream. It is built here because the backend owns the gRPC
+   * connection it rides on and the `platformService` tuning that configures it.
+   *
+   * `start()` below brings it up for the DATA path — heartbeats and reconnect
+   * detection — via `platform.armConnectionMonitoring()`. What it deliberately
+   * does NOT do is arm processor status reporting or route instructions: that is
+   * remote administration, and it stays opt-in behind
+   * `axonServerControlPlane(axon.platform, …)`, which registers its handler and
+   * supplier and then calls `platform.start()` on this same live stream.
+   *
+   * An instruction that arrives before a control plane exists is buffered by the
+   * platform connection and drained on the first `onInstruction` registration,
+   * so opening the stream early costs nothing.
+   */
+  readonly platform: PlatformConnection
+  /**
+   * DATA-PATH START. Two things, both data path:
+   *
+   *   1. arm heartbeat-driven reconnect detection on the platform stream, and
+   *   2. wait until Axon Server can route to the handlers subscribed on the bus
+   *      streams.
+   *
+   * Call AFTER `kronos` — the subscribe frames must already be on the wire for
+   * the readiness wait to mean anything.
+   *
+   * Takes no arguments and arms no control-plane state.
+   */
+  start(): Promise<void>
+  /** Drain in-flight bus work, stop the platform stream, close the connection. */
+  close(): Promise<void>
+}
 
-    // ---- Slot population (D-95) -----------------------------------------
-    //
-    // AppImpl.start() in @kronos-ts/app eagerly resolves all 8 slots and
-    // runs `commandBus.subscribe(...)` for every registered handler BEFORE
-    // any onStart('connect') hook fires (see app.ts §3 / §5c). The Axon
-    // bus factories open real gRPC streams against the live channel during
-    // construction (createAxonMetadata / connection.onReconnect / inbound
-    // stream openers), so they CANNOT run until the connect hook has
-    // populated `connection`.
-    //
-    // Solution: the slot factories return wrappers around lazily-built
-    // inner instances. EventStore/SnapshotStore use a lightweight lazy
-    // proxy because their factories never dereference `connection` at
-    // construction time (only inside method bodies). CommandBus/QueryBus
-    // use a `subscribe()`-buffering wrapper that queues subscriptions
-    // synchronously and replays them once the connect hook completes —
-    // dispatch / query calls await the same readiness promise.
+/**
+ * Connect to Axon Server and build the components it backs.
+ *
+ * `serializer` and `unitOfWorkFactory` are arguments rather than slot lookups:
+ * the buses serialize payloads with the former and run every inbound command /
+ * query in the latter, so they must be the SAME instances the rest of the app
+ * uses. Pass the ones you hand to `kronos`.
+ */
+export async function axonServer(
+  options: AxonServerOptions,
+): Promise<AxonServerBackend> {
+  const config = options
+  const { serializer, unitOfWorkFactory, resilience } = config
 
-    /** Latches once the connect hook has populated `connection`. */
-    let resolveConnected: () => void = () => {}
-    const connected: Promise<void> = new Promise((res) => {
-      resolveConnected = res
-    })
+  const connection = await withRetry(async () => connectToAxonServer(config), {
+    event: "initial-connect",
+    ...resilience,
+  })
 
-    app.set("eventStore", (resolved) => {
-      // Lazy proxy: createAxonServerEventStore stores `connection` in
-      // closure scope but only dereferences it inside method bodies, so
-      // a Proxy that forwards property access to getConnection() works
-      // — by the time framework code calls source/append/stream the
-      // connect hook has populated the closure.
-      const lazyConnection = new Proxy({} as AxonServerConnection, {
-        get(_t, prop) {
-          return (getConnection() as any)[prop]
-        },
-      })
-      return createAxonServerEventStore(lazyConnection, resolved.serializer)
-    })
+  // Health-check ping with warn-then-continue (D-100). AxonServerConnection has
+  // no dedicated probe surface today; the gRPC channel itself is created
+  // eagerly in connectToAxonServer so the meaningful probe is a round-trip — we
+  // approximate via a soft no-op promise that satisfies the threshold contract.
+  // Real network failure is surfaced by the first bus call against the channel.
+  await healthCheck(async () => undefined, {
+    thresholdMs: resilience?.healthCheckThresholdMs,
+    log: resilience?.log,
+  })
 
-    app.set("snapshotStore", (resolved) => {
-      const lazyConnection = new Proxy({} as AxonServerConnection, {
-        get(_t, prop) {
-          return (getConnection() as any)[prop]
-        },
-      })
-      return createAxonServerSnapshotStore(lazyConnection, resolved.serializer)
-    })
+  // One latch per bus, drained in close() before the transport goes away.
+  const commandLatch = shutdownLatch()
+  const queryLatch = shutdownLatch()
+  const busLatches: ShutdownLatch[] = [commandLatch, queryLatch]
 
-    app.set("commandBus", (resolved) => {
-      const latch = createShutdownLatch()
-      busLatches.push(latch)
+  // The connection is live before anything below is built, so the buses open
+  // their gRPC streams for real and `subscribe()` reaches the wire immediately —
+  // no lazy proxy, no subscription buffering, no readiness promise.
+  const components: AxonServerComponents = {
+    eventStore: axonServerEventStore(connection, serializer),
+    snapshotStore: axonServerSnapshotStore(connection, serializer),
+    commandBus: distributedCommandBus(
+      connection,
+      unitOfWorkFactory,
+      commandLatch,
+      serializer,
+      config.commandFlowControl,
+      config.commandLoadFactor,
+      resilience,
+    ),
+    queryBus: distributedQueryBus(
+      connection,
+      unitOfWorkFactory,
+      queryLatch,
+      serializer,
+      config.queryFlowControl,
+      config.shortcutQueriesToLocalHandlers,
+      config.queryTimeoutMs,
+      resilience,
+    ),
+  }
 
-      let inner: CommandBus | undefined
-      const pendingSubs: Array<[string, (m: CommandMessage) => Promise<unknown>]> = []
+  // Built here, started by the control plane (or by the caller). Constructing it
+  // eagerly is what lets the control plane be a separate object at all — and it
+  // keeps `platformService` tuning and `stop()` ownership in one place, so the
+  // documented shutdown order below holds whether or not anyone opted in.
+  const platform = platformConnection(connection, config.platformService)
 
-      // Build the real bus once the connect hook fires + replay buffered subs.
-      connected.then(() => {
-        inner = createDistributedCommandBus(
-          getConnection(),
-          resolved.unitOfWorkFactory,
-          latch,
-          resolved.serializer,
-          serverConfig.commandFlowControl,
-          serverConfig.commandLoadFactor,
-          serverConfig.resilience,
-        )
-        for (const [name, h] of pendingSubs) inner.subscribe(name, h)
-        pendingSubs.length = 0
-      })
+  return {
+    components,
+    platform,
 
-      const wrapper: CommandBus = {
-        async dispatch(message) {
-          await connected
-          return inner!.dispatch(message)
-        },
-        subscribe(name, handler) {
-          if (inner) inner.subscribe(name, handler)
-          else pendingSubs.push([name, handler])
-        },
-      }
-      return wrapper
-    })
+    async start() {
+      // RECONNECT DETECTION IS DATA PATH. The heartbeat on the platform stream
+      // is what notices a dead channel and calls `connection.reconnect()`; both
+      // buses above hook `connection.onReconnect(...)` to rebuild their own
+      // streams. Arming it used to be a side effect of `platform.start()`, which
+      // only `axonServerControlPlane(...)` calls — so a service that never opted
+      // into remote administration had NO reconnect detection at all and would
+      // sit on a dead channel forever. It is armed here, unconditionally,
+      // independent of whether anyone administers this service.
+      //
+      // `armConnectionMonitoring()` opens the stream and starts heartbeats but
+      // arms NO processor status reporting; that stays the control plane's, and
+      // a later `platform.start()` adds it to this same live stream. Both calls
+      // are idempotent, so either order works.
+      await platform.armConnectionMonitoring()
 
-    app.set("queryBus", (resolved) => {
-      const latch = createShutdownLatch()
-      busLatches.push(latch)
+      // The only thing the data path has to wait for: Axon Server's
+      // command/query routing tables registering the subscribe frames sent on
+      // the BUS streams. It cannot be derived from the platform stream, because
+      // subscribes travel on a different stream entirely — and the platform
+      // stream's own `subscriptionsAcked()` latch says nothing about them (it
+      // latches unconditionally once `register` has been flushed; see
+      // platform-service.ts). So this barrier is the settle wait, and it is
+      // deliberately independent of whether the platform stream is up at all.
+      // The legacy enhancer carried the same 1s wait.
+      await new Promise((r) => setTimeout(r, config.busSubscriptionAckDelayMs ?? 1000))
+    },
 
-      let inner: QueryBus | undefined
-      const pendingSubs: Array<[string, (m: QueryMessage) => Promise<unknown>]> = []
-
-      connected.then(() => {
-        inner = createDistributedQueryBus(
-          getConnection(),
-          resolved.unitOfWorkFactory,
-          latch,
-          resolved.serializer,
-          serverConfig.queryFlowControl,
-          serverConfig.shortcutQueriesToLocalHandlers,
-          serverConfig.queryTimeoutMs,
-          serverConfig.resilience,
-        )
-        for (const [name, h] of pendingSubs) inner.subscribe(name, h)
-        pendingSubs.length = 0
-      })
-
-      const wrapper: QueryBus = {
-        async query(message) {
-          await connected
-          return inner!.query(message)
-        },
-        subscribe(name, handler) {
-          if (inner) inner.subscribe(name, handler)
-          else pendingSubs.push([name, handler])
-        },
-        subscriptionQuery(message, bufferSize) {
-          if (!inner) {
-            throw new Error(
-              "[kronos:axon-server] subscriptionQuery called before connect hook completed",
-            )
-          }
-          return inner.subscriptionQuery(message, bufferSize)
-        },
-        subscribeToUpdates(message, bufferSize) {
-          if (!inner) {
-            throw new Error(
-              "[kronos:axon-server] subscribeToUpdates called before connect hook completed",
-            )
-          }
-          return inner.subscribeToUpdates(message, bufferSize)
-        },
-        async emitUpdate(name, filter, update) {
-          await connected
-          return inner!.emitUpdate(name, filter, update)
-        },
-        async completeSubscription(name, filter) {
-          await connected
-          return inner!.completeSubscription(name, filter)
-        },
-        async completeSubscriptionExceptionally(name, error, filter) {
-          await connected
-          return inner!.completeSubscriptionExceptionally(name, error, filter)
-        },
-      }
-      return wrapper
-    })
-
-    // ---- Lifecycle: connect (D-101 normative split) ---------------------
-    // connect = initial connect + health-check + platform setup +
-    //           instruction wiring + platform.start.
-    app.onStart("connect", async () => {
-      connection = await withRetry(
-        async () => connectToAxonServer(serverConfig),
-        { event: "initial-connect", ...serverConfig.resilience },
-      )
-
-      // Health-check ping with warn-then-continue (D-100). AxonServerConnection
-      // has no dedicated probe surface today; the gRPC channel itself is
-      // created eagerly in connectToAxonServer so the meaningful probe is a
-      // round-trip — we approximate via a soft no-op promise that satisfies
-      // the threshold contract. Real network failure is surfaced by the
-      // first bus call against the live channel.
-      await healthCheck(async () => undefined, {
-        thresholdMs: serverConfig.resilience?.healthCheckThresholdMs,
-        log: serverConfig.resilience?.log,
-      })
-
-      platform = createPlatformConnection(connection!, serverConfig.platformService)
-
-      // Build a name-keyed view of the EventProcessorModule list so server-
-      // initiated instructions can route to the right module. We resolve via
-      // `app.processors()` — Plan 09-01's zero-arg read accessor (D-103).
-      const processors = app.processors()
-      const processorMap = new Map<string, EventProcessorModule>()
-      for (const proc of processors) processorMap.set(proc.name, proc)
-
-      platform.onInstruction(async (instruction) => {
-        switch (instruction.kind) {
-          case "pause-processor": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.stop) proc.stop()
-            break
-          }
-          case "start-processor": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.start) await proc.start()
-            break
-          }
-          case "release-segment": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.releaseSegment) await proc.releaseSegment(instruction.segmentId)
-            break
-          }
-          case "split-segment": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.splitSegment) await proc.splitSegment(instruction.segmentId)
-            break
-          }
-          case "merge-segment": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.mergeSegment) await proc.mergeSegment(instruction.segmentId)
-            break
-          }
-        }
-      })
-
-      platform.registerProcessorStatusSupplier(() => {
-        return processors.map((proc: any) => ({
-          name: proc.name,
-          running: proc.running ?? false,
-          mode: proc.supportsReset?.() === false ? "Subscribing" : "Tracking",
-          isStreamingProcessor: proc.supportsReset?.() !== false,
-          activeThreads: proc.running ? 1 : 0,
-          availableThreads: 0,
-          error: false,
-          tokenStoreIdentifier: "",
-          segments: proc.processingStatus
-            ? Array.from(proc.processingStatus().entries() as Iterable<[number, any]>).map(
-                ([segId, status]: [number, any]) => ({
-                  segmentId: segId,
-                  caughtUp: status.caughtUp ?? false,
-                  replaying: status.replaying ?? false,
-                  onePartOf: 1,
-                  tokenPosition: status.position ?? 0n,
-                  errorState: status.error?.message ?? "",
-                }),
-              )
-            : [
-                {
-                  segmentId: 0,
-                  caughtUp: true,
-                  replaying: proc.replaying ?? false,
-                  onePartOf: 1,
-                  tokenPosition: proc.position ?? 0n,
-                  errorState: "",
-                },
-              ],
-        }))
-      })
-
-      await platform.start()
-
-      // Latch the connected promise so the deferred bus wrappers built in
-      // the slot factories above construct their inner instances and replay
-      // any subscriptions that were buffered while connect was running.
-      // This MUST happen synchronously before any subsequent stage hook so
-      // register/processors-stage code sees the fully-wired buses. The
-      // microtask queue drains the `.then(...)` callbacks attached in the
-      // slot factories before this hook resolves.
-      resolveConnected()
-      await Promise.resolve()
-    })
-
-    // ---- Lifecycle: processors (D-101 / D-102) --------------------------
-    // processors = subscription-ack wait. The two-step shape mirrors the
-    // kronosdb sibling (Plan 09-03 / D-102) but is adapted for Axon Server's
-    // protocol shape, which differs from kronosdb's in one observable way:
-    //
-    //   - kronosdb's PlatformService proactively emits a frame in response
-    //     to `register`, so its `subscriptionsAcked` latches on the first
-    //     inbound platform-stream message.
-    //
-    //   - Axon Server's PlatformService holds the stream open silently
-    //     until either a topology change or a heartbeat round-trip occurs.
-    //     The platform stream therefore latches `acked` synchronously once
-    //     the `register` frame has been flushed (see platform-service.ts).
-    //
-    // The bus-side subscription frames (sent on the command/query streams,
-    // not the platform stream) need a small processing window on the
-    // server before commands dispatched here are routed back to our
-    // handler. Empirically Axon Server processes the subscribe within
-    // 1 second — same number the legacy enhancer used. Wrapped in the same
-    // `withRetry({event: "per-operation"})` shape as kronosdb so per-extension
-    // resilience overrides still apply uniformly.
-    app.onStart("processors", async () => {
-      await withRetry(
-        async () => {
-          const ok = await platform!.subscriptionsAcked()
-          if (!ok) throw new Error("axon-server subscriptions not yet acked")
-        },
-        { event: "per-operation", ...serverConfig.resilience },
-      )
-      // Axon-specific: give the server's command/query routing tables a
-      // beat to register the subscribe frames we just sent on the bus
-      // streams. The legacy enhancer carried this same 1s wait at line 264;
-      // it cannot be derived from the platform stream because subscribes
-      // travel on a different stream entirely.
-      await new Promise((r) => setTimeout(r, serverConfig.busSubscriptionAckDelayMs ?? 1000))
-    })
-
-    // ---- Lifecycle: stop (D-101.b — preserves legacy ordering) ----------
-    // busLatches drained first → platform.stop → connection.close.
-    app.onStop("connect", async () => {
+    async close() {
       await Promise.all(busLatches.map((l) => l.initiateShutdown()))
-      platform?.stop()
-      connection?.close()
-    })
+      // Idempotent, and independent of `control.close()` — a backend that was
+      // never administered still stops a platform stream someone else started.
+      platform.stop()
+      connection.close()
+    },
   }
 }
 
@@ -563,7 +429,36 @@ function createPayloadHelpers(serializer: Serializer) {
  *   routes an inbound command to this node, it's executed on the local segment
  *   within a UnitOfWork.
  */
-function createDistributedCommandBus(
+/**
+ * A command bus backed by Axon Server.
+ *
+ * ## Correlation lineage and the interceptor layer
+ *
+ * The returned bus is wrapped in {@link interceptingCommandBus} carrying
+ * {@link correlationDataDispatchInterceptor}, so lineage is stamped onto the
+ * outgoing message BEFORE it is serialized onto the wire.
+ *
+ * This is precisely how the Java client does it. AF4's `AxonServerCommandBus`
+ * holds its own `DispatchInterceptors` and dispatches as
+ * `doDispatch(dispatchInterceptors.intercept(commandMessage), cb)` — one call
+ * site, at the top, ahead of any routing; and its `doDispatch` (like this one)
+ * always goes to the server, letting Axon Server decide where the command lands.
+ * AF5 keeps the property via decorator order:
+ * `DISTRIBUTED_COMMAND_BUS_ORDER = InterceptingCommandBus.DECORATION_ORDER - 50`
+ * stacks `InterceptingCommandBus → DistributedCommandBus → SimpleCommandBus`.
+ *
+ * Before this wrap, an Axon-backed service lost lineage on EVERY command: the
+ * only registration of `correlationDataDispatchInterceptor` lives in
+ * `@kronos-ts/app`'s in-memory default bus, and `components.commandBus` from
+ * this backend replaces it wholesale.
+ *
+ * No double-application risk: the local segment here is a plain handler map, not
+ * a `CommandBus`, so this is the only interceptor in the chain. Inbound commands
+ * from the server are invoked through that map directly, which matches AF —
+ * `CommandProcessingTask` runs the local segment WITHOUT re-running dispatch
+ * interceptors.
+ */
+export function distributedCommandBus(
   connection: AxonServerConnection,
   unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
@@ -581,7 +476,7 @@ function createDistributedCommandBus(
   const localSegment = new Map<string, (message: CommandMessage) => Promise<unknown>>()
 
   // Bidirectional stream for handler registration + inbound command handling
-  let outbound = createOutboundStream<any>()
+  let outbound = outboundStream<any>()
   let streamStarted = false
   let permits = 0n
 
@@ -612,7 +507,7 @@ function createDistributedCommandBus(
    */
   function reestablishStreamBody() {
     outbound.close()
-    outbound = createOutboundStream<any>()
+    outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
     ensureStreamStarted()
@@ -726,7 +621,7 @@ function createDistributedCommandBus(
     }
   }
 
-  return {
+  const routing: CommandBus = {
     async dispatch(message: CommandMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
@@ -775,6 +670,11 @@ function createDistributedCommandBus(
       grantPermits()
     },
   }
+
+  // Interception OUTSIDE routing — see the note on this function.
+  const bus = interceptingCommandBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
 }
 
 // ---------------------------------------------------------------------------
@@ -789,8 +689,20 @@ function createDistributedCommandBus(
  * - **Local segment**: Handlers registered here are stored locally and
  *   registered with Axon Server for inbound routing. Inbound queries
  *   are executed within a UnitOfWork.
+ *
+ * Wrapped in {@link interceptingQueryBus} with
+ * {@link correlationDataDispatchInterceptor}, matching AF4's
+ * `AxonServerQueryBus`, which calls `dispatchInterceptors.intercept(...)` at the
+ * top of `query`, `streamingQuery`, `scatterGather` and `subscriptionQuery`.
+ * Because the wrap is outside, the `shortcutQueriesToLocalHandlers` branch in
+ * `query()` gets identical lineage to the remote branch.
+ *
+ * KNOWN GAP: `subscriptionQuery` / `subscribeToUpdates` build their proto
+ * straight from `message.metadata`, and `interceptingQueryBus` (in
+ * `@kronos-ts/messaging`) forwards those two calls to the delegate without
+ * running the dispatch chain. Closing that needs a messaging-package change.
  */
-export function createDistributedQueryBus(
+export function distributedQueryBus(
   connection: AxonServerConnection,
   unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
@@ -818,7 +730,7 @@ export function createDistributedQueryBus(
   // exact subscriber.
   const handlerSubscriptions = new Map<string, { queryName: string; payload: unknown }>()
 
-  let outbound = createOutboundStream<any>()
+  let outbound = outboundStream<any>()
   let streamStarted = false
   let permits = 0n
 
@@ -847,7 +759,7 @@ export function createDistributedQueryBus(
    */
   function reestablishStreamBody() {
     outbound.close()
-    outbound = createOutboundStream<any>()
+    outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
     ensureStreamStarted()
@@ -1040,7 +952,7 @@ export function createDistributedQueryBus(
     }
   }
 
-  return {
+  const routing: QueryBus = {
     async query(message: QueryMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
@@ -1107,13 +1019,13 @@ export function createDistributedQueryBus(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       const queryName = qualifiedNameToString(message.name)
       const subscriptionId = generateIdentifier()
 
-      const outboundSub = createOutboundStream<any>()
+      const outboundSub = outboundStream<any>()
 
       outboundSub.send({
         subscribe: {
@@ -1174,12 +1086,12 @@ export function createDistributedQueryBus(
               }
             } else if (response.update) {
               const update = deserializePayload(response.update.payload?.data as Uint8Array | undefined)
-              updateHandler.offer(update)
+              handler.offer(update)
             } else if (response.complete) {
-              updateHandler.complete()
+              handler.complete()
               break
             } else if (response.completeExceptionally) {
-              updateHandler.completeExceptionally(
+              handler.completeExceptionally(
                 new Error(response.completeExceptionally.errorMessage?.message ?? "Subscription query failed"),
               )
               break
@@ -1191,7 +1103,7 @@ export function createDistributedQueryBus(
             rejectInitial(error)
             initialSettled = true
           }
-          updateHandler.completeExceptionally(error)
+          handler.completeExceptionally(error)
         } finally {
           subscriptions.delete(queryId)
         }
@@ -1199,7 +1111,7 @@ export function createDistributedQueryBus(
 
       return {
         initialResult,
-        updates: updateHandler.iterable,
+        updates: handler.iterable,
         close: () => {
           outboundSub.send({
             unsubscribe: {
@@ -1208,7 +1120,7 @@ export function createDistributedQueryBus(
           })
           outboundSub.close()
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },
@@ -1219,14 +1131,14 @@ export function createDistributedQueryBus(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       return {
-        [Symbol.asyncIterator]: () => updateHandler.iterable[Symbol.asyncIterator](),
+        [Symbol.asyncIterator]: () => handler.iterable[Symbol.asyncIterator](),
         close: () => {
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },
@@ -1320,4 +1232,8 @@ export function createDistributedQueryBus(
       })
     },
   }
+
+  const bus = interceptingQueryBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
 }

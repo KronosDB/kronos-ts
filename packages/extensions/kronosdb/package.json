@@ -50,7 +50,6 @@
   },
   "dependencies": {
     "@kronos-ts/common": "workspace:*",
-    "@kronos-ts/app": "workspace:*",
     "@kronos-ts/eventsourcing": "workspace:*",
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/modelling": "workspace:*",
@@ -61,6 +60,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@kronos-ts/app": "workspace:*",
     "grpc-tools": "^1.12",
     "grpc_tools_node_protoc_ts": "^5.3",
     "testcontainers": "^11.13.0",

@@ -74,7 +74,7 @@ export interface MessageStream<M> {
  * Creates a MessageStream that wraps a source with transformation support.
  * Used by event store implementations to provide stream instances.
  */
-export function createMessageStream<M>(source: {
+export function messageStream<M>(source: {
   next(): M | undefined
   peek(): M | undefined
   hasNextAvailable(): boolean
@@ -108,7 +108,7 @@ export function createMessageStream<M>(source: {
  * Creates a completed empty MessageStream.
  */
 export function emptyMessageStream<M>(): MessageStream<M> {
-  return createMessageStream<M>({
+  return messageStream<M>({
     next: () => undefined,
     peek: () => undefined,
     hasNextAvailable: () => false,
@@ -123,7 +123,7 @@ export function emptyMessageStream<M>(): MessageStream<M> {
  * Creates a MessageStream that immediately fails with the given error.
  */
 export function failedMessageStream<M>(error: Error): MessageStream<M> {
-  return createMessageStream<M>({
+  return messageStream<M>({
     next: () => undefined,
     peek: () => undefined,
     hasNextAvailable: () => false,
@@ -139,7 +139,7 @@ export function failedMessageStream<M>(error: Error): MessageStream<M> {
 // ---------------------------------------------------------------------------
 
 function createMappedStream<M, R>(source: MessageStream<M>, mapper: (item: M) => R): MessageStream<R> {
-  return createMessageStream<R>({
+  return messageStream<R>({
     next() {
       const item = source.next()
       return item !== undefined ? mapper(item) : undefined
@@ -167,7 +167,7 @@ function createFilteredStream<M>(source: MessageStream<M>, predicate: (item: M) 
     }
   }
 
-  return createMessageStream<M>({
+  return messageStream<M>({
     next() {
       if (buffered !== undefined) {
         const item = buffered
@@ -207,7 +207,7 @@ function createErrorRecoveryStream<M>(
     }
   }
 
-  return createMessageStream<M>({
+  return messageStream<M>({
     next() { checkRecovery(); return current.next() },
     peek() { checkRecovery(); return current.peek() },
     hasNextAvailable() { checkRecovery(); return current.hasNextAvailable() },
@@ -228,7 +228,7 @@ function createConcatStream<M>(first: MessageStream<M>, second: MessageStream<M>
     return usingFirst ? first : second
   }
 
-  return createMessageStream<M>({
+  return messageStream<M>({
     next() { return current().next() },
     peek() { return current().peek() },
     hasNextAvailable() { return current().hasNextAvailable() },

@@ -1,6 +1,6 @@
 import type { KronosDbConnection } from "./connection.js"
-import { createKronosMetadata } from "./connection.js"
-import { createOutboundStream } from "./outbound-stream.js"
+import { kronosMetadata } from "./connection.js"
+import { outboundStream } from "./outbound-stream.js"
 import type { PlatformInbound } from "./generated/platform.js"
 import type { ProcessorStatusSupplier } from "./event-processor-info.js"
 import { toEventProcessorInfo } from "./event-processor-info.js"
@@ -35,7 +35,7 @@ export interface PlatformConnection {
    *
    * This replaces the legacy 1-second sleep at
    * kronosdb-configuration-enhancer.ts:216 (D-102): the kronosDb extension's
-   * `onStart('processors', ...)` hook polls this method via `withRetry` so the
+   * `start()` polls this method via `withRetry` so the
    * application waits exactly long enough for handler subscriptions to be
    * routable, no longer or shorter.
    *
@@ -120,7 +120,7 @@ export function parseInstruction(message: any): PlatformInstruction | null {
  * 3. Receives instructions from KronosDB (split, merge, pause, resume)
  * 4. Reports event processor status periodically
  */
-export function createPlatformConnection(
+export function platformConnection(
   connection: KronosDbConnection,
   options?: PlatformServiceOptions,
 ): PlatformConnection {
@@ -131,11 +131,23 @@ export function createPlatformConnection(
 
   const instructionHandlers: InstructionHandler[] = []
   const processorStatusSuppliers: ProcessorStatusSupplier[] = []
+  /**
+   * Instructions that arrived before anything registered a handler.
+   *
+   * The stream is meant to go live only after the control plane has registered
+   * (see `kronosDbControlPlane`), but the backend also starts the stream on its
+   * own for the subscription-ack barrier — `subscriptionsAcked()` has no signal
+   * without a live stream. That leaves a window in which KronosDB can push an
+   * instruction at a client that has nothing to route it to. Buffering makes the
+   * window harmless instead of merely forbidden: the first `onInstruction`
+   * registration drains this queue in arrival order.
+   */
+  const pendingInstructions: PlatformInstruction[] = []
   let isConnected = false
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
   let lastHeartbeatResponse = Date.now()
-  let outbound: ReturnType<typeof createOutboundStream<PlatformInbound>> | null = null
+  let outbound: ReturnType<typeof outboundStream<PlatformInbound>> | null = null
   /**
    * Latches once KronosDB sends its first inbound message after registration
    * — the earliest observable signal that the platform stream is fully wired
@@ -144,7 +156,7 @@ export function createPlatformConnection(
    */
   let acked = false
 
-  const grpcMetadata = createKronosMetadata(connection.config)
+  const grpcMetadata = kronosMetadata(connection.config)
 
   async function processInboundInstructions(inbound: AsyncIterable<any>) {
     try {
@@ -154,6 +166,11 @@ export function createPlatformConnection(
         acked = true
         const instruction = parseInstruction(message)
         if (instruction) {
+          if (instructionHandlers.length === 0) {
+            // Nothing to route to yet — hold it for the first registration
+            // rather than dropping it.
+            pendingInstructions.push(instruction)
+          }
           for (const handler of instructionHandlers) {
             try {
               await handler(instruction)
@@ -239,7 +256,7 @@ export function createPlatformConnection(
 
       // Re-arm the ack latch so a stop/start cycle correctly re-waits.
       acked = false
-      outbound = createOutboundStream<PlatformInbound>()
+      outbound = outboundStream<PlatformInbound>()
 
       // Register with KronosDB — first message must be ClientIdentification
       outbound.send({
@@ -264,6 +281,9 @@ export function createPlatformConnection(
 
     stop() {
       isConnected = false
+      // A stopped stream's un-routed backlog is stale — do not replay it if a
+      // handler registers later.
+      pendingInstructions.length = 0
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer)
         heartbeatTimer = null
@@ -279,7 +299,22 @@ export function createPlatformConnection(
     },
 
     onInstruction(handler) {
+      const isFirst = instructionHandlers.length === 0
       instructionHandlers.push(handler)
+
+      // Drain anything that arrived before a handler existed, in arrival order.
+      if (isFirst && pendingInstructions.length > 0) {
+        const backlog = pendingInstructions.splice(0, pendingInstructions.length)
+        void (async () => {
+          for (const instruction of backlog) {
+            try {
+              await handler(instruction)
+            } catch (err) {
+              console.error("Platform instruction handler error:", err)
+            }
+          }
+        })()
+      }
     },
 
     registerProcessorStatusSupplier(supplier) {

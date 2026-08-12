@@ -5,7 +5,7 @@ import type { DispatchInterceptor } from "./interceptor.js"
 /**
  * Wraps an EventBus with dispatch interceptors for event publishing.
  */
-export function createInterceptingEventBus(
+export function interceptingEventBus(
   delegate: EventBus,
   dispatchInterceptors: ReadonlyArray<DispatchInterceptor<EventMessage>>,
 ): EventBus {

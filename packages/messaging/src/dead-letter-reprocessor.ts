@@ -47,7 +47,7 @@ export interface DeadLetterReprocessor {
  * failure. Trigger it manually or on a schedule (see the processor's
  * `dlqRetryIntervalMs`).
  */
-export function createDeadLetterReprocessor(
+export function deadLetterReprocessor(
   options: DeadLetterReprocessorOptions,
 ): DeadLetterReprocessor {
   const {

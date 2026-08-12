@@ -1,8 +1,9 @@
 /**
  * End-to-end integration test for @kronos-ts/postgres.
  *
- * Spins up postgres:16-alpine via testcontainers, wires the postgres()
- * extension into a kronos() app, and exercises the full CQRS/ES pipeline:
+ * Spins up postgres:16-alpine via testcontainers, spreads the components the
+ * postgres() backend provides over the in-memory defaults, and exercises the
+ * full CQRS/ES pipeline:
  *
  *   command  → DCB-checked append (Postgres)
  *   sourcing → state reconstruction (Postgres)
@@ -30,16 +31,21 @@ import {
   eventHandler,
   queryHandler,
   EventCriteria,
+  jsonSerializer,
   trackingProcessor,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
   afterEvents,
+  descriptorBasedTagResolver,
 } from "@kronos-ts/eventsourcing"
-import { kronos, type App, type RunningApp } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import { postgres, AppendConditionError } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
+
+/** The backend handle `postgres()` returns — its type is not re-exported. */
+type PostgresBackend = Awaited<ReturnType<typeof postgres>>
 
 // ============================================================================
 // Domain — university courses, same shape as e2e-inmemory / e2e-kronosdb
@@ -181,12 +187,11 @@ const id = (name: string) => `${name}-${runId}`
 describe("E2E: @kronos-ts/postgres full stack", () => {
   let container: StartedTestContainer
   let connectionString: string
-  let app: RunningApp
-  let capturedEventStore: EventStore | undefined
+  let app: App
+  let backend: PostgresBackend
 
   beforeAll(async () => {
     courseViews.clear()
-    capturedEventStore = undefined
 
     // 1. Spin up Postgres 16. Wait for the second "ready to accept connections"
     //    line — the first is initdb, the second is the listening server.
@@ -202,38 +207,54 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
 
     connectionString = `postgresql://kronos_e2e:kronos_e2e@${container.getHost()}:${container.getMappedPort(5432)}/kronos_e2e`
 
-    // 2. Capture probe — RunningApp doesn't expose the resolved eventStore.
-    const captureExtension = (a: App) => {
-      a.decorate("eventStore", (inner) => {
-        capturedEventStore = inner
-        return inner
-      })
-    }
+    // 2. Connect postgres — this bootstraps the schema and hands back the
+    //    components it provides. Nothing has to be probed back out of a
+    //    container: `backend.components.eventStore` IS the event store the app
+    //    runs on, because the same value is spread into `kronos` below.
+    backend = await postgres({
+      adapter: pgAdapter({ connectionString }),
+      serializer: jsonSerializer(),
+      tagResolver: descriptorBasedTagResolver(),
+    })
 
-    // 3. Wire postgres() — bootstraps schema on connect, populates eventStore +
-    //    snapshotStore slots.
-    app = await kronos({ quiet: true })
-      .states([Course, { snapshotPolicy: afterEvents(1) }])
-      .commands(createCourse, subscribeStudent)
-      .queries(getCourse)
-      .processors(
-        trackingProcessor("postgres-course-projection")
-          .eventHandlers(onCourseCreated, onStudentSubscribed)
-          .build(),
-      )
-      .use(captureExtension)
-      .use(postgres({ adapter: pgAdapter({ connectionString }) }))
-      .start()
+    // 3. Compose. The in-memory command bus must be built around postgres's
+    //    LAZY transactional UoW factory, so it is passed as an override rather
+    //    than only spread on top — otherwise handlers would run in a plain
+    //    runInNewUoW and never see a transaction.
+    app = kronos({
+      components: {
+        ...inMemoryComponents({ unitOfWorkFactory: backend.components.unitOfWorkFactory }),
+        ...backend.components,
+      },
+      modules: [
+        module(
+          "postgres-e2e",
+          // Per-state snapshot policy, declared in the registration list — see
+          // the "snapshot store" test below. The tuple is the state plus the
+          // options its repository is built from; the stores come from the
+          // module's components, i.e. postgres's.
+          [Course, { snapshotPolicy: afterEvents(1) }],
+          createCourse, subscribeStudent,
+          getCourse,
+          trackingProcessor("postgres-course-projection")
+            .eventHandlers(onCourseCreated, onStudentSubscribed)
+            .build(),
+        ),
+      ],
+    })
+
+    // 4. Background workers (the durable scheduler) — after handlers subscribe.
+    await backend.start()
   }, 60_000)
 
   afterAll(async () => {
     await app?.stop()
+    await backend?.close()
     await container?.stop()
   })
 
   function eventStore(): EventStore {
-    if (!capturedEventStore) throw new Error("eventStore capture failed")
-    return capturedEventStore
+    return backend.components.eventStore
   }
 
   it("command persists events through @kronos-ts/postgres", async () => {
@@ -315,6 +336,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     // Advisory locks serialise them; the loser hits the DCB conflict check
     // and the postgres adapter raises AppendConditionError (SQLSTATE KR001).
     const ev = (studentId: string): EventMessage => ({
+      kind: "event",
       identifier: generateIdentifier(),
       name: qn("postgres-e2e", "StudentSubscribed"),
       payload: { courseId, studentId },
@@ -336,10 +358,11 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     expect((losers[0] as PromiseRejectedResult).reason).toBeInstanceOf(AppendConditionError)
   })
 
-  it("snapshot store wired from postgres() slot — entity policy alone is sufficient", async () => {
-    // The entities() tuple only specified `snapshotPolicy: afterEvents(2)` — no
-    // explicit snapshotStore. The framework must fall back to the slot value
-    // populated by postgres(), so snapshots land in kronos_snapshots.
+  it("snapshots land in kronos_snapshots — the postgres snapshot store is what the state runs on", async () => {
+    // The Course repository declared in beforeAll — `[Course, {
+    // snapshotPolicy: afterEvents(1) }]` — is built on the module's snapshot
+    // store, which is postgres's (spread into the app's components), so
+    // snapshots must land in kronos_snapshots.
     const courseId = id("cs-snap")
 
     // afterEvents(1) triggers when a ctx.load() observes > 1 event. The second
@@ -369,10 +392,10 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     }
   })
 
-  it("schema was bootstrapped by the postgres() extension", async () => {
-    // The extension's connect-stage lifecycle hook ran bootstrapSchema(),
-    // which is the only reason the previous tests' inserts worked. As a
-    // direct sanity check, look the tables up via the captured adapter.
+  it("schema was bootstrapped by the postgres() backend", async () => {
+    // `await postgres(...)` ran bootstrapSchema() before it returned, which is
+    // the only reason the previous tests' inserts worked. As a direct sanity
+    // check, look the tables up over a fresh client.
     const { Client } = await import("pg")
     const client = new Client({ connectionString })
     await client.connect()
@@ -391,23 +414,29 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
   it("stateful automation — an event handler sends a command in its own UoW", async () => {
     // A dedicated app isolates the automation processor from the shared app's
     // assertions; it connects to the same Postgres database.
-    let autoEventStore: EventStore | undefined
-    const autoApp = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse, subscribeStudent, closeEnrollment)
-      .processors(
-        trackingProcessor("postgres-enrollment-automation")
-          .eventHandlers(closeEnrollmentWhenFull)
-          .build(),
-      )
-      .use((a: App) => {
-        a.decorate("eventStore", (inner) => {
-          autoEventStore = inner
-          return inner
-        })
-      })
-      .use(postgres({ adapter: pgAdapter({ connectionString }) }))
-      .start()
+    const autoBackend = await postgres({
+      adapter: pgAdapter({ connectionString }),
+      serializer: jsonSerializer(),
+      tagResolver: descriptorBasedTagResolver(),
+    })
+    const autoEventStore: EventStore = autoBackend.components.eventStore
+    const autoApp = kronos({
+      components: {
+        ...inMemoryComponents({ unitOfWorkFactory: autoBackend.components.unitOfWorkFactory }),
+        ...autoBackend.components,
+      },
+      modules: [
+        module(
+          "postgres-e2e-automation",
+          Course,
+          createCourse, subscribeStudent, closeEnrollment,
+          trackingProcessor("postgres-enrollment-automation")
+            .eventHandlers(closeEnrollmentWhenFull)
+            .build(),
+        ),
+      ],
+    })
+    await autoBackend.start()
 
     try {
       const courseId = id("auto-cap")
@@ -418,11 +447,11 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       // CloseEnrollment; its handler appends EnrollmentClosed in its own UoW.
       const criteria = EventCriteria.havingTags(tag("courseId", courseId))
       await waitFor(async () => {
-        const { events } = await autoEventStore!.source({ criteria })
+        const { events } = await autoEventStore.source({ criteria })
         return events.some((ev) => ev.name.name === "EnrollmentClosed")
       })
 
-      const { events } = await autoEventStore!.source({ criteria })
+      const { events } = await autoEventStore.source({ criteria })
       expect(events.map((ev) => ev.name.name)).toEqual([
         "CourseCreated",
         "StudentSubscribed",
@@ -430,6 +459,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       ])
     } finally {
       await autoApp.stop()
+      await autoBackend.close()
     }
   })
 })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { qn, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import type { CommandMessage, Message } from "@kronos-ts/messaging"
-import { createOpenTelemetrySpanFactory } from "../opentelemetry-span-factory.js"
+import { openTelemetrySpanFactory } from "../opentelemetry-span-factory.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,7 +24,7 @@ function commandMsg(name: string, metadata: Record<string, unknown> = {}): Comma
 describe("OpenTelemetrySpanFactory", () => {
   it("creates a span factory", () => {
     // given / when
-    const factory = createOpenTelemetrySpanFactory()
+    const factory = openTelemetrySpanFactory()
 
     // then
     expect(factory).toBeDefined()
@@ -38,7 +38,7 @@ describe("OpenTelemetrySpanFactory", () => {
   describe("span lifecycle", () => {
     it("createRootTrace returns a startable span", () => {
       // given
-      const factory = createOpenTelemetrySpanFactory()
+      const factory = openTelemetrySpanFactory()
 
       // when
       const span = factory.createRootTrace("test-operation")
@@ -50,7 +50,7 @@ describe("OpenTelemetrySpanFactory", () => {
 
     it("createHandlerSpan creates a consumer span", () => {
       // given
-      const factory = createOpenTelemetrySpanFactory()
+      const factory = openTelemetrySpanFactory()
       const msg = commandMsg("DoSomething")
 
       // when
@@ -63,7 +63,7 @@ describe("OpenTelemetrySpanFactory", () => {
 
     it("createDispatchSpan creates a producer span", () => {
       // given
-      const factory = createOpenTelemetrySpanFactory()
+      const factory = openTelemetrySpanFactory()
       const msg = commandMsg("DoSomething")
 
       // when
@@ -76,7 +76,7 @@ describe("OpenTelemetrySpanFactory", () => {
 
     it("createInternalSpan creates an internal span", () => {
       // given
-      const factory = createOpenTelemetrySpanFactory()
+      const factory = openTelemetrySpanFactory()
 
       // when
       const span = factory.createInternalSpan("internal-op")
@@ -88,7 +88,7 @@ describe("OpenTelemetrySpanFactory", () => {
 
     it("recordException ends the span with error", () => {
       // given
-      const factory = createOpenTelemetrySpanFactory()
+      const factory = openTelemetrySpanFactory()
       const span = factory.createInternalSpan("failing-op").start()
 
       // when / then — no errors
@@ -99,7 +99,7 @@ describe("OpenTelemetrySpanFactory", () => {
   describe("context propagation", () => {
     it("propagateContext returns the message when no active context", () => {
       // given
-      const factory = createOpenTelemetrySpanFactory()
+      const factory = openTelemetrySpanFactory()
       const msg = commandMsg("DoSomething")
 
       // when
@@ -114,7 +114,7 @@ describe("OpenTelemetrySpanFactory", () => {
   describe("span attribute providers", () => {
     it("registers custom attribute providers", () => {
       // given
-      const factory = createOpenTelemetrySpanFactory({
+      const factory = openTelemetrySpanFactory({
         spanAttributeProviders: [
           {
             provideAttributes(message: Message) {
@@ -133,7 +133,7 @@ describe("OpenTelemetrySpanFactory", () => {
 
     it("registerSpanAttributeProvider adds providers at runtime", () => {
       // given
-      const factory = createOpenTelemetrySpanFactory()
+      const factory = openTelemetrySpanFactory()
       factory.registerSpanAttributeProvider({
         provideAttributes: () => ({ "runtime.attr": "added" }),
       })

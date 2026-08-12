@@ -7,7 +7,9 @@ import type {
 } from "@kronos-ts/messaging"
 import {
   applySubscriptionFilter,
-  createUpdateHandler,
+  correlationDataDispatchInterceptor,
+  interceptingQueryBus,
+  updateHandler,
   runAfterCommitOrImmediately,
   runInNewUoW,
 } from "@kronos-ts/messaging"
@@ -73,8 +75,25 @@ export interface RabbitMqQueryBusOptions {
  * `completeSubscriptionExceptionally`.
  *
  * Falls back to local-only behaviour when no `subscriberRegistry` is supplied.
+ *
+ * ## Correlation lineage
+ *
+ * Like the command bus, the returned object is wrapped in
+ * {@link interceptingQueryBus} carrying {@link correlationDataDispatchInterceptor},
+ * so lineage is stamped BEFORE the local-vs-remote decision in `query()` — see
+ * the long note in `command-bus.ts` for the AxonFramework precedent. AF applies
+ * the same treatment to queries: `AxonServerQueryBus` calls
+ * `dispatchInterceptors.intercept(...)` at the top of `query`, `scatterGather`,
+ * `streamingQuery` AND `subscriptionQuery`.
+ *
+ * `subscriptionQuery` here gets it for the INITIAL RESULT only, because that
+ * goes back through `bus.query`. The subscription registration itself carries
+ * `message.metadata` untouched: `interceptingQueryBus` (in `@kronos-ts/messaging`)
+ * passes `subscriptionQuery` straight to the delegate without running the
+ * dispatch chain, so there is no seam to hook from here. That is a messaging-side
+ * gap, not a RabbitMQ one — the same hole exists on every backend.
  */
-export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryBus {
+export function rabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryBus {
   const localHandlers = new Set<string>()
   const { localSegment, transport, subscriberRegistry, config } = options
 
@@ -119,7 +138,7 @@ export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryB
     if (localOwnedHandlers.has(subId)) {
       throw new Error(`Subscription query already registered for identifier "${subId}"`)
     }
-    const handler = createUpdateHandler(message, bufferSize)
+    const handler = updateHandler(message, bufferSize)
     localOwnedHandlers.set(subId, handler)
 
     if (subscriberRegistry) {
@@ -145,7 +164,7 @@ export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryB
     }
   }
 
-  const bus: QueryBus = {
+  const routing: QueryBus = {
     async query(message: QueryMessage): Promise<unknown> {
       const queryName = qualifiedNameToString(message.name)
       const preferLocal = config.queries.preferLocalHandlers && !config.queries.alwaysUseDistributedBus
@@ -183,11 +202,12 @@ export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryB
     },
 
     subscriptionQuery(message: QueryMessage, bufferSize?: number): SubscriptionQueryResult {
-      const updateHandler = registerSubscription(message, bufferSize)
+      const handler = registerSubscription(message, bufferSize)
+      // Through the WRAPPED bus, so the initial result carries lineage.
       const initialResult = bus.query(message)
       return {
         initialResult,
-        updates: updateHandler.iterable,
+        updates: handler.iterable,
         close: () => unregisterSubscription(message),
       }
     },
@@ -196,9 +216,9 @@ export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryB
       message: QueryMessage,
       bufferSize?: number,
     ): AsyncIterable<unknown> & { close(): void } {
-      const updateHandler = registerSubscription(message, bufferSize)
+      const handler = registerSubscription(message, bufferSize)
       return {
-        [Symbol.asyncIterator]: () => updateHandler.iterable[Symbol.asyncIterator](),
+        [Symbol.asyncIterator]: () => handler.iterable[Symbol.asyncIterator](),
         close: () => unregisterSubscription(message),
       }
     },
@@ -300,6 +320,8 @@ export function createRabbitMqQueryBus(options: RabbitMqQueryBusOptions): QueryB
     },
   }
 
+  const bus = interceptingQueryBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
   return bus
 }
 

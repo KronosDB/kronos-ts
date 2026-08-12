@@ -2,8 +2,8 @@
 //
 // Wave-1 only exports the error surface; subsequent waves layer in:
 //   Plan 04 — postgres() extension factory + PostgresConfig (./postgres.js),
-//             createPostgresEventStore (./postgres-event-store.js)
-//   Plan 05 — createPostgresSnapshotStore (./postgres-snapshot-store.js)
+//             postgresEventStore (./postgres-event-store.js)
+//   Plan 05 — postgresSnapshotStore (./postgres-snapshot-store.js)
 //
 // Adapter implementations are NOT exported from this barrel — users import
 // them via the sub-path exports declared in package.json:
@@ -28,7 +28,7 @@ export {
 
 // Engine factory (Plan 04 + extended in Plan 05)
 export {
-  createPostgresEventStore,
+  postgresEventStore,
   type PostgresEventStoreConfig,
   type Serializer,
   type TagResolver,
@@ -36,7 +36,7 @@ export {
 
 // Snapshot store factory (Plan 05)
 export {
-  createPostgresSnapshotStore,
+  postgresSnapshotStore,
   type PostgresSnapshotStoreConfig,
 } from "./postgres-snapshot-store.js"
 
@@ -64,7 +64,7 @@ export {
 // automatically when a uowFactory with the lazy postgres tx is in place;
 // exported here so users who compose their own wiring can construct one.
 export {
-  createPostgresEventScheduler,
+  postgresEventScheduler,
   type PostgresEventScheduler,
   type PostgresEventSchedulerConfig,
 } from "./postgres-event-scheduler.js"
@@ -82,3 +82,4 @@ export {
   DEFAULT_TABLE_NAMES,
   type TableNames,
 } from "./schema.js"
+export type { PostgresOptions } from "./postgres.js"

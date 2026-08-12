@@ -2,11 +2,11 @@
  * postgres(config) — Extension factory for @kronos-ts/postgres.
  *
  * Populates five slots:
- *   - eventStore           : EventStorageEngine via createPostgresEventStore
- *   - snapshotStore        : SnapshotStore via createPostgresSnapshotStore
+ *   - eventStore           : EventStorageEngine via postgresEventStore
+ *   - snapshotStore        : SnapshotStore via postgresSnapshotStore
  *   - transactionManager   : postgresTransactionManager(adapter)
  *   - unitOfWorkFactory    : lazyTransactionalUnitOfWorkFactory(runInNewUoW, tm)
- *   - eventScheduler       : createPostgresEventScheduler(...) (durable,
+ *   - eventScheduler       : postgresEventScheduler(...) (durable,
  *                            background worker started in "processors" stage)
  *
  * Setting the last two together is what gives `append() + schedule()` (and
@@ -27,7 +27,6 @@
  * scope for this extension — postgres token store is a separate package).
  */
 
-import type { App } from "@kronos-ts/app"
 import type { ResilienceConfig } from "@kronos-ts/common"
 import { withRetry } from "@kronos-ts/common"
 import {
@@ -35,11 +34,13 @@ import {
   runInNewUoW,
 } from "@kronos-ts/messaging"
 import type { PostgresAdapter } from "./adapter.js"
-import { createPostgresEventStore } from "./postgres-event-store.js"
-import { createPostgresSnapshotStore } from "./postgres-snapshot-store.js"
+import { postgresEventStore } from "./postgres-event-store.js"
+import { postgresSnapshotStore } from "./postgres-snapshot-store.js"
 import { postgresTransactionManager } from "./postgres-transaction-manager.js"
+import type { Serializer } from "@kronos-ts/common"
+import type { TagResolver } from "@kronos-ts/eventsourcing"
 import {
-  createPostgresEventScheduler,
+  postgresEventScheduler,
   type PostgresEventScheduler,
 } from "./postgres-event-scheduler.js"
 import { bootstrapSchema, DEFAULT_TABLE_NAMES, type TableNames } from "./schema.js"
@@ -62,72 +63,83 @@ export interface PostgresConfig {
   }
 }
 
-export function postgres(config: PostgresConfig): (app: App) => void {
-  const { adapter, resilience } = config
+/**
+ * A Postgres backend. There is no lifecycle framework: this is an async factory
+ * that connects (and bootstraps) eagerly, hands back the components it provides,
+ * and gives you a `start`/`close` pair to call in whatever order your bootstrap
+ * says. The order is written down in your composition root rather than encoded
+ * in framework stages:
+ *
+ * ```ts
+ * const pg  = await postgres({ adapter, serializer, tagResolver })
+ * const app = kronos({ components: { ...inMemoryComponents(), ...pg.components }, modules })
+ * await pg.start()          // scheduler, once every handler is subscribed
+ * // …
+ * await app.stop(); await pg.close()
+ * ```
+ */
+/** Everything postgres() needs: its own config plus the framework values it borrows. */
+export type PostgresOptions = PostgresConfig & { serializer: Serializer; tagResolver: TagResolver }
+
+export interface PostgresBackend {
+  readonly components: PostgresComponents
+  /** Start background workers (the durable scheduler). Call after handlers are registered. */
+  start(): Promise<void>
+  /** Stop workers and disconnect. */
+  close(): Promise<void>
+}
+
+export interface PostgresComponents {
+  eventStore: ReturnType<typeof postgresEventStore>
+  snapshotStore: ReturnType<typeof postgresSnapshotStore>
+  transactionManager: ReturnType<typeof postgresTransactionManager>
+  unitOfWorkFactory: ReturnType<typeof lazyTransactionalUnitOfWorkFactory>
+  eventScheduler: PostgresEventScheduler
+}
+
+export async function postgres(
+  options: PostgresOptions,
+): Promise<PostgresBackend> {
+  const config = options
+  const { adapter, resilience, serializer, tagResolver } = config
   const bootstrap = config.bootstrap ?? true
   const tables = config.tableNames ?? DEFAULT_TABLE_NAMES
 
   // Safety timeouts (idle-in-transaction / statement) are armed by the adapter
-  // itself — configure them on the adapter (e.g. `pgAdapter({ connectionString,
-  // idleInTransactionTimeoutMs })`), so every transaction through it is bounded
-  // and two adapters on two databases stay independently configured.
-  const txManager = postgresTransactionManager(adapter)
+  // itself, so two adapters on two databases stay independently configured.
+  const transactionManager = postgresTransactionManager(adapter)
 
-  return (app: App) => {
-    app.set("eventStore", ({ serializer, tagResolver }) =>
-      createPostgresEventStore({ adapter, serializer, tagResolver, tableNames: tables }),
-    )
-    app.set("snapshotStore", ({ serializer }) =>
-      createPostgresSnapshotStore({ adapter, serializer, tableNames: tables }),
-    )
-    app.set("transactionManager", () => txManager)
-    // Lazy: pure-read UoWs never claim a connection; the first writer (an
-    // append flush, or a user's own SQL via getOrBeginActiveTransaction)
-    // begins the tx, and everything in that UoW — events AND co-located
-    // writes — commits or rolls back together. The command bus runs handlers
-    // through this factory (see createSimpleCommandBus), so command handlers
-    // get the transaction without this extension reaching into the command
-    // pipeline.
-    app.set("unitOfWorkFactory", () =>
-      lazyTransactionalUnitOfWorkFactory(runInNewUoW, txManager),
-    )
-
-    // Durable scheduler — closure captures the instance so the worker can be
-    // start()'d in "processors" and stop()'d in "connect" symmetric to other
-    // background workers.
-    let scheduler: PostgresEventScheduler | undefined
-    app.set("eventScheduler", ({ eventStore, unitOfWorkFactory, tagResolver }) => {
-      scheduler = createPostgresEventScheduler({
-        adapter,
-        eventStore,
-        uowFactory: unitOfWorkFactory,
-        tagResolver,
-        tableNames: tables,
-        ...config.scheduler,
-      })
-      return scheduler
+  await withRetry(() => adapter.connect(), { event: "initial-connect", ...resilience })
+  if (bootstrap) {
+    await withRetry(() => bootstrapSchema(adapter, { tableNames: tables }), {
+      event: "initial-connect",
+      ...resilience,
     })
+  }
 
-    app.onStart("connect", async () => {
-      await withRetry(() => adapter.connect(), { event: "initial-connect", ...resilience })
-      if (bootstrap) {
-        await withRetry(() => bootstrapSchema(adapter, { tableNames: tables }), {
-          event: "initial-connect",
-          ...resilience,
-        })
-      }
-    })
+  const eventStore = postgresEventStore({ adapter, serializer, tagResolver, tableNames: tables })
+  const snapshotStore = postgresSnapshotStore({ adapter, serializer, tableNames: tables })
+  // Lazy: pure-read UoWs never claim a connection; the first writer begins the
+  // tx, and everything in that UoW — events AND co-located writes — commits or
+  // rolls back together.
+  const unitOfWorkFactory = lazyTransactionalUnitOfWorkFactory(runInNewUoW, transactionManager)
+  const eventScheduler = postgresEventScheduler({
+    adapter,
+    eventStore,
+    uowFactory: unitOfWorkFactory,
+    tagResolver,
+    tableNames: tables,
+    ...config.scheduler,
+  })
 
-    // Worker spins up after registration/warmup so all slots are resolved and
-    // any user-supplied processors are in place before due schedules start
-    // firing into the event store.
-    app.onStart("processors", async () => {
-      if (scheduler) await scheduler.start()
-    })
-
-    app.onStop("connect", async () => {
-      if (scheduler) await scheduler.stop()
+  return {
+    components: { eventStore, snapshotStore, transactionManager, unitOfWorkFactory, eventScheduler },
+    async start() {
+      await eventScheduler.start()
+    },
+    async close() {
+      await eventScheduler.stop()
       await adapter.disconnect()
-    })
+    },
   }
 }

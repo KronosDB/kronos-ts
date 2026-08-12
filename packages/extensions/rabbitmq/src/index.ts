@@ -1,7 +1,10 @@
 export {
   rabbitMq,
   resolveRabbitMqConfig,
-  type RabbitMqExtensionConfig,
+  type RabbitMqConfig,
+  type RabbitMqOptions,
+  type RabbitMqBackend,
+  type RabbitMqComponents,
   type RabbitMqCommandDispatchConfig,
   type RabbitMqQueryDispatchConfig,
   type RabbitMqRetryConfig,
@@ -9,13 +12,14 @@ export {
 } from "./rabbitmq.js"
 
 export {
-  createRabbitMqTopologyNames,
+  rabbitMqTopologyNames,
+  type RabbitMqIdentity,
   type RabbitMqTopologyConfig,
   type RabbitMqTopologyNames,
 } from "./topology.js"
 
 export {
-  createRabbitMqCommandBus,
+  rabbitMqCommandBus,
   type RabbitMqCommandEnvelope,
   type RabbitMqCommandReplyEnvelope,
   type RabbitMqCommandTransport,
@@ -23,7 +27,7 @@ export {
 } from "./command-bus.js"
 
 export {
-  createRabbitMqQueryBus,
+  rabbitMqQueryBus,
   type RabbitMqQueryEnvelope,
   type RabbitMqQueryReplyEnvelope,
   type RabbitMqQueryTransport,
@@ -42,7 +46,7 @@ export { AmqpRabbitMqCommandTransport } from "./amqp-command-transport.js"
 export { AmqpRabbitMqQueryTransport } from "./amqp-query-transport.js"
 
 export {
-  createAmqpConnection,
+  amqpConnection,
   type AmqpConnection,
   type AmqpConnect,
 } from "./connection.js"

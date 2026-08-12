@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test"
 import { pgAdapter } from "../adapters/pg.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
 import { bootstrapSchema, DEFAULT_TABLE_NAMES } from "../schema.js"
-import { createPostgresEventStore } from "../postgres-event-store.js"
+import { postgresEventStore } from "../postgres-event-store.js"
 import { AppendConditionError } from "../errors.js"
 import { ORIGIN } from "@kronos-ts/eventsourcing"
 import { generateIdentifier } from "@kronos-ts/common"
@@ -10,7 +10,7 @@ import type { EventMessage } from "@kronos-ts/messaging"
 
 let pg: RunningPostgres
 let adapter: ReturnType<typeof pgAdapter>
-let store: ReturnType<typeof createPostgresEventStore>
+let store: ReturnType<typeof postgresEventStore>
 
 const NOOP_SERIALIZER = {
   serialize: (x: unknown) => new TextEncoder().encode(JSON.stringify(x)),
@@ -37,7 +37,7 @@ beforeAll(async () => {
   adapter = pgAdapter({ connectionString: pg.connectionString })
   await adapter.connect()
   await bootstrapSchema(adapter)
-  store = createPostgresEventStore({
+  store = postgresEventStore({
     adapter,
     serializer: NOOP_SERIALIZER,
     tagResolver: NOOP_TAG_RESOLVER,
@@ -55,7 +55,7 @@ beforeEach(async () => {
   await adapter.query(`TRUNCATE TABLE ${DEFAULT_TABLE_NAMES.events} RESTART IDENTITY`)
 })
 
-describe("createPostgresEventStore — shape", () => {
+describe("postgresEventStore — shape", () => {
   it("exposes source / appendEvents / append", () => {
     expect(typeof store.source).toBe("function")
     expect(typeof store.appendEvents).toBe("function")

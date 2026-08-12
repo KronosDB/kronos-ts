@@ -1,33 +1,60 @@
 /**
- * Native KronosDB extension (Phase 9, D-95 / D-101 / D-102).
+ * KronosDB backend for @kronos-ts.
  *
- * Native `(app: App) => void` extension that:
+ * An async factory that connects eagerly and hands back the components it
+ * provides plus a `start`/`close` pair. There is no lifecycle framework and no
+ * container: what used to be `onStart("connect")` now happens inside this
+ * function, what used to be `onStart("processors")` is `start()`, and what used
+ * to be `onStop("connect")` is `close()`. Dependencies that used to be resolved
+ * lazily out of other slots (serializer, unitOfWorkFactory) are ordinary
+ * arguments.
  *
- *   - populates four typed slots (eventStore, snapshotStore, commandBus,
- *     queryBus) via app.set(...) using the canonical Resolved slot names
- *     (in particular `resolved.unitOfWorkFactory`, NOT `unitOfWorkRunner`);
- *   - wires connect-stage transport bring-up under the @kronos-ts/common
- *     resilience helper (initial-connect + health-check + platform setup +
- *     instruction handlers + platform.start);
- *   - wires processors-stage subscription-ack wait via withRetry against
- *     `platform.subscriptionsAcked()` — REPLACES the 1-second sleep hack
- *     that lived at line 216 of the legacy file (D-102);
- *   - reverses shutdown deterministically in a single onStop('connect') hook
- *     (busLatches → platform.stop → connection.close — D-101.b).
+ * ```ts
+ * const kdb = await kronosDb({
+ *   componentName: "university-service",
+ *   serializer,
+ *   unitOfWorkFactory,
+ * })
+ * const app = kronos({
+ *   components: { ...inMemoryComponents(), ...kdb.components },
+ *   modules,
+ * })
+ * await kdb.start()                   // subscription-ack wait, after handlers subscribe
+ * // …
+ * await app.stop(); await kdb.close()
+ * ```
+ *
+ * Remote administration — KronosDB pushing pause / start / split / merge at this
+ * client's processors, and this client reporting their status back for the admin
+ * UI — is NOT part of the backend. It is opt-in, in `./control-plane.js`:
+ *
+ * ```ts
+ * const control = kronosDbControlPlane(kdb.platform, app.processors)
+ * ```
+ *
+ * Because the connection exists before any component is built, the stores and
+ * buses are constructed against a live channel — the lazy proxies and the
+ * subscribe()-buffering wrappers the container era needed are gone.
  */
 import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer, withRetry, healthCheck, type ResilienceConfig } from "@kronos-ts/common"
-import type { App } from "@kronos-ts/app"
-import type { CommandBus, CommandMessage, EventProcessorModule, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
-import { applySubscriptionFilter, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import type { CommandBus, CommandMessage, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
+import {
+  applySubscriptionFilter,
+  correlationDataDispatchInterceptor,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  updateHandler,
+  runAfterCommitOrImmediately,
+} from "@kronos-ts/messaging"
 import type { KronosDbConnectionConfig } from "./connection.js"
-import { connectToKronosDb, createKronosMetadata, type KronosDbConnection } from "./connection.js"
+import { connectToKronosDb, kronosMetadata, type KronosDbConnection } from "./connection.js"
 import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
 import { metadataFromProto, metadataToProto } from "./metadata-conversion.js"
-import { createOutboundStream } from "./outbound-stream.js"
-import { createPlatformConnection, type PlatformConnection, type PlatformServiceOptions } from "./platform-service.js"
-import { createKronosDbEventStore } from "./kronosdb-event-store.js"
-import { createKronosDbSnapshotStore } from "./kronosdb-snapshot-store.js"
-import { createShutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
+import { outboundStream } from "./outbound-stream.js"
+import { platformConnection, type PlatformConnection, type PlatformServiceOptions } from "./platform-service.js"
+import { kronosDbEventStore } from "./kronosdb-event-store.js"
+import { kronosDbSnapshotStore } from "./kronosdb-snapshot-store.js"
+import { shutdownLatch, type ShutdownLatch } from "./shutdown-latch.js"
 
 const DEFAULT_PERMITS = 5000n
 const DEFAULT_THRESHOLD = 2500n
@@ -72,16 +99,17 @@ function defaultQueryInstructions(timeoutMs: number): any[] {
   ]
 }
 
-export interface KronosDbExtensionConfig extends KronosDbConnectionConfig {
+export interface KronosDbConfig extends KronosDbConnectionConfig {
   /**
    * Wire the distributed command/query buses backed by KronosDB.
    * Default: true.
    *
    * Set to false to use KronosDB purely as an event/snapshot store and bring
-   * your own messaging transport (e.g. the RabbitMQ extension, which
-   * decorates the default local buses). The platform control plane
-   * (processor pause/start/split/merge, status reporting) stays active in
-   * both modes — it belongs to event processing, not command/query routing.
+   * your own messaging transport. With `messaging: false` the returned
+   * `components` carry only eventStore/snapshotStore, so spreading them over
+   * your defaults leaves the local buses in place. The platform stream is
+   * unaffected either way — it is neither persistence nor command/query routing,
+   * and remote administration on top of it is opt-in via `kronosDbControlPlane`.
    */
   messaging?: boolean
   commandFlowControl?: FlowControlConfig
@@ -96,316 +124,195 @@ export interface KronosDbExtensionConfig extends KronosDbConnectionConfig {
 }
 
 /**
- * Native KronosDB extension factory. Returns an Extension closure shaped as
- * `(app: App) => void` per D-95.
+ * The components a KronosDB backend provides. Spread over your defaults:
  *
  * ```ts
- * await kronos()
- *   .use(kronosDb({ componentName: "university-service" }))
- *   .start()
+ * kronos({ components: { ...inMemoryComponents(), ...kdb.components }, modules })
  * ```
  *
- * With `messaging: false` only the eventStore/snapshotStore slots are
- * populated; the commandBus/queryBus slots are left untouched so another
- * transport (or the in-memory defaults) can own them:
+ * `commandBus` / `queryBus` are absent when `messaging: false`, so the spread
+ * leaves whatever transport you already had in place.
+ */
+export interface KronosDbComponents {
+  eventStore: ReturnType<typeof kronosDbEventStore>
+  snapshotStore: ReturnType<typeof kronosDbSnapshotStore>
+  commandBus?: CommandBus
+  queryBus?: QueryBus
+}
+
+/** A connected KronosDB backend. See {@link kronosDb}. */
+export interface KronosDbBackend {
+  readonly components: KronosDbComponents
+  /** The live connection, for callers that need the raw client. */
+  readonly connection: KronosDbConnection
+  /**
+   * The platform stream. Persistence and transport do not use it; it is public
+   * so the optional control plane can be handed it:
+   * `kronosDbControlPlane(kdb.platform, app.processors)`.
+   */
+  readonly platform: PlatformConnection
+  /**
+   * Wait until KronosDB has acknowledged this client's registration, i.e. until
+   * handler subscriptions are routable. Call AFTER every handler is subscribed
+   * (after `kronos`). This is the D-102 replacement for the legacy
+   * 1-second sleep — it waits exactly long enough, no longer.
+   *
+   * This is the readiness barrier and nothing else. Remote administration is
+   * `kronosDbControlPlane`, which is opt-in and takes no part in startup.
+   */
+  start(): Promise<void>
+  /** Drain in-flight bus work, stop the platform stream, close the connection. */
+  close(): Promise<void>
+}
+
+/** Arguments a KronosDB backend cannot make up for itself. */
+/** Everything kronosDb() needs: its own config plus the framework values it borrows. */
+export type KronosDbOptions = KronosDbConfig & KronosDbDependencies
+
+export interface KronosDbDependencies {
+  serializer: Serializer
+  /** The same UoW runner the app runs on — inbound commands/queries run inside it. */
+  unitOfWorkFactory: UoWRunner
+}
+
+/**
+ * Connect to KronosDB and build its components.
+ *
+ * Everything the connect stage used to do — connect under `withRetry`,
+ * health-check and platform setup — happens
+ * here, awaited, before the function returns. Ordering that used to be encoded
+ * in framework stages is now written down in your composition root.
  *
  * ```ts
- * await kronos()
- *   .use(kronosDb({ componentName: "university-service", messaging: false }))
- *   .use(rabbitMq({ url: "amqp://localhost" }))
- *   .start()
+ * const kdb = await kronosDb({
+ *   componentName: "university-service",
+ *   serializer, unitOfWorkFactory,
+ * })
+ * const app = kronos({
+ *   components: { ...inMemoryComponents(), ...kdb.components },
+ *   modules,
+ * })
+ * await kdb.start()
+ * ```
+ *
+ * With `messaging: false` only the stores come back, so another transport (or
+ * the in-memory defaults) keeps the buses:
+ *
+ * ```ts
+ * const kdb = await kronosDb({ componentName: "svc", messaging: false, serializer, unitOfWorkFactory })
+ * const app = kronos({ components: { ...inMemoryComponents(), ...kdb.components }, modules })
  * ```
  */
-export function kronosDb(serverConfig: KronosDbExtensionConfig): (app: App) => void {
-  return (app) => {
-    let connection: KronosDbConnection | undefined
-    let platform: PlatformConnection | undefined
-    const busLatches: ShutdownLatch[] = []
+export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBackend> {
+  const config = options
+  const { serializer, unitOfWorkFactory, resilience } = config
+  const busLatches: ShutdownLatch[] = []
 
-    function getConnection(): KronosDbConnection {
-      if (!connection) {
-        throw new Error(
-          "[kronos:kronosdb] connection not yet established — wait for onStart('connect')",
-        )
-      }
-      return connection
-    }
+  const connection: KronosDbConnection = await withRetry(
+    async () => connectToKronosDb(config),
+    { event: "initial-connect", ...resilience },
+  )
 
-    // ---- Slot population (D-95) ------------------------------------------
-    //
-    // AppImpl.start() in @kronos-ts/app eagerly resolves all 8 slots and
-    // runs `commandBus.subscribe(...)` for every registered handler BEFORE
-    // any onStart('connect') hook fires (see app.ts §3 / §5c). The KronosDB
-    // bus factories open real gRPC streams against the live channel during
-    // construction (createKronosMetadata / connection.onReconnect / inbound
-    // stream openers), so they CANNOT run until the connect hook has
-    // populated `connection`.
-    //
-    // Solution: the slot factories return wrappers around lazily-built
-    // inner instances. EventStore/SnapshotStore use a lightweight lazy
-    // proxy because their factories never dereference `connection` at
-    // construction time (only inside method bodies). CommandBus/QueryBus
-    // use a `subscribe()`-buffering wrapper that queues subscriptions
-    // synchronously and replays them once the connect hook completes —
-    // dispatch / query calls await the same readiness promise.
+  // Health-check ping with warn-then-continue (D-100). KronosDbConnection has
+  // no dedicated probe surface today; the gRPC channel itself is created
+  // eagerly in connectToKronosDb so the meaningful probe is a round-trip — we
+  // approximate via a soft no-op promise that satisfies the threshold
+  // contract. Real network failure is surfaced by the first bus call against
+  // the live channel.
+  await healthCheck(async () => undefined, {
+    thresholdMs: resilience?.healthCheckThresholdMs,
+    log: resilience?.log,
+  })
 
-    /** Latches once the connect hook has populated `connection`. */
-    let resolveConnected: () => void = () => {}
-    const connected: Promise<void> = new Promise((res) => {
-      resolveConnected = res
-    })
+  // ---- Platform control plane -------------------------------------------
+  const platform = platformConnection(connection, config.platformService)
 
-    app.set("eventStore", (resolved) => {
-      // Lazy proxy: createKronosDbEventStore stores `connection` in
-      // closure scope but only dereferences it inside method bodies, so
-      // a Proxy that forwards property access to getConnection() works
-      // — by the time framework code calls source/append/stream the
-      // connect hook has populated the closure.
-      const lazyConnection = new Proxy({} as KronosDbConnection, {
-        get(_t, prop) {
-          return (getConnection() as any)[prop]
-        },
-      })
-      return createKronosDbEventStore(lazyConnection, resolved.serializer)
-    })
 
-    app.set("snapshotStore", (resolved) => {
-      const lazyConnection = new Proxy({} as KronosDbConnection, {
-        get(_t, prop) {
-          return (getConnection() as any)[prop]
-        },
-      })
-      return createKronosDbSnapshotStore(lazyConnection, resolved.serializer)
-    })
+  // ---- Components --------------------------------------------------------
+  // The connection is live by now, so these are the real things: no lazy
+  // proxy around the stores, no subscribe()-buffering wrapper around the buses.
+  const components: KronosDbComponents = {
+    eventStore: kronosDbEventStore(connection, serializer),
+    snapshotStore: kronosDbSnapshotStore(connection, serializer),
+  }
 
-    const messaging = serverConfig.messaging !== false
+  if (config.messaging !== false) {
+    const commandLatch = shutdownLatch()
+    busLatches.push(commandLatch)
+    components.commandBus = distributedCommandBus(
+      connection,
+      unitOfWorkFactory,
+      commandLatch,
+      serializer,
+      config.commandFlowControl,
+      config.commandLoadFactor,
+      resilience,
+    )
 
-    if (messaging) app.set("commandBus", (resolved) => {
-      const latch = createShutdownLatch()
-      busLatches.push(latch)
+    const queryLatch = shutdownLatch()
+    busLatches.push(queryLatch)
+    components.queryBus = distributedQueryBus(
+      connection,
+      unitOfWorkFactory,
+      queryLatch,
+      serializer,
+      config.queryFlowControl,
+      config.shortcutQueriesToLocalHandlers,
+      config.queryTimeoutMs,
+      resilience,
+    )
+  }
 
-      let inner: CommandBus | undefined
-      const pendingSubs: Array<[string, (m: CommandMessage) => Promise<unknown>]> = []
-
-      // Build the real bus once the connect hook fires + replay buffered subs.
-      connected.then(() => {
-        // canonical Resolved slot name is `unitOfWorkFactory` (NOT unitOfWorkRunner)
-        inner = createDistributedCommandBus(
-          getConnection(),
-          resolved.unitOfWorkFactory,
-          latch,
-          resolved.serializer,
-          serverConfig.commandFlowControl,
-          serverConfig.commandLoadFactor,
-          serverConfig.resilience,
-        )
-        for (const [name, h] of pendingSubs) inner.subscribe(name, h)
-        pendingSubs.length = 0
-      })
-
-      const wrapper: CommandBus = {
-        async dispatch(message) {
-          await connected
-          return inner!.dispatch(message)
-        },
-        subscribe(name, handler) {
-          if (inner) inner.subscribe(name, handler)
-          else pendingSubs.push([name, handler])
-        },
-      }
-      return wrapper
-    })
-
-    if (messaging) app.set("queryBus", (resolved) => {
-      const latch = createShutdownLatch()
-      busLatches.push(latch)
-
-      let inner: QueryBus | undefined
-      const pendingSubs: Array<[string, (m: QueryMessage) => Promise<unknown>]> = []
-
-      connected.then(() => {
-        inner = createDistributedQueryBus(
-          getConnection(),
-          resolved.unitOfWorkFactory,
-          latch,
-          resolved.serializer,
-          serverConfig.queryFlowControl,
-          serverConfig.shortcutQueriesToLocalHandlers,
-          serverConfig.queryTimeoutMs,
-          serverConfig.resilience,
-        )
-        for (const [name, h] of pendingSubs) inner.subscribe(name, h)
-        pendingSubs.length = 0
-      })
-
-      const wrapper: QueryBus = {
-        async query(message) {
-          await connected
-          return inner!.query(message)
-        },
-        subscribe(name, handler) {
-          if (inner) inner.subscribe(name, handler)
-          else pendingSubs.push([name, handler])
-        },
-        subscriptionQuery(message, bufferSize) {
-          if (!inner) {
-            throw new Error(
-              "[kronos:kronosdb] subscriptionQuery called before connect hook completed",
-            )
-          }
-          return inner.subscriptionQuery(message, bufferSize)
-        },
-        subscribeToUpdates(message, bufferSize) {
-          if (!inner) {
-            throw new Error(
-              "[kronos:kronosdb] subscribeToUpdates called before connect hook completed",
-            )
-          }
-          return inner.subscribeToUpdates(message, bufferSize)
-        },
-        async emitUpdate(name, filter, update) {
-          await connected
-          return inner!.emitUpdate(name, filter, update)
-        },
-        async completeSubscription(name, filter) {
-          await connected
-          return inner!.completeSubscription(name, filter)
-        },
-        async completeSubscriptionExceptionally(name, error, filter) {
-          await connected
-          return inner!.completeSubscriptionExceptionally(name, error, filter)
-        },
-      }
-      return wrapper
-    })
-
-    // ---- Lifecycle: connect (D-101 normative split) ---------------------
-    // connect = initial connect + health-check + platform setup +
-    //           instruction wiring + platform.start.
-    app.onStart("connect", async () => {
-      connection = await withRetry(
-        async () => connectToKronosDb(serverConfig),
-        { event: "initial-connect", ...serverConfig.resilience },
-      )
-
-      // Health-check ping with warn-then-continue (D-100). KronosDbConnection
-      // has no dedicated probe surface today; the gRPC channel itself is
-      // created eagerly in connectToKronosDb so the meaningful probe is a
-      // round-trip — we approximate via a soft no-op promise that satisfies
-      // the threshold contract. Real network failure is surfaced by the
-      // first bus call against the live channel.
-      await healthCheck(async () => undefined, {
-        thresholdMs: serverConfig.resilience?.healthCheckThresholdMs,
-        log: serverConfig.resilience?.log,
-      })
-
-      platform = createPlatformConnection(connection!, serverConfig.platformService)
-
-      // Build a name-keyed view of the EventProcessorModule list so server-
-      // initiated instructions can route to the right module. We resolve via
-      // `app.processors()` — Plan 09-01's zero-arg read accessor (D-103).
-      const processors = app.processors()
-      const processorMap = new Map<string, EventProcessorModule>()
-      for (const proc of processors) processorMap.set(proc.name, proc)
-
-      platform.onInstruction(async (instruction) => {
-        switch (instruction.kind) {
-          case "pause-processor": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.stop) proc.stop()
-            break
-          }
-          case "start-processor": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.start) await proc.start()
-            break
-          }
-          case "release-segment": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.releaseSegment) await proc.releaseSegment(instruction.segmentId)
-            break
-          }
-          case "split-segment": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.splitSegment) await proc.splitSegment(instruction.segmentId)
-            break
-          }
-          case "merge-segment": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.mergeSegment) await proc.mergeSegment(instruction.segmentId)
-            break
-          }
-        }
-      })
-
-      platform.registerProcessorStatusSupplier(() => {
-        return processors.map((proc: any) => ({
-          name: proc.name,
-          running: proc.running ?? false,
-          mode: proc.supportsReset?.() === false ? "Subscribing" : "Tracking",
-          isStreamingProcessor: proc.supportsReset?.() !== false,
-          activeThreads: proc.running ? 1 : 0,
-          availableThreads: 0,
-          error: false,
-          tokenStoreIdentifier: "",
-          segments: proc.processingStatus
-            ? Array.from(proc.processingStatus().entries() as Iterable<[number, any]>).map(
-                ([segId, status]: [number, any]) => ({
-                  segmentId: segId,
-                  caughtUp: status.caughtUp ?? false,
-                  replaying: status.replaying ?? false,
-                  onePartOf: 1,
-                  tokenPosition: status.position ?? 0n,
-                  errorState: status.error?.message ?? "",
-                }),
-              )
-            : [
-                {
-                  segmentId: 0,
-                  caughtUp: true,
-                  replaying: proc.replaying ?? false,
-                  onePartOf: 1,
-                  tokenPosition: proc.position ?? 0n,
-                  errorState: "",
-                },
-              ],
-        }))
-      })
-
+  return {
+    components,
+    connection,
+    platform,
+    async start() {
+      // ASYMMETRY WITH axon-server, ON PURPOSE. The axon backend has a
+      // `platform.armConnectionMonitoring()` split — a data-path entry point
+      // that opens the platform stream and arms the heartbeat WITHOUT arming
+      // processor status reporting. KronosDB does not need one: its readiness
+      // barrier (`subscriptionsAcked()`) can only be answered by a live platform
+      // stream, so this backend has always called `platform.start()` itself, and
+      // the heartbeat that drives `connection.reconnect()` on timeout has always
+      // been armed on the data path regardless of whether anyone built a
+      // `kronosDbControlPlane`.
+      //
+      // Axon's exposure came from the opposite coupling: its barrier is a plain
+      // settle wait on the BUS streams, so nothing on its data path had reason
+      // to touch the platform stream, and after the control-plane extraction an
+      // un-administered service ended up with no reconnect detection at all.
+      //
+      // The cost of not splitting here is one idle timer: `platform.start()`
+      // also arms status reporting, and `reportProcessorStatus()` returns
+      // immediately while `processorStatusSuppliers` is empty. Harmless, and a
+      // control plane created later is picked up live because the reporter reads
+      // the supplier list on every tick rather than capturing it.
+      //
+      // The readiness barrier needs a LIVE platform stream: the ack signal is
+      // the first server-originated frame on it, so `subscriptionsAcked()` is
+      // `false` until the stream is open. `platform.start()` is idempotent — if
+      // a control plane was created first (the recommended order) it already
+      // brought the stream live AFTER registering its handlers, and this is a
+      // no-op. Without a control plane the backend still needs the stream, so it
+      // starts it here. Instructions that land before a control plane registers
+      // are buffered by the platform connection, not dropped.
       await platform.start()
 
-      // Latch the connected promise so the deferred bus wrappers built in
-      // the slot factories above construct their inner instances and replay
-      // any subscriptions that were buffered while connect was running.
-      // This MUST happen synchronously before any subsequent stage hook so
-      // register/processors-stage code sees the fully-wired buses. The
-      // microtask queue drains the `.then(...)` callbacks attached in the
-      // slot factories before this hook resolves.
-      resolveConnected()
-      await Promise.resolve()
-    })
-
-    // ---- Lifecycle: processors (D-101 / D-102) --------------------------
-    // processors = ONLY the subscription-ack wait, via withRetry against
-    // `platform.subscriptionsAcked()`. This REPLACES the legacy 1-second
-    // sleep that lived at kronosdb-configuration-enhancer.ts:216.
-    app.onStart("processors", async () => {
       await withRetry(
         async () => {
-          const ok = await platform!.subscriptionsAcked()
+          const ok = await platform.subscriptionsAcked()
           if (!ok) throw new Error("subscriptions not yet acked")
         },
-        { event: "per-operation", ...serverConfig.resilience },
+        { event: "per-operation", ...resilience },
       )
-    })
-
-    // ---- Lifecycle: stop (D-101.b — preserves legacy ordering) ----------
-    // busLatches drained first → platform.stop → connection.close.
-    app.onStop("connect", async () => {
+    },
+    async close() {
+      // Ordering preserved from D-101.b: drain buses, then platform, then socket.
       await Promise.all(busLatches.map((l) => l.initiateShutdown()))
-      platform?.stop()
-      connection?.close()
-    })
+      platform.stop()
+      connection.close()
+    },
   }
 }
 
@@ -434,7 +341,34 @@ function createPayloadHelpers(serializer: Serializer) {
 //   2) inbound-stream backoff replaced by the same withRetry path
 // ---------------------------------------------------------------------------
 
-function createDistributedCommandBus(
+/**
+ * A command bus backed by KronosDB.
+ *
+ * ## Correlation lineage and the interceptor layer
+ *
+ * The returned bus is wrapped in {@link interceptingCommandBus} carrying
+ * {@link correlationDataDispatchInterceptor}, so lineage is stamped onto the
+ * outgoing message BEFORE it is serialized onto the wire.
+ *
+ * This mirrors AxonFramework, where dispatch interception always sits outside
+ * the routing bus. AF4's `AxonServerCommandBus.dispatch` is
+ * `doDispatch(dispatchInterceptors.intercept(commandMessage), cb)`; AF5 expresses
+ * the same thing through decorator order —
+ * `DISTRIBUTED_COMMAND_BUS_ORDER = InterceptingCommandBus.DECORATION_ORDER - 50`
+ * stacks the buses `InterceptingCommandBus → DistributedCommandBus → SimpleCommandBus`.
+ *
+ * Without this, remote lineage was simply lost: the interceptor was registered
+ * only inside `@kronos-ts/app`'s default in-memory bus, and this bus REPLACES
+ * that one in `components` — every command left the process with no
+ * `correlationId` / `causationId`, even though the inbound side below faithfully
+ * rebuilds a UnitOfWork from `message.metadata`.
+ *
+ * There is no double-application concern here (unlike the RabbitMQ backend):
+ * this bus's local segment is a plain handler map, not a `CommandBus`, so the
+ * wrap below is the only interceptor in the chain — exactly AF5's shape, where
+ * the local `SimpleCommandBus` has no dispatch-interceptor support at all.
+ */
+export function distributedCommandBus(
   connection: KronosDbConnection,
   unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
@@ -443,14 +377,14 @@ function createDistributedCommandBus(
   commandLoadFactor?: number,
   resilience?: Partial<ResilienceConfig>,
 ): CommandBus {
-  const metadata = createKronosMetadata(connection.config)
+  const metadata = kronosMetadata(connection.config)
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
   const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
   const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
 
   const localSegment = new Map<string, (message: CommandMessage) => Promise<unknown>>()
 
-  let outbound = createOutboundStream<any>()
+  let outbound = outboundStream<any>()
   let streamStarted = false
   let permits = 0n
 
@@ -472,7 +406,7 @@ function createDistributedCommandBus(
 
   function reestablishStreamBody() {
     outbound.close()
-    outbound = createOutboundStream<any>()
+    outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
     ensureStreamStarted()
@@ -582,7 +516,7 @@ function createDistributedCommandBus(
     }
   }
 
-  return {
+  const routing: CommandBus = {
     async dispatch(message: CommandMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
@@ -630,13 +564,34 @@ function createDistributedCommandBus(
       grantPermits()
     },
   }
+
+  // Interception OUTSIDE routing — see the note on this function.
+  const bus = interceptingCommandBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
 }
 
 // ---------------------------------------------------------------------------
 // Distributed Query Bus
 // ---------------------------------------------------------------------------
 
-export function createDistributedQueryBus(
+/**
+ * A query bus backed by KronosDB.
+ *
+ * Wrapped in {@link interceptingQueryBus} with
+ * {@link correlationDataDispatchInterceptor} for the same reason the command bus
+ * is — AF runs dispatch interception at the top of `query` / `scatterGather` /
+ * `subscriptionQuery`, before anything is sent. `query()` below can also shortcut
+ * to a co-located handler, and wrapping outside means lineage is stamped
+ * identically on both branches.
+ *
+ * KNOWN GAP: `subscriptionQuery` / `subscribeToUpdates` build their proto
+ * straight from `message.metadata`, and `interceptingQueryBus` (in
+ * `@kronos-ts/messaging`) forwards those two calls to the delegate without
+ * running the dispatch chain. Subscription registrations therefore still travel
+ * without lineage. Closing that needs a change in the messaging package.
+ */
+export function distributedQueryBus(
   connection: KronosDbConnection,
   unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
@@ -646,7 +601,7 @@ export function createDistributedQueryBus(
   queryTimeoutMs?: number,
   resilience?: Partial<ResilienceConfig>,
 ): QueryBus {
-  const metadata = createKronosMetadata(connection.config)
+  const metadata = kronosMetadata(connection.config)
   const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
   const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
@@ -660,7 +615,7 @@ export function createDistributedQueryBus(
   // target. The server then routes each response back to that exact subscriber.
   const handlerSubscriptions = new Map<string, { queryName: string; payload: unknown }>()
 
-  let outbound = createOutboundStream<any>()
+  let outbound = outboundStream<any>()
   let streamStarted = false
   let permits = 0n
 
@@ -682,7 +637,7 @@ export function createDistributedQueryBus(
 
   function reestablishStreamBody() {
     outbound.close()
-    outbound = createOutboundStream<any>()
+    outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
     ensureStreamStarted()
@@ -876,7 +831,7 @@ export function createDistributedQueryBus(
     }
   }
 
-  return {
+  const routing: QueryBus = {
     async query(message: QueryMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
@@ -943,14 +898,14 @@ export function createDistributedQueryBus(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       const queryName = qualifiedNameToString(message.name)
       const subscriptionId = generateIdentifier()
       const serialized = serializePayload(queryName, message.payload)
 
-      const outboundSub = createOutboundStream<any>()
+      const outboundSub = outboundStream<any>()
 
       outboundSub.send({
         subscribe: {
@@ -993,12 +948,12 @@ export function createDistributedQueryBus(
               }
             } else if (response.update) {
               const update = deserializePayload(response.update.payload?.data as Uint8Array | undefined, response.update.payload?.type, response.update.payload?.revision)
-              updateHandler.offer(update)
+              handler.offer(update)
             } else if (response.complete) {
-              updateHandler.complete()
+              handler.complete()
               break
             } else if (response.completeExceptionally) {
-              updateHandler.completeExceptionally(
+              handler.completeExceptionally(
                 new Error(response.completeExceptionally.errorMessage?.message ?? "Subscription query failed"),
               )
               break
@@ -1010,7 +965,7 @@ export function createDistributedQueryBus(
             rejectInitial(error)
             initialSettled = true
           }
-          updateHandler.completeExceptionally(error)
+          handler.completeExceptionally(error)
         } finally {
           subscriptions.delete(queryId)
         }
@@ -1018,7 +973,7 @@ export function createDistributedQueryBus(
 
       return {
         initialResult,
-        updates: updateHandler.iterable,
+        updates: handler.iterable,
         close: () => {
           outboundSub.send({
             unsubscribe: {
@@ -1027,7 +982,7 @@ export function createDistributedQueryBus(
           })
           outboundSub.close()
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },
@@ -1038,14 +993,14 @@ export function createDistributedQueryBus(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const updateHandler = createUpdateHandler(message, bufferSize)
-      subscriptions.set(queryId, updateHandler)
+      const handler = updateHandler(message, bufferSize)
+      subscriptions.set(queryId, handler)
 
       return {
-        [Symbol.asyncIterator]: () => updateHandler.iterable[Symbol.asyncIterator](),
+        [Symbol.asyncIterator]: () => handler.iterable[Symbol.asyncIterator](),
         close: () => {
           subscriptions.delete(queryId)
-          updateHandler.complete()
+          handler.complete()
         },
       }
     },
@@ -1139,4 +1094,8 @@ export function createDistributedQueryBus(
       })
     },
   }
+
+  const bus = interceptingQueryBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
 }

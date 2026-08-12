@@ -19,7 +19,7 @@ import {
 import type { EventMessage } from "@kronos-ts/messaging"
 import { Status } from "nice-grpc"
 import type { KronosDbConnection } from "./connection.js"
-import { createKronosMetadata } from "./connection.js"
+import { kronosMetadata } from "./connection.js"
 import { metadataToStringMap } from "./metadata-conversion.js"
 
 const textEncoder = new TextEncoder()
@@ -101,7 +101,7 @@ export function createKronosDbScheduler(
   serializer: Serializer,
 ): KronosDbScheduler {
   function getMetadata() {
-    return createKronosMetadata(connection.config)
+    return kronosMetadata(connection.config)
   }
 
   return {

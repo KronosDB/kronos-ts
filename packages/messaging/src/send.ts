@@ -24,7 +24,7 @@ export const COMMAND_BUS_KEY: ResourceKey<CommandBus> = resourceKey("commandBus"
  *
  * AF5-aligned semantics: every command is handled in its own fresh
  * UnitOfWork (`commandBus.dispatch` always starts a new one — see
- * `createSimpleCommandBus`). The command handler is therefore its own
+ * `simpleCommandBus`). The command handler is therefore its own
  * atomic boundary: it loads state, decides, appends events, and commits
  * once — independent of the caller's UnitOfWork.
  *

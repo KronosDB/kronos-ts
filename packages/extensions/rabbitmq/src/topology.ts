@@ -1,5 +1,18 @@
 import type { QualifiedName } from "@kronos-ts/common"
-import type { KronosIdentity } from "@kronos-ts/app"
+
+/**
+ * Who this process is on the broker. Every queue name that must not be shared
+ * between processes (reply queues, gossip/direct subscriber queues) is derived
+ * from it, so `instanceId` has to be unique per running process and
+ * `serviceName` shared by every replica of the same deployment.
+ *
+ * It used to be read off the container's `app.identity`. There is no container,
+ * so it is an argument now.
+ */
+export interface RabbitMqIdentity {
+  readonly serviceName: string
+  readonly instanceId: string
+}
 
 export interface RabbitMqTopologyConfig {
   readonly prefix?: string
@@ -25,8 +38,8 @@ export interface RabbitMqTopologyNames {
   queryReplyQueue(): string
 }
 
-export function createRabbitMqTopologyNames(
-  identity: KronosIdentity,
+export function rabbitMqTopologyNames(
+  identity: RabbitMqIdentity,
   config: RabbitMqTopologyConfig = {},
 ): RabbitMqTopologyNames {
   const prefix = sanitizeSegment(config.prefix ?? "kronos")

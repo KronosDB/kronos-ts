@@ -6,10 +6,10 @@ import type { DispatchInterceptor, HandlerInterceptor } from "./interceptor.js"
  * A command bus decorator that adds dispatch and handler interceptor chains
  * to any {@link CommandBus} implementation.
  *
- * {@link createSimpleCommandBus} handles dispatch + subscribe only;
+ * {@link simpleCommandBus} handles dispatch + subscribe only;
  * this decorator layers interceptor support on top.
  */
-export function createInterceptingCommandBus(
+export function interceptingCommandBus(
   delegate: CommandBus,
 ): CommandBus & {
   /** Register a dispatch interceptor. Returns an unsubscribe function. */

@@ -3,9 +3,9 @@ import { z } from "zod"
 import { qn, tag, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import { event, EventCriteria, type EventMessage } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createInMemoryEventStore } from "../in-memory-event-store.js"
-import { createEventSourcedRepository } from "../event-sourced-repository.js"
-import { createInMemorySnapshotStore } from "../snapshot-store.js"
+import { inMemoryEventStore } from "../in-memory-event-store.js"
+import { eventSourcedRepository } from "../event-sourced-repository.js"
+import { inMemorySnapshotStore } from "../snapshot-store.js"
 import { afterEvents, noSnapshotPolicy } from "../snapshot-policy.js"
 
 // -- Fixtures --
@@ -58,8 +58,8 @@ describe("EventSourcedRepository with Snapshots", () => {
   describe("snapshot loading", () => {
     it("loads state from snapshot and replays only subsequent events", async () => {
       // given
-      const eventStore = createInMemoryEventStore()
-      const snapshotStore = createInMemorySnapshotStore()
+      const eventStore = inMemoryEventStore()
+      const snapshotStore = inMemorySnapshotStore()
 
       // Append 3 events
       await eventStore.append([
@@ -80,7 +80,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         metadata: {},
       })
 
-      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore)
+      const repo = eventSourcedRepository(Course, eventStore, snapshotStore)
 
       // when
       const result = await repo.load({ courseId: "cs-101" })
@@ -95,12 +95,12 @@ describe("EventSourcedRepository with Snapshots", () => {
 
     it("works without snapshot store", async () => {
       // given
-      const eventStore = createInMemoryEventStore()
+      const eventStore = inMemoryEventStore()
       await eventStore.append([
         eventMsg(CourseCreated, { courseId: "cs-101", name: "CS 101", capacity: 30 }),
       ])
 
-      const repo = createEventSourcedRepository(Course, eventStore)
+      const repo = eventSourcedRepository(Course, eventStore)
 
       // when
       const result = await repo.load({ courseId: "cs-101" })
@@ -112,8 +112,8 @@ describe("EventSourcedRepository with Snapshots", () => {
 
     it("falls back to full replay when no snapshot exists", async () => {
       // given
-      const eventStore = createInMemoryEventStore()
-      const snapshotStore = createInMemorySnapshotStore()
+      const eventStore = inMemoryEventStore()
+      const snapshotStore = inMemorySnapshotStore()
       // No snapshot stored
 
       await eventStore.append([
@@ -121,7 +121,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         eventMsg(CourseCapacityChanged, { courseId: "cs-101", capacity: 50 }),
       ])
 
-      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore)
+      const repo = eventSourcedRepository(Course, eventStore, snapshotStore)
 
       // when
       const result = await repo.load({ courseId: "cs-101" })
@@ -138,8 +138,8 @@ describe("EventSourcedRepository with Snapshots", () => {
   describe("snapshot creation", () => {
     it("creates snapshot when policy triggers", async () => {
       // given
-      const eventStore = createInMemoryEventStore()
-      const snapshotStore = createInMemorySnapshotStore()
+      const eventStore = inMemoryEventStore()
+      const snapshotStore = inMemorySnapshotStore()
       const policy = afterEvents(2)
 
       await eventStore.append([
@@ -148,7 +148,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         eventMsg(CourseCapacityChanged, { courseId: "cs-101", capacity: 60 }),
       ])
 
-      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore, policy)
+      const repo = eventSourcedRepository(Course, eventStore, snapshotStore, policy)
 
       // when
       await repo.load({ courseId: "cs-101" })
@@ -167,15 +167,15 @@ describe("EventSourcedRepository with Snapshots", () => {
 
     it("does not create snapshot when policy does not trigger", async () => {
       // given
-      const eventStore = createInMemoryEventStore()
-      const snapshotStore = createInMemorySnapshotStore()
+      const eventStore = inMemoryEventStore()
+      const snapshotStore = inMemorySnapshotStore()
       const policy = afterEvents(100) // threshold too high
 
       await eventStore.append([
         eventMsg(CourseCreated, { courseId: "cs-101", name: "CS 101", capacity: 30 }),
       ])
 
-      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore, policy)
+      const repo = eventSourcedRepository(Course, eventStore, snapshotStore, policy)
 
       // when
       await repo.load({ courseId: "cs-101" })
@@ -188,14 +188,14 @@ describe("EventSourcedRepository with Snapshots", () => {
 
     it("does not create snapshot with noSnapshotPolicy", async () => {
       // given
-      const eventStore = createInMemoryEventStore()
-      const snapshotStore = createInMemorySnapshotStore()
+      const eventStore = inMemoryEventStore()
+      const snapshotStore = inMemorySnapshotStore()
 
       await eventStore.append([
         eventMsg(CourseCreated, { courseId: "cs-101", name: "CS 101", capacity: 30 }),
       ])
 
-      const repo = createEventSourcedRepository(
+      const repo = eventSourcedRepository(
         Course, eventStore, snapshotStore, noSnapshotPolicy(),
       )
 
@@ -210,8 +210,8 @@ describe("EventSourcedRepository with Snapshots", () => {
 
     it("does not create snapshot when no new events after snapshot", async () => {
       // given
-      const eventStore = createInMemoryEventStore()
-      const snapshotStore = createInMemorySnapshotStore()
+      const eventStore = inMemoryEventStore()
+      const snapshotStore = inMemorySnapshotStore()
       const policy = afterEvents(1)
 
       await eventStore.append([
@@ -226,7 +226,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         metadata: {},
       })
 
-      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore, policy)
+      const repo = eventSourcedRepository(Course, eventStore, snapshotStore, policy)
 
       // when — load with no new events since snapshot
       const result = await repo.load({ courseId: "cs-101" })
@@ -240,8 +240,8 @@ describe("EventSourcedRepository with Snapshots", () => {
   describe("snapshot + subsequent events", () => {
     it("correctly combines snapshot state with new events", async () => {
       // given
-      const eventStore = createInMemoryEventStore()
-      const snapshotStore = createInMemorySnapshotStore()
+      const eventStore = inMemoryEventStore()
+      const snapshotStore = inMemorySnapshotStore()
       const policy = afterEvents(2) // snapshot after more than 2 events
 
       // Append 5 events
@@ -259,7 +259,7 @@ describe("EventSourcedRepository with Snapshots", () => {
         metadata: {},
       })
 
-      const repo = createEventSourcedRepository(Course, eventStore, snapshotStore, policy)
+      const repo = eventSourcedRepository(Course, eventStore, snapshotStore, policy)
 
       // when
       const result = await repo.load({ courseId: "cs-101" })

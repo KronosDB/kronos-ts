@@ -23,7 +23,7 @@ export interface EventGateway {
 /**
  * Creates an event gateway backed by an event sink.
  */
-export function createEventGateway(eventSink: EventSink): EventGateway {
+export function eventGateway(eventSink: EventSink): EventGateway {
   return {
     async publish(descriptor, payload, metadata = {}) {
       const tags = descriptor.tags ? descriptor.tags(payload) : []

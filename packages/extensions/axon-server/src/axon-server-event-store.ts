@@ -11,7 +11,7 @@ import type {
   SequencedEvent,
   StreamingCondition,
 } from "@kronos-ts/messaging"
-import { createMessageStream } from "@kronos-ts/messaging"
+import { messageStream } from "@kronos-ts/messaging"
 import type {
   EventStore,
   SourcingResult,
@@ -149,7 +149,7 @@ function createEventConverters(serializer: Serializer) {
  * a single gRPC Stream RPC call that stays open indefinitely, aligned with
  * Java's infinite {@code ResultStream}.
  */
-export function createAxonServerEventStore(connection: AxonServerConnection, serializer: Serializer): EventStore {
+export function axonServerEventStore(connection: AxonServerConnection, serializer: Serializer): EventStore {
   const { eventToProto, eventFromProto } = createEventConverters(serializer)
 
   function createAxonMetadata(): Metadata {
@@ -296,7 +296,7 @@ export function createAxonServerEventStore(connection: AxonServerConnection, ser
 
       startReading()
 
-      return createMessageStream<SequencedEvent>({
+      return messageStream<SequencedEvent>({
         next() {
           return buffer.shift()
         },

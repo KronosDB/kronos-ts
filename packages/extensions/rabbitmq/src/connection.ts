@@ -26,11 +26,11 @@ async function defaultAmqpConnect(url: string): Promise<ChannelModel> {
  * Create a shared AMQP connection. The connection opens on the first
  * `channel()` call and is reused for every channel thereafter.
  *
- * Ownership: whoever calls {@link createAmqpConnection} owns the connection and
+ * Ownership: whoever calls {@link amqpConnection} owns the connection and
  * is responsible for calling `close()`. Transports borrow channels and only
  * close their own channels.
  */
-export function createAmqpConnection(
+export function amqpConnection(
   url: string,
   connect: AmqpConnect = defaultAmqpConnect,
 ): AmqpConnection {

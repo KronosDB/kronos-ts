@@ -28,7 +28,7 @@ export interface MessageMonitorRegistry {
 /**
  * Creates a default message monitor registry.
  */
-export function createMessageMonitorRegistry(): MessageMonitorRegistry {
+export function messageMonitorRegistry(): MessageMonitorRegistry {
   const genericMonitors: MessageMonitor<Message>[] = []
   const commandMonitors: MessageMonitor<CommandMessage>[] = []
   const eventMonitors: MessageMonitor<EventMessage>[] = []
