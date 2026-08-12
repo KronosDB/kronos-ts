@@ -10,10 +10,9 @@ import { getResource, hasResource, onPrepareCommit, setResource } from "./proces
 // `ctx.append()` only BUFFERS into the active UnitOfWork; someone must register
 // a PREPARE_COMMIT hook that flushes the buffer to a store, with the append
 // condition derived from what the handler load()ed (the DCB consistency check).
-// Historically only the command path registered it. Processors now do too, so
-// STATEFUL event handlers (automations that load state and append facts
-// directly, without a command hop) work — and a UnitOfWork that buffers events
-// with nowhere to flush them FAILS at commit instead of dropping them.
+// Only the COMMAND path registers it — dispatch always opens a fresh
+// UnitOfWork, so the command handler is the sole decide-and-append boundary.
+// Event handlers deliberately have no `append` (see handler-context.ts).
 // ---------------------------------------------------------------------------
 
 /** Once-per-UoW guard. Nested dispatch re-enters invocation inside the same ALS
@@ -71,24 +70,5 @@ export function registerEventFlush(options: EventFlushOptions): void {
     }
 
     await options.eventStore.append(resolvedEvents, appendCondition)
-  })
-}
-
-/**
- * For a UnitOfWork with NO event store (a hand-built processor without one):
- * turn "appended events with nowhere to go" into a commit-time error instead of
- * a silent drop. Registered in place of the flush.
- */
-export function registerEventFlushGuard(processorName: string): void {
-  if (hasResource(EVENT_FLUSH_REGISTERED_KEY)) return
-  setResource(EVENT_FLUSH_REGISTERED_KEY, true)
-  onPrepareCommit(async () => {
-    const buffered = getResource(BUFFERED_EVENTS_KEY)
-    if (!buffered || buffered.length === 0) return
-    throw new Error(
-      `Processor "${processorName}": ${buffered.length} event(s) were appended in this ` +
-        `UnitOfWork, but the processor was built without an eventStore to flush them to. ` +
-        `Pass eventStore (kronos does this automatically) or dispatch a command instead.`,
-    )
   })
 }

@@ -304,8 +304,6 @@ export function kronos(opts: {
             queryBus: c.queryBus,
             correlationDataProviders,
             unitOfWorkRunner: proc.unitOfWorkRunner ?? c.unitOfWorkFactory,
-            eventStore: c.eventStore,
-            tagResolver: c.tagResolver,
             ...(proc.errorHandler ? { errorHandler: proc.errorHandler } : {}),
             ...(handlerEnhancer ? { handlerEnhancer } : {}),
           }) as never,
@@ -322,8 +320,6 @@ export function kronos(opts: {
           queryBus: c.queryBus,
           correlationDataProviders,
           unitOfWorkRunner: proc.unitOfWorkRunner ?? c.unitOfWorkFactory,
-          eventStore: c.eventStore,
-          tagResolver: c.tagResolver,
           // Per-processor override wins over the module/app token store.
           tokenStore: proc.tokenStore ?? c.tokenStore,
           // Everything else the builder accepts. Dropping any of these makes
