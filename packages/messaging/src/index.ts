@@ -285,11 +285,13 @@ export { COMMAND_BUS_KEY } from "./send.js"
 export {
   type HandlerContext,
   type EventHandlerContext,
+  type QueryHandlerContext,
   type ContextAppendFunction,
   type ContextLoadFunction,
   type ContextSendFunction,
   HANDLER_CONTEXT,
   EVENT_HANDLER_CONTEXT,
+  QUERY_HANDLER_CONTEXT,
 } from "./handler-context.js"
 export { QUERY_BUS_KEY, type EmitUpdateFunction } from "./emit-update.js"
 
