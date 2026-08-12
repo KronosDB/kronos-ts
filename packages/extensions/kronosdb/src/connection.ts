@@ -221,10 +221,14 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
             )
           }
 
-          const delay = Math.min(
+          const backoff = Math.min(
             resolvedConfig.reconnectIntervalMs * Math.pow(2, attempt - 1),
             30000,
           )
+          // ±25% jitter: after a server restart every instance of a scaled-out
+          // service loses its connection at the same instant, and identical
+          // backoff schedules would reconnect them as one synchronized wave.
+          const delay = backoff * (0.75 + Math.random() * 0.5)
           await new Promise((r) => setTimeout(r, delay))
         }
       }
