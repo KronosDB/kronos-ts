@@ -4,7 +4,7 @@ import { createInMemoryEventStore } from "@kronos-ts/eventsourcing"
 import { command, commandHandler, EventCriteria, event } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { z } from "zod"
-import { createApp, inMemoryComponents, module } from "../create-app.js"
+import { createApp, inMemory, inMemoryComponents, module } from "../create-app.js"
 import { kronos } from "../kronos.js"
 import { defineModule, type ModuleApi } from "../module.js"
 
@@ -94,8 +94,8 @@ const billLine = (ledger: Ledger) =>
 /** A slice is a LIST of registrations. Deps are closure arguments. */
 const billLinesSlice = (ledger: Ledger) => [Bill, openBill, billLine(ledger)]
 
-const billingModule = (ledger: Ledger, eventStore: ReturnType<typeof createInMemoryEventStore>) =>
-  module("billing", { eventStore }, ...billLinesSlice(ledger))
+const billingModule = (ledger: Ledger, persistence: ReturnType<typeof inMemory>) =>
+  module("billing", persistence, ...billLinesSlice(ledger))
 
 // ===========================================================================
 
@@ -117,12 +117,12 @@ describe("billing, both ways", () => {
 
   it("functional style: same behaviour, assembly is a record", async () => {
     const ledger = newLedger()
-    const store = createInMemoryEventStore()
+    const persistence = inMemory()
 
     // --- composition root (functional) ---
     const app = createApp({
       components: inMemoryComponents(),
-      modules: [billingModule(ledger, store)],
+      modules: [billingModule(ledger, persistence)],
     })
     // -------------------------------------
 
@@ -135,8 +135,8 @@ describe("billing, both ways", () => {
 
   it("functional style: two modules, two event stores, one bus", async () => {
     const billingLedger = newLedger()
-    const billingStore = createInMemoryEventStore()
-    const orderingStore = createInMemoryEventStore()
+    const billingPersistence = inMemory()
+    const orderingPersistence = inMemory()
 
     // A second module with its OWN command + event, so the shared bus stays valid.
     const OrderPlaced = event({
@@ -155,8 +155,8 @@ describe("billing, both ways", () => {
     const app = createApp({
       components: inMemoryComponents(),
       modules: [
-        billingModule(billingLedger, billingStore),
-        module("ordering", { eventStore: orderingStore }, placeOrder),
+        billingModule(billingLedger, billingPersistence),
+        module("ordering", orderingPersistence, placeOrder),
       ],
     })
 
@@ -169,7 +169,9 @@ describe("billing, both ways", () => {
     expect(app.stateManagers.get("billing")).not.toBe(app.stateManagers.get("ordering"))
 
     // And the stores really are separate.
-    const billingEvents = await billingStore.source({ criteria: EventCriteria.havingTags({ billId: "b-9" }) } as never)
+    const billingEvents = await billingPersistence.eventStore!.source({
+      criteria: EventCriteria.havingTags({ billId: "b-9" }),
+    } as never)
     expect((billingEvents as { events: unknown[] }).events.length).toBeGreaterThan(0)
     await app.stop()
   })

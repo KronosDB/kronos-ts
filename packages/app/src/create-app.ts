@@ -98,10 +98,24 @@ export interface AppModule {
   readonly register: ReadonlyArray<Registration>
 }
 
-/** Per-module persistence. Omit either to inherit the app's. */
-export interface ModuleOptions {
+/**
+ * Where a module's events and processor cursors live. Both are derived from
+ * ONE backing database, so backends ship a single factory rather than making
+ * callers name each store:
+ *
+ *   module("billing", postgres(pool), ...slices)   // not { eventStore: …, tokenStore: … }
+ *
+ * Omit it entirely and the module inherits the app's stores. Hand-build the
+ * record only when genuinely mixing backends.
+ */
+export interface ModulePersistence {
   readonly eventStore?: EventStore
   readonly tokenStore?: TokenStore
+}
+
+/** In-memory persistence for a module — the dev/test backend, as one call. */
+export function inMemory(): ModulePersistence {
+  return { eventStore: createInMemoryEventStore(), tokenStore: createInMemoryTokenStore() }
 }
 
 /**
@@ -109,26 +123,30 @@ export interface ModuleOptions {
  * name, optional persistence, then everything it registers, variadically:
  *
  * ```ts
- * const billing = module("billing", { eventStore: postgresEventStore(pool) },
+ * const billing = module("billing", postgres(pool),
  *   ...billLinesSlice(deps),
  *   ...creditLineSlice(deps),
  * )
  * ```
  *
- * The options object is optional — `module("ordering", ...registrations)` works
- * and inherits the app's stores. Options are told apart from registrations by
- * the `kind` discriminator every registration carries.
+ * Persistence is optional — `module("ordering", ...registrations)` inherits the
+ * app's stores — and is told apart from registrations by the `kind`
+ * discriminator every registration carries.
  */
 export function module(name: string, ...register: Registration[]): AppModule
-export function module(name: string, options: ModuleOptions, ...register: Registration[]): AppModule
 export function module(
   name: string,
-  optionsOrFirst?: ModuleOptions | Registration,
+  persistence: ModulePersistence,
+  ...register: Registration[]
+): AppModule
+export function module(
+  name: string,
+  optionsOrFirst?: ModulePersistence | Registration,
   ...rest: Registration[]
 ): AppModule {
   const hasOptions =
     optionsOrFirst !== undefined && !("kind" in (optionsOrFirst as { kind?: unknown }))
-  const options = (hasOptions ? optionsOrFirst : {}) as ModuleOptions
+  const options = (hasOptions ? optionsOrFirst : {}) as ModulePersistence
   const register = hasOptions ? rest : ([optionsOrFirst, ...rest].filter(Boolean) as Registration[])
   return {
     name,

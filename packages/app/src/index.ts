@@ -48,8 +48,9 @@ export {
   createApp,
   module,
   inMemoryComponents,
+  inMemory,
   type Components,
   type AppModule,
-  type ModuleOptions,
+  type ModulePersistence,
   type Registration,
 } from "./create-app.js"

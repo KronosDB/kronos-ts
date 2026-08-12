@@ -53,10 +53,9 @@ export const billingModule = (env: KarmaEnv) => {
 
   return module(
     "billing",
-    {
-      eventStore: postgresEventStore(pool),
-      tokenStore: postgresTokenStore(pool),   // carries its own transaction manager
-    },
+    postgres(pool),          // ONE call: the module owns a database, kronos derives
+                             // its event store + token store (and the token store
+                             // carries its own transaction manager) from it
     ...billLines(deps),
     ...creditBilledLine(deps),
     ...chargeBill(deps),
@@ -67,10 +66,13 @@ export const billingModule = (env: KarmaEnv) => {
 ```
 
 Same shape as every other factory in the framework — `commandHandler(descriptor,
-fn)`, `state({...})`, `module(name, options, ...registrations)`. The options
-object is optional: `module("ordering", ...registrations)` inherits the app's
-stores, and options are told apart from registrations by the `kind` every
-registration carries.
+fn)`, `state({...})`, `module(name, persistence, ...registrations)`. Persistence
+is optional: `module("ordering", ...registrations)` inherits the app's stores,
+and it is told apart from registrations by the `kind` every registration carries.
+
+A module owns a *database*, not a list of stores, so backends ship one factory
+(`postgres(pool)`, `inMemory()`) returning both. You only hand-build
+`{ eventStore, tokenStore }` when genuinely mixing backends.
 
 What disappeared: `createModuleRuntime`, the `ModuleRuntime` interface,
 per-module `boot()`, module-kit's `defineModule`, the `KarmaModule` type, and the
@@ -158,8 +160,9 @@ It stays — thinner, and no longer a re-implementation of framework wiring.
 1. **Lifecycle.** `createApp` must become `await createApp(...)` with ordered
    start/stop, because rabbit connect, postgres bootstrap and processor start have
    a real order. This is the one genuinely unfinished piece.
-2. **Token store carries its transaction manager**, so `postgresTokenStore(pool)`
-   is one value and the pairing hazard is gone.
+2. **`postgres(pool)` returns a module's whole persistence** — event store plus a
+   token store that carries its own transaction manager, so the pairing hazard is
+   structurally gone and the call site names the database once.
 3. **Kronos owns `kronos_token_entries` / `kronos_dead_letters`** and their
    migrations, so `module.migrate()` is only the module's own read models.
 4. **Drop the string-keyed config shim** — pass the typed record into the
