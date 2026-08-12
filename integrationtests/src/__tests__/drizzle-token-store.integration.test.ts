@@ -3,7 +3,7 @@ import { GenericContainer, type StartedTestContainer, Wait } from "testcontainer
 import { drizzle } from "drizzle-orm/postgres-js"
 import postgres from "postgres"
 import { pgTable, varchar, integer, primaryKey } from "drizzle-orm/pg-core"
-import { eq, and, or, lt, isNull } from "drizzle-orm"
+
 import { drizzleTokenStore } from "@kronos-ts/drizzle"
 import { globalSequenceToken, UnableToClaimTokenError } from "@kronos-ts/messaging"
 import { TOKEN_TABLE_DDL, DROP_TOKEN_TABLE } from "./shared-token-table.js"
@@ -51,7 +51,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   // -- Happy paths --
 
   it("store and get a token", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
     const token = globalSequenceToken(42n)
 
     await store.store("test-processor", 0, token)
@@ -62,7 +62,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("get returns undefined for nonexistent entry", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
 
     const retrieved = await store.get("nonexistent", 0)
 
@@ -70,7 +70,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("initializeSegments creates entries", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
 
     await store.initializeSegments("test-processor", 3)
     const segments = await store.fetchSegments("test-processor")
@@ -79,7 +79,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("claimToken succeeds on unclaimed segment", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
     await store.initializeSegments("test-processor", 1)
 
     const token = await store.claimToken("test-processor", 0, "owner-1")
@@ -88,7 +88,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("claimToken re-claim by same owner refreshes", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
     await store.store("test-processor", 0, globalSequenceToken(10n))
@@ -100,7 +100,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("extendClaim refreshes timestamp", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
 
@@ -109,7 +109,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("releaseClaim clears ownership", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
 
@@ -120,7 +120,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("fetchSegments lists all segments", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
     await store.initializeSegments("test-processor", 4)
 
     const segments = await store.fetchSegments("test-processor")
@@ -129,7 +129,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("fetchAvailableSegments returns unclaimed segments", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
     await store.initializeSegments("test-processor", 3)
     await store.claimToken("test-processor", 1, "owner-1")
 
@@ -141,7 +141,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("deleteToken removes entry", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
     await store.store("test-processor", 0, globalSequenceToken(5n))
 
     await store.deleteToken("test-processor", 0)
@@ -153,7 +153,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   // -- Unhappy paths --
 
   it("claimToken throws when claimed by another", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
 
@@ -163,7 +163,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("claimToken succeeds after claim expires", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, eq, and, or, lt, isNull, claimTimeoutMs: 100 })
+    const store = drizzleTokenStore({ db, table: kronosTokenEntries, claimTimeoutMs: 100 })
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
 

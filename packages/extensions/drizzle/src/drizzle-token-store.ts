@@ -1,3 +1,4 @@
+import { and, eq, isNull, lt, or } from "drizzle-orm"
 import type { TokenStore, TrackingToken } from "@kronos-ts/messaging"
 import {
   getActiveTransaction,
@@ -34,16 +35,6 @@ export interface DrizzleTokenStoreConfig {
   db: DrizzleDatabaseLike
   /** The Drizzle table reference for `kronos_token_entries`. */
   table: any
-  /** Drizzle `eq` operator. */
-  eq: (column: any, value: any) => any
-  /** Drizzle `and` operator. */
-  and: (...conditions: any[]) => any
-  /** Drizzle `or` operator. */
-  or: (...conditions: any[]) => any
-  /** Drizzle `lt` operator. */
-  lt: (column: any, value: any) => any
-  /** Drizzle `isNull` operator. */
-  isNull: (column: any) => any
   /** Claim timeout in ms. Default: 10000. */
   claimTimeoutMs?: number
 }
@@ -67,7 +58,6 @@ function nowIso(): string {
  * Participates in the active transaction via `getActiveTransaction()`.
  *
  * ```typescript
- * import { eq, and, or, lt, isNull } from "drizzle-orm"
  * import { drizzleTokenStore } from "@kronos-ts/drizzle"
  * import { kronosTokenEntries } from "./schema"
  *
@@ -75,12 +65,12 @@ function nowIso(): string {
  * // (Phase 9). For now, construct the store and pass it directly to the
  * // tracking processor that owns it:
  * const tokenStore = drizzleTokenStore({
- *   db, table: kronosTokenEntries, eq, and, or, lt, isNull,
+ *   db, table: kronosTokenEntries,
  * })
  * ```
  */
 export function drizzleTokenStore(config: DrizzleTokenStoreConfig): TokenStore {
-  const { table, eq, and, or, lt, isNull } = config
+  const { table } = config
   const claimTimeoutMs = config.claimTimeoutMs ?? 10000
 
   function getDb(): any {
