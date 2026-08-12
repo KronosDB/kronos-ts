@@ -1,5 +1,12 @@
 # @kronos-ts/messaging
 
+## 0.10.1
+
+### Patch Changes
+
+- Updated dependencies [9ad1a3c]
+  - @kronos-ts/eventsourcing@0.4.1
+
 ## 0.10.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/prisma",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "Prisma extension for Kronos.",
   "license": "Apache-2.0",
   "type": "module",
