@@ -604,6 +604,7 @@ export class AppImpl implements App {
       queryBus: built.queryBus,
       moduleName: "queries",
       handlerEnhancer: composedHandlerEnhancer,
+      config: configShim,
     })
 
     // 5e. Build event processors from explicit `.processors(...)` modules.

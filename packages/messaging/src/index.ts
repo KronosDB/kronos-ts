@@ -57,7 +57,8 @@ export {
 // Handler registration
 // Note: Handler context wrapper types deleted (Plan 04-02 / D-41).
 // Helper function types deleted.
-// Consumers import load/append from @kronos-ts/eventsourcing and send/dispatch/emitUpdate from here directly.
+// Handler capabilities (load/append/send/emitUpdate/schedule/transaction) are
+// reached via the HandlerContext passed to every handler — see handler-context.ts.
 export {
   type EventHandlerRegistration,
   type EvolverRegistration,
@@ -280,17 +281,19 @@ export {
 } from "./retrying-command-bus.js"
 
 // Module-level handler helpers (Plan 04-01 / HDL-02 / D-42)
-export { send, COMMAND_BUS_KEY } from "./send.js"
+export { COMMAND_BUS_KEY } from "./send.js"
 export {
   type HandlerContext,
   type EventHandlerContext,
+  type QueryHandlerContext,
   type ContextAppendFunction,
   type ContextLoadFunction,
   type ContextSendFunction,
   HANDLER_CONTEXT,
   EVENT_HANDLER_CONTEXT,
+  QUERY_HANDLER_CONTEXT,
 } from "./handler-context.js"
-export { emitUpdate, QUERY_BUS_KEY } from "./emit-update.js"
+export { QUERY_BUS_KEY, type EmitUpdateFunction } from "./emit-update.js"
 
 // Event scheduling
 export {

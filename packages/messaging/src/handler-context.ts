@@ -1,5 +1,7 @@
 import type { Metadata } from "@kronos-ts/common"
-import { append, load } from "@kronos-ts/eventsourcing"
+import { append } from "@kronos-ts/eventsourcing/append"
+import { load } from "@kronos-ts/eventsourcing/load"
+import { schedule, scheduleAfter, cancelSchedule } from "@kronos-ts/eventsourcing/schedule"
 import type { z } from "zod"
 import type { CommandDescriptor, EventDescriptor } from "./descriptor.js"
 import { emitUpdate, type EmitUpdateFunction } from "./emit-update.js"
@@ -29,6 +31,12 @@ import { getOrBeginActiveTransaction } from "./transaction.js"
 export interface ContextAppendFunction {
   <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>): void
   <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>, metadata: Metadata): void
+  /** Batch form — `ctx.append([[A, a], [B, b]])`. Same atomic flush. */
+  <T extends readonly EventDescriptor<any>[]>(events: {
+    [K in keyof T]:
+      | readonly [T[K], z.infer<T[K] extends EventDescriptor<infer P> ? P : never>]
+      | readonly [T[K], z.infer<T[K] extends EventDescriptor<infer P> ? P : never>, Metadata]
+  }): void
 }
 
 /**
@@ -66,6 +74,12 @@ export interface ContextSendFunction {
 export interface EventHandlerContext {
   /** Load event-sourced state within the active UnitOfWork (cached per UoW). */
   readonly load: ContextLoadFunction
+  /** Schedule an event for future delivery via the configured event scheduler. */
+  readonly schedule: typeof import("@kronos-ts/eventsourcing/schedule").schedule
+  /** Schedule an event after a delay. */
+  readonly scheduleAfter: typeof import("@kronos-ts/eventsourcing/schedule").scheduleAfter
+  /** Cancel a previously scheduled event. */
+  readonly cancelSchedule: typeof import("@kronos-ts/eventsourcing/schedule").cancelSchedule
   /** Dispatch a command; it is handled in its own fresh UnitOfWork. */
   readonly send: ContextSendFunction
   /** Emit a subscription-query update through the active query bus. */
@@ -76,6 +90,22 @@ export interface EventHandlerContext {
    * drizzle/postgres transaction). `undefined` when no transactional
    * UnitOfWork factory is configured.
    */
+  readonly transaction: <T = unknown>() => Promise<T | undefined>
+}
+
+/**
+ * Capabilities available to QUERY handlers — read-only by construction.
+ *
+ * Queries already run inside a UnitOfWork (`simple-query-bus` dispatches
+ * through `runInUoW`), so the ambient machinery a context needs is present;
+ * what was missing was only the seeding and the argument. Deliberately narrow:
+ * no `append` (a query must not write), and no `send` (dispatching a command
+ * from a query breaks command/query separation).
+ */
+export interface QueryHandlerContext {
+  /** Load event-sourced state within the active UnitOfWork (cached per UoW). */
+  readonly load: ContextLoadFunction
+  /** The active adapter transaction, so a query can read inside it. */
   readonly transaction: <T = unknown>() => Promise<T | undefined>
 }
 
@@ -96,8 +126,17 @@ export interface HandlerContext extends EventHandlerContext {
  */
 export const EVENT_HANDLER_CONTEXT: EventHandlerContext = Object.freeze({
   load,
+  schedule,
+  scheduleAfter,
+  cancelSchedule,
   send,
   emitUpdate,
+  transaction: getOrBeginActiveTransaction,
+})
+
+/** Shared query-handler context instance. See {@link EVENT_HANDLER_CONTEXT}. */
+export const QUERY_HANDLER_CONTEXT: QueryHandlerContext = Object.freeze({
+  load,
   transaction: getOrBeginActiveTransaction,
 })
 

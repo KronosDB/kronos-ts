@@ -1,4 +1,5 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/messaging"
+import { and, asc, eq } from "drizzle-orm"
 import { getActiveTransaction, DeadLetterQueueOverflowError } from "@kronos-ts/messaging"
 import type { DrizzleTransaction } from "./drizzle-transaction-manager.js"
 
@@ -43,10 +44,6 @@ export interface DrizzleDeadLetterQueueConfig {
   table: any
   /** Processing group (the processor name) this queue serves. */
   processingGroup: string
-  /** Drizzle `eq` operator. */
-  eq: (column: any, value: any) => any
-  /** Drizzle `and` operator. */
-  and: (...conditions: any[]) => any
   /** Drizzle `asc` ordering helper. */
   asc: (column: any) => any
   /** Maximum number of sequences. Default: 1024 (Axon parity). */
@@ -68,7 +65,7 @@ function newId(group: string): string {
 }
 
 export function drizzleDeadLetterQueue(config: DrizzleDeadLetterQueueConfig): SequencedDeadLetterQueue {
-  const { table, processingGroup, eq, and, asc } = config
+  const { table, processingGroup } = config
   const maxSequences = config.maxSequences ?? 1024
   const maxSequenceSize = config.maxSequenceSize ?? 1024
   const claimDurationMs = config.claimDurationMs ?? 30000

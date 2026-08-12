@@ -8,7 +8,6 @@ import {
   EventCriteria,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { load, append } from "@kronos-ts/eventsourcing"
 import { createTestFixture, type TestFixture, FixtureAssertionError } from "../fixture.js"
 
 // ============================================================================
@@ -50,18 +49,18 @@ const Course = state({
   ],
 })
 
-const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
-  append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
+  ctx.append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already subscribed")
-  append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
+  ctx.append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
 })
 
 // ============================================================================

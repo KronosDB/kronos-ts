@@ -5,10 +5,9 @@ import { kronos } from "@kronos-ts/app"
 import {
   command,
   commandHandler,
-  emitUpdate,
   payloadEquals,
   query,
-  queryHandler,
+  queryHandler
 } from "@kronos-ts/messaging"
 import { rabbitMq } from "../rabbitmq.js"
 import { startRabbitMqContainer, type RunningRabbitMq } from "./testcontainers-setup.js"
@@ -70,8 +69,8 @@ describe("RabbitMQ query transport integration", () => {
       .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
       .queries(queryHandler(WatchValue, async () => "initial"))
       .commands(
-        commandHandler(PublishUpdate, async ({ payload: cmd }) => {
-          emitUpdate(WatchValue, payloadEquals({ id: cmd.id }), cmd.value)
+        commandHandler(PublishUpdate, async ({ payload: cmd }, ctx) => {
+          ctx.emitUpdate(WatchValue, payloadEquals({ id: cmd.id }), cmd.value)
         }),
       )
       .start()
@@ -123,12 +122,12 @@ describe("RabbitMQ query transport integration", () => {
       .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
       .queries(queryHandler(WatchValue, async () => "initial"))
       .commands(
-        commandHandler(PublishUpdate, async ({ payload: cmd }) => {
+        commandHandler(PublishUpdate, async ({ payload: cmd }, ctx) => {
           // Function filter — only IDs starting with "hi-" match. This case
           // could not cross the wire under the broadcast model because JS
           // functions don't serialize. Under the gossip-mirror model the
           // filter runs on the emitter against the cluster-wide mirror.
-          emitUpdate(
+          ctx.emitUpdate(
             WatchValue,
             (p) => (p as { id: string }).id.startsWith("hi-"),
             cmd.value,

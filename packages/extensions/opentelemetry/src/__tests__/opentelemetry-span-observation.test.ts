@@ -29,7 +29,6 @@ import {
   subscribingProcessor,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { append, load } from "@kronos-ts/eventsourcing"
 import { kronos, type RunningApp } from "@kronos-ts/app"
 import { openTelemetry } from "../opentelemetry.js"
 
@@ -83,10 +82,10 @@ const Greeting = state({
   evolve: (on) => [on(Greeted, (s) => ({ ...s, greeted: true }))],
 })
 
-const greet = commandHandler(Greet, async ({ payload: cmd }) => {
-  const g = await load(Greeting, { id: cmd.id })
+const greet = commandHandler(Greet, async ({ payload: cmd }, ctx) => {
+  const g = await ctx.load(Greeting, { id: cmd.id })
   if (g.greeted) throw new Error("already greeted")
-  append(Greeted, { id: cmd.id, who: cmd.who })
+  ctx.append(Greeted, { id: cmd.id, who: cmd.who })
 })
 
 // ---------------------------------------------------------------------------
@@ -133,7 +132,7 @@ describe("openTelemetry() span observation (E2E)", () => {
   it("event handler invocation emits a child span", async () => {
     // given
     const seen: string[] = []
-    const onGreeted = eventHandler(Greeted, async ({ payload: e }) => {
+    const onGreeted = eventHandler(Greeted, async ({ payload: e }, ctx) => {
       seen.push(e.id)
     })
 

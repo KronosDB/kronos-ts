@@ -4,7 +4,7 @@
  * Proves the framework's contract: a command handler is one atomic unit. Its
  * appended events AND any non-event writes commit — or roll back — together.
  *
- *   command → load() → <user CRUD via the UoW connection> + append(WidgetUpdated)
+ *   command → ctx.load() → <user CRUD via the UoW connection> + ctx.append(WidgetUpdated)
  *           → one COMMIT (success)  OR  one ROLLBACK (handler throws)
  *
  * Two framework pieces make this work, and NOTHING ELSE is framework-provided:
@@ -28,7 +28,7 @@ import { pgTable, text } from "drizzle-orm/pg-core"
 import { qn, tag } from "@kronos-ts/common"
 import { command, event, commandHandler, EventCriteria, getOrBeginActiveTransaction } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { type EventStore, load, append } from "@kronos-ts/eventsourcing"
+import { type EventStore } from "@kronos-ts/eventsourcing"
 import { kronos, type App, type RunningApp } from "@kronos-ts/app"
 import { postgres, type PostgresAdapterTransaction } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
@@ -82,8 +82,8 @@ const Widget = state({
   ],
 })
 
-const editWidget = commandHandler(EditWidget, async ({ payload: cmd }) => {
-  await load(Widget, { widgetId: cmd.id })
+const editWidget = commandHandler(EditWidget, async ({ payload: cmd }, ctx) => {
+  await ctx.load(Widget, { widgetId: cmd.id })
 
   // CRUD write through a user-built Drizzle client — rides the UoW tx.
   const db = await uowDb()
@@ -93,7 +93,7 @@ const editWidget = commandHandler(EditWidget, async ({ payload: cmd }) => {
     .onConflictDoUpdate({ target: widgets.id, set: { name: cmd.name } })
 
   // Event append — same UoW, same transaction.
-  append(WidgetUpdated, { id: cmd.id, name: cmd.name })
+  ctx.append(WidgetUpdated, { id: cmd.id, name: cmd.name })
 
   // Force the whole UoW to roll back AFTER both writes — proves atomicity.
   if (cmd.boom) throw new Error("boom — force rollback")

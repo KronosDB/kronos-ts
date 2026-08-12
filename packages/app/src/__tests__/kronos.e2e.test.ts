@@ -3,7 +3,6 @@ import { z } from "zod"
 import { qn, emptyMetadata } from "@kronos-ts/common"
 import { command, event, commandHandler, EventCriteria } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { load, append } from "@kronos-ts/eventsourcing"
 import { kronos, type RunningApp, AppAlreadyStartedError } from "../index.js"
 
 // ============================================================================
@@ -29,9 +28,9 @@ const Thing = state({
   evolve: (on) => [on(ThingCreated, (s) => ({ ...s, created: true }))],
 })
 
-const createThingHandler = commandHandler(CreateThing, async ({ payload: cmd }) => {
-  await load(Thing, { id: cmd.id })
-  append(ThingCreated, { id: cmd.id })
+const createThingHandler = commandHandler(CreateThing, async ({ payload: cmd }, ctx) => {
+  await ctx.load(Thing, { id: cmd.id })
+  ctx.append(ThingCreated, { id: cmd.id })
 })
 
 // ============================================================================

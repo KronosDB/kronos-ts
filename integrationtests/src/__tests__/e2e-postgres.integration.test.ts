@@ -31,11 +31,12 @@ import {
   queryHandler,
   EventCriteria,
   trackingProcessor,
-  emitUpdate,
-  send,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { type EventStore, load, append, afterEvents } from "@kronos-ts/eventsourcing"
+import {
+  type EventStore,
+  afterEvents,
+} from "@kronos-ts/eventsourcing"
 import { kronos, type App, type RunningApp } from "@kronos-ts/app"
 import { postgres, AppendConditionError } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
@@ -99,35 +100,35 @@ const Course = state({
   ],
 })
 
-const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (course.created) throw new Error("Course already exists")
-  append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
+  ctx.append(CourseCreated, { courseId: cmd.courseId, name: cmd.name, capacity: cmd.capacity })
 })
 
-const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const subscribeStudent = commandHandler(SubscribeStudent, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created) throw new Error("Course does not exist")
   if (course.enrolled.length >= course.capacity) throw new Error("Course is full")
   if (course.enrolled.includes(cmd.studentId)) throw new Error("Already enrolled")
-  append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
+  ctx.append(StudentSubscribed, { courseId: cmd.courseId, studentId: cmd.studentId })
 })
 
 // -- Stateful automation: an event handler that reacts to StudentSubscribed,
 // sources the affected Course, and — if it is now full — issues a
-// CloseEnrollment command via send(). The command runs in its own fresh
+// CloseEnrollment command via ctx.send(). The command runs in its own fresh
 // UnitOfWork per the AF5-aligned model.
 
-const closeEnrollment = commandHandler(CloseEnrollment, async ({ payload: cmd }) => {
-  const course = await load(Course, { courseId: cmd.courseId })
+const closeEnrollment = commandHandler(CloseEnrollment, async ({ payload: cmd }, ctx) => {
+  const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (!course.created || course.closed) return
-  append(EnrollmentClosed, { courseId: cmd.courseId })
+  ctx.append(EnrollmentClosed, { courseId: cmd.courseId })
 })
 
-const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload: e }) => {
-  const course = await load(Course, { courseId: e.courseId })
+const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
+  const course = await ctx.load(Course, { courseId: e.courseId })
   if (course.created && !course.closed && course.enrolled.length >= course.capacity) {
-    await send(CloseEnrollment, { courseId: e.courseId })
+    await ctx.send(CloseEnrollment, { courseId: e.courseId })
   }
 })
 
@@ -136,17 +137,17 @@ const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload
 type CourseView = { courseId: string; name: string; capacity: number; enrolledCount: number }
 const courseViews = new Map<string, CourseView>()
 
-const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }) => {
+const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
   const view: CourseView = { courseId: e.courseId, name: e.name, capacity: e.capacity, enrolledCount: 0 }
   courseViews.set(e.courseId, view)
-  emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
+  ctx.emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
 })
 
-const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }) => {
+const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
   const view = courseViews.get(e.courseId)
   if (!view) return
   view.enrolledCount++
-  emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
+  ctx.emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
 })
 
 const getCourse = queryHandler(GetCourse, async ({ payload: q }) => {
@@ -341,7 +342,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     // populated by postgres(), so snapshots land in kronos_snapshots.
     const courseId = id("cs-snap")
 
-    // afterEvents(1) triggers when a load() observes > 1 event. The second
+    // afterEvents(1) triggers when a ctx.load() observes > 1 event. The second
     // SubscribeStudent's load sees 2 events, so snapshotting fires (async,
     // fire-and-forget — we poll for the row).
     await app.commandGateway.send(CreateCourse, { courseId, name: "Snap", capacity: 10 })

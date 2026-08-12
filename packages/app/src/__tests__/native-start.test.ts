@@ -22,7 +22,6 @@ import {
   type EventProcessorModule,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { load, append } from "@kronos-ts/eventsourcing"
 import { kronos } from "../kronos.js"
 
 // ─── Minimal domain ──────────────────────────────────────────────────────────
@@ -52,9 +51,9 @@ const Thing = state({
   evolve: (on) => [on(ThingCreated, (s) => ({ ...s, created: true }))],
 })
 
-const createThingHandler = commandHandler(CreateThing, async ({ payload: cmd }) => {
-  await load(Thing, { id: cmd.id })
-  append(ThingCreated, { id: cmd.id })
+const createThingHandler = commandHandler(CreateThing, async ({ payload: cmd }, ctx) => {
+  await ctx.load(Thing, { id: cmd.id })
+  ctx.append(ThingCreated, { id: cmd.id })
 })
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -86,7 +85,7 @@ describe("native App.start() — end-to-end without configurer (Plan 03a)", () =
 
   it("Test 3: wires event handlers via subscribing processor — append triggers handler", async () => {
     let received = ""
-    const onThingCreated = eventHandler(ThingCreated, async ({ payload }) => {
+    const onThingCreated = eventHandler(ThingCreated, async ({ payload }, ctx) => {
       received = payload.id
     })
     const app = kronos({ quiet: true })
