@@ -15,10 +15,32 @@ import { CORRELATION_DATA_KEY } from "@kronos-ts/messaging/correlation-data"
 import type { z } from "zod"
 import type { EventDescriptor, EventMessage, EventCriteria } from "@kronos-ts/messaging"
 
-/** Append events to the active unit of work, buffered until commit. */
+/**
+ * A list of `[descriptor, payload]` (optionally `[descriptor, payload, metadata]`)
+ * pairs. The descriptors are inferred as a tuple and each payload is mapped from
+ * ITS OWN element, so a payload that does not match the descriptor beside it is
+ * a compile error — no pairing helper needed.
+ */
+export type EventList<T extends readonly EventDescriptor<any>[]> = {
+  [K in keyof T]:
+    | readonly [T[K], z.infer<T[K] extends EventDescriptor<infer P> ? P : never>]
+    | readonly [T[K], z.infer<T[K] extends EventDescriptor<infer P> ? P : never>, Metadata]
+}
+
+/**
+ * Append events to the active unit of work, buffered until commit.
+ *
+ * Single:  `append(TicketOpened, { ticketId })`
+ * Batch:   `append([[TicketOpened, { ticketId }], [MessageSent, { messageId }]])`
+ *
+ * Both forms are equivalent — every append in a UnitOfWork already flushes as
+ * one atomic write at PREPARE_COMMIT, so the batch form is ergonomics, not a
+ * different transaction boundary.
+ */
 export interface AppendFunction {
   <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>): void
   <P extends z.ZodType>(event: EventDescriptor<P>, payload: z.infer<P>, metadata: Metadata): void
+  <T extends readonly EventDescriptor<any>[]>(events: EventList<T>): void
 }
 
 // ---------------------------------------------------------------------------
@@ -53,10 +75,19 @@ export const STATE_MODULES_KEY: ResourceKey<Map<string, { module: any; id: unkno
  * matching evolvers (same logic as command-handling-module.ts appendFn).
  */
 export const append: AppendFunction = ((
-  eventDescriptor: EventDescriptor<any>,
-  eventPayload: unknown,
+  eventDescriptorOrList: EventDescriptor<any> | ReadonlyArray<readonly [EventDescriptor<any>, unknown, Metadata?]>,
+  eventPayload?: unknown,
   eventMetadata?: Metadata,
 ) => {
+  // Batch form: fan out to the single form so buffering, tag derivation,
+  // correlation stamping and cached-state evolution stay in ONE place.
+  if (Array.isArray(eventDescriptorOrList)) {
+    for (const [descriptor, payload, metadata] of eventDescriptorOrList) {
+      ;(append as (d: EventDescriptor<any>, p: unknown, m?: Metadata) => void)(descriptor, payload, metadata)
+    }
+    return
+  }
+  const eventDescriptor = eventDescriptorOrList as EventDescriptor<any>
   const state = requireInvocationPhase() // D-43 mutator guard
   const events = computeIfAbsent(BUFFERED_EVENTS_KEY, () => [])
   const tags = eventDescriptor.tags ? eventDescriptor.tags(eventPayload) : []
