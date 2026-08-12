@@ -5,6 +5,7 @@ import type {
   QueryDescriptor,
 } from "./descriptor.js"
 import type { EventMessage, QueryMessage, SequencedEventMessage } from "./message.js"
+import type { EventHandlerContext } from "./handler-context.js"
 
 // ---------------------------------------------------------------------------
 // Handler context shapes — DELETED (Plan 04-02, D-41)
@@ -18,11 +19,23 @@ import type { EventMessage, QueryMessage, SequencedEventMessage } from "./messag
 // Registration types
 // ---------------------------------------------------------------------------
 
-/** A paired event descriptor + handler function, used in handler arrays. */
+/**
+ * A paired event descriptor + handler function, used in handler arrays.
+ *
+ * The handler is invoked with the sequenced event and an
+ * {@link EventHandlerContext}. Handlers declared with fewer parameters (the
+ * `on(E, async (message) => ...)` style) remain assignable — the context is
+ * simply not observed. Note that `on()` itself keeps its single-parameter
+ * handler callback: its evolver overload is distinguished by callback arity,
+ * so a context-receiving handler is declared via `eventHandler(...)` instead.
+ */
 export interface EventHandlerRegistration<P extends z.ZodType = z.ZodType> {
   readonly kind: "event-handler"
   readonly descriptor: EventDescriptor<P>
-  readonly handler: (message: SequencedEventMessage<z.infer<P>>) => Promise<void> | void
+  readonly handler: (
+    message: SequencedEventMessage<z.infer<P>>,
+    context: EventHandlerContext,
+  ) => Promise<void> | void
 }
 
 /**

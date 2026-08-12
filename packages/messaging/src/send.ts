@@ -18,6 +18,10 @@ export const COMMAND_BUS_KEY: ResourceKey<CommandBus> = resourceKey("commandBus"
 /**
  * Send a command from inside a handler.
  *
+ * @deprecated Prefer the handler context: `commandHandler(C, async (msg, ctx) => ctx.send(...))`.
+ * The module-level helper resolves through ALS and fails at runtime outside a
+ * handler; the context only exists inside one, making misuse a compile error.
+ *
  * AF5-aligned semantics: every command is handled in its own fresh
  * UnitOfWork (`commandBus.dispatch` always starts a new one — see
  * `createSimpleCommandBus`). The command handler is therefore its own

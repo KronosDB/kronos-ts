@@ -34,6 +34,7 @@ import { STATE_MANAGER_KEY, EVENT_SCHEDULER_KEY } from "@kronos-ts/eventsourcing
 import type { EventScheduler } from "./event-scheduler.js"
 import { COMMAND_BUS_KEY } from "./send.js"
 import { QUERY_BUS_KEY } from "./emit-update.js"
+import { EVENT_HANDLER_CONTEXT } from "./handler-context.js"
 
 /**
  * A streaming event processor that uses push-based event delivery
@@ -362,7 +363,7 @@ export function createStreamingEventProcessor(
 
     for (const reg of handlers) {
       try {
-        await reg.handler({ ...event, sequence: sequencedEvent.sequence })
+        await reg.handler({ ...event, sequence: sequencedEvent.sequence }, EVENT_HANDLER_CONTEXT)
       } catch (err) {
         await errorHandler.handleError(err, eventName, sequencedEvent.sequence)
       }
@@ -387,7 +388,7 @@ export function createStreamingEventProcessor(
     const position =
       typeof letter.diagnostics.position === "number" ? BigInt(letter.diagnostics.position) : 0n
     for (const reg of handlers) {
-      await reg.handler({ ...event, sequence: position })
+      await reg.handler({ ...event, sequence: position }, EVENT_HANDLER_CONTEXT)
     }
   }
 

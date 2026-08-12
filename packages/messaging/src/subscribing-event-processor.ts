@@ -16,6 +16,7 @@ import { STATE_MANAGER_KEY, EVENT_SCHEDULER_KEY } from "@kronos-ts/eventsourcing
 import type { EventScheduler } from "./event-scheduler.js"
 import { COMMAND_BUS_KEY } from "./send.js"
 import { QUERY_BUS_KEY } from "./emit-update.js"
+import { EVENT_HANDLER_CONTEXT } from "./handler-context.js"
 
 // Re-export for backward compatibility
 export type { SubscribableEventSource } from "./event-bus.js"
@@ -160,7 +161,7 @@ export function createSubscribingEventProcessor(
 
     for (const reg of handlers) {
       try {
-        await reg.handler(event)
+        await reg.handler(event, EVENT_HANDLER_CONTEXT)
       } catch (err) {
         // SubscribingEventProcessor doesn't have position tracking,
         // so pass -1n as position indicator

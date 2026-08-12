@@ -43,6 +43,10 @@ export const STATE_MODULES_KEY: ResourceKey<Map<string, { module: any; id: unkno
 /**
  * Plan 04-01 (HDL-02 / D-42): module-level append.
  *
+ * @deprecated Prefer the handler context: `commandHandler(C, async (msg, ctx) => ctx.append(...))`.
+ * Same behaviour; the context only exists inside a handler, so the
+ * NoActiveUnitOfWork / WrongUoWPhase failure modes become unrepresentable.
+ *
  * Throws NoActiveUnitOfWork outside a UoW (D-43 fail-fast on no-UoW).
  * Throws WrongUoWPhase outside INVOCATION phase (D-43 mutator guard).
  *

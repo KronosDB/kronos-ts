@@ -2,6 +2,7 @@ import type { z } from "zod"
 import type { CommandDescriptor } from "./descriptor.js"
 import type { EventCriteria } from "./event-criteria.js"
 import type { CommandMessage } from "./message.js"
+import type { HandlerContext } from "./handler-context.js"
 
 /**
  * A registered command handler — pairs a command descriptor with its handler function.
@@ -15,6 +16,7 @@ export interface CommandHandlerDefinition<
   readonly descriptor: CommandDescriptor<P, R>
   readonly handler: (
     message: CommandMessage<z.infer<P>>,
+    context: HandlerContext,
   ) => R extends z.ZodType ? Promise<z.infer<R>> | z.infer<R> : Promise<void> | void
   readonly appendCondition?: (
     message: CommandMessage<z.infer<P>>,
@@ -25,11 +27,17 @@ export interface CommandHandlerDefinition<
 /**
  * Defines a command handler.
  *
+ * The handler receives the command message and a {@link HandlerContext} — the
+ * typed front door to the active UnitOfWork (`load`, `append`, `send`,
+ * `emitUpdate`, `transaction`). Prefer the context over the module-level
+ * helpers: it only exists inside a handler, so misuse is a compile error
+ * rather than a runtime NoActiveUnitOfWork.
+ *
  * Void command (no result on descriptor):
  * ```
- * commandHandler(ChangeCourseCapacity, async ({ payload, metadata }) => {
- *   const course = await load(Course, { courseId: payload.courseId })
- *   append(CourseCapacityChanged, { courseId: payload.courseId, capacity: payload.capacity })
+ * commandHandler(ChangeCourseCapacity, async ({ payload, metadata }, ctx) => {
+ *   const course = await ctx.load(Course, { courseId: payload.courseId })
+ *   ctx.append(CourseCapacityChanged, { courseId: payload.courseId, capacity: payload.capacity })
  * })
  * ```
  *
@@ -41,8 +49,8 @@ export interface CommandHandlerDefinition<
  *   result: z.object({ courseId: z.string() }),
  * })
  *
- * commandHandler(CreateCourse, async ({ payload, metadata }) => {
- *   append(CourseCreated, { ... })
+ * commandHandler(CreateCourse, async ({ payload, metadata }, ctx) => {
+ *   ctx.append(CourseCreated, { ... })
  *   return { courseId: payload.courseId }  // ← must match descriptor's result schema
  * })
  * ```
@@ -57,18 +65,18 @@ export interface CommandHandlerDefinition<
  */
 export function commandHandler<P extends z.ZodType>(
   descriptor: CommandDescriptor<P, undefined>,
-  handler: (message: CommandMessage<z.infer<P>>) => Promise<void> | void,
+  handler: (message: CommandMessage<z.infer<P>>, context: HandlerContext) => Promise<void> | void,
 ): CommandHandlerDefinition<P, undefined>
 
 export function commandHandler<P extends z.ZodType, R extends z.ZodType>(
   descriptor: CommandDescriptor<P, R>,
-  handler: (message: CommandMessage<z.infer<P>>) => Promise<z.infer<R>> | z.infer<R>,
+  handler: (message: CommandMessage<z.infer<P>>, context: HandlerContext) => Promise<z.infer<R>> | z.infer<R>,
 ): CommandHandlerDefinition<P, R>
 
 export function commandHandler<P extends z.ZodType>(
   descriptor: CommandDescriptor<P, undefined>,
   options: {
-    handler: (message: CommandMessage<z.infer<P>>) => Promise<void> | void
+    handler: (message: CommandMessage<z.infer<P>>, context: HandlerContext) => Promise<void> | void
     appendCondition?: (
       message: CommandMessage<z.infer<P>>,
       sourcedCriteria: EventCriteria,
@@ -79,7 +87,7 @@ export function commandHandler<P extends z.ZodType>(
 export function commandHandler<P extends z.ZodType, R extends z.ZodType>(
   descriptor: CommandDescriptor<P, R>,
   options: {
-    handler: (message: CommandMessage<z.infer<P>>) => Promise<z.infer<R>> | z.infer<R>
+    handler: (message: CommandMessage<z.infer<P>>, context: HandlerContext) => Promise<z.infer<R>> | z.infer<R>
     appendCondition?: (
       message: CommandMessage<z.infer<P>>,
       sourcedCriteria: EventCriteria,

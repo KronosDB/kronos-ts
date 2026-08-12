@@ -23,6 +23,9 @@ export const QUERY_BUS_KEY: ResourceKey<QueryBus> = resourceKey("queryBus")
 /**
  * Plan 04-01 (HDL-02 / D-42): module-level emitUpdate.
  *
+ * @deprecated Prefer the handler context: `ctx.emitUpdate(...)` (second handler
+ * argument). Same behaviour; compile-time scoping instead of runtime throws.
+ *
  * Throws NoActiveUnitOfWork outside a UoW; throws WrongUoWPhase outside
  * INVOCATION phase (D-43 mutator guard). Emits a subscription query update
  * through the active query bus.
