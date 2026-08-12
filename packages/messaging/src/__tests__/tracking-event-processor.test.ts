@@ -7,7 +7,7 @@ import {
 } from "../tracking-event-processor.js"
 import type { StreamableEventSource, SequencedEvent, MessageStream } from "../event-source.js"
 import type { EventMessage } from "../message.js"
-import type { EventHandlerRegistration } from "../handler.js"
+import type { EventHandlerDefinition } from "../event-handler.js"
 import type { TokenStore } from "../token-store.js"
 import type { TrackingToken } from "../tracking-token.js"
 import { globalSequenceToken } from "../tracking-token.js"
@@ -130,7 +130,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ payload }) => { delivered.push(payload) },
@@ -163,7 +163,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ payload }) => { delivered.push(payload) },
@@ -306,7 +306,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ payload }) => {
@@ -346,7 +346,7 @@ describe("TrackingEventProcessor", () => {
       const eventSource = createInMemoryEventSource(events)
 
       let thrown = false
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ sequence }: any) => {
@@ -416,7 +416,7 @@ describe("TrackingEventProcessor", () => {
         },
       }
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: ({ payload }) => { delivered.push(payload) },
@@ -520,7 +520,7 @@ describe("TrackingEventProcessor", () => {
       ]
       const eventSource = createInMemoryEventSource(events)
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: (_payload) => {
@@ -639,7 +639,7 @@ describe("TrackingEventProcessor", () => {
         makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
       ]
       const eventSource = createInMemoryEventSource(events)
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: () => {},
@@ -669,7 +669,7 @@ describe("TrackingEventProcessor", () => {
       let failOnce = true
       const events = [makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n)]
       const eventSource = createInMemoryEventSource(events)
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         kind: "event-handler",
         descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
         handler: () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, type QualifiedName } from "@kronos-ts/common"
 import { trackingEventProcessor } from "../tracking-event-processor.js"
 import type { StreamableEventSource, SequencedEvent } from "../event-source.js"
-import type { EventHandlerRegistration } from "../handler.js"
+import type { EventHandlerDefinition } from "../event-handler.js"
 import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
 import { sequentialPerTag } from "../sequencing-policy.js"
 
@@ -93,7 +93,7 @@ describe("DLQ wiring (tracking processor, Option A)", () => {
     const dlq = inMemoryDeadLetterQueue()
 
     const delivered: number[] = []
-    const handler: EventHandlerRegistration<any> = {
+    const handler: EventHandlerDefinition<any> = {
       kind: "event-handler",
       descriptor: { kind: "event", name: EVENT_NAME, version: "1.0", payload: {} as any },
       handler: ({ payload }: { payload: { v: number; poison?: boolean } }) => {
@@ -136,7 +136,7 @@ describe("DLQ wiring (tracking processor, Option A)", () => {
     ]
     const dlq = inMemoryDeadLetterQueue()
     const delivered: number[] = []
-    const handler: EventHandlerRegistration<any> = {
+    const handler: EventHandlerDefinition<any> = {
       kind: "event-handler",
       descriptor: { kind: "event", name: EVENT_NAME, version: "1.0", payload: {} as any },
       handler: ({ payload }: { payload: { v: number } }) => { delivered.push(payload.v) },

@@ -1,5 +1,5 @@
 import { qualifiedNameToString } from "@kronos-ts/common"
-import type { EventHandlerRegistration } from "./handler.js"
+import type { EventHandlerDefinition } from "./event-handler.js"
 import type { SequencedEvent } from "./event-source.js"
 import { type SequencingPolicy, defaultSequencingPolicy } from "./sequencing-policy.js"
 import {
@@ -63,7 +63,7 @@ export function deadLetteringDelivery(options: DeadLetteringOptions) {
      */
     async deliver(
       sequencedEvent: SequencedEvent,
-      handlers: Array<EventHandlerRegistration<any>>,
+      handlers: Array<EventHandlerDefinition<any>>,
     ): Promise<void> {
       const event = sequencedEvent.event
       const seqId = sequencingPolicy(event)

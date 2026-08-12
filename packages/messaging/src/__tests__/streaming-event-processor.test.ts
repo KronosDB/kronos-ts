@@ -3,7 +3,7 @@ import { qn, emptyMetadata, type QualifiedName } from "@kronos-ts/common"
 import { streamingEventProcessor } from "../streaming-event-processor.js"
 import { propagatingErrorHandler } from "../tracking-event-processor.js"
 import type { StreamableEventSource, SequencedEvent } from "../event-source.js"
-import type { EventHandlerRegistration } from "../handler.js"
+import type { EventHandlerDefinition } from "../event-handler.js"
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -96,7 +96,7 @@ describe("StreamingEventProcessor", () => {
     ]
     const eventSource = createInMemoryEventSource(events)
 
-    const handler: EventHandlerRegistration<any> = {
+    const handler: EventHandlerDefinition<any> = {
       kind: "event-handler",
       descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
       handler: ({ payload }: any) => { delivered.push(payload) },
@@ -130,7 +130,7 @@ describe("StreamingEventProcessor", () => {
     const eventSource = createInMemoryEventSource(events)
 
     let thrown = false
-    const handler: EventHandlerRegistration<any> = {
+    const handler: EventHandlerDefinition<any> = {
       kind: "event-handler",
       descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
       handler: ({ sequence }: any) => {

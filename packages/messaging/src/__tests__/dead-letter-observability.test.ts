@@ -6,7 +6,7 @@ import { inMemoryDeadLetterQueue, DeadLetterQueueOverflowError } from "../dead-l
 import { sequentialPerTag } from "../sequencing-policy.js"
 import type { DeadLetterListener } from "../dead-letter-listener.js"
 import type { StreamableEventSource, SequencedEvent } from "../event-source.js"
-import type { EventHandlerRegistration } from "../handler.js"
+import type { EventHandlerDefinition } from "../event-handler.js"
 
 const EVENT_NAME = qn("test", "SomethingHappened")
 
@@ -38,7 +38,7 @@ function recordingListener() {
   return { calls, listener }
 }
 
-const failingHandler: EventHandlerRegistration<any> = {
+const failingHandler: EventHandlerDefinition<any> = {
   kind: "event-handler",
   descriptor: { kind: "event", name: EVENT_NAME, version: "1.0", payload: {} as any },
   handler: () => { throw new Error("boom") },

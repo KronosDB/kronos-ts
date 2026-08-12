@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach } from "bun:test"
 import { qn, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
 import type { EventMessage } from "../message.js"
-import type { EventHandlerRegistration } from "../handler.js"
+import type { EventHandlerDefinition } from "../event-handler.js"
 import type { SubscribableEventSource } from "../subscribing-event-processor.js"
 import { subscribingEventProcessor } from "../subscribing-event-processor.js"
 
@@ -122,7 +122,7 @@ describe("SubscribingEventProcessor", () => {
       const source = createInMemorySubscribableSource()
       const received: unknown[] = []
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         descriptor: { kind: "event", name: qn("test", "SomethingHappened"), version: "1.0", payload: {} as any },
         handler: async ({ payload }) => { received.push(payload) },
       }
@@ -148,7 +148,7 @@ describe("SubscribingEventProcessor", () => {
       const source = createInMemorySubscribableSource()
       const received: unknown[] = []
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         descriptor: { kind: "event", name: qn("test", "SomethingHappened"), version: "1.0", payload: {} as any },
         handler: async ({ payload }) => { received.push(payload) },
       }
@@ -173,7 +173,7 @@ describe("SubscribingEventProcessor", () => {
       const source = createInMemorySubscribableSource()
       const received: unknown[] = []
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         descriptor: { kind: "event", name: qn("test", "SomethingHappened"), version: "1.0", payload: {} as any },
         handler: async ({ payload }) => { received.push(payload) },
       }
@@ -199,7 +199,7 @@ describe("SubscribingEventProcessor", () => {
       const source = createInMemorySubscribableSource()
       const received: string[] = []
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         descriptor: { kind: "event", name: qn("test", "ItemAdded"), version: "1.0", payload: {} as any },
         handler: async ({ payload }: any) => { received.push(payload.item) },
       }
@@ -230,7 +230,7 @@ describe("SubscribingEventProcessor", () => {
       const source = createInMemorySubscribableSource()
       const errors: unknown[] = []
 
-      const handler: EventHandlerRegistration<any> = {
+      const handler: EventHandlerDefinition<any> = {
         descriptor: { kind: "event", name: qn("test", "BadEvent"), version: "1.0", payload: {} as any },
         handler: async () => { throw new Error("handler failed") },
       }

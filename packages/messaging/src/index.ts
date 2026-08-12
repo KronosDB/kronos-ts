@@ -60,11 +60,9 @@ export {
 // Handler capabilities (load/append/send/emitUpdate/schedule/transaction) are
 // reached via the HandlerContext passed to every handler — see handler-context.ts.
 export {
-  type EventHandlerRegistration,
   type EvolverRegistration,
   type QueryHandlerRegistration,
   on,
-  onEvent,
 } from "./handler.js"
 
 // Command handlers

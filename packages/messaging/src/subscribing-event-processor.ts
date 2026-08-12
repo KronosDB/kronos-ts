@@ -1,6 +1,5 @@
 import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
 import type { EventMessage } from "./message.js"
-import type { EventHandlerRegistration } from "./handler.js"
 import type { EventHandlerDefinition } from "./event-handler.js"
 import type { UoWRunner } from "./unit-of-work.js"
 import { runInNewUoW } from "./unit-of-work.js"
@@ -107,7 +106,7 @@ export function subscribingEventProcessor(
   // Plan 09-01: when a handlerEnhancer is supplied, wrap each handler at
   // registration time symmetric to TrackingEventProcessor. Plan 11-02:
   // handlerGroup is now the processor name (no separate group identity).
-  const handlerMap = new Map<string, EventHandlerRegistration<any>[]>()
+  const handlerMap = new Map<string, EventHandlerDefinition<any>[]>()
   for (const reg of eventHandlers) {
     const eventName = qualifiedNameToString(reg.descriptor.name)
     const enhanced = handlerEnhancer
@@ -122,9 +121,9 @@ export function subscribingEventProcessor(
       : reg
     const existing = handlerMap.get(eventName)
     if (existing) {
-      existing.push(enhanced as EventHandlerRegistration<any>)
+      existing.push(enhanced)
     } else {
-      handlerMap.set(eventName, [enhanced as EventHandlerRegistration<any>])
+      handlerMap.set(eventName, [enhanced])
     }
   }
 

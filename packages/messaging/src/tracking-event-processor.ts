@@ -1,6 +1,5 @@
 import { emptyMetadata, qualifiedNameToString } from "@kronos-ts/common"
 import type { EventProcessor, EventProcessorStatus } from "./event-processor.js"
-import type { EventHandlerRegistration } from "./handler.js"
 import type { EventHandlerDefinition } from "./event-handler.js"
 import type { StreamableEventSource, MessageStream, SequencedEvent } from "./event-source.js"
 import type { UoWRunner } from "./unit-of-work.js"
@@ -202,7 +201,7 @@ export function trackingEventProcessor(
     : undefined
   let dlqRetryTimer: ReturnType<typeof setInterval> | null = null
 
-  const handlerMap = new Map<string, Array<EventHandlerRegistration<any>>>()
+  const handlerMap = new Map<string, Array<EventHandlerDefinition<any>>>()
   for (const reg of eventHandlers) {
     const eventName = qualifiedNameToString(reg.descriptor.name)
     if (!handlerMap.has(eventName)) {
@@ -218,7 +217,7 @@ export function trackingEventProcessor(
           }),
         }
       : reg
-    handlerMap.get(eventName)!.push(enhanced as EventHandlerRegistration<any>)
+    handlerMap.get(eventName)!.push(enhanced)
   }
 
   let token: TrackingToken = globalSequenceToken(0n)
