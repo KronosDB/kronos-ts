@@ -31,6 +31,47 @@ export function jsonSerializer(): Serializer {
   }
 }
 
+/**
+ * Dispatch serialization per message type, so one app can mix formats — Avro or
+ * MessagePack for the high-volume streams, JSON for everything else.
+ *
+ * ```ts
+ * const serializer = multiSerializer([avroSerializer({ registry }), jsonSerializer()])
+ * ```
+ *
+ * Order matters: the FIRST serializer whose `canConvert(type)` returns true
+ * wins, so put the specific ones before a catch-all like {@link jsonSerializer}
+ * (which converts everything).
+ *
+ * IMPORTANT — the type→format mapping must be stable over time. `SerializedObject`
+ * carries `{ type, revision, data }` and no format marker, so deserialization
+ * re-runs the same `canConvert` dispatch that serialization used. Moving a type
+ * from one format to another makes previously-written events undecodable. If you
+ * need to migrate a type's format, keep the old serializer in the chain and
+ * discriminate on `revision`.
+ */
+export function multiSerializer(serializers: readonly Serializer[]): Serializer {
+  if (serializers.length === 0) throw new Error("multiSerializer: at least one serializer is required")
+
+  function pick(type: string): Serializer {
+    const found = serializers.find((s) => s.canConvert(type))
+    if (!found) throw new Error(`multiSerializer: no serializer accepts type "${type}"`)
+    return found
+  }
+
+  return {
+    serialize(value: unknown, type: string, revision?: string): SerializedObject {
+      return pick(type).serialize(value, type, revision)
+    },
+    deserialize<T>(data: SerializedObject): T {
+      return pick(data.type).deserialize<T>(data)
+    },
+    canConvert(type: string): boolean {
+      return serializers.some((s) => s.canConvert(type))
+    },
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Schema registries — per message type
 // ---------------------------------------------------------------------------

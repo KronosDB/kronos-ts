@@ -396,6 +396,7 @@ export {
   createEventSchemaRegistry,
   createCommandSchemaRegistry,
   createQuerySchemaRegistry,
+  multiSerializer,
 } from "./serializer.js"
 
 // Message monitors
