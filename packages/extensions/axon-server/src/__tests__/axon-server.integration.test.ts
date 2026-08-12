@@ -3,7 +3,7 @@
  * factory against a real Axon Server container.
  *
  * Written on the functional composition shape: `axonServer()` connects, its
- * components are spread into `createApp`, and `start()` waits for the server's
+ * components are spread into `kronos`, and `start()` waits for the server's
  * routing tables. Requires docker (testcontainers).
  *
  * Coverage parity with the original deferred suite:
@@ -36,7 +36,7 @@ import {
   type EventStore,
   type Snapshot
 } from "@kronos-ts/eventsourcing"
-import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import { axonServer, type AxonServerBackend } from "../axon-server.js"
 import { axonServerControlPlane, type ManagedEventProcessor } from "../control-plane.js"
 import {
@@ -158,7 +158,7 @@ describe("Axon Server integration — axonServer() backend", () => {
       unitOfWorkFactory: runInNewUoW,
     })
 
-    app = createApp({
+    app = kronos({
       components: {
         ...inMemoryComponents({ serializer, unitOfWorkFactory: runInNewUoW }),
         ...axon.components,

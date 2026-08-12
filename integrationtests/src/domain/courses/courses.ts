@@ -209,7 +209,7 @@ const getAllCourses = queryHandler(GetAllCourses, async () => {
  * are not API.
  *
  * Compose at the app's composition root via `module("courses", ...courseRegistrations)`
- * (see `packages/app/src/create-app.ts`), which partitions the list by each
+ * (see `packages/app/src/kronos.ts`), which partitions the list by each
  * registration's own `kind` discriminator — no configurer callback needed.
  */
 export const courseRegistrations: Registration[] = [

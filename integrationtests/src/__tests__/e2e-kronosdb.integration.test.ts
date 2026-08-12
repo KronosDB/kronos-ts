@@ -27,7 +27,7 @@ import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
 } from "@kronos-ts/eventsourcing"
-import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import { kronosDb, type KronosDbBackend } from "@kronos-ts/kronosdb"
 
 // ============================================================================
@@ -207,7 +207,7 @@ describe("E2E: KronosDB full stack", () => {
       unitOfWorkFactory: base.unitOfWorkFactory,
     })
 
-    app = createApp({
+    app = kronos({
       components: { ...base, ...backend.components },
       modules: [
         module(
@@ -354,7 +354,7 @@ describe("E2E: KronosDB full stack", () => {
       unitOfWorkFactory: autoBase.unitOfWorkFactory,
     })
     const autoEventStore: EventStore = autoBackend.components.eventStore
-    const autoApp = createApp({
+    const autoApp = kronos({
       components: { ...autoBase, ...autoBackend.components },
       modules: [
         module(

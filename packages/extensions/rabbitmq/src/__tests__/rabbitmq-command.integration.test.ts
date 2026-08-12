@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn, tag } from "@kronos-ts/common"
-import { createApp, inMemoryComponents, module, type Registration } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type Registration } from "@kronos-ts/app"
 import {
   command,
   commandHandler,
@@ -86,7 +86,7 @@ describe("RabbitMQ command transport integration", () => {
   /**
    * One process, composed by hand: in-memory components, the RabbitMQ backend
    * wrapping their buses, then the app on top of the merged record. `start()`
-   * after `createApp` is what the "processors" lifecycle stage used to be — it
+   * after `kronos` is what the "processors" lifecycle stage used to be — it
    * waits until every handler registered above is bound and consuming.
    */
   async function startNode(params: {
@@ -103,7 +103,7 @@ describe("RabbitMQ command transport integration", () => {
       localCommandBus: base.commandBus,
       localQueryBus: base.queryBus,
     })
-    const app = createApp({
+    const app = kronos({
       components: { ...base, ...backend.components },
       modules: [module(params.serviceName, ...params.registrations)],
     })

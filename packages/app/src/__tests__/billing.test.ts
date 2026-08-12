@@ -4,7 +4,7 @@ import { createInMemoryEventStore } from "@kronos-ts/eventsourcing"
 import { command, commandHandler, EventCriteria, event } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { z } from "zod"
-import { createApp, inMemoryComponents, module } from "../create-app.js"
+import { kronos, inMemoryComponents, module } from "../kronos.js"
 import { createInMemoryTokenStore, createSimpleCommandBus } from "@kronos-ts/messaging"
 
 // ===========================================================================
@@ -83,7 +83,7 @@ describe("billing", () => {
     const persistence = inMemoryStores()
 
     // --- composition root (functional) ---
-    const app = createApp({
+    const app = kronos({
       components: inMemoryComponents(),
       modules: [billingModule(ledger, persistence)],
     })
@@ -115,7 +115,7 @@ describe("billing", () => {
       ctx.append(OrderPlaced, { orderId: payload.orderId })
     })
 
-    const app = createApp({
+    const app = kronos({
       components: inMemoryComponents(),
       modules: [
         billingModule(billingLedger, billingPersistence),
@@ -145,7 +145,7 @@ describe("billing", () => {
     // handlers are NOT reachable from the app-level gateway. Nothing about the
     // override mechanism privileges persistence.
     const ownBus = createSimpleCommandBus()
-    const app = createApp({
+    const app = kronos({
       components: inMemoryComponents(),
       modules: [
         module("billing", { ...inMemoryStores(), commandBus: ownBus }, ...billLinesSlice(ledger)),
@@ -198,8 +198,8 @@ describe("component resolution", () => {
     }) as typeof runInNewUoW
 
     const ledger = newLedger()
-    const app = createApp({
-      // PARTIAL record — createApp resolves the bus after the merge.
+    const app = kronos({
+      // PARTIAL record — kronos resolves the bus after the merge.
       components: { unitOfWorkFactory: countingUoW },
       modules: [module("billing", inMemoryStores(), ...billLinesSlice(ledger))],
     })
@@ -211,12 +211,66 @@ describe("component resolution", () => {
 
   it("exposes live processor instances, not just descriptors", async () => {
     const ledger = newLedger()
-    const app = createApp({
+    const app = kronos({
       modules: [module("billing", inMemoryStores(), ...billLinesSlice(ledger))],
     })
     // No processors registered here, but the surface exists for control planes
     // (Axon/KronosDB) that need real instances to honour pause/split/merge.
     expect(app.processors).toBeInstanceOf(Map)
+    await app.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stateful automations — load + append directly in an event handler
+// ---------------------------------------------------------------------------
+
+import { eventHandler, trackingProcessor } from "@kronos-ts/messaging"
+
+const BillClosed = event({
+  name: qn("billing", "BillClosed"),
+  payload: z.object({ billId: z.string() }),
+  tags: (p) => [{ key: "billId", value: p.billId }],
+})
+
+describe("stateful automation", () => {
+  it("an event handler can load state and append facts without a command hop", async () => {
+    const ledger = newLedger()
+    const stores = inMemoryStores()
+
+    // The automation: when a line lands on a bill whose total crosses 100,
+    // close the bill — decided from LOADED state, recorded via DIRECT append.
+    const closeWhenLarge = eventHandler(LineBilled, async ({ payload }, ctx) => {
+      const bill = await ctx.load(Bill, { billId: payload.billId })
+      if (bill.total >= 100) {
+        ctx.append(BillClosed, { billId: payload.billId })
+      }
+    })
+
+    const app = kronos({
+      modules: [
+        module("billing", stores,
+          ...billLinesSlice(ledger),
+          trackingProcessor("close-large-bills").eventHandlers(closeWhenLarge).build(),
+        ),
+      ],
+    })
+
+    await app.commandGateway.send(OpenBill, { billId: "big" }, emptyMetadata())
+    await app.commandGateway.send(BillLine, { billId: "big", amount: 150 }, emptyMetadata())
+
+    // The processor polls; wait for the automation's appended fact to land.
+    const deadline = Date.now() + 3000
+    let names: string[] = []
+    while (Date.now() < deadline) {
+      const { events } = await stores.eventStore.source({
+        criteria: EventCriteria.havingTags({ billId: "big" }),
+      } as never)
+      names = (events as Array<{ name: { name: string } }>).map((e) => e.name.name)
+      if (names.includes("BillClosed")) break
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    expect(names).toContain("BillClosed")
     await app.stop()
   })
 })

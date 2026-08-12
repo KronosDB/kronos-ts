@@ -10,7 +10,7 @@
  *
  * These tests exercise a real OTel TracerProvider with an `InMemorySpanExporter`
  * and assert that:
- *   1. command dispatch through a real `createApp`-composed app, with its
+ *   1. command dispatch through a real `kronos`-composed app, with its
  *      commandBus wrapped via `tracingCommandBus`, emits a span
  *   2. `handlerEnhancer.wrapHandler(...)` emits a handler span that is a real
  *      child of the dispatch span it re-parents onto (command-kind messages)
@@ -19,7 +19,7 @@
  *      it re-traces from a propagated event
  *   4. without wrapping, no spans are emitted (control case)
  *
- * NOTE: `createApp` does not (yet) plumb a `handlerEnhancer` through to
+ * NOTE: `kronos` does not (yet) plumb a `handlerEnhancer` through to
  * `registerCommandHandlersNatively` / event processors — that wiring is
  * outside this package's scope (packages/app). Tests 2 and 3 exercise
  * `handlerEnhancer` directly against real propagated-context messages
@@ -40,7 +40,7 @@ import { qn, tag, emptyMetadata } from "@kronos-ts/common"
 import { command, event, commandHandler, EventCriteria } from "@kronos-ts/messaging"
 import type { CommandBus, CommandMessage, EventMessage } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import { openTelemetry, tracingCommandBus } from "../opentelemetry.js"
 
 // ---------------------------------------------------------------------------
@@ -117,14 +117,14 @@ describe("openTelemetry() span observation (E2E)", () => {
     await harness.uninstall()
   })
 
-  it("command dispatch through a createApp-composed app emits a span", async () => {
+  it("command dispatch through a kronos-composed app emits a span", async () => {
     // given — the caller wraps the commandBus themselves, ordinary function
     // composition, no app mutation.
     const { spanFactory } = openTelemetry()
     const base = inMemoryComponents()
     const components = { ...base, commandBus: tracingCommandBus(base.commandBus, spanFactory) }
 
-    app = createApp({ components, modules: [module("otel-test", Greeting, greet)] })
+    app = kronos({ components, modules: [module("otel-test", Greeting, greet)] })
 
     // when
     await app.commandGateway.send(Greet, { id: "g-1", who: "world" })
@@ -140,7 +140,7 @@ describe("openTelemetry() span observation (E2E)", () => {
 
   it("emits no spans when the commandBus is not wrapped with tracingCommandBus", async () => {
     // given — identical app, commandBus left undecorated
-    app = createApp({ modules: [module("otel-test", Greeting, greet)] })
+    app = kronos({ modules: [module("otel-test", Greeting, greet)] })
 
     // when
     await app.commandGateway.send(Greet, { id: "g-3", who: "world" })

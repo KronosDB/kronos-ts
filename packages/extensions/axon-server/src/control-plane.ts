@@ -19,7 +19,7 @@
  *
  * ```ts
  * const axon = await axonServer({ ... })
- * const app  = createApp({ components: { ...axon.components }, modules })
+ * const app  = kronos({ components: { ...axon.components }, modules })
  * await axon.start()                                  // data path only
  *
  * // opt in to remote administration
@@ -137,10 +137,10 @@ function processorStatuses(
  * never starts it, because starting it is exactly what this function is for.
  *
  * `processors` are the LIVE processor instances, which only exist after
- * `createApp` has built them — that is why this cannot be folded back into the
+ * `kronos` has built them — that is why this cannot be folded back into the
  * backend factory. Pass `app.processors.values()`.
  *
- * Caveat on that call: `createApp` types `processors` as
+ * Caveat on that call: `kronos` types `processors` as
  * `ReadonlyMap<string, unknown>`, so `.values()` needs a cast today —
  * `app.processors.values() as Iterable<ManagedEventProcessor>`. Narrowing that
  * map in `@kronos-ts/app` would remove the cast; this package cannot.

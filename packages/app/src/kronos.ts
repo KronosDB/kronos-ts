@@ -91,7 +91,7 @@ function resolveComponents(supplied: Partial<Components>): Components {
 
 /**
  * A full in-memory component record. Prefer passing a PARTIAL record to
- * `createApp` and letting it resolve the rest — see {@link resolveComponents}
+ * `kronos` and letting it resolve the rest — see {@link resolveComponents}
  * for why spreading a complete record under a backend is a trap.
  */
 export function inMemoryComponents(overrides: Partial<Components> = {}): Components {
@@ -101,7 +101,7 @@ export function inMemoryComponents(overrides: Partial<Components> = {}): Compone
 /**
  * Anything a module can register. Every one of these already carries a `kind`
  * discriminator, so the author never has to sort them into buckets — the values
- * describe themselves and `createApp` partitions them.
+ * describe themselves and `kronos` partitions them.
  */
 export type Registration =
   | StateModule<any, any>
@@ -230,14 +230,14 @@ function shimFor(components: Components, eventStore: EventStore, stateManager: S
   return {
     hasComponent: (type: string) => type in map,
     getComponent: <T,>(type: string): T => {
-      if (!(type in map)) throw new Error(`createApp: no component "${type}"`)
+      if (!(type in map)) throw new Error(`kronos: no component "${type}"`)
       return map[type] as T
     },
     getOptionalComponent: <T,>(type: string): T | undefined => map[type] as T | undefined,
   }
 }
 
-export function createApp(opts: {
+export function kronos(opts: {
   components?: Partial<Components>
   modules: ReadonlyArray<AppModule>
   /** Cross-cutting handler wrapper (tracing, metrics). Applied to commands, queries and processors. */
@@ -304,6 +304,8 @@ export function createApp(opts: {
             queryBus: c.queryBus,
             correlationDataProviders,
             unitOfWorkRunner: proc.unitOfWorkRunner ?? c.unitOfWorkFactory,
+            eventStore: c.eventStore,
+            tagResolver: c.tagResolver,
             ...(proc.errorHandler ? { errorHandler: proc.errorHandler } : {}),
             ...(handlerEnhancer ? { handlerEnhancer } : {}),
           }) as never,
@@ -320,6 +322,8 @@ export function createApp(opts: {
           queryBus: c.queryBus,
           correlationDataProviders,
           unitOfWorkRunner: proc.unitOfWorkRunner ?? c.unitOfWorkFactory,
+          eventStore: c.eventStore,
+          tagResolver: c.tagResolver,
           // Per-processor override wins over the module/app token store.
           tokenStore: proc.tokenStore ?? c.tokenStore,
           // Everything else the builder accepts. Dropping any of these makes

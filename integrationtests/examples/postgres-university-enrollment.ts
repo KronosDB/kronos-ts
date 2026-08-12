@@ -1,7 +1,7 @@
 /**
  * Example: full CQRS slice on @kronos-ts/postgres.
  *
- *   write side  : createApp() + postgres() on bunSqlAdapter (Bun.sql driver)
+ *   write side  : kronos() + postgres() on bunSqlAdapter (Bun.sql driver)
  *                 → events land in kronos_events, snapshots in kronos_snapshots
  *
  *   read side   : drizzle-orm/bun-sql against the SAME database
@@ -35,7 +35,7 @@ import {
   createEventSourcedRepository,
   descriptorBasedTagResolver,
 } from "@kronos-ts/eventsourcing"
-import { createApp, inMemoryComponents, module } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import { postgres } from "@kronos-ts/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
 import { drizzle } from "drizzle-orm/bun-sql"
@@ -217,7 +217,7 @@ async function main(): Promise<void> {
       serializer: jsonSerializer(),
       tagResolver: descriptorBasedTagResolver(),
     })
-    const app = createApp({
+    const app = kronos({
       components: {
         ...inMemoryComponents({ unitOfWorkFactory: pg.components.unitOfWorkFactory }),
         ...pg.components,
@@ -232,7 +232,7 @@ async function main(): Promise<void> {
       ],
     })
 
-    // Snapshotting is per-state and `createApp` builds repositories without a
+    // Snapshotting is per-state and `kronos` builds repositories without a
     // policy, so each state that wants one names it here: same event store,
     // postgres's snapshot store, afterEvents(1).
     const states = app.stateManagers.get("university")!

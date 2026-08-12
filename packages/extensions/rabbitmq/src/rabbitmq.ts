@@ -97,7 +97,7 @@ export interface RabbitMqBackend {
   readonly config: RabbitMqResolvedConfig
   /**
    * Resolve once every handler subscribed so far is actually bound and
-   * consuming on the broker. Call it after `createApp` has registered handlers;
+   * consuming on the broker. Call it after `kronos` has registered handlers;
    * until it resolves, a command routed to this process can land on a queue
    * nobody consumes yet.
    */
@@ -135,7 +135,7 @@ export interface RabbitMqOptions extends RabbitMqConfig {
  *   localCommandBus: base.commandBus,
  *   localQueryBus: base.queryBus,
  * })
- * const app = createApp({ components: { ...base, ...rabbit.components }, modules })
+ * const app = kronos({ components: { ...base, ...rabbit.components }, modules })
  * await rabbit.start()      // handlers are registered — bind and consume
  * // …
  * await app.stop(); await rabbit.close()

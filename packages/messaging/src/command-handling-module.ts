@@ -1,4 +1,4 @@
-import { qualifiedNameToString, resourceKey } from "@kronos-ts/common"
+import { qualifiedNameToString } from "@kronos-ts/common"
 import type { CommandHandlerDefinition } from "./command-handler.js"
 import { HANDLER_CONTEXT } from "./handler-context.js"
 
@@ -32,11 +32,12 @@ const COMMAND_INVOCATION_KEYS = {
   TAG_RESOLVER: "tagResolver",
 } as const
 
-const EVENT_FLUSH_REGISTERED_KEY = resourceKey<boolean>("commandInvocationEventFlushRegistered")
 import type { CommandBus } from "./command-bus.js"
 import type { QueryBus } from "./query-bus.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
-import { getResource, setResource, onPrepareCommit, hasResource } from "./processing-state.js"
+import { setResource } from "./processing-state.js"
+import { registerEventFlush } from "./event-flush.js"
+import type { EventCriteria } from "./event-criteria.js"
 import { COMMAND_BUS_KEY } from "./send.js"
 import { QUERY_BUS_KEY } from "./emit-update.js"
 import type { CommandMessage, EventMessage } from "./message.js"
@@ -83,54 +84,14 @@ export function createCommandInvocation(
       setResource(EVENT_SCHEDULER_KEY, config.getComponent<EventScheduler>(COMMAND_INVOCATION_KEYS.EVENT_SCHEDULER))
     }
 
-    // Register event flush in PREPARE_COMMIT phase once per UnitOfWork.
-    // Nested context-aware dispatch re-enters createCommandInvocation inside
-    // the same ALS state; without this guard every nested command registers an
-    // additional flush and the same buffered events are appended repeatedly.
-    if (!hasResource(EVENT_FLUSH_REGISTERED_KEY)) {
-      setResource(EVENT_FLUSH_REGISTERED_KEY, true)
-      onPrepareCommit(async () => {
-        const buffered = getResource(BUFFERED_EVENTS_KEY)
-        if (!buffered || buffered.length === 0) return
-        if (!config.hasComponent(COMMAND_INVOCATION_KEYS.EVENT_STORE)) return
-
-        const eventStore = config.getComponent<{ append: (events: ReadonlyArray<EventMessage>, condition?: any) => Promise<unknown> }>(COMMAND_INVOCATION_KEYS.EVENT_STORE)
-
-        // Correlation data is applied to each event when it is appended (see
-        // append()), so buffered events already carry the active lineage here.
-
-        // Resolve tags via TagResolver (if configured)
-        const tagResolver = config.getOptionalComponent<{ resolve: (event: EventMessage) => Array<{ key: string; value: string }> }>(COMMAND_INVOCATION_KEYS.TAG_RESOLVER)
-        const resolvedEvents = tagResolver
-          ? buffered.map(event => ({
-              ...event,
-              tags: [...event.tags, ...tagResolver.resolve(event)],
-            }))
-          : buffered
-        const sourcingInfos = getResource(SOURCING_INFOS_KEY) ?? []
-
-        let appendCondition: any = undefined
-        if (sourcingInfos.length > 0) {
-          const combinedCriteria = sourcingInfos.length === 1
-            ? sourcingInfos[0]!.criteria
-            : { kind: "either" as const, criteria: sourcingInfos.map((s) => s.criteria) }
-
-          const maxMarker = sourcingInfos.reduce(
-            (max, s) => s.markerPosition > max ? s.markerPosition : max,
-            -1n,
-          )
-
-          const finalCriteria = handler.appendCondition
-            ? handler.appendCondition(message, combinedCriteria)
-            : combinedCriteria
-
-          appendCondition = {
-            criteria: finalCriteria,
-            marker: { position: maxMarker },
-          }
-        }
-
-        await eventStore.append(resolvedEvents, appendCondition)
+    // One flush per UnitOfWork (nested dispatch re-enters this wrapper).
+    if (config.hasComponent(COMMAND_INVOCATION_KEYS.EVENT_STORE)) {
+      registerEventFlush({
+        eventStore: config.getComponent(COMMAND_INVOCATION_KEYS.EVENT_STORE),
+        tagResolver: config.getOptionalComponent(COMMAND_INVOCATION_KEYS.TAG_RESOLVER),
+        ...(handler.appendCondition
+          ? { appendCondition: (criteria: EventCriteria) => handler.appendCondition!(message, criteria) }
+          : {}),
       })
     }
 

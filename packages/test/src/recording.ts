@@ -6,7 +6,7 @@ import type { CommandBus, CommandMessage, EventMessage } from "@kronos-ts/messag
  * Recorded traffic from a test run.
  *
  * Recording is a wrapper, not a registration: you build the components you
- * want, wrap the two that carry traffic, and pass the result to `createApp`.
+ * want, wrap the two that carry traffic, and pass the result to `kronos`.
  * There is no enhancer slot, no priority, no extension — the wrapper is
  * innermost because you put it innermost.
  */
@@ -102,7 +102,7 @@ export function recordingCommandBus(inner: CommandBus, recordings: Recordings): 
  *
  * ```ts
  * const recordings = createRecordings()
- * const app = createApp({
+ * const app = kronos({
  *   components: recordingComponents(inMemoryComponents(), recordings),
  *   modules: [module("courses", ...courses)],
  * })

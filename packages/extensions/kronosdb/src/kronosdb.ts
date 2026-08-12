@@ -15,7 +15,7 @@
  *   serializer,
  *   unitOfWorkFactory,
  * })
- * const app = createApp({
+ * const app = kronos({
  *   components: { ...inMemoryComponents(), ...kdb.components },
  *   modules,
  * })
@@ -120,7 +120,7 @@ export interface KronosDbConfig extends KronosDbConnectionConfig {
  * The components a KronosDB backend provides. Spread over your defaults:
  *
  * ```ts
- * createApp({ components: { ...inMemoryComponents(), ...kdb.components }, modules })
+ * kronos({ components: { ...inMemoryComponents(), ...kdb.components }, modules })
  * ```
  *
  * `commandBus` / `queryBus` are absent when `messaging: false`, so the spread
@@ -147,7 +147,7 @@ export interface KronosDbBackend {
   /**
    * Wait until KronosDB has acknowledged this client's registration, i.e. until
    * handler subscriptions are routable. Call AFTER every handler is subscribed
-   * (after `createApp`). This is the D-102 replacement for the legacy
+   * (after `kronos`). This is the D-102 replacement for the legacy
    * 1-second sleep — it waits exactly long enough, no longer.
    *
    * This is the readiness barrier and nothing else. Remote administration is
@@ -181,7 +181,7 @@ export interface KronosDbDependencies {
  *   componentName: "university-service",
  *   serializer, unitOfWorkFactory,
  * })
- * const app = createApp({
+ * const app = kronos({
  *   components: { ...inMemoryComponents(), ...kdb.components },
  *   modules,
  * })
@@ -193,7 +193,7 @@ export interface KronosDbDependencies {
  *
  * ```ts
  * const kdb = await kronosDb({ componentName: "svc", messaging: false, serializer, unitOfWorkFactory })
- * const app = createApp({ components: { ...inMemoryComponents(), ...kdb.components }, modules })
+ * const app = kronos({ components: { ...inMemoryComponents(), ...kdb.components }, modules })
  * ```
  */
 export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBackend> {

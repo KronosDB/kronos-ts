@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, beforeEach } from "bun:test"
-import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import { createTestFixture, type TestFixture } from "@kronos-ts/test"
 import {
   courseRegistrations,
@@ -272,7 +272,7 @@ describe("University — Full Application Flow", () => {
   })
 
   it("command → event → processor → projection → query", async () => {
-    app = createApp({ modules: [module("courses", ...courseRegistrations)] })
+    app = kronos({ modules: [module("courses", ...courseRegistrations)] })
 
     // when
     await app.commandGateway.send(CreateCourse, {
@@ -289,7 +289,7 @@ describe("University — Full Application Flow", () => {
   })
 
   it("multiple commands update the projection correctly", async () => {
-    app = createApp({ modules: [module("courses", ...courseRegistrations)] })
+    app = kronos({ modules: [module("courses", ...courseRegistrations)] })
 
     await app.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 })
     await app.commandGateway.send(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" })
@@ -307,7 +307,7 @@ describe("University — Full Application Flow", () => {
   })
 
   it("business rules enforced after state sourced from events", async () => {
-    app = createApp({ modules: [module("courses", ...courseRegistrations)] })
+    app = kronos({ modules: [module("courses", ...courseRegistrations)] })
 
     await app.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 2 })
     await app.commandGateway.send(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" })
@@ -325,7 +325,7 @@ describe("University — Full Application Flow", () => {
   it("token store records processor position via a component override", async () => {
     const { createInMemoryTokenStore } = await import("@kronos-ts/messaging")
     const probe = createInMemoryTokenStore()
-    app = createApp({
+    app = kronos({
       components: { ...inMemoryComponents(), tokenStore: probe },
       modules: [module("courses", ...courseRegistrations)],
     })
@@ -344,7 +344,7 @@ describe("University — Full Application Flow", () => {
   })
 
   it("query returns all courses", async () => {
-    app = createApp({ modules: [module("courses", ...courseRegistrations)] })
+    app = kronos({ modules: [module("courses", ...courseRegistrations)] })
 
     await app.commandGateway.send(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 })
     await app.commandGateway.send(CreateCourse, { courseId: "cs-201", name: "Advanced", capacity: 20 })

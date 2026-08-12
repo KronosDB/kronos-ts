@@ -72,7 +72,7 @@ export interface PostgresConfig {
  *
  * ```ts
  * const pg  = await postgres({ adapter, serializer, tagResolver })
- * const app = createApp({ components: { ...inMemoryComponents(), ...pg.components }, modules })
+ * const app = kronos({ components: { ...inMemoryComponents(), ...pg.components }, modules })
  * await pg.start()          // scheduler, once every handler is subscribed
  * // …
  * await app.stop(); await pg.close()

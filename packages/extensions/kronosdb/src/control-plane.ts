@@ -14,7 +14,7 @@
  *
  * ```ts
  * const kdb = await kronosDb({ componentName: "svc", serializer, unitOfWorkFactory })
- * const app = createApp({ components: { ...inMemoryComponents(), ...kdb.components }, modules })
+ * const app = kronos({ components: { ...inMemoryComponents(), ...kdb.components }, modules })
  *
  * // Opt in to remote administration. Create it BEFORE kdb.start() — see the
  * // ordering note on kronosDbControlPlane.

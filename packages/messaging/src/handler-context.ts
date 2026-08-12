@@ -63,15 +63,19 @@ export interface ContextSendFunction {
 
 /**
  * Capabilities available to event handlers running inside a processor's
- * UnitOfWork.
+ * UnitOfWork — including `append`: processors register the event flush, so a
+ * STATEFUL handler (an automation) can load decision state and append facts
+ * directly, with the append condition derived from its loads exactly as on the
+ * command path. A processor built without an event store fails such appends
+ * loudly at commit (see registerEventFlushGuard) rather than dropping them.
  *
- * Deliberately does NOT include `append`: processor UoWs register no
- * event-flush hook, so an appended event would be silently dropped at commit.
- * Automations that need to produce new events dispatch a command via
- * {@link EventHandlerContext.send} — the command handler is its own atomic
- * append boundary.
+ * The command hop (`ctx.send`) remains the right tool when the decision should
+ * be its own atomic, routable boundary — it is no longer the only way for an
+ * automation to produce facts.
  */
 export interface EventHandlerContext {
+  /** Append events to the active UnitOfWork, buffered until commit. */
+  readonly append: ContextAppendFunction
   /** Load event-sourced state within the active UnitOfWork (cached per UoW). */
   readonly load: ContextLoadFunction
   /** Schedule an event for future delivery via the configured event scheduler. */
@@ -109,15 +113,8 @@ export interface QueryHandlerContext {
   readonly transaction: <T = unknown>() => Promise<T | undefined>
 }
 
-/**
- * Capabilities available to command handlers: everything an event handler has,
- * plus `append` — the command handler is the atomic decide-and-append
- * boundary, and its UnitOfWork flushes buffered events at PREPARE_COMMIT.
- */
-export interface HandlerContext extends EventHandlerContext {
-  /** Append an event to the active UnitOfWork, buffered until commit. */
-  readonly append: ContextAppendFunction
-}
+/** Command handlers see the same capability set; the name marks the call site. */
+export type HandlerContext = EventHandlerContext
 
 /**
  * Shared event-handler context instance. Every capability resolves its
@@ -125,6 +122,7 @@ export interface HandlerContext extends EventHandlerContext {
  * frozen instance serves every invocation — no per-dispatch allocation.
  */
 export const EVENT_HANDLER_CONTEXT: EventHandlerContext = Object.freeze({
+  append,
   load,
   schedule,
   scheduleAfter,
@@ -140,8 +138,5 @@ export const QUERY_HANDLER_CONTEXT: QueryHandlerContext = Object.freeze({
   transaction: getOrBeginActiveTransaction,
 })
 
-/** Shared command-handler context instance. See {@link EVENT_HANDLER_CONTEXT}. */
-export const HANDLER_CONTEXT: HandlerContext = Object.freeze({
-  ...EVENT_HANDLER_CONTEXT,
-  append,
-})
+/** Shared command-handler context instance — same value, named for the call site. */
+export const HANDLER_CONTEXT: HandlerContext = EVENT_HANDLER_CONTEXT

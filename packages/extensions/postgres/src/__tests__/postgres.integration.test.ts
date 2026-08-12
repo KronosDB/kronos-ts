@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
-import { createApp, inMemoryComponents } from "@kronos-ts/app"
+import { kronos, inMemoryComponents } from "@kronos-ts/app"
 import { descriptorBasedTagResolver } from "@kronos-ts/eventsourcing"
 import { jsonSerializer } from "@kronos-ts/messaging"
 import { pgAdapter } from "../adapters/pg.js"
@@ -28,7 +28,7 @@ describe("postgres() backend", () => {
       serializer: jsonSerializer(),
       tagResolver: descriptorBasedTagResolver(),
     })
-    const app = createApp({
+    const app = kronos({
       components: { ...inMemoryComponents(), ...backend.components },
       modules: [],
     })
@@ -68,7 +68,7 @@ describe("postgres() backend", () => {
       serializer: jsonSerializer(),
       tagResolver: descriptorBasedTagResolver(),
     })
-    const app = createApp({
+    const app = kronos({
       components: { ...inMemoryComponents(), ...backend.components },
       modules: [],
     })

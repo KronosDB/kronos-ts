@@ -12,7 +12,7 @@
  *      (`correlationDataProviders: [messageOriginProvider()]`), and
  *   2. the command bus applies that data to outgoing commands
  *      (`correlationDataDispatchInterceptor()`).
- * `createApp` builds processors with `correlationDataProviders: []` and hands
+ * `kronos` builds processors with `correlationDataProviders: []` and hands
  * out a bare `createSimpleCommandBus`, so it supplies neither — there is no
  * "framework default" for lineage any more. The test therefore composes the
  * automation explicitly on top of the app's components, which is what the
@@ -35,7 +35,7 @@ import {
   type EventMessage
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createApp, inMemoryComponents, module } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
 
@@ -98,7 +98,7 @@ describe("Correlation lineage: command -> event -> processor -> command", () => 
     commandBus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
     const components = { ...base, commandBus }
 
-    const app = createApp({
+    const app = kronos({
       components,
       modules: [module("uni", Student, enrollStudent, notifyRegistry)],
     })

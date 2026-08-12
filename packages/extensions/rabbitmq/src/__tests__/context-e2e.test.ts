@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn, tag } from "@kronos-ts/common"
-import { createApp, inMemoryComponents, module } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import {
   command,
   event,
@@ -117,7 +117,7 @@ describe("RabbitMQ remote command handling e2e", () => {
     })
 
     const base = inMemoryComponents({ eventStore: probe.eventStore })
-    const app = createApp({
+    const app = kronos({
       components: { ...base, commandBus: loopbackCommandBus(transport, base.commandBus) },
       modules: [module("ctx", StateA, StateB, start, finish)],
     })

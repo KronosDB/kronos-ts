@@ -3,7 +3,7 @@
  * marker that the framework attaches to append() so the event store can reject
  * stale-state writes.
  *
- * Composition: `createApp` takes a plain `Components` record, so a
+ * Composition: `kronos` takes a plain `Components` record, so a
  * probe-wrapped event store is passed in directly — it is the `eventStore`
  * field, not a slot factory registered under a string key.
  */
@@ -18,7 +18,7 @@ import {
   type EventMessage,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createApp, inMemoryComponents, module } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
@@ -81,7 +81,7 @@ function probeEventStore(): EventStore & { records: AppendRecord[] } {
 describe("Append condition derived from sourced state — probe event store as a component", () => {
   it("appendCondition captures the sourcing criteria from the loaded entity", async () => {
     const probe = probeEventStore()
-    const app = createApp({
+    const app = kronos({
       components: inMemoryComponents({ eventStore: probe }),
       modules: [module("ac", Thing, touchThing)],
     })
@@ -107,7 +107,7 @@ describe("Append condition derived from sourced state — probe event store as a
 
   it("detects concurrent modification via append condition (probe surfaces the marker)", async () => {
     const probe = probeEventStore()
-    const app = createApp({
+    const app = kronos({
       components: inMemoryComponents({ eventStore: probe }),
       modules: [module("ac", Thing, touchThing)],
     })

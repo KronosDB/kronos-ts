@@ -3,7 +3,7 @@ import { z } from "zod"
 import { qn, tag, emptyMetadata } from "@kronos-ts/common"
 import { command, commandHandler, EventCriteria, event } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createApp, inMemoryComponents, module } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import {
   createRecordings,
   recordingComponents,
@@ -42,7 +42,7 @@ const doTestThingHandler = commandHandler(DoTestThing, async ({ payload: cmd }, 
 })
 
 function bootWithRecording(recordings: Recordings) {
-  return createApp({
+  return kronos({
     components: recordingComponents(inMemoryComponents(), recordings),
     modules: [module("rec-test", Thing, doTestThingHandler)],
   })
@@ -133,7 +133,7 @@ describe("recording wrappers", () => {
       },
     }
 
-    const app = createApp({
+    const app = kronos({
       components: { ...base, eventStore: probed },
       modules: [module("rec-test", Thing, doTestThingHandler)],
     })

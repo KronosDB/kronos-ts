@@ -1,5 +1,5 @@
 export {
-  createApp,
+  kronos,
   module,
   inMemoryComponents,
   type App,
@@ -7,4 +7,4 @@ export {
   type Components,
   type ModuleOverrides,
   type Registration,
-} from "./create-app.js"
+} from "./kronos.js"

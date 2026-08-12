@@ -41,7 +41,7 @@ import {
   createEventSourcedRepository,
   descriptorBasedTagResolver,
 } from "@kronos-ts/eventsourcing"
-import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import { postgres, AppendConditionError } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 
@@ -211,7 +211,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     // 2. Connect postgres — this bootstraps the schema and hands back the
     //    components it provides. Nothing has to be probed back out of a
     //    container: `backend.components.eventStore` IS the event store the app
-    //    runs on, because the same value is spread into `createApp` below.
+    //    runs on, because the same value is spread into `kronos` below.
     backend = await postgres({
       adapter: pgAdapter({ connectionString }),
       serializer: jsonSerializer(),
@@ -222,7 +222,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     //    LAZY transactional UoW factory, so it is passed as an override rather
     //    than only spread on top — otherwise handlers would run in a plain
     //    runInNewUoW and never see a transaction.
-    app = createApp({
+    app = kronos({
       components: {
         ...inMemoryComponents({ unitOfWorkFactory: backend.components.unitOfWorkFactory }),
         ...backend.components,
@@ -241,7 +241,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     })
 
     // Per-state snapshot policy — see the "snapshot store" test below.
-    // `createApp` builds repositories with no policy, so Course gets one
+    // `kronos` builds repositories with no policy, so Course gets one
     // explicitly, on postgres's event + snapshot stores.
     app.stateManagers
       .get("postgres-e2e")!
@@ -432,7 +432,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       tagResolver: descriptorBasedTagResolver(),
     })
     const autoEventStore: EventStore = autoBackend.components.eventStore
-    const autoApp = createApp({
+    const autoApp = kronos({
       components: {
         ...inMemoryComponents({ unitOfWorkFactory: autoBackend.components.unitOfWorkFactory }),
         ...autoBackend.components,

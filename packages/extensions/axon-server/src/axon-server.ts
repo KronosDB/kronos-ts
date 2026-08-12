@@ -14,7 +14,7 @@
  *   serializer,
  *   unitOfWorkFactory,
  * })
- * const app = createApp({
+ * const app = kronos({
  *   components: { ...inMemoryComponents({ serializer, unitOfWorkFactory }), ...axon.components },
  *   modules,
  * })
@@ -25,7 +25,7 @@
  *
  * Connecting before the app is built is what removes the lazy proxies and
  * subscribe-buffering wrappers the container version needed: by the time
- * `createApp` subscribes a handler, the gRPC streams are already live.
+ * `kronos` subscribes a handler, the gRPC streams are already live.
  *
  * REMOTE ADMINISTRATION IS NOT IN HERE. Processor instructions (pause / start /
  * release / split / merge) and processor status reporting are the platform
@@ -220,7 +220,7 @@ export interface AxonServerConfig extends AxonServerConnectionConfig {
   busSubscriptionAckDelayMs?: number
 }
 
-/** The components an Axon Server backend provides. Spread into `createApp`. */
+/** The components an Axon Server backend provides. Spread into `kronos`. */
 export interface AxonServerComponents {
   eventStore: ReturnType<typeof createAxonServerEventStore>
   snapshotStore: ReturnType<typeof createAxonServerSnapshotStore>
@@ -253,7 +253,7 @@ export interface AxonServerBackend {
   readonly platform: PlatformConnection
   /**
    * DATA-PATH READINESS BARRIER. Wait until Axon Server can route to the
-   * handlers subscribed on the bus streams. Call AFTER `createApp` — the
+   * handlers subscribed on the bus streams. Call AFTER `kronos` — the
    * subscribe frames must already be on the wire for the wait to mean anything.
    *
    * Takes no arguments and touches no control-plane state.
@@ -269,7 +269,7 @@ export interface AxonServerBackend {
  * `serializer` and `unitOfWorkFactory` are arguments rather than slot lookups:
  * the buses serialize payloads with the former and run every inbound command /
  * query in the latter, so they must be the SAME instances the rest of the app
- * uses. Pass the ones you hand to `createApp`.
+ * uses. Pass the ones you hand to `kronos`.
  */
 export async function axonServer(
   options: AxonServerOptions,

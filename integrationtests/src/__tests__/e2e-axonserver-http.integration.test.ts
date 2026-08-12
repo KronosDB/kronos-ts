@@ -34,7 +34,7 @@ import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
 } from "@kronos-ts/eventsourcing"
-import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import {
   axonServerControlPlane, axonServer, type AxonServerBackend } from "@kronos-ts/axon-server"
 
@@ -200,14 +200,14 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 
 // Wired against the Axon Server BACKEND FACTORY:
 //   const axon = await axonServer({ ..., serializer, unitOfWorkFactory })
-//   createApp({ components: { ...inMemoryComponents(), ...axon.components }, modules })
+//   kronos({ components: { ...inMemoryComponents(), ...axon.components }, modules })
 //   await axon.start()                                              // data-path readiness
 //   await axonServerControlPlane(axon.platform, [processor])        // opt-in remote admin
 // axonServer() provides eventStore / snapshotStore / commandBus / queryBus as
 // ordinary values; connect + resilience happen inside the awaited factory, and
 // the platform stream comes up in start() once handlers are subscribed.
 //
-// The HTTP layer is plain Express, wired AFTER createApp(): no framework
+// The HTTP layer is plain Express, wired AFTER kronos(): no framework
 // extension. Kronos composes, then registerCourseHttp() binds routes to the App
 // gateways, then the server listens. This is the decoupled replacement for the
 // removed withExpress/withFastify/withHono extensions.
@@ -257,7 +257,7 @@ describe("E2E: Axon Server full stack", () => {
       unitOfWorkFactory: base.unitOfWorkFactory,
     })
 
-    app = createApp({
+    app = kronos({
       components: { ...base, ...backend.components },
       modules: [
         module(
@@ -274,7 +274,7 @@ describe("E2E: Axon Server full stack", () => {
     await backend.start()
     control = await axonServerControlPlane(backend.platform, [courseProjection])
 
-    // HTTP layer: plain Express, wired after createApp() against the App.
+    // HTTP layer: plain Express, wired after kronos() against the App.
     const expressApp: Express = express()
     expressApp.use(express.json())
     registerCourseHttp(expressApp, app)
@@ -459,7 +459,7 @@ describe("E2E: Axon Server full stack", () => {
       unitOfWorkFactory: autoBase.unitOfWorkFactory,
     })
     const autoEventStore: EventStore = autoBackend.components.eventStore
-    const autoApp = createApp({
+    const autoApp = kronos({
       components: { ...autoBase, ...autoBackend.components },
       modules: [
         module(

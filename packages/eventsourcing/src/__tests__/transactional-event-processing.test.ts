@@ -24,7 +24,7 @@ import {
   type TransactionManager,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createApp, inMemoryComponents, module } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
@@ -72,7 +72,7 @@ describe("Transactional event processing — tokenStore + transactionManager com
       seen.push(e.id)
     })
 
-    const app = createApp({
+    const app = kronos({
       components: inMemoryComponents({ tokenStore: probe }),
       modules: [
         module(
@@ -112,7 +112,7 @@ describe("Transactional event processing — tokenStore + transactionManager com
     }
 
     const bootWith = (sink: string[]) =>
-      createApp({
+      kronos({
         components: inMemoryComponents({ tokenStore: probe, eventStore }),
         modules: [
           module(
@@ -154,7 +154,7 @@ describe("Transactional event processing — tokenStore + transactionManager com
     // instead of the app's, and that store is the one the processor writes to.
     const moduleScoped: TokenStore = createInMemoryTokenStore()
     const seenThird: string[] = []
-    const third = createApp({
+    const third = kronos({
       components: inMemoryComponents({ tokenStore: probe }),
       modules: [
         module(
@@ -193,7 +193,7 @@ describe("Transactional event processing — tokenStore + transactionManager com
       async rollback(_tx) {},
     }
 
-    const app = createApp({
+    const app = kronos({
       components: inMemoryComponents({ transactionManager: counting as TransactionManager }),
       modules: [module("transactional", Thing, createThing)],
     })

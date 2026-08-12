@@ -12,7 +12,7 @@ import type {
 } from "@kronos-ts/messaging"
 import { runInNewUoW } from "@kronos-ts/messaging"
 import {
-  createApp,
+  kronos,
   inMemoryComponents,
   module as appModule,
   type App,
@@ -98,7 +98,7 @@ export function createTestFixture(
   const recordings = createRecordings()
 
   // Recording is composition, not registration: wrap the two traffic-carrying
-  // components before handing them to createApp. Because the wrapper IS the
+  // components before handing them to kronos. Because the wrapper IS the
   // component every handler resolves, it sits innermost by construction — no
   // ordering rule to remember.
   const components = recordingComponents(options.components ?? inMemoryComponents(), recordings)
@@ -115,7 +115,7 @@ export function createTestFixture(
     })),
   ]
 
-  const app = createApp({ components, modules })
+  const app = kronos({ components, modules })
   const eventStore = components.eventStore
 
   return {

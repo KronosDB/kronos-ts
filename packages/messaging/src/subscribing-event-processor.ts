@@ -17,6 +17,7 @@ import type { EventScheduler } from "./event-scheduler.js"
 import { COMMAND_BUS_KEY } from "./send.js"
 import { QUERY_BUS_KEY } from "./emit-update.js"
 import { EVENT_HANDLER_CONTEXT } from "./handler-context.js"
+import { registerEventFlush, registerEventFlushGuard, type EventFlushStore } from "./event-flush.js"
 
 // Re-export for backward compatibility
 export type { SubscribableEventSource } from "./event-bus.js"
@@ -67,6 +68,9 @@ export interface SubscribingEventProcessorOptions {
   correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>
   /** Optional per-event callback fired inside the UoW before handler invocation (e.g. monitoring). */
   onEventDelivery?: () => void
+  /** Enables direct appends from event handlers; flushed with DCB conditions. */
+  eventStore?: EventFlushStore
+  tagResolver?: { resolve(event: EventMessage): Array<{ key: string; value: string }> }
   unitOfWorkRunner?: UoWRunner
   errorHandler?: EventProcessingErrorHandler
   /**
@@ -98,6 +102,8 @@ export function createSubscribingEventProcessor(
     eventScheduler,
     correlationDataProviders,
     onEventDelivery,
+    eventStore,
+    tagResolver,
     unitOfWorkRunner = runInNewUoW,
     errorHandler = propagatingErrorHandler(),
     handlerEnhancer,
@@ -151,6 +157,11 @@ export function createSubscribingEventProcessor(
     if (commandBus !== undefined) setResource(COMMAND_BUS_KEY, commandBus)
     if (queryBus !== undefined) setResource(QUERY_BUS_KEY, queryBus)
     if (eventScheduler !== undefined) setResource(EVENT_SCHEDULER_KEY, eventScheduler)
+    // Stateful handlers may load state and append facts directly; the flush
+    // (with DCB append conditions from their loads) commits with this UoW.
+    // Without a store, buffered appends FAIL at commit instead of dropping.
+    if (eventStore !== undefined) registerEventFlush({ eventStore, tagResolver })
+    else registerEventFlushGuard(name)
     // Seed correlation data from the triggering event so an automation's
     // outgoing commands/events inherit its lineage.
     if (correlationDataProviders && correlationDataProviders.length > 0) {

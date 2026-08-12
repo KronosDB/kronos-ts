@@ -191,9 +191,10 @@ describe("handler context", () => {
     expect(definition.handler.length).toBe(2)
   })
 
-  it("event context deliberately has no append capability", () => {
-    expect((EVENT_HANDLER_CONTEXT as Record<string, unknown>).append).toBeUndefined()
-    expect((HANDLER_CONTEXT as Record<string, unknown>).append).toBeDefined()
+  it("event context carries append — stateful automations load and append directly", () => {
+    expect((EVENT_HANDLER_CONTEXT as Record<string, unknown>).append).toBeDefined()
+    // One capability set; the two names mark the call site, not a difference.
+    expect(HANDLER_CONTEXT).toBe(EVENT_HANDLER_CONTEXT)
   })
 
   it("context instances are frozen", () => {

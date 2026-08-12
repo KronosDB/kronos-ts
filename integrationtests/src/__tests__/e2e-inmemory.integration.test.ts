@@ -9,7 +9,7 @@
  * - Correlation data propagation
  * - Business rule enforcement
  *
- * Wired against the functional composition root: `createApp({ components,
+ * Wired against the functional composition root: `kronos({ components,
  * modules })`. There is no container, so nothing has to be probed back out of
  * one — the event store is an ordinary value the test creates and hands to
  * `inMemoryComponents({ eventStore })`, then asserts against directly.
@@ -36,7 +36,7 @@ import {
   createInMemorySnapshotStore,
   afterEvents,
 } from "@kronos-ts/eventsourcing"
-import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 
 // ============================================================================
 // Domain: University Course Management
@@ -247,7 +247,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     // given
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
 
-    running = createApp({
+    running = kronos({
       components: inMemoryComponents(),
       modules: [
         module(
@@ -282,7 +282,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     // given
     const { projectionHandlers, queryHandlers } = createProjection()
 
-    running = createApp({
+    running = kronos({
       components: inMemoryComponents(),
       modules: [
         module(
@@ -320,7 +320,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     ).rejects.toThrow("Course is full")
   })
 
-  // Per-STATE snapshot config (policy + its own store). `createApp` builds
+  // Per-STATE snapshot config (policy + its own store). `kronos` builds
   // every state's repository with `snapshotPolicy: undefined`, so there is no
   // declarative way to attach a policy to one state today. The repository is a
   // plain value and the module's StateManager is public, so the composition
@@ -331,7 +331,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     const snapshotStore: SnapshotStore = createInMemorySnapshotStore()
     const { projectionHandlers, queryHandlers } = createProjection()
 
-    running = createApp({
+    running = kronos({
       components: inMemoryComponents({ eventStore, snapshotStore }),
       modules: [
         module(
@@ -378,7 +378,7 @@ describe("E2E: In-memory full CQRS flow", () => {
       received.push(e.courseId)
     })
 
-    running = createApp({
+    running = kronos({
       components: inMemoryComponents(),
       modules: [
         module(
@@ -407,7 +407,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     const auditOnCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => { auditLog.push(`created:${e.courseId}`) })
     const auditOnStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => { auditLog.push(`enrolled:${e.studentId}`) })
 
-    running = createApp({
+    running = kronos({
       components: inMemoryComponents(),
       modules: [
         module(
@@ -445,7 +445,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     // distributed tests.
     const eventStore = createInMemoryEventStore()
 
-    running = createApp({
+    running = kronos({
       components: inMemoryComponents({ eventStore }),
       modules: [module("university", Course, createCourse)],
     })
@@ -472,7 +472,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     // given
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
 
-    running = createApp({
+    running = kronos({
       components: inMemoryComponents(),
       modules: [
         module(
@@ -504,7 +504,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     // given — a "close enrolment when full" automation on its own processor
     const eventStore = createInMemoryEventStore()
 
-    running = createApp({
+    running = kronos({
       components: inMemoryComponents({ eventStore }),
       modules: [
         module(

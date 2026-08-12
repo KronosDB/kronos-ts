@@ -38,7 +38,7 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import { type EventStore, descriptorBasedTagResolver } from "@kronos-ts/eventsourcing"
-import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import { postgres, type PostgresAdapterTransaction } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 
@@ -150,7 +150,7 @@ describe("transactional commands — user CRUD atomic with appended events", () 
     // The whole point of this file: the command bus is built around postgres's
     // lazy transactional UoW factory, so a handler's appends and its own CRUD
     // ride the same transaction.
-    app = createApp({
+    app = kronos({
       components: {
         ...inMemoryComponents({ unitOfWorkFactory: backend.components.unitOfWorkFactory }),
         ...backend.components,

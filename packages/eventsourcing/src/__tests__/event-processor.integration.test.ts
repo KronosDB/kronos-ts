@@ -20,7 +20,7 @@ import {
   trackingProcessor,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createApp, module } from "@kronos-ts/app"
+import { kronos, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
 
@@ -74,7 +74,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
     })
     const getStudent = queryHandler(GetStudent, async ({ payload: p }) => view.get(p.studentId))
 
-    const app = createApp({
+    const app = kronos({
       modules: [
         module(
           "uni",
@@ -109,7 +109,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
       view.set(e.studentId, { studentId: e.studentId, name: e.name })
     })
 
-    const app = createApp({
+    const app = kronos({
       modules: [
         module(
           "uni",
@@ -156,7 +156,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
       renamed.push(e.studentId)
     })
 
-    const app = createApp({
+    const app = kronos({
       modules: [
         module(
           "uni",
