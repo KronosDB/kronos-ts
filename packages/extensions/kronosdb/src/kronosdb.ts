@@ -183,7 +183,7 @@ export interface KronosDbDependencies {
  * Connect to KronosDB and build its components.
  *
  * Everything the connect stage used to do — connect under `withRetry`,
- * health-check, platform setup, instruction wiring, `platform.start()` — happens
+ * health-check and platform setup — happens
  * here, awaited, before the function returns. Ordering that used to be encoded
  * in framework stages is now written down in your composition root.
  *
@@ -231,7 +231,6 @@ export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBacken
   // ---- Platform control plane -------------------------------------------
   const platform = createPlatformConnection(connection, config.platformService)
 
-  await platform.start()
 
   // ---- Components --------------------------------------------------------
   // The connection is live by now, so these are the real things: no lazy
@@ -342,6 +341,11 @@ export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBacken
               ],
         }))
       })
+      // Stream goes live only AFTER the instruction handler and status supplier
+      // are registered, or an instruction arriving in between is dropped and an
+      // early status request finds no supplier.
+      await platform.start()
+
       await withRetry(
         async () => {
           const ok = await platform.subscriptionsAcked()
