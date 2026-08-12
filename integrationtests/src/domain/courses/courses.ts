@@ -1,4 +1,4 @@
-import type { App } from "@kronos-ts/app"
+import type { Registration } from "@kronos-ts/app"
 import { z } from "zod"
 import { tag } from "@kronos-ts/common"
 import {
@@ -203,26 +203,30 @@ const getAllCourses = queryHandler(GetAllCourses, async () => {
  * Course domain slice — Phase 11 canonical single-file slice convention.
  *
  * All domain primitives (messages, entity, command/event handlers, projection
- * state, query handlers) are module-private `const`. Only this configurer
- * is exposed to production callers. The re-exports at the bottom of this
- * file exist solely for integration-test inspection — they are not API.
+ * state, query handlers) are module-private `const`. Only this flat
+ * registration list is exposed to production callers. The re-exports at the
+ * bottom of this file exist solely for integration-test inspection — they
+ * are not API.
  *
- * Compose via `app.use(configureCourses)` to honor the slice convention from
- * `.planning/phases/11-.../CONTEXT.md`.
+ * Compose at the app's composition root via `module("courses", ...courseRegistrations)`
+ * (see `packages/app/src/create-app.ts`), which partitions the list by each
+ * registration's own `kind` discriminator — no configurer callback needed.
  */
-export function configureCourses(app: App): void {
-  app.states(Course)
-  app.commands(createCourse, changeCourseCapacity, subscribeStudent, unsubscribeStudent)
-  app.queries(getCourseView, getAllCourses)
-  app.processors(
-    trackingProcessor("course-projection")
-      .eventHandlers(onCreated, onCapChanged, onSubscribed, onUnsubscribed)
-      .onReset(async () => {
-        courseViews.clear()
-      })
-      .build(),
-  )
-}
+export const courseRegistrations: Registration[] = [
+  Course,
+  createCourse,
+  changeCourseCapacity,
+  subscribeStudent,
+  unsubscribeStudent,
+  getCourseView,
+  getAllCourses,
+  trackingProcessor("course-projection")
+    .eventHandlers(onCreated, onCapChanged, onSubscribed, onUnsubscribed)
+    .onReset(async () => {
+      courseViews.clear()
+    })
+    .build(),
+]
 
 // ---------------------------------------------------------------------------
 // Test inspection helpers — used by integration tests only, not API
@@ -239,7 +243,7 @@ export function clearCourseViews(): void {
 // ---------------------------------------------------------------------------
 // Re-exports — message descriptors + entity needed by integration tests
 // to construct command / query messages and assert on entity behavior.
-// Production code outside the test suite imports ONLY `configureCourses`.
+// Production code outside the test suite imports ONLY `courseRegistrations`.
 // ---------------------------------------------------------------------------
 
 export {

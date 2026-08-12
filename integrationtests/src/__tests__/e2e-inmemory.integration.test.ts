@@ -9,11 +9,10 @@
  * - Correlation data propagation
  * - Business rule enforcement
  *
- * Plan 08-03b migration: rewired off `EventSourcingConfigurer.create()` to
- * native `kronos()` + fluent App API (D-73). The eventStore is captured via
- * an identity decorator (same pattern as @kronos-ts/test fixture) because
- * native `RunningApp` deliberately does NOT expose the resolved infrastructure
- * components — they are only reachable through gateways or via a probe decorator.
+ * Wired against the functional composition root: `createApp({ components,
+ * modules })`. There is no container, so nothing has to be probed back out of
+ * one — the event store is an ordinary value the test creates and hands to
+ * `inMemoryComponents({ eventStore })`, then asserts against directly.
  */
 import { describe, expect, it, afterEach } from "bun:test"
 import { z } from "zod"
@@ -31,12 +30,13 @@ import {
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
-  type EventStore,
   type SnapshotStore,
+  createEventSourcedRepository,
+  createInMemoryEventStore,
   createInMemorySnapshotStore,
   afterEvents,
 } from "@kronos-ts/eventsourcing"
-import { kronos, type RunningApp, type App } from "@kronos-ts/app"
+import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
 
 // ============================================================================
 // Domain: University Course Management
@@ -231,36 +231,12 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 5000
   throw new Error("Timed out waiting for condition")
 }
 
-/**
- * Capture the resolved eventStore via an identity decorator. Native RunningApp
- * does NOT expose eventStore directly; this is the same probe pattern used by
- * @kronos-ts/test (see fixture.ts §"Capture the eventStore reference"). The
- * decorator runs once at start() during Step 3b.
- */
-function captureEventStore(): { extension: (app: App) => void; get: () => EventStore } {
-  let captured: EventStore | undefined
-  return {
-    extension: (app: App) => {
-      app.decorate("eventStore", (inner) => {
-        captured = inner
-        return inner
-      })
-    },
-    get: () => {
-      if (!captured) {
-        throw new Error("eventStore capture failed — start() did not run the probe decorator")
-      }
-      return captured
-    },
-  }
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
 
 describe("E2E: In-memory full CQRS flow", () => {
-  let running: RunningApp | undefined
+  let running: App | undefined
 
   afterEach(async () => {
     await running?.stop()
@@ -271,16 +247,20 @@ describe("E2E: In-memory full CQRS flow", () => {
     // given
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
 
-    running = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse, changeCourseCapacity, subscribeStudent)
-      .queries(...queryHandlers)
-      .processors(
-        trackingProcessor("course-projection")
-          .eventHandlers(...projectionHandlers)
-          .build(),
-      )
-      .start()
+    running = createApp({
+      components: inMemoryComponents(),
+      modules: [
+        module(
+          "university",
+          Course,
+          createCourse, changeCourseCapacity, subscribeStudent,
+          ...queryHandlers,
+          trackingProcessor("course-projection")
+            .eventHandlers(...projectionHandlers)
+            .build(),
+        ),
+      ],
+    })
 
     // when
     await running.commandGateway.send(CreateCourse, {
@@ -302,16 +282,20 @@ describe("E2E: In-memory full CQRS flow", () => {
     // given
     const { projectionHandlers, queryHandlers } = createProjection()
 
-    running = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse, subscribeStudent)
-      .queries(...queryHandlers)
-      .processors(
-        trackingProcessor("course-projection")
-          .eventHandlers(...projectionHandlers)
-          .build(),
-      )
-      .start()
+    running = createApp({
+      components: inMemoryComponents(),
+      modules: [
+        module(
+          "university",
+          Course,
+          createCourse, subscribeStudent,
+          ...queryHandlers,
+          trackingProcessor("course-projection")
+            .eventHandlers(...projectionHandlers)
+            .build(),
+        ),
+      ],
+    })
 
     // when
     await running.commandGateway.send(CreateCourse, {
@@ -336,24 +320,38 @@ describe("E2E: In-memory full CQRS flow", () => {
     ).rejects.toThrow("Course is full")
   })
 
-  // Plan 09-01 Task 3 — unskipped via the new entities() tuple-style overload
-  // (Plan 09-01 Task 2). Per-entity { snapshotPolicy, snapshotStore } now
-  // threads through to createEventSourcedRepository.
+  // Per-STATE snapshot config (policy + its own store). `createApp` builds
+  // every state's repository with `snapshotPolicy: undefined`, so there is no
+  // declarative way to attach a policy to one state today. The repository is a
+  // plain value and the module's StateManager is public, so the composition
+  // root says it directly: build the repository you want and register it.
   it("snapshots accelerate entity loading", async () => {
     // given
+    const eventStore = createInMemoryEventStore()
     const snapshotStore: SnapshotStore = createInMemorySnapshotStore()
     const { projectionHandlers, queryHandlers } = createProjection()
 
-    running = await kronos({ quiet: true })
-      .states([Course, { snapshotPolicy: afterEvents(3), snapshotStore }])
-      .commands(createCourse, changeCourseCapacity)
-      .queries(...queryHandlers)
-      .processors(
-        trackingProcessor("course-projection")
-          .eventHandlers(...projectionHandlers)
-          .build(),
-      )
-      .start()
+    running = createApp({
+      components: inMemoryComponents({ eventStore, snapshotStore }),
+      modules: [
+        module(
+          "university",
+          Course,
+          createCourse, changeCourseCapacity,
+          ...queryHandlers,
+          trackingProcessor("course-projection")
+            .eventHandlers(...projectionHandlers)
+            .build(),
+        ),
+      ],
+    })
+
+    // Course gets a snapshotting repository: same event store, the test's own
+    // snapshot store, and afterEvents(3). Re-registering by state name replaces
+    // the default repository before any command is dispatched.
+    running.stateManagers
+      .get("university")!
+      .register(Course, createEventSourcedRepository(Course, eventStore, snapshotStore, afterEvents(3)))
 
     // when — create + 4 capacity changes (5 events total)
     // Snapshot triggers after 3+ events are replayed during a load.
@@ -380,15 +378,19 @@ describe("E2E: In-memory full CQRS flow", () => {
       received.push(e.courseId)
     })
 
-    running = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse)
-      .processors(
-        subscribingProcessor("sync-projection")
-          .eventHandlers(onCourseCreated)
-          .build(),
-      )
-      .start()
+    running = createApp({
+      components: inMemoryComponents(),
+      modules: [
+        module(
+          "university",
+          Course,
+          createCourse,
+          subscribingProcessor("sync-projection")
+            .eventHandlers(onCourseCreated)
+            .build(),
+        ),
+      ],
+    })
 
     // when — subscribing processor delivers synchronously with append
     await running.commandGateway.send(CreateCourse, { courseId: "sync-1", name: "Sync", capacity: 10 })
@@ -405,19 +407,23 @@ describe("E2E: In-memory full CQRS flow", () => {
     const auditOnCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => { auditLog.push(`created:${e.courseId}`) })
     const auditOnStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => { auditLog.push(`enrolled:${e.studentId}`) })
 
-    running = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse, subscribeStudent)
-      .queries(...queryHandlers)
-      .processors(
-        trackingProcessor("course-projection")
-          .eventHandlers(...projectionHandlers)
-          .build(),
-        trackingProcessor("audit-log")
-          .eventHandlers(auditOnCourseCreated, auditOnStudentSubscribed)
-          .build(),
-      )
-      .start()
+    running = createApp({
+      components: inMemoryComponents(),
+      modules: [
+        module(
+          "university",
+          Course,
+          createCourse, subscribeStudent,
+          ...queryHandlers,
+          trackingProcessor("course-projection")
+            .eventHandlers(...projectionHandlers)
+            .build(),
+          trackingProcessor("audit-log")
+            .eventHandlers(auditOnCourseCreated, auditOnStudentSubscribed)
+            .build(),
+        ),
+      ],
+    })
 
     // when
     await running.commandGateway.send(CreateCourse, { courseId: "multi-1", name: "Multi", capacity: 10 })
@@ -437,13 +443,12 @@ describe("E2E: In-memory full CQRS flow", () => {
     // Verify that events inherit the command's metadata (basic propagation
     // mechanism). Cross-message correlation is tested via the Axon Server
     // distributed tests.
-    const probe = captureEventStore()
+    const eventStore = createInMemoryEventStore()
 
-    running = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse)
-      .use(probe.extension)
-      .start()
+    running = createApp({
+      components: inMemoryComponents({ eventStore }),
+      modules: [module("university", Course, createCourse)],
+    })
 
     // when — dispatch a command with custom metadata
     const metadata = { tenantId: "t-1", userId: "u-42" }
@@ -454,7 +459,6 @@ describe("E2E: In-memory full CQRS flow", () => {
     }, metadata)
 
     // then — events inherit the command's metadata
-    const eventStore = probe.get()
     const { events } = await eventStore.source({
       criteria: EventCriteria.havingTags(tag("courseId", "corr-1")),
     })
@@ -468,16 +472,20 @@ describe("E2E: In-memory full CQRS flow", () => {
     // given
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
 
-    running = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse)
-      .queries(...queryHandlers)
-      .processors(
-        trackingProcessor("course-projection")
-          .eventHandlers(...projectionHandlers)
-          .build(),
-      )
-      .start()
+    running = createApp({
+      components: inMemoryComponents(),
+      modules: [
+        module(
+          "university",
+          Course,
+          createCourse,
+          ...queryHandlers,
+          trackingProcessor("course-projection")
+            .eventHandlers(...projectionHandlers)
+            .build(),
+        ),
+      ],
+    })
 
     // when
     await running.commandGateway.send(CreateCourse, { courseId: "all-1", name: "Course A", capacity: 10 })
@@ -494,18 +502,21 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("stateful automation — an event handler sends a command in its own UoW", async () => {
     // given — a "close enrolment when full" automation on its own processor
-    const probe = captureEventStore()
+    const eventStore = createInMemoryEventStore()
 
-    running = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse, subscribeStudent, closeEnrollment)
-      .processors(
-        trackingProcessor("enrollment-automation")
-          .eventHandlers(closeEnrollmentWhenFull)
-          .build(),
-      )
-      .use(probe.extension)
-      .start()
+    running = createApp({
+      components: inMemoryComponents({ eventStore }),
+      modules: [
+        module(
+          "university",
+          Course,
+          createCourse, subscribeStudent, closeEnrollment,
+          trackingProcessor("enrollment-automation")
+            .eventHandlers(closeEnrollmentWhenFull)
+            .build(),
+        ),
+      ],
+    })
 
     // when — a one-seat course is filled
     await running.commandGateway.send(CreateCourse, { courseId: "auto-1", name: "One Seat", capacity: 1 })
@@ -513,7 +524,6 @@ describe("E2E: In-memory full CQRS flow", () => {
 
     // then — the automation sources the now-full course and dispatches
     // CloseEnrollment, whose handler appends EnrollmentClosed in its own UoW
-    const eventStore = probe.get()
     const criteria = EventCriteria.havingTags(tag("courseId", "auto-1"))
     await waitFor(async () => {
       const { events } = await eventStore.source({ criteria })

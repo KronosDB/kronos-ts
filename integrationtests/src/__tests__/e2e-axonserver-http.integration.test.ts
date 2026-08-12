@@ -6,8 +6,8 @@
  * + Full CQRS flow validation
  *
  * Demonstrates the decoupled HTTP wiring: Kronos has no knowledge of the web
- * framework. The app is started first, then HTTP routes are registered against
- * the resulting RunningApp gateways and the server begins listening. Routes are
+ * framework. The app is built first, then HTTP routes are registered against
+ * the resulting App gateways and the server begins listening. Routes are
  * defined alongside their domain slice (registerCourseHttp) so a slice bundles
  * both its Kronos handlers and its HTTP surface.
  *
@@ -33,8 +33,8 @@ import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
 } from "@kronos-ts/eventsourcing"
-import { kronos, type App, type RunningApp } from "@kronos-ts/app"
-import { axonServer } from "@kronos-ts/axon-server"
+import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { axonServer, type AxonServerBackend } from "@kronos-ts/axon-server"
 
 // ============================================================================
 // Domain
@@ -152,10 +152,10 @@ const getCourse = queryHandler(GetCourse, async ({ payload: q }) => {
 
 // -- HTTP surface for the Course slice --
 // Co-located with the slice's domain. Plain Express: no framework extension,
-// no deferred decorator. Receives the already-started RunningApp and closes
-// over its gateways. Composes the same way Kronos slices do — call it for each
+// no deferred decorator. Receives the already-composed App and closes over its
+// gateways. Composes the same way Kronos slices do — call it for each
 // slice on the shared Express instance before listen().
-function registerCourseHttp(http: Express, k: RunningApp): void {
+function registerCourseHttp(http: Express, k: App): void {
   http.post("/courses", async (req, res) => {
     try {
       await k.commandGateway.send(CreateCourse, req.body)
@@ -196,21 +196,22 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 // Tests
 // ============================================================================
 
-// Wired against the native Axon Server extension (D-95):
-//   .states(...).commands(...).queries(...).processors(...)
-//   .use(axonServer({...}))  // native (app: App) => void
-// axonServer() populates eventStore / snapshotStore / commandBus / queryBus
-// typed slots via app.set(...) and runs connect/processors/stop hooks under the
-// @kronos-ts/common resilience helper.
+// Wired against the Axon Server BACKEND FACTORY:
+//   const axon = await axonServer({ ..., serializer, unitOfWorkFactory })
+//   createApp({ components: { ...inMemoryComponents(), ...axon.components }, modules })
+//   await axon.start(processors)   // platform stream + subscription-ack wait
+// axonServer() provides eventStore / snapshotStore / commandBus / queryBus as
+// ordinary values; connect + resilience happen inside the awaited factory, and
+// the platform stream comes up in start() once handlers are subscribed.
 //
-// The HTTP layer is plain Express, wired AFTER start(): no framework extension.
-// Kronos starts, then registerCourseHttp() binds routes to the RunningApp
+// The HTTP layer is plain Express, wired AFTER createApp(): no framework
+// extension. Kronos composes, then registerCourseHttp() binds routes to the App
 // gateways, then the server listens. This is the decoupled replacement for the
 // removed withExpress/withFastify/withHono extensions.
 describe("E2E: Axon Server full stack", () => {
   let container: StartedTestContainer
-  let app: RunningApp
-  let capturedEventStore: EventStore | undefined
+  let app: App
+  let backend: AxonServerBackend
   let httpServer: Server
   let baseUrl: string
   let axonHost: string
@@ -218,7 +219,6 @@ describe("E2E: Axon Server full stack", () => {
 
   beforeAll(async () => {
     courseViews.clear()
-    capturedEventStore = undefined
 
     container = await new GenericContainer("axoniq/axonserver:2025.2.5")
       .withExposedPorts(8024, 8124)
@@ -236,33 +236,40 @@ describe("E2E: Axon Server full stack", () => {
     // Extra delay for DCB event store stream endpoint initialization
     await new Promise(r => setTimeout(r, 3000))
 
-    // Capture eventStore via probe decorator (native RunningApp has no eventStore field).
-    const captureExtension = (kronosApp: App) => {
-      kronosApp.decorate("eventStore", (inner) => {
-        capturedEventStore = inner
-        return inner
-      })
-    }
+    const courseProjection = trackingProcessor("course-projection")
+      .eventHandlers(onCourseCreated, onStudentSubscribed)
+      .build()
 
-    app = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse, subscribeStudent)
-      .queries(getCourse)
-      .processors(
-        trackingProcessor("course-projection")
-          .eventHandlers(onCourseCreated, onStudentSubscribed)
-          .build(),
-      )
-      .use(captureExtension)
-      .use(axonServer({                                         // native (app: App) => void
-        componentName: "e2e-full-stack",
-        host,
-        port: grpcPort,
-        context: "default",
-      }))
-      .start()
+    // serializer + UoW runner are shared with the distributed buses, so they
+    // are built first and handed to the backend.
+    const base = inMemoryComponents()
 
-    // HTTP layer: plain Express, wired after start() against the RunningApp.
+    backend = await axonServer({
+      componentName: "e2e-full-stack",
+      host,
+      port: grpcPort,
+      context: "default",
+      serializer: base.serializer,
+      unitOfWorkFactory: base.unitOfWorkFactory,
+    })
+
+    app = createApp({
+      components: { ...base, ...backend.components },
+      modules: [
+        module(
+          "e2e",
+          Course,
+          createCourse, subscribeStudent,
+          getCourse,
+          courseProjection,
+        ),
+      ],
+    })
+
+    // Platform stream + subscription-ack wait, AFTER handlers are subscribed.
+    await backend.start([courseProjection])
+
+    // HTTP layer: plain Express, wired after createApp() against the App.
     const expressApp: Express = express()
     expressApp.use(express.json())
     registerCourseHttp(expressApp, app)
@@ -282,12 +289,12 @@ describe("E2E: Axon Server full stack", () => {
       httpServer.close(() => resolve())
     })
     await app?.stop()
+    await backend?.close()
     await container?.stop()
   })
 
   function eventStore(): EventStore {
-    if (!capturedEventStore) throw new Error("eventStore capture failed — start() did not run probe decorator")
-    return capturedEventStore
+    return backend.components.eventStore
   }
 
   async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 30000): Promise<void> {
@@ -394,57 +401,6 @@ describe("E2E: Axon Server full stack", () => {
     expect((result as CourseView).name).toBe("Course A")
   }, 60_000)
 
-  it("stateful automation — an event handler sends a command in its own UoW", async () => {
-    // A dedicated app isolates the automation processor from the shared app's
-    // assertions; it connects to the same Axon Server instance.
-    let autoEventStore: EventStore | undefined
-    const autoApp = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse, subscribeStudent, closeEnrollment)
-      .processors(
-        trackingProcessor("axonserver-enrollment-automation")
-          .eventHandlers(closeEnrollmentWhenFull)
-          .build(),
-      )
-      .use((a: App) => {
-        a.decorate("eventStore", (inner) => {
-          autoEventStore = inner
-          return inner
-        })
-      })
-      .use(axonServer({
-        componentName: "e2e-automation",
-        host: axonHost,
-        port: axonGrpcPort,
-        context: "default",
-      }))
-      .start()
-    await new Promise(r => setTimeout(r, 2000))
-
-    try {
-      const courseId = "e2e-auto-cap"
-      await autoApp.commandGateway.send(CreateCourse, { courseId, name: "One Seat", capacity: 1 })
-      await autoApp.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-1" })
-
-      // The automation sources the now-full course and dispatches
-      // CloseEnrollment; its handler appends EnrollmentClosed in its own UoW.
-      const criteria = EventCriteria.havingTags(tag("courseId", courseId))
-      await waitFor(async () => {
-        const { events } = await autoEventStore!.source({ criteria })
-        return events.some((ev) => ev.name.name === "EnrollmentClosed")
-      }, 30000)
-
-      const { events } = await autoEventStore!.source({ criteria })
-      expect(events.map((ev) => ev.name.name)).toEqual([
-        "CourseCreated",
-        "StudentSubscribed",
-        "EnrollmentClosed",
-      ])
-    } finally {
-      await autoApp.stop()
-    }
-  }, 90_000)
-
   it("HTTP POST → command → event → Axon Server, HTTP GET → projection", async () => {
     // when — create a course over HTTP (plain Express → commandGateway)
     const created = await fetch(`${baseUrl}/courses`, {
@@ -476,4 +432,69 @@ describe("E2E: Axon Server full stack", () => {
     })
     expect(res.status).toBe(400)
   }, 60_000)
+
+  // NOTE: this test runs LAST on purpose. It stands up a second app that
+  // registers the SAME command names on the SAME Axon context, and closing it
+  // leaves Axon Server briefly routing to a socket that is gone — any test
+  // after it can get a command dispatched into the closed client.
+  it("stateful automation — an event handler sends a command in its own UoW", async () => {
+    // A dedicated app isolates the automation processor from the shared app's
+    // assertions; it connects to the same Axon Server instance.
+    const automation = trackingProcessor("axonserver-enrollment-automation")
+      .eventHandlers(closeEnrollmentWhenFull)
+      .build()
+    const autoBase = inMemoryComponents()
+    const autoBackend = await axonServer({
+      componentName: "e2e-automation",
+      host: axonHost,
+      port: axonGrpcPort,
+      context: "default",
+      serializer: autoBase.serializer,
+      unitOfWorkFactory: autoBase.unitOfWorkFactory,
+    })
+    const autoEventStore: EventStore = autoBackend.components.eventStore
+    const autoApp = createApp({
+      components: { ...autoBase, ...autoBackend.components },
+      modules: [
+        module(
+          "e2e-automation",
+          Course,
+          createCourse, subscribeStudent, closeEnrollment,
+          automation,
+        ),
+      ],
+    })
+    await autoBackend.start([automation])
+    await new Promise(r => setTimeout(r, 2000))
+
+    try {
+      const courseId = "e2e-auto-cap"
+      await autoApp.commandGateway.send(CreateCourse, { courseId, name: "One Seat", capacity: 1 })
+      await autoApp.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-1" })
+
+      // The automation sources the now-full course and dispatches
+      // CloseEnrollment; its handler appends EnrollmentClosed in its own UoW.
+      const criteria = EventCriteria.havingTags(tag("courseId", courseId))
+      await waitFor(async () => {
+        const { events } = await autoEventStore.source({ criteria })
+        return events.some((ev) => ev.name.name === "EnrollmentClosed")
+      }, 30000)
+
+      const { events } = await autoEventStore.source({ criteria })
+      expect(events.map((ev) => ev.name.name)).toEqual([
+        "CourseCreated",
+        "StudentSubscribed",
+        "EnrollmentClosed",
+      ])
+    } finally {
+      await autoApp.stop()
+      await autoBackend.close()
+      // This app registered the SAME command names as the shared app on the
+      // same context. Axon Server drops a closed client's registrations
+      // asynchronously, so give it a beat — otherwise the next command can be
+      // routed to the socket that just went away.
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+  }, 90_000)
+
 })

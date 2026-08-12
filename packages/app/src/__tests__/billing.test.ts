@@ -178,3 +178,45 @@ describe("billing", () => {
     await app.stop()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Component resolution order — the silent-transaction-loss regression
+// ---------------------------------------------------------------------------
+
+import { runInNewUoW } from "@kronos-ts/messaging"
+
+describe("component resolution", () => {
+  it("a supplied unitOfWorkFactory reaches the default command bus", async () => {
+    // The trap: createSimpleCommandBus captures the UoW factory when BUILT.
+    // Spreading a fully-built record under a backend used to leave the bus on
+    // runInNewUoW while unitOfWorkFactory said otherwise — handlers then ran
+    // outside the transaction and a rollback silently kept its row.
+    let ranThrough = 0
+    const countingUoW: typeof runInNewUoW = ((metadata: never, fn: never) => {
+      ranThrough++
+      return (runInNewUoW as (m: never, f: never) => unknown)(metadata, fn)
+    }) as typeof runInNewUoW
+
+    const ledger = newLedger()
+    const app = createApp({
+      // PARTIAL record — createApp resolves the bus after the merge.
+      components: { unitOfWorkFactory: countingUoW },
+      modules: [module("billing", inMemoryStores(), ...billLinesSlice(ledger))],
+    })
+
+    await app.commandGateway.send(OpenBill, { billId: "uow-1" }, emptyMetadata())
+    expect(ranThrough).toBeGreaterThan(0)
+    await app.stop()
+  })
+
+  it("exposes live processor instances, not just descriptors", async () => {
+    const ledger = newLedger()
+    const app = createApp({
+      modules: [module("billing", inMemoryStores(), ...billLinesSlice(ledger))],
+    })
+    // No processors registered here, but the surface exists for control planes
+    // (Axon/KronosDB) that need real instances to honour pause/split/merge.
+    expect(app.processors).toBeInstanceOf(Map)
+    await app.stop()
+  })
+})

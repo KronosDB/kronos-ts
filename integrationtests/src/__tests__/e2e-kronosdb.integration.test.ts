@@ -26,8 +26,8 @@ import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
 } from "@kronos-ts/eventsourcing"
-import { kronos, type App, type RunningApp } from "@kronos-ts/app"
-import { kronosDb } from "@kronos-ts/kronosdb"
+import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { kronosDb, type KronosDbBackend } from "@kronos-ts/kronosdb"
 
 // ============================================================================
 // Domain — same university model as the Axon Server E2E test
@@ -166,14 +166,13 @@ function id(name: string) { return `${name}-${runId}` }
 
 describe("E2E: KronosDB full stack", () => {
   let container: StartedTestContainer
-  let app: RunningApp
-  let capturedEventStore: EventStore | undefined
+  let app: App
+  let backend: KronosDbBackend
   let kronosHost: string
   let kronosPort: number
 
   beforeAll(async () => {
     courseViews.clear()
-    capturedEventStore = undefined
 
     // Spin up KronosDB. The server logs "KronosDB starting" once it binds
     // its gRPC listener; testcontainers also waits for port 50051 to accept
@@ -186,52 +185,56 @@ describe("E2E: KronosDB full stack", () => {
     kronosHost = container.getHost()
     kronosPort = container.getMappedPort(50051)
 
-    // Plan 09-03 migration: native (app: App) => void extension shape (D-95).
-    // kronosDb populates eventStore / snapshotStore / commandBus / queryBus
-    // typed slots and wires connect-stage transport bring-up + processors-stage
-    // subscription-ack wait via the @kronos-ts/common resilience helper.
-    const kronosDbExtension = kronosDb({
+    // The projection processor is named once and used twice: it is registered
+    // in the module AND handed to the backend, whose platform control plane may
+    // pause / start / split / merge it. The container used to read this back
+    // out of itself via app.processors(); now it is an ordinary argument.
+    const courseProjection = trackingProcessor("kronosdb-course-projection")
+      .eventHandlers(onCourseCreated, onStudentSubscribed)
+      .build()
+
+    // The app's serializer + UoW runner must be the SAME instances the
+    // distributed buses use, so they are built first and passed in.
+    const base = inMemoryComponents()
+
+    backend = await kronosDb({
       componentName: "kronosdb-e2e-test",
       host: kronosHost,
       port: kronosPort,
       context: "default",
+      serializer: base.serializer,
+      unitOfWorkFactory: base.unitOfWorkFactory,
+      processors: [courseProjection],
     })
 
-    // Capture the resolved eventStore via an identity decorator. Native RunningApp
-    // does not expose eventStore directly — see e2e-inmemory.integration.test.ts
-    // §captureEventStore for the same pattern.
-    const captureExtension = (kronosApp: App) => {
-      kronosApp.decorate("eventStore", (inner) => {
-        capturedEventStore = inner
-        return inner
-      })
-    }
+    app = createApp({
+      components: { ...base, ...backend.components },
+      modules: [
+        module(
+          "kronosdb-e2e",
+          Course,
+          createCourse, subscribeStudent,
+          getCourse,
+          courseProjection,
+        ),
+      ],
+    })
 
-    app = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse, subscribeStudent)
-      .queries(getCourse)
-      .processors(
-        trackingProcessor("kronosdb-course-projection")
-          .eventHandlers(onCourseCreated, onStudentSubscribed)
-          .build(),
-      )
-      .use(captureExtension)
-      .use(kronosDbExtension)
-      .start()
-
-    // Give KronosDB time to process handler subscriptions
+    // Wait until KronosDB has acked this client's registration — the handler
+    // subscribe frames are already on the wire by now.
+    await backend.start()
+    // Belt-and-braces: the legacy wait for KronosDB to process subscriptions.
     await new Promise(r => setTimeout(r, 2000))
   }, 120_000)
 
   afterAll(async () => {
     await app?.stop()
+    await backend?.close()
     await container?.stop()
   })
 
   function eventStore(): EventStore {
-    if (!capturedEventStore) throw new Error("eventStore capture failed — start() did not run probe decorator")
-    return capturedEventStore
+    return backend.components.eventStore
   }
 
   it("command persists events to KronosDB event store", async () => {
@@ -338,28 +341,32 @@ describe("E2E: KronosDB full stack", () => {
     // A dedicated app isolates the automation processor so it cannot perturb
     // the event counts asserted by the tests above. It connects to the same
     // KronosDB instance.
-    let autoEventStore: EventStore | undefined
-    const autoApp = await kronos({ quiet: true })
-      .states(Course)
-      .commands(createCourse, subscribeStudent, closeEnrollment)
-      .processors(
-        trackingProcessor("kronosdb-enrollment-automation")
-          .eventHandlers(closeEnrollmentWhenFull)
-          .build(),
-      )
-      .use((a: App) => {
-        a.decorate("eventStore", (inner) => {
-          autoEventStore = inner
-          return inner
-        })
-      })
-      .use(kronosDb({
-        componentName: "kronosdb-automation-test",
-        host: kronosHost,
-        port: kronosPort,
-        context: "default",
-      }))
-      .start()
+    const automation = trackingProcessor("kronosdb-enrollment-automation")
+      .eventHandlers(closeEnrollmentWhenFull)
+      .build()
+    const autoBase = inMemoryComponents()
+    const autoBackend = await kronosDb({
+      componentName: "kronosdb-automation-test",
+      host: kronosHost,
+      port: kronosPort,
+      context: "default",
+      serializer: autoBase.serializer,
+      unitOfWorkFactory: autoBase.unitOfWorkFactory,
+      processors: [automation],
+    })
+    const autoEventStore: EventStore = autoBackend.components.eventStore
+    const autoApp = createApp({
+      components: { ...autoBase, ...autoBackend.components },
+      modules: [
+        module(
+          "kronosdb-e2e-automation",
+          Course,
+          createCourse, subscribeStudent, closeEnrollment,
+          automation,
+        ),
+      ],
+    })
+    await autoBackend.start()
     await new Promise(r => setTimeout(r, 2000))
 
     try {
@@ -371,11 +378,11 @@ describe("E2E: KronosDB full stack", () => {
       // CloseEnrollment; its handler appends EnrollmentClosed in its own UoW.
       const criteria = EventCriteria.havingTags(tag("courseId", courseId))
       await waitFor(async () => {
-        const { events } = await autoEventStore!.source({ criteria })
+        const { events } = await autoEventStore.source({ criteria })
         return events.some((ev) => ev.name.name === "EnrollmentClosed")
       }, 30000)
 
-      const { events } = await autoEventStore!.source({ criteria })
+      const { events } = await autoEventStore.source({ criteria })
       expect(events.map((ev) => ev.name.name)).toEqual([
         "CourseCreated",
         "StudentSubscribed",
@@ -383,6 +390,7 @@ describe("E2E: KronosDB full stack", () => {
       ])
     } finally {
       await autoApp.stop()
+      await autoBackend.close()
     }
   }, 60_000)
 })

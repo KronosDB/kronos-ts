@@ -61,7 +61,38 @@ export interface Components {
   transactionManager: TransactionManager
 }
 
-/** The zero-config path, as a function returning a value you can spread. */
+/**
+ * Fill in whatever a caller did not supply, IN DEPENDENCY ORDER.
+ *
+ * This exists because component construction is ordered: `createSimpleCommandBus`
+ * captures the UoW factory when it is built. Spreading a fully-built record under
+ * a backend — `{ ...inMemoryComponents(), ...pg.components }` — therefore leaves
+ * the bus holding the in-memory `runInNewUoW` even though `pg.components` supplied
+ * a transactional one, and handlers run OUTSIDE the transaction. That failure is
+ * silent: a row survives a rollback. Resolving here, after the merge, makes the
+ * ordering impossible to get wrong from the outside.
+ */
+function resolveComponents(supplied: Partial<Components>): Components {
+  const unitOfWorkFactory = supplied.unitOfWorkFactory ?? runInNewUoW
+  return {
+    eventStore: supplied.eventStore ?? createInMemoryEventStore(),
+    snapshotStore: supplied.snapshotStore ?? createInMemorySnapshotStore(),
+    // Built LAST of the bus-adjacent components, so it sees the final UoW factory.
+    commandBus: supplied.commandBus ?? defaultCommandBus(unitOfWorkFactory),
+    queryBus: supplied.queryBus ?? createSimpleQueryBus(),
+    serializer: supplied.serializer ?? jsonSerializer(),
+    unitOfWorkFactory,
+    tagResolver: supplied.tagResolver ?? descriptorBasedTagResolver(),
+    tokenStore: supplied.tokenStore ?? createInMemoryTokenStore(),
+    transactionManager: supplied.transactionManager ?? noTransactionManager(),
+  }
+}
+
+/**
+ * A full in-memory component record. Prefer passing a PARTIAL record to
+ * `createApp` and letting it resolve the rest — see {@link resolveComponents}
+ * for why spreading a complete record under a backend is a trap.
+ */
 export function inMemoryComponents(overrides: Partial<Components> = {}): Components {
   const unitOfWorkFactory = overrides.unitOfWorkFactory ?? runInNewUoW
   return {
@@ -188,6 +219,12 @@ export interface App {
   readonly queryGateway: QueryGateway
   /** Per-module state managers, keyed by module name — for tests/introspection. */
   readonly stateManagers: ReadonlyMap<string, StateManager>
+  /**
+   * The LIVE processor instances, keyed by name. Distributed control planes
+   * (Axon Server, KronosDB) need these to honour pause/start/split/merge and to
+   * report segment status — a descriptor alone makes those instructions no-ops.
+   */
+  readonly processors: ReadonlyMap<string, unknown>
   stop(): Promise<void>
 }
 
@@ -216,25 +253,26 @@ function shimFor(components: Components, eventStore: EventStore, stateManager: S
 }
 
 export function createApp(opts: {
-  components?: Components
+  components?: Partial<Components>
   modules: ReadonlyArray<AppModule>
   /** Cross-cutting handler wrapper (tracing, metrics). Applied to commands, queries and processors. */
   handlerEnhancer?: HandlerEnhancerDefinition
   /** Seeds correlation data on each processed event. Defaults to messageOriginProvider(). */
   correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>
 }): App {
-  const components = opts.components ?? inMemoryComponents()
+  const components = resolveComponents(opts.components ?? {})
   const handlerEnhancer = opts.handlerEnhancer
   const correlationDataProviders = opts.correlationDataProviders ?? [messageOriginProvider()]
   const stateManagers = new Map<string, StateManager>()
   const started: Array<{ start(): void; stop(): void }> = []
   const built: Array<{ start(): void; stop(): void }> = []
+  const processorsByName = new Map<string, unknown>()
 
   for (const module of opts.modules) {
     // The module's component record: the app's, with its overrides on top. One
     // spread is the whole of what slot scoping + resolution existed to express,
     // and it caps nothing — every component is overridable.
-    const c: Components = { ...components, ...module.overrides }
+    const c: Components = resolveComponents({ ...components, ...module.overrides })
 
     const { states, commands, queries, processors } = partition(module.register)
 
@@ -337,6 +375,7 @@ export function createApp(opts: {
   // need a consumer-first topological order precisely because each instance
   // starts replaying the moment it boots.
   for (const processor of built) {
+    processorsByName.set((processor as { name?: string }).name ?? "", processor)
     processor.start()
     started.push(processor)
   }
@@ -345,6 +384,7 @@ export function createApp(opts: {
     commandGateway: createCommandGateway(components.commandBus),
     queryGateway: createQueryGateway(components.queryBus, components.unitOfWorkFactory),
     stateManagers,
+    processors: processorsByName,
     async stop() {
       for (const p of started) p.stop()
     },

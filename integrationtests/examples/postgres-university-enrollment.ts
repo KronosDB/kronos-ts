@@ -1,7 +1,7 @@
 /**
  * Example: full CQRS slice on @kronos-ts/postgres.
  *
- *   write side  : kronos() + bunSqlAdapter (Bun.sql native driver)
+ *   write side  : createApp() + postgres() on bunSqlAdapter (Bun.sql driver)
  *                 → events land in kronos_events, snapshots in kronos_snapshots
  *
  *   read side   : drizzle-orm/bun-sql against the SAME database
@@ -25,12 +25,17 @@ import {
   event,
   commandHandler,
   eventHandler,
+  jsonSerializer,
   trackingProcessor,
   EventCriteria,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { afterEvents } from "@kronos-ts/eventsourcing"
-import { kronos } from "@kronos-ts/app"
+import {
+  afterEvents,
+  createEventSourcedRepository,
+  descriptorBasedTagResolver,
+} from "@kronos-ts/eventsourcing"
+import { createApp, inMemoryComponents, module } from "@kronos-ts/app"
 import { postgres } from "@kronos-ts/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
 import { drizzle } from "drizzle-orm/bun-sql"
@@ -202,16 +207,46 @@ async function main(): Promise<void> {
       )
     `)
 
-    // Write side: framework with the Bun.SQL adapter.
-    const app = await kronos({ quiet: true })
-      .states(
-        [Course, { snapshotPolicy: afterEvents(1) }],
-        [Student, { snapshotPolicy: afterEvents(1) }],
-      )
-      .commands(openCourse, registerStudent, enrollStudent)
-      .processors(buildProjector(db))
-      .use(postgres({ adapter: bunSqlAdapter({ connectionString }) }))
-      .start()
+    // Write side: the postgres backend, connected and bootstrapped, then
+    // spread over the in-memory defaults. The lazy transactional UoW factory
+    // postgres provides is passed INTO inMemoryComponents so the command bus
+    // is built around it — spreading it on afterwards would leave the bus
+    // running handlers outside any transaction.
+    const pg = await postgres({
+      adapter: bunSqlAdapter({ connectionString }),
+      serializer: jsonSerializer(),
+      tagResolver: descriptorBasedTagResolver(),
+    })
+    const app = createApp({
+      components: {
+        ...inMemoryComponents({ unitOfWorkFactory: pg.components.unitOfWorkFactory }),
+        ...pg.components,
+      },
+      modules: [
+        module(
+          "university",
+          Course, Student,
+          openCourse, registerStudent, enrollStudent,
+          buildProjector(db),
+        ),
+      ],
+    })
+
+    // Snapshotting is per-state and `createApp` builds repositories without a
+    // policy, so each state that wants one names it here: same event store,
+    // postgres's snapshot store, afterEvents(1).
+    const states = app.stateManagers.get("university")!
+    states.register(
+      Course,
+      createEventSourcedRepository(Course, pg.components.eventStore, pg.components.snapshotStore, afterEvents(1)),
+    )
+    states.register(
+      Student,
+      createEventSourcedRepository(Student, pg.components.eventStore, pg.components.snapshotStore, afterEvents(1)),
+    )
+
+    // Background workers (the durable scheduler), once handlers are subscribed.
+    await pg.start()
 
     try {
       // ---- Scenario 1: open CS-101 (cap 2), register, enroll both --------
@@ -312,6 +347,7 @@ async function main(): Promise<void> {
       }
     } finally {
       await app.stop()
+      await pg.close()
     }
   } finally {
     // Close drizzle's Bun.SQL client before tearing down the container.
