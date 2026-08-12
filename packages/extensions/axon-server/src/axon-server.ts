@@ -256,6 +256,9 @@ export interface AxonServerComponents {
  * A live Axon Server backend: the components it provides plus the two calls
  * that used to be lifecycle stages.
  */
+/** Everything axonServer() needs: its own config plus the framework values it borrows. */
+export type AxonServerOptions = AxonServerConfig & { serializer: Serializer; unitOfWorkFactory: UoWRunner }
+
 export interface AxonServerBackend {
   readonly components: AxonServerComponents
   /**
@@ -320,8 +323,9 @@ function processorStatuses(
  * uses. Pass the ones you hand to `createApp`.
  */
 export async function axonServer(
-  config: AxonServerConfig & { serializer: Serializer; unitOfWorkFactory: UoWRunner },
+  options: AxonServerOptions,
 ): Promise<AxonServerBackend> {
+  const config = options
   const { serializer, unitOfWorkFactory, resilience } = config
 
   const connection = await withRetry(async () => connectToAxonServer(config), {

@@ -76,3 +76,4 @@ export {
   mapErrorCode,
   isTransientError,
 } from "./errors.js"
+export type { AxonServerOptions } from "./axon-server.js"

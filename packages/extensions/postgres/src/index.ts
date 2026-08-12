@@ -82,3 +82,4 @@ export {
   DEFAULT_TABLE_NAMES,
   type TableNames,
 } from "./schema.js"
+export type { PostgresOptions } from "./postgres.js"

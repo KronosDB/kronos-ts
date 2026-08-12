@@ -127,6 +127,24 @@ export interface KronosDbComponents {
 }
 
 /** A connected KronosDB backend. See {@link kronosDb}. */
+/**
+ * The subset of a live processor the control plane drives. Structurally
+ * satisfied by TrackingEventProcessor / StreamingEventProcessor; everything past
+ * `name` is optional so an instruction is skipped rather than crashing when a
+ * processor kind does not implement it.
+ */
+export interface ManagedEventProcessor {
+  readonly name: string
+  start?(): Promise<void> | void
+  stop?(): void
+  releaseSegment?(segmentId: number): Promise<void> | void
+  splitSegment?(segmentId: number): Promise<void> | void
+  mergeSegment?(segmentId: number): Promise<void> | void
+  supportsReset?(): boolean
+  processingStatus?(): Map<number, unknown>
+  readonly running?: boolean
+}
+
 export interface KronosDbBackend {
   readonly components: KronosDbComponents
   /** The live connection, for callers that need the raw client. */
@@ -139,12 +157,15 @@ export interface KronosDbBackend {
    * (after `createApp`). This is the D-102 replacement for the legacy
    * 1-second sleep — it waits exactly long enough, no longer.
    */
-  start(): Promise<void>
+  start(processors?: ReadonlyArray<ManagedEventProcessor>): Promise<void>
   /** Drain in-flight bus work, stop the platform stream, close the connection. */
   close(): Promise<void>
 }
 
 /** Arguments a KronosDB backend cannot make up for itself. */
+/** Everything kronosDb() needs: its own config plus the framework values it borrows. */
+export type KronosDbOptions = KronosDbConfig & KronosDbDependencies
+
 export interface KronosDbDependencies {
   serializer: Serializer
   /** The same UoW runner the app runs on — inbound commands/queries run inside it. */
@@ -186,11 +207,9 @@ export interface KronosDbDependencies {
  * const app = createApp({ components: { ...inMemoryComponents(), ...kdb.components }, modules })
  * ```
  */
-export async function kronosDb(
-  config: KronosDbConfig & KronosDbDependencies,
-): Promise<KronosDbBackend> {
+export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBackend> {
+  const config = options
   const { serializer, unitOfWorkFactory, resilience } = config
-  const processors = config.processors ?? []
   const busLatches: ShutdownLatch[] = []
 
   const connection: KronosDbConnection = await withRetry(
@@ -211,73 +230,6 @@ export async function kronosDb(
 
   // ---- Platform control plane -------------------------------------------
   const platform = createPlatformConnection(connection, config.platformService)
-
-  const processorMap = new Map<string, EventProcessorModule>()
-  for (const proc of processors) processorMap.set(proc.name, proc)
-
-  platform.onInstruction(async (instruction) => {
-    switch (instruction.kind) {
-      case "pause-processor": {
-        const proc = processorMap.get(instruction.processorName) as any
-        if (proc?.stop) proc.stop()
-        break
-      }
-      case "start-processor": {
-        const proc = processorMap.get(instruction.processorName) as any
-        if (proc?.start) await proc.start()
-        break
-      }
-      case "release-segment": {
-        const proc = processorMap.get(instruction.processorName) as any
-        if (proc?.releaseSegment) await proc.releaseSegment(instruction.segmentId)
-        break
-      }
-      case "split-segment": {
-        const proc = processorMap.get(instruction.processorName) as any
-        if (proc?.splitSegment) await proc.splitSegment(instruction.segmentId)
-        break
-      }
-      case "merge-segment": {
-        const proc = processorMap.get(instruction.processorName) as any
-        if (proc?.mergeSegment) await proc.mergeSegment(instruction.segmentId)
-        break
-      }
-    }
-  })
-
-  platform.registerProcessorStatusSupplier(() => {
-    return processors.map((proc: any) => ({
-      name: proc.name,
-      running: proc.running ?? false,
-      mode: proc.supportsReset?.() === false ? "Subscribing" : "Tracking",
-      isStreamingProcessor: proc.supportsReset?.() !== false,
-      activeThreads: proc.running ? 1 : 0,
-      availableThreads: 0,
-      error: false,
-      tokenStoreIdentifier: "",
-      segments: proc.processingStatus
-        ? Array.from(proc.processingStatus().entries() as Iterable<[number, any]>).map(
-            ([segId, status]: [number, any]) => ({
-              segmentId: segId,
-              caughtUp: status.caughtUp ?? false,
-              replaying: status.replaying ?? false,
-              onePartOf: 1,
-              tokenPosition: status.position ?? 0n,
-              errorState: status.error?.message ?? "",
-            }),
-          )
-        : [
-            {
-              segmentId: 0,
-              caughtUp: true,
-              replaying: proc.replaying ?? false,
-              onePartOf: 1,
-              tokenPosition: proc.position ?? 0n,
-              errorState: "",
-            },
-          ],
-    }))
-  })
 
   await platform.start()
 
@@ -320,7 +272,76 @@ export async function kronosDb(
     components,
     connection,
     platform,
-    async start() {
+    async start(processors: ReadonlyArray<ManagedEventProcessor> = []) {
+      // The control plane needs LIVE processors, which only exist after
+      // createApp has built them — so this cannot be wired in the factory.
+      // Pass `app.processors.values()`.
+      const processorMap = new Map<string, ManagedEventProcessor>()
+      for (const proc of processors) processorMap.set(proc.name, proc)
+
+      platform.onInstruction(async (instruction) => {
+        switch (instruction.kind) {
+          case "pause-processor": {
+            const proc = processorMap.get(instruction.processorName) as any
+            if (proc?.stop) proc.stop()
+            break
+          }
+          case "start-processor": {
+            const proc = processorMap.get(instruction.processorName) as any
+            if (proc?.start) await proc.start()
+            break
+          }
+          case "release-segment": {
+            const proc = processorMap.get(instruction.processorName) as any
+            if (proc?.releaseSegment) await proc.releaseSegment(instruction.segmentId)
+            break
+          }
+          case "split-segment": {
+            const proc = processorMap.get(instruction.processorName) as any
+            if (proc?.splitSegment) await proc.splitSegment(instruction.segmentId)
+            break
+          }
+          case "merge-segment": {
+            const proc = processorMap.get(instruction.processorName) as any
+            if (proc?.mergeSegment) await proc.mergeSegment(instruction.segmentId)
+            break
+          }
+        }
+      })
+
+      platform.registerProcessorStatusSupplier(() => {
+        return processors.map((proc: any) => ({
+          name: proc.name,
+          running: proc.running ?? false,
+          mode: proc.supportsReset?.() === false ? "Subscribing" : "Tracking",
+          isStreamingProcessor: proc.supportsReset?.() !== false,
+          activeThreads: proc.running ? 1 : 0,
+          availableThreads: 0,
+          error: false,
+          tokenStoreIdentifier: "",
+          segments: proc.processingStatus
+            ? Array.from(proc.processingStatus().entries() as Iterable<[number, any]>).map(
+                ([segId, status]: [number, any]) => ({
+                  segmentId: segId,
+                  caughtUp: status.caughtUp ?? false,
+                  replaying: status.replaying ?? false,
+                  onePartOf: 1,
+                  tokenPosition: status.position ?? 0n,
+                  errorState: status.error?.message ?? "",
+                }),
+              )
+            : [
+                {
+                  segmentId: 0,
+                  caughtUp: true,
+                  replaying: proc.replaying ?? false,
+                  onePartOf: 1,
+                  tokenPosition: proc.position ?? 0n,
+                  errorState: "",
+                },
+              ],
+        }))
+      })
       await withRetry(
         async () => {
           const ok = await platform.subscriptionsAcked()

@@ -89,3 +89,4 @@ export {
   EventStoreDefinition,
   SnapshotStoreDefinition,
 } from "./service-definitions.js"
+export type { KronosDbOptions } from "./kronosdb.js"

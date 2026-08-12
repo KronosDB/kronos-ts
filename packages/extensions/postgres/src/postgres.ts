@@ -78,6 +78,9 @@ export interface PostgresConfig {
  * await app.stop(); await pg.close()
  * ```
  */
+/** Everything postgres() needs: its own config plus the framework values it borrows. */
+export type PostgresOptions = PostgresConfig & { serializer: Serializer; tagResolver: TagResolver }
+
 export interface PostgresBackend {
   readonly components: PostgresComponents
   /** Start background workers (the durable scheduler). Call after handlers are registered. */
@@ -95,8 +98,9 @@ export interface PostgresComponents {
 }
 
 export async function postgres(
-  config: PostgresConfig & { serializer: Serializer; tagResolver: TagResolver },
+  options: PostgresOptions,
 ): Promise<PostgresBackend> {
+  const config = options
   const { adapter, resilience, serializer, tagResolver } = config
   const bootstrap = config.bootstrap ?? true
   const tables = config.tableNames ?? DEFAULT_TABLE_NAMES
