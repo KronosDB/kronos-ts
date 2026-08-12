@@ -18,7 +18,7 @@
  *   components: { ...inMemoryComponents({ serializer, unitOfWorkFactory }), ...axon.components },
  *   modules,
  * })
- * await axon.start(processors)   // platform stream + subscription-ack wait
+ * await axon.start()   // readiness barrier: the server can route to our handlers
  * // …
  * await app.stop(); await axon.close()
  * ```
@@ -27,11 +27,18 @@
  * subscribe-buffering wrappers the container version needed: by the time
  * `createApp` subscribes a handler, the gRPC streams are already live.
  *
- * The processor list is an ARGUMENT to `start()`. The container resolved it
- * through `app.processors()`; there is no such accessor anymore, so anything
- * Axon Server may pause / resume / split / merge / report on is handed over
- * explicitly. Pass nothing and the platform stream simply reports no
- * processors.
+ * REMOTE ADMINISTRATION IS NOT IN HERE. Processor instructions (pause / start /
+ * release / split / merge) and processor status reporting are the platform
+ * CONTROL PLANE — they are neither persistence nor transport, and lived here
+ * only because they share this gRPC connection. They are now an opt-in second
+ * object built on the platform stream this backend exposes:
+ *
+ * ```ts
+ * const control = await axonServerControlPlane(axon.platform, app.processors.values())
+ * ```
+ *
+ * `start()` therefore takes NO arguments and does exactly one thing: the
+ * data-path readiness barrier. See `control-plane.ts`.
  *
  * Axon-specific protocol invariants are preserved byte-for-byte:
  *
@@ -78,7 +85,6 @@ import {
   type PlatformConnection,
   type PlatformServiceOptions,
 } from "./platform-service.js"
-import type { ProcessorStatus, SegmentStatus } from "./event-processor-info.js"
 
 /** Default flow control settings — aligned with Java's 5000 permits. */
 const DEFAULT_PERMITS = 5000n
@@ -200,48 +206,18 @@ export interface AxonServerConfig extends AxonServerConnectionConfig {
   /** Per-extension resilience config (D-100 / D-101). */
   resilience?: Partial<ResilienceConfig>
   /**
-   * Delay in ms after the platform-stream ack to give Axon Server's
-   * routing tables time to register the subscribe frames sent on the
-   * command/query streams. The platform stream cannot observe these (they
-   * travel on different streams). Default: 1000 — matches the legacy
-   * enhancer's wait. Tests against a freshly-booted server can tighten
-   * this once subscriptions are observed to land faster.
+   * How long `start()` waits for Axon Server's routing tables to register the
+   * subscribe frames sent on the command/query streams. This is the entire
+   * data-path readiness barrier.
+   *
+   * It is a timed wait rather than an observed signal because nothing on the
+   * client can observe it: subscribes travel on the bus streams, and the
+   * platform stream — which is where an ack would arrive — is a different
+   * stream that Axon Server holds open silently after `register`. Default:
+   * 1000, matching the legacy enhancer. Tests against a freshly-booted server
+   * can tighten this once subscriptions are observed to land faster.
    */
   busSubscriptionAckDelayMs?: number
-}
-
-/**
- * A processor Axon Server is allowed to observe and control.
- *
- * The container version reached for `app.processors()` and cast the result to
- * `any` before poking at `start` / `stop` / `releaseSegment` / … — this is that
- * cast, written down. Both `TrackingEventProcessor` and
- * `StreamingEventProcessor` satisfy it structurally; anything else that can
- * name itself and answer some of these calls does too. Every member past the
- * name is optional because Axon Server asks for things a given processor kind
- * may not implement (a subscribing processor has no segments), and the
- * instruction handler simply skips what is absent.
- */
-export interface ManagedEventProcessor {
-  readonly name: string
-  readonly running?: boolean
-  readonly replaying?: boolean
-  readonly position?: bigint
-  start?(): Promise<void> | void
-  stop?(): void
-  supportsReset?(): boolean
-  processingStatus?(): ReadonlyMap<
-    number,
-    {
-      readonly position?: bigint
-      readonly caughtUp?: boolean
-      readonly replaying?: boolean
-      readonly error?: Error
-    }
-  >
-  releaseSegment?(segmentId: number): Promise<unknown> | unknown
-  splitSegment?(segmentId: number): Promise<unknown> | unknown
-  mergeSegment?(segmentId: number): Promise<unknown> | unknown
 }
 
 /** The components an Axon Server backend provides. Spread into `createApp`. */
@@ -262,56 +238,29 @@ export type AxonServerOptions = AxonServerConfig & { serializer: Serializer; uni
 export interface AxonServerBackend {
   readonly components: AxonServerComponents
   /**
-   * Bring up the platform (control) stream and wait until Axon Server can route
-   * to the handlers subscribed on the bus streams. Call AFTER `createApp` — the
+   * The platform stream, built but NOT started.
+   *
+   * This is the seam the control plane plugs into. It is built here because the
+   * backend owns the gRPC connection it rides on and the `platformService`
+   * tuning that configures it; it is left unstarted because starting it is the
+   * control plane's job — the instruction handler and status supplier have to
+   * be registered before the `register` frame goes out (see `control-plane.ts`).
+   *
+   * A service with no remote administration can ignore this entirely, or call
+   * `platform.start()` directly if it wants the heartbeat / registration
+   * without the processor-control wiring.
+   */
+  readonly platform: PlatformConnection
+  /**
+   * DATA-PATH READINESS BARRIER. Wait until Axon Server can route to the
+   * handlers subscribed on the bus streams. Call AFTER `createApp` — the
    * subscribe frames must already be on the wire for the wait to mean anything.
    *
-   * `processors` is the list Axon Server may pause / resume / split / merge and
-   * report status for. Omit it and the platform stream reports none.
+   * Takes no arguments and touches no control-plane state.
    */
-  start(processors?: ReadonlyArray<ManagedEventProcessor>): Promise<void>
+  start(): Promise<void>
   /** Drain in-flight bus work, stop the platform stream, close the connection. */
   close(): Promise<void>
-}
-
-/** Map the processor list into the status shape the platform stream reports. */
-function processorStatuses(
-  processors: ReadonlyArray<ManagedEventProcessor>,
-): ProcessorStatus[] {
-  return processors.map((proc) => {
-    const isStreamingProcessor = proc.supportsReset?.() !== false
-    const perSegment = proc.processingStatus?.()
-    const segments: SegmentStatus[] = perSegment
-      ? Array.from(perSegment.entries()).map(([segmentId, status]) => ({
-          segmentId,
-          caughtUp: status.caughtUp ?? false,
-          replaying: status.replaying ?? false,
-          onePartOf: 1,
-          tokenPosition: status.position ?? 0n,
-          errorState: status.error?.message ?? "",
-        }))
-      : [
-          {
-            segmentId: 0,
-            caughtUp: true,
-            replaying: proc.replaying ?? false,
-            onePartOf: 1,
-            tokenPosition: proc.position ?? 0n,
-            errorState: "",
-          },
-        ]
-    return {
-      name: proc.name,
-      running: proc.running ?? false,
-      mode: isStreamingProcessor ? "Tracking" : "Subscribing",
-      isStreamingProcessor,
-      activeThreads: proc.running ? 1 : 0,
-      availableThreads: 0,
-      error: false,
-      tokenStoreIdentifier: "",
-      segments,
-    }
-  })
 }
 
 /**
@@ -375,64 +324,34 @@ export async function axonServer(
     ),
   }
 
-  let platform: PlatformConnection | undefined
+  // Built here, started by the control plane (or by the caller). Constructing it
+  // eagerly is what lets the control plane be a separate object at all — and it
+  // keeps `platformService` tuning and `stop()` ownership in one place, so the
+  // documented shutdown order below holds whether or not anyone opted in.
+  const platform = createPlatformConnection(connection, config.platformService)
 
   return {
     components,
+    platform,
 
-    async start(processors: ReadonlyArray<ManagedEventProcessor> = []) {
-      platform = createPlatformConnection(connection, config.platformService)
-
-      // Name-keyed view so server-initiated instructions route to the right one.
-      const byName = new Map<string, ManagedEventProcessor>()
-      for (const proc of processors) byName.set(proc.name, proc)
-
-      platform.onInstruction(async (instruction) => {
-        switch (instruction.kind) {
-          case "pause-processor":
-            byName.get(instruction.processorName)?.stop?.()
-            break
-          case "start-processor":
-            await byName.get(instruction.processorName)?.start?.()
-            break
-          case "release-segment":
-            await byName.get(instruction.processorName)?.releaseSegment?.(instruction.segmentId)
-            break
-          case "split-segment":
-            await byName.get(instruction.processorName)?.splitSegment?.(instruction.segmentId)
-            break
-          case "merge-segment":
-            await byName.get(instruction.processorName)?.mergeSegment?.(instruction.segmentId)
-            break
-        }
-      })
-
-      platform.registerProcessorStatusSupplier(() => processorStatuses(processors))
-
-      await platform.start()
-
-      // Subscription-ack wait (D-102 — Axon equivalent). Axon Server's
-      // PlatformService holds the stream open silently until a topology change
-      // or heartbeat round-trip, so the platform stream latches `acked` once the
-      // `register` frame has been flushed (see platform-service.ts).
-      await withRetry(
-        async () => {
-          const ok = await platform!.subscriptionsAcked()
-          if (!ok) throw new Error("axon-server subscriptions not yet acked")
-        },
-        { event: "per-operation", ...resilience },
-      )
-
-      // Axon-specific: give the server's command/query routing tables a beat to
-      // register the subscribe frames sent on the BUS streams. It cannot be
-      // derived from the platform stream because subscribes travel on a
-      // different stream entirely. The legacy enhancer carried the same 1s wait.
+    async start() {
+      // The only thing the data path has to wait for: Axon Server's
+      // command/query routing tables registering the subscribe frames sent on
+      // the BUS streams. It cannot be derived from the platform stream, because
+      // subscribes travel on a different stream entirely — and the platform
+      // stream's own `subscriptionsAcked()` latch says nothing about them (it
+      // latches unconditionally once `register` has been flushed; see
+      // platform-service.ts). So this barrier is the settle wait, and it is
+      // deliberately independent of whether the platform stream is up at all.
+      // The legacy enhancer carried the same 1s wait.
       await new Promise((r) => setTimeout(r, config.busSubscriptionAckDelayMs ?? 1000))
     },
 
     async close() {
       await Promise.all(busLatches.map((l) => l.initiateShutdown()))
-      platform?.stop()
+      // Idempotent, and independent of `control.close()` — a backend that was
+      // never administered still stops a platform stream someone else started.
+      platform.stop()
       connection.close()
     },
   }

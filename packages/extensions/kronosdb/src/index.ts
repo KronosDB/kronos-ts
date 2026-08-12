@@ -26,6 +26,13 @@ export {
 } from "./kronosdb.js"
 
 export {
+  kronosDbControlPlane,
+  type ManagedEventProcessor,
+  type ManagedProcessorSource,
+  type KronosDbControlPlane,
+} from "./control-plane.js"
+
+export {
   type PlatformConnection,
   type PlatformInstruction,
   type InstructionHandler,

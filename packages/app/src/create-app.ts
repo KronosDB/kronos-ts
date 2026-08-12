@@ -1,4 +1,3 @@
-import type { Serializer } from "@kronos-ts/common"
 import {
   createEventSourcedRepository,
   createInMemoryEventStore,
@@ -24,9 +23,8 @@ import {
   messageOriginProvider,
   type CorrelationDataProvider,
   type HandlerEnhancerDefinition,
-  jsonSerializer,
+  type EventProcessor,
   type EventProcessorModule,
-  noTransactionManager,
   type QueryBus,
   type QueryGateway,
   type QueryHandlerDefinition,
@@ -34,7 +32,6 @@ import {
   registerQueryHandlersNatively,
   runInNewUoW,
   type TokenStore,
-  type TransactionManager,
   type UoWRunner,
 } from "@kronos-ts/messaging"
 import { createStateManager, type StateManager, type StateModule } from "@kronos-ts/modelling"
@@ -48,17 +45,23 @@ import { createStateManager, type StateManager, type StateModule } from "@kronos
 // property access, or (b) a function call you write yourself and can read.
 // ---------------------------------------------------------------------------
 
-/** Everything an app needs. A record, not a key space — no string lookups. */
+/**
+ * Everything an app needs. A record, not a key space — no string lookups.
+ *
+ * Deliberately NOT here: `serializer` and `transactionManager`. Their only real
+ * consumers are event stores, snapshot stores and transports — i.e. backends —
+ * so a backend takes them directly (`postgres({ serializer, tagResolver })`).
+ * Keeping them on Components too gave two sources of truth for one value, with
+ * the app-level copy silently ignored.
+ */
 export interface Components {
   eventStore: EventStore
   snapshotStore: SnapshotStore
   commandBus: CommandBus
   queryBus: QueryBus
-  serializer: Serializer
   unitOfWorkFactory: UoWRunner
   tagResolver: TagResolver
   tokenStore: TokenStore
-  transactionManager: TransactionManager
 }
 
 /**
@@ -80,11 +83,9 @@ function resolveComponents(supplied: Partial<Components>): Components {
     // Built LAST of the bus-adjacent components, so it sees the final UoW factory.
     commandBus: supplied.commandBus ?? defaultCommandBus(unitOfWorkFactory),
     queryBus: supplied.queryBus ?? createSimpleQueryBus(),
-    serializer: supplied.serializer ?? jsonSerializer(),
     unitOfWorkFactory,
     tagResolver: supplied.tagResolver ?? descriptorBasedTagResolver(),
     tokenStore: supplied.tokenStore ?? createInMemoryTokenStore(),
-    transactionManager: supplied.transactionManager ?? noTransactionManager(),
   }
 }
 
@@ -94,22 +95,7 @@ function resolveComponents(supplied: Partial<Components>): Components {
  * for why spreading a complete record under a backend is a trap.
  */
 export function inMemoryComponents(overrides: Partial<Components> = {}): Components {
-  const unitOfWorkFactory = overrides.unitOfWorkFactory ?? runInNewUoW
-  return {
-    eventStore: createInMemoryEventStore(),
-    snapshotStore: createInMemorySnapshotStore(),
-    // Wrapped so correlation/causation lineage is applied to outgoing commands.
-    // The container did this via a framework default decorator; here it is an
-    // ordinary wrap, but it still has to HAPPEN or lineage silently vanishes.
-    commandBus: defaultCommandBus(unitOfWorkFactory),
-    queryBus: createSimpleQueryBus(),
-    serializer: jsonSerializer(),
-    unitOfWorkFactory,
-    tagResolver: descriptorBasedTagResolver(),
-    tokenStore: createInMemoryTokenStore(),
-    transactionManager: noTransactionManager(),
-    ...overrides,
-  }
+  return resolveComponents(overrides)
 }
 
 /**
@@ -224,23 +210,22 @@ export interface App {
    * (Axon Server, KronosDB) need these to honour pause/start/split/merge and to
    * report segment status — a descriptor alone makes those instructions no-ops.
    */
-  readonly processors: ReadonlyMap<string, unknown>
+  readonly processors: ReadonlyMap<string, EventProcessor>
   stop(): Promise<void>
 }
 
 /** The config shim the command/query invocation path reads at dispatch. */
 function shimFor(components: Components, eventStore: EventStore, stateManager: StateManager) {
+  // EXACTLY the keys createCommandInvocation / registerQueryHandlersNatively
+  // read. The container's shim mirrored every slot "for parity"; those extra
+  // entries were never read, and carrying them made Components look like it
+  // owned things it does not.
   const map: Record<string, unknown> = {
     stateManager,
     eventStore,
     commandBus: components.commandBus,
     queryBus: components.queryBus,
-    snapshotStore: components.snapshotStore,
-    serializer: components.serializer,
-    unitOfWorkFactory: components.unitOfWorkFactory,
     tagResolver: components.tagResolver,
-    tokenStore: components.tokenStore,
-    transactionManager: components.transactionManager,
   }
   return {
     hasComponent: (type: string) => type in map,
@@ -266,7 +251,7 @@ export function createApp(opts: {
   const stateManagers = new Map<string, StateManager>()
   const started: Array<{ start(): void; stop(): void }> = []
   const built: Array<{ start(): void; stop(): void }> = []
-  const processorsByName = new Map<string, unknown>()
+  const processorsByName = new Map<string, EventProcessor>()
 
   for (const module of opts.modules) {
     // The module's component record: the app's, with its overrides on top. One
@@ -375,7 +360,7 @@ export function createApp(opts: {
   // need a consumer-first topological order precisely because each instance
   // starts replaying the moment it boots.
   for (const processor of built) {
-    processorsByName.set((processor as { name?: string }).name ?? "", processor)
+    processorsByName.set((processor as unknown as EventProcessor).name, processor as unknown as EventProcessor)
     processor.start()
     started.push(processor)
   }

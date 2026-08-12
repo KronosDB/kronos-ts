@@ -22,10 +22,15 @@ export {
   type AxonServerConfig,
   type AxonServerBackend,
   type AxonServerComponents,
-  type ManagedEventProcessor,
   type FlowControlConfig,
   type ProcessingInstructions,
 } from "./axon-server.js"
+
+export {
+  axonServerControlPlane,
+  type AxonServerControlPlane,
+  type ManagedEventProcessor,
+} from "./control-plane.js"
 
 export {
   type MessageSizeConfig,

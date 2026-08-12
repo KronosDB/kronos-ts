@@ -131,6 +131,18 @@ export function createPlatformConnection(
 
   const instructionHandlers: InstructionHandler[] = []
   const processorStatusSuppliers: ProcessorStatusSupplier[] = []
+  /**
+   * Instructions that arrived before anything registered a handler.
+   *
+   * The stream is meant to go live only after the control plane has registered
+   * (see `kronosDbControlPlane`), but the backend also starts the stream on its
+   * own for the subscription-ack barrier — `subscriptionsAcked()` has no signal
+   * without a live stream. That leaves a window in which KronosDB can push an
+   * instruction at a client that has nothing to route it to. Buffering makes the
+   * window harmless instead of merely forbidden: the first `onInstruction`
+   * registration drains this queue in arrival order.
+   */
+  const pendingInstructions: PlatformInstruction[] = []
   let isConnected = false
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
@@ -154,6 +166,11 @@ export function createPlatformConnection(
         acked = true
         const instruction = parseInstruction(message)
         if (instruction) {
+          if (instructionHandlers.length === 0) {
+            // Nothing to route to yet — hold it for the first registration
+            // rather than dropping it.
+            pendingInstructions.push(instruction)
+          }
           for (const handler of instructionHandlers) {
             try {
               await handler(instruction)
@@ -264,6 +281,9 @@ export function createPlatformConnection(
 
     stop() {
       isConnected = false
+      // A stopped stream's un-routed backlog is stale — do not replay it if a
+      // handler registers later.
+      pendingInstructions.length = 0
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer)
         heartbeatTimer = null
@@ -279,7 +299,22 @@ export function createPlatformConnection(
     },
 
     onInstruction(handler) {
+      const isFirst = instructionHandlers.length === 0
       instructionHandlers.push(handler)
+
+      // Drain anything that arrived before a handler existed, in arrival order.
+      if (isFirst && pendingInstructions.length > 0) {
+        const backlog = pendingInstructions.splice(0, pendingInstructions.length)
+        void (async () => {
+          for (const instruction of backlog) {
+            try {
+              await handler(instruction)
+            } catch (err) {
+              console.error("Platform instruction handler error:", err)
+            }
+          }
+        })()
+      }
     },
 
     registerProcessorStatusSupplier(supplier) {

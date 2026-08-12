@@ -20,6 +20,7 @@ import type { Server } from "node:http"
 import { z } from "zod"
 import { qn, tag } from "@kronos-ts/common"
 import {
+  jsonSerializer,
   command,
   event,
   query,
@@ -34,7 +35,8 @@ import {
   type EventStore,
 } from "@kronos-ts/eventsourcing"
 import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
-import { axonServer, type AxonServerBackend } from "@kronos-ts/axon-server"
+import {
+  axonServerControlPlane, axonServer, type AxonServerBackend } from "@kronos-ts/axon-server"
 
 // ============================================================================
 // Domain
@@ -199,7 +201,8 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 // Wired against the Axon Server BACKEND FACTORY:
 //   const axon = await axonServer({ ..., serializer, unitOfWorkFactory })
 //   createApp({ components: { ...inMemoryComponents(), ...axon.components }, modules })
-//   await axon.start(processors)   // platform stream + subscription-ack wait
+//   await axon.start()                                              // data-path readiness
+//   await axonServerControlPlane(axon.platform, [processor])        // opt-in remote admin
 // axonServer() provides eventStore / snapshotStore / commandBus / queryBus as
 // ordinary values; connect + resilience happen inside the awaited factory, and
 // the platform stream comes up in start() once handlers are subscribed.
@@ -212,6 +215,7 @@ describe("E2E: Axon Server full stack", () => {
   let container: StartedTestContainer
   let app: App
   let backend: AxonServerBackend
+  let control: Awaited<ReturnType<typeof axonServerControlPlane>>
   let httpServer: Server
   let baseUrl: string
   let axonHost: string
@@ -249,7 +253,7 @@ describe("E2E: Axon Server full stack", () => {
       host,
       port: grpcPort,
       context: "default",
-      serializer: base.serializer,
+      serializer: jsonSerializer(),
       unitOfWorkFactory: base.unitOfWorkFactory,
     })
 
@@ -267,7 +271,8 @@ describe("E2E: Axon Server full stack", () => {
     })
 
     // Platform stream + subscription-ack wait, AFTER handlers are subscribed.
-    await backend.start([courseProjection])
+    await backend.start()
+    control = await axonServerControlPlane(backend.platform, [courseProjection])
 
     // HTTP layer: plain Express, wired after createApp() against the App.
     const expressApp: Express = express()
@@ -284,6 +289,7 @@ describe("E2E: Axon Server full stack", () => {
   }, 120_000)
 
   afterAll(async () => {
+    await control?.close()
     await new Promise<void>((resolve) => {
       if (!httpServer) return resolve()
       httpServer.close(() => resolve())
@@ -449,7 +455,7 @@ describe("E2E: Axon Server full stack", () => {
       host: axonHost,
       port: axonGrpcPort,
       context: "default",
-      serializer: autoBase.serializer,
+      serializer: jsonSerializer(),
       unitOfWorkFactory: autoBase.unitOfWorkFactory,
     })
     const autoEventStore: EventStore = autoBackend.components.eventStore
@@ -464,7 +470,8 @@ describe("E2E: Axon Server full stack", () => {
         ),
       ],
     })
-    await autoBackend.start([automation])
+    await autoBackend.start()
+    const autoControl = await axonServerControlPlane(autoBackend.platform, [automation])
     await new Promise(r => setTimeout(r, 2000))
 
     try {
@@ -488,6 +495,7 @@ describe("E2E: Axon Server full stack", () => {
       ])
     } finally {
       await autoApp.stop()
+      await autoControl.close()
       await autoBackend.close()
       // This app registered the SAME command names as the shared app on the
       // same context. Axon Server drops a closed client's registrations

@@ -13,6 +13,7 @@ import { GenericContainer, Wait, type StartedTestContainer } from "testcontainer
 import { z } from "zod"
 import { qn, tag } from "@kronos-ts/common"
 import {
+  jsonSerializer,
   command,
   event,
   query,
@@ -202,9 +203,8 @@ describe("E2E: KronosDB full stack", () => {
       host: kronosHost,
       port: kronosPort,
       context: "default",
-      serializer: base.serializer,
+      serializer: jsonSerializer(),
       unitOfWorkFactory: base.unitOfWorkFactory,
-      processors: [courseProjection],
     })
 
     app = createApp({
@@ -350,9 +350,8 @@ describe("E2E: KronosDB full stack", () => {
       host: kronosHost,
       port: kronosPort,
       context: "default",
-      serializer: autoBase.serializer,
+      serializer: jsonSerializer(),
       unitOfWorkFactory: autoBase.unitOfWorkFactory,
-      processors: [automation],
     })
     const autoEventStore: EventStore = autoBackend.components.eventStore
     const autoApp = createApp({

@@ -38,6 +38,7 @@ import {
 } from "@kronos-ts/eventsourcing"
 import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
 import { axonServer, type AxonServerBackend } from "../axon-server.js"
+import { axonServerControlPlane, type ManagedEventProcessor } from "../control-plane.js"
 import {
   connectToAxonServer,
   type AxonServerConnection,
@@ -166,6 +167,10 @@ describe("Axon Server integration — axonServer() backend", () => {
     })
 
     // Handlers are subscribed by now — wait until the server can route to them.
+    // NOTE: this is the DATA-PATH readiness barrier only. No platform (control)
+    // stream is started anywhere in this suite — every command/query/event test
+    // below runs with `axon.platform.connected === false`, which is what proves
+    // remote administration is genuinely orthogonal to the data path.
     await axon.start()
   }, 120_000)
 
@@ -270,6 +275,23 @@ describe("Axon Server integration — axonServer() backend", () => {
         studentId: "student-X",
       }),
     ).rejects.toThrow()
+  }, 60_000)
+
+  it("start() leaves the platform stream down; the control plane brings it up", async () => {
+    // The whole point of the extraction: a service that is not remotely
+    // administered never opens the control stream, yet everything above worked.
+    expect(axon.platform.connected).toBe(false)
+
+    const proc: ManagedEventProcessor = { name: "course-projection", running: true, position: 3n }
+    const control = await axonServerControlPlane(axon.platform, [proc])
+    try {
+      expect(axon.platform.connected).toBe(true)
+      expect(await axon.platform.subscriptionsAcked()).toBe(true)
+      expect(control.processors.get("course-projection")).toBe(proc)
+    } finally {
+      await control.close()
+    }
+    expect(axon.platform.connected).toBe(false)
   }, 60_000)
 
   it("snapshot store roundtrip via createAxonServerSnapshotStore", async () => {

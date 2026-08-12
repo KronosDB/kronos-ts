@@ -14,7 +14,6 @@
  *   componentName: "university-service",
  *   serializer,
  *   unitOfWorkFactory,
- *   processors,                       // for platform control-plane routing
  * })
  * const app = createApp({
  *   components: { ...inMemoryComponents(), ...kdb.components },
@@ -25,12 +24,20 @@
  * await app.stop(); await kdb.close()
  * ```
  *
+ * Remote administration — KronosDB pushing pause / start / split / merge at this
+ * client's processors, and this client reporting their status back for the admin
+ * UI — is NOT part of the backend. It is opt-in, in `./control-plane.js`:
+ *
+ * ```ts
+ * const control = kronosDbControlPlane(kdb.platform, app.processors)
+ * ```
+ *
  * Because the connection exists before any component is built, the stores and
  * buses are constructed against a live channel — the lazy proxies and the
  * subscribe()-buffering wrappers the container era needed are gone.
  */
 import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer, withRetry, healthCheck, type ResilienceConfig } from "@kronos-ts/common"
-import type { CommandBus, CommandMessage, EventProcessorModule, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
+import type { CommandBus, CommandMessage, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
 import { applySubscriptionFilter, createUpdateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
 import type { KronosDbConnectionConfig } from "./connection.js"
 import { connectToKronosDb, createKronosMetadata, type KronosDbConnection } from "./connection.js"
@@ -93,9 +100,9 @@ export interface KronosDbConfig extends KronosDbConnectionConfig {
    * Set to false to use KronosDB purely as an event/snapshot store and bring
    * your own messaging transport. With `messaging: false` the returned
    * `components` carry only eventStore/snapshotStore, so spreading them over
-   * your defaults leaves the local buses in place. The platform control plane
-   * (processor pause/start/split/merge, status reporting) stays active in
-   * both modes — it belongs to event processing, not command/query routing.
+   * your defaults leaves the local buses in place. The platform stream is
+   * unaffected either way — it is neither persistence nor command/query routing,
+   * and remote administration on top of it is opt-in via `kronosDbControlPlane`.
    */
   messaging?: boolean
   commandFlowControl?: FlowControlConfig
@@ -127,37 +134,26 @@ export interface KronosDbComponents {
 }
 
 /** A connected KronosDB backend. See {@link kronosDb}. */
-/**
- * The subset of a live processor the control plane drives. Structurally
- * satisfied by TrackingEventProcessor / StreamingEventProcessor; everything past
- * `name` is optional so an instruction is skipped rather than crashing when a
- * processor kind does not implement it.
- */
-export interface ManagedEventProcessor {
-  readonly name: string
-  start?(): Promise<void> | void
-  stop?(): void
-  releaseSegment?(segmentId: number): Promise<void> | void
-  splitSegment?(segmentId: number): Promise<void> | void
-  mergeSegment?(segmentId: number): Promise<void> | void
-  supportsReset?(): boolean
-  processingStatus?(): Map<number, unknown>
-  readonly running?: boolean
-}
-
 export interface KronosDbBackend {
   readonly components: KronosDbComponents
   /** The live connection, for callers that need the raw client. */
   readonly connection: KronosDbConnection
-  /** The platform control plane (processor instructions, status reporting). */
+  /**
+   * The platform stream. Persistence and transport do not use it; it is public
+   * so the optional control plane can be handed it:
+   * `kronosDbControlPlane(kdb.platform, app.processors)`.
+   */
   readonly platform: PlatformConnection
   /**
    * Wait until KronosDB has acknowledged this client's registration, i.e. until
    * handler subscriptions are routable. Call AFTER every handler is subscribed
    * (after `createApp`). This is the D-102 replacement for the legacy
    * 1-second sleep — it waits exactly long enough, no longer.
+   *
+   * This is the readiness barrier and nothing else. Remote administration is
+   * `kronosDbControlPlane`, which is opt-in and takes no part in startup.
    */
-  start(processors?: ReadonlyArray<ManagedEventProcessor>): Promise<void>
+  start(): Promise<void>
   /** Drain in-flight bus work, stop the platform stream, close the connection. */
   close(): Promise<void>
 }
@@ -170,13 +166,6 @@ export interface KronosDbDependencies {
   serializer: Serializer
   /** The same UoW runner the app runs on — inbound commands/queries run inside it. */
   unitOfWorkFactory: UoWRunner
-  /**
-   * Processors the platform control plane may address (pause / start / release /
-   * split / merge) and report status for. These used to be read back out of the
-   * container via `app.processors()`; now you pass the same list you hand to
-   * your modules. Omit it and the control plane simply has nothing to route to.
-   */
-  processors?: ReadonlyArray<EventProcessorModule>
 }
 
 /**
@@ -190,7 +179,7 @@ export interface KronosDbDependencies {
  * ```ts
  * const kdb = await kronosDb({
  *   componentName: "university-service",
- *   serializer, unitOfWorkFactory, processors,
+ *   serializer, unitOfWorkFactory,
  * })
  * const app = createApp({
  *   components: { ...inMemoryComponents(), ...kdb.components },
@@ -271,79 +260,15 @@ export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBacken
     components,
     connection,
     platform,
-    async start(processors: ReadonlyArray<ManagedEventProcessor> = []) {
-      // The control plane needs LIVE processors, which only exist after
-      // createApp has built them — so this cannot be wired in the factory.
-      // Pass `app.processors.values()`.
-      const processorMap = new Map<string, ManagedEventProcessor>()
-      for (const proc of processors) processorMap.set(proc.name, proc)
-
-      platform.onInstruction(async (instruction) => {
-        switch (instruction.kind) {
-          case "pause-processor": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.stop) proc.stop()
-            break
-          }
-          case "start-processor": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.start) await proc.start()
-            break
-          }
-          case "release-segment": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.releaseSegment) await proc.releaseSegment(instruction.segmentId)
-            break
-          }
-          case "split-segment": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.splitSegment) await proc.splitSegment(instruction.segmentId)
-            break
-          }
-          case "merge-segment": {
-            const proc = processorMap.get(instruction.processorName) as any
-            if (proc?.mergeSegment) await proc.mergeSegment(instruction.segmentId)
-            break
-          }
-        }
-      })
-
-      platform.registerProcessorStatusSupplier(() => {
-        return processors.map((proc: any) => ({
-          name: proc.name,
-          running: proc.running ?? false,
-          mode: proc.supportsReset?.() === false ? "Subscribing" : "Tracking",
-          isStreamingProcessor: proc.supportsReset?.() !== false,
-          activeThreads: proc.running ? 1 : 0,
-          availableThreads: 0,
-          error: false,
-          tokenStoreIdentifier: "",
-          segments: proc.processingStatus
-            ? Array.from(proc.processingStatus().entries() as Iterable<[number, any]>).map(
-                ([segId, status]: [number, any]) => ({
-                  segmentId: segId,
-                  caughtUp: status.caughtUp ?? false,
-                  replaying: status.replaying ?? false,
-                  onePartOf: 1,
-                  tokenPosition: status.position ?? 0n,
-                  errorState: status.error?.message ?? "",
-                }),
-              )
-            : [
-                {
-                  segmentId: 0,
-                  caughtUp: true,
-                  replaying: proc.replaying ?? false,
-                  onePartOf: 1,
-                  tokenPosition: proc.position ?? 0n,
-                  errorState: "",
-                },
-              ],
-        }))
-      })
-      // Stream goes live only AFTER the instruction handler and status supplier
-      // are registered, or an instruction arriving in between is dropped and an
-      // early status request finds no supplier.
+    async start() {
+      // The readiness barrier needs a LIVE platform stream: the ack signal is
+      // the first server-originated frame on it, so `subscriptionsAcked()` is
+      // `false` until the stream is open. `platform.start()` is idempotent — if
+      // a control plane was created first (the recommended order) it already
+      // brought the stream live AFTER registering its handlers, and this is a
+      // no-op. Without a control plane the backend still needs the stream, so it
+      // starts it here. Instructions that land before a control plane registers
+      // are buffered by the platform connection, not dropped.
       await platform.start()
 
       await withRetry(
