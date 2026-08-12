@@ -1,6 +1,8 @@
 import { describe, expect, it, afterEach } from "bun:test"
 import { z } from "zod"
-import { qn, tag } from "@kronos-ts/common"
+import { emptyMetadata, qn, tag } from "@kronos-ts/common"
+import { createInMemoryEventStore } from "@kronos-ts/eventsourcing"
+import { inMemoryComponents, module } from "@kronos-ts/app"
 import {
   command,
   event,
@@ -8,7 +10,7 @@ import {
   EventCriteria,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { createTestFixture, type TestFixture, FixtureAssertionError } from "../fixture.js"
+import { createTestFixture, type TestFixture } from "../fixture.js"
 
 // ============================================================================
 // Domain — same as the real integration tests
@@ -75,10 +77,7 @@ describe("Test Fixture", () => {
   })
 
   it("creates a course and verifies the event", async () => {
-    fixture = await createTestFixture((app) => {
-      app.states(Course)
-      app.commands(createCourse, subscribeStudent)
-    })
+    fixture = createTestFixture(Course, createCourse, subscribeStudent)
 
     await fixture
       .given()
@@ -93,10 +92,7 @@ describe("Test Fixture", () => {
   })
 
   it("rejects duplicate course creation", async () => {
-    fixture = await createTestFixture((app) => {
-      app.states(Course)
-      app.commands(createCourse, subscribeStudent)
-    })
+    fixture = createTestFixture(Course, createCourse, subscribeStudent)
 
     await fixture
       .given()
@@ -109,10 +105,7 @@ describe("Test Fixture", () => {
   })
 
   it("subscribes a student to a course", async () => {
-    fixture = await createTestFixture((app) => {
-      app.states(Course)
-      app.commands(createCourse, subscribeStudent)
-    })
+    fixture = createTestFixture(Course, createCourse, subscribeStudent)
 
     await fixture
       .given()
@@ -127,10 +120,7 @@ describe("Test Fixture", () => {
   })
 
   it("rejects subscription when course is full", async () => {
-    fixture = await createTestFixture((app) => {
-      app.states(Course)
-      app.commands(createCourse, subscribeStudent)
-    })
+    fixture = createTestFixture(Course, createCourse, subscribeStudent)
 
     await fixture
       .given()
@@ -146,10 +136,7 @@ describe("Test Fixture", () => {
   })
 
   it("supports given with commands", async () => {
-    fixture = await createTestFixture((app) => {
-      app.states(Course)
-      app.commands(createCourse, subscribeStudent)
-    })
+    fixture = createTestFixture(Course, createCourse, subscribeStudent)
 
     await fixture
       .given()
@@ -164,10 +151,7 @@ describe("Test Fixture", () => {
   })
 
   it("supports chained scenarios with and()", async () => {
-    fixture = await createTestFixture((app) => {
-      app.states(Course)
-      app.commands(createCourse, subscribeStudent)
-    })
+    fixture = createTestFixture(Course, createCourse, subscribeStudent)
 
     // First scenario: create a course
     await fixture
@@ -190,10 +174,7 @@ describe("Test Fixture", () => {
   })
 
   it("provides custom event assertion via expectEventsSatisfying", async () => {
-    fixture = await createTestFixture((app) => {
-      app.states(Course)
-      app.commands(createCourse)
-    })
+    fixture = createTestFixture(Course, createCourse)
 
     await fixture
       .given()
@@ -205,5 +186,47 @@ describe("Test Fixture", () => {
           expect(events).toHaveLength(1)
           expect((events[0]!.payload as any).courseId).toBe("cs-101")
         })
+  })
+
+  it("accepts whole modules, with their own event store", async () => {
+    fixture = createTestFixture(
+      module("university", { eventStore: createInMemoryEventStore() }, Course, createCourse),
+    )
+
+    await fixture
+      .given()
+        .noPriorActivity()
+      .when()
+        .command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 })
+      .then()
+        .expectSuccess()
+        .expectEvents([CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }])
+  })
+
+  it("accepts the explicit options form", async () => {
+    fixture = createTestFixture({
+      components: inMemoryComponents(),
+      modules: [module("university", Course, createCourse, subscribeStudent)],
+    })
+
+    await fixture
+      .given()
+        .commands([CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 }])
+      .when()
+        .command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" })
+      .then()
+        .expectSuccess()
+        .expectEvents([StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" }])
+  })
+
+  it("exposes the app for direct gateway access", async () => {
+    fixture = createTestFixture(Course, createCourse)
+
+    await fixture.app.commandGateway.send(
+      CreateCourse,
+      { courseId: "cs-999", name: "Direct", capacity: 5 },
+      emptyMetadata(),
+    )
+    expect(fixture.recordings.events()).toHaveLength(1)
   })
 })

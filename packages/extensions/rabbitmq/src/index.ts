@@ -1,7 +1,10 @@
 export {
   rabbitMq,
   resolveRabbitMqConfig,
-  type RabbitMqExtensionConfig,
+  type RabbitMqConfig,
+  type RabbitMqOptions,
+  type RabbitMqBackend,
+  type RabbitMqComponents,
   type RabbitMqCommandDispatchConfig,
   type RabbitMqQueryDispatchConfig,
   type RabbitMqRetryConfig,
@@ -10,6 +13,7 @@ export {
 
 export {
   createRabbitMqTopologyNames,
+  type RabbitMqIdentity,
   type RabbitMqTopologyConfig,
   type RabbitMqTopologyNames,
 } from "./topology.js"

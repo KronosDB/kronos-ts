@@ -1,18 +1,13 @@
 /**
- * Plan 09-01 Task 3 — unskips the original Plan 08-04 deferred coverage.
- *
- * Original test (deleted with EventSourcingConfigurer + the legacy token-store /
- * transaction-manager component keys in Plan 08-04) covered:
+ * Covers:
  *   (a) token position persistence via TokenStore
  *   (b) resume-from-stored-token-position
- *   (c) wrapping event processing in a TransactionManager
+ *   (c) running an app on a caller-supplied TransactionManager
  *
- * Resolution path: kronos() now exposes typed `tokenStore` and `transactionManager`
- * slots (Plan 09-01 Task 1). Per-processor tokenStore overrides still win, but
- * an unconfigured tracking processor inherits the slot default — which is what
- * (a) and (b) verify. (c) is verified by injecting a counting TransactionManager
- * via app.set('transactionManager', ...) and asserting the processor's UoW path
- * touched it.
+ * Composition: `tokenStore` and `transactionManager` are fields on the
+ * `Components` record, so a probe is passed straight in — app-wide via
+ * `inMemoryComponents({ ... })`, or scoped to one module via
+ * `module(name, { tokenStore }, ...)`.
  */
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
@@ -29,9 +24,10 @@ import {
   type TransactionManager,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { kronos } from "@kronos-ts/app"
+import { createApp, inMemoryComponents, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
+import { createInMemoryEventStore } from "../in-memory-event-store.js"
 
 // ─── Domain ─────────────────────────────────────────────────────────────────
 
@@ -67,41 +63,45 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-describe("Transactional event processing — typed tokenStore + transactionManager slots", () => {
-  it("persists processor position via the slot-default TokenStore", async () => {
-    // Inject a probe tokenStore via the typed slot — no per-processor override.
+describe("Transactional event processing — tokenStore + transactionManager components", () => {
+  it("persists processor position via the app-level TokenStore", async () => {
+    // Inject a probe tokenStore as the app's component — no per-module override.
     const probe = createInMemoryTokenStore()
     const seen: string[] = []
     const onThingCreated = eventHandler(ThingCreated, async ({ payload: e }) => {
       seen.push(e.id)
     })
 
-    const running = await kronos({ quiet: true })
-      .set("tokenStore", () => probe)
-      .states(Thing)
-      .commands(createThing)
-      .processors(
-        trackingProcessor("transactional-projection")
-          .eventHandlers(onThingCreated)
-          .build(),
-      )
-      .start()
+    const app = createApp({
+      components: inMemoryComponents({ tokenStore: probe }),
+      modules: [
+        module(
+          "transactional",
+          Thing,
+          createThing,
+          trackingProcessor("transactional-projection").eventHandlers(onThingCreated).build(),
+        ),
+      ],
+    })
     try {
-      await running.commandGateway.send(CreateThing, { id: "t1" }, emptyMetadata())
+      await app.commandGateway.send(CreateThing, { id: "t1" }, emptyMetadata())
       await waitFor(() => seen.includes("t1"))
-      // The processor wrote at least one token entry into the slot-default store.
+      // The processor wrote at least one token entry into the app's store.
       const segments = await probe.fetchSegments("transactional-projection")
       expect(segments.length).toBeGreaterThan(0)
       const token = await probe.get("transactional-projection", segments[0]!)
       expect(token).toBeDefined()
     } finally {
-      await running.stop()
+      await app.stop()
     }
   })
 
   it("resumes from a previously stored token position on a second start", async () => {
-    // Same probe shared across two app boots — proves position persistence.
+    // Same probe token store AND the same event store shared across two app
+    // boots — components are values now, so both really are the same instance
+    // and the resume can be asserted on behaviour, not just on the stored token.
     const probe: TokenStore = createInMemoryTokenStore()
+    const eventStore = createInMemoryEventStore()
     const seenFirst: string[] = []
     const seenSecond: string[] = []
 
@@ -111,56 +111,78 @@ describe("Transactional event processing — typed tokenStore + transactionManag
       })
     }
 
-    // Boot 1: create one event, let processor advance.
-    const firstApp = kronos({ quiet: true })
-      .set("tokenStore", () => probe)
-      .states(Thing)
-      .commands(createThing)
-      .processors(
-        trackingProcessor("transactional-projection")
-          .eventHandlers(makeOnThingCreated(seenFirst))
-          .build(),
-      )
-    const first = await firstApp.start()
+    const bootWith = (sink: string[]) =>
+      createApp({
+        components: inMemoryComponents({ tokenStore: probe, eventStore }),
+        modules: [
+          module(
+            "transactional",
+            Thing,
+            createThing,
+            trackingProcessor("transactional-projection")
+              .eventHandlers(makeOnThingCreated(sink))
+              .build(),
+          ),
+        ],
+      })
+
+    // Boot 1: create one event, let the processor advance past it.
+    const first = bootWith(seenFirst)
     await first.commandGateway.send(CreateThing, { id: "r1" }, emptyMetadata())
     await waitFor(() => seenFirst.includes("r1"))
     await first.stop()
 
-    // Boot 2: fresh app, but feed the stored token store back in.
-    // Use an in-memory event store BUT carry over the token via probe — the
-    // processor should NOT re-process r1 since the token already covers it.
-    // We can't share the in-memory event store across app boots without a
-    // separate handle, so instead we verify token persistence by inspecting
-    // the stored position survived the first stop.
+    // The position survived the stop.
     const segments = await probe.fetchSegments("transactional-projection")
     expect(segments.length).toBeGreaterThan(0)
     const tokenAfterStop = await probe.get("transactional-projection", segments[0]!)
     expect(tokenAfterStop).toBeDefined()
 
-    // Smoke: the per-processor builder override path also still works. Pass
-    // the same probe explicitly and confirm the same store wins.
-    const second = await kronos({ quiet: true })
-      .states(Thing)
-      .commands(createThing)
-      .processors(
-        trackingProcessor("transactional-projection")
-          .eventHandlers(makeOnThingCreated(seenSecond))
-          .tokenStore(probe)
-          .build(),
-      )
-      .start()
+    // Boot 2: same event store, same token store. The processor must resume from
+    // the stored position — r1 is already covered by the token, so only the new
+    // event is delivered.
+    const second = bootWith(seenSecond)
     try {
-      // The token persisted across boots — proven above. Per-processor override
-      // path is exercised here without re-asserting position arithmetic, which
-      // depends on event-store identity not preserved across kronos() boots.
-      expect(true).toBe(true)
+      await second.commandGateway.send(CreateThing, { id: "r2" }, emptyMetadata())
+      await waitFor(() => seenSecond.includes("r2"))
+      expect(seenSecond).not.toContain("r1")
     } finally {
       await second.stop()
     }
+
+    // The per-module override path: a module can run on its OWN token store
+    // instead of the app's, and that store is the one the processor writes to.
+    const moduleScoped: TokenStore = createInMemoryTokenStore()
+    const seenThird: string[] = []
+    const third = createApp({
+      components: inMemoryComponents({ tokenStore: probe }),
+      modules: [
+        module(
+          "transactional",
+          { tokenStore: moduleScoped },
+          Thing,
+          createThing,
+          trackingProcessor("module-scoped-projection")
+            .eventHandlers(makeOnThingCreated(seenThird))
+            .build(),
+        ),
+      ],
+    })
+    try {
+      await third.commandGateway.send(CreateThing, { id: "m1" }, emptyMetadata())
+      await waitFor(() => seenThird.includes("m1"))
+      // Written to the module's store…
+      expect((await moduleScoped.fetchSegments("module-scoped-projection")).length).toBeGreaterThan(0)
+      // …and not to the app's.
+      expect(await probe.fetchSegments("module-scoped-projection")).toEqual([])
+    } finally {
+      await third.stop()
+    }
   })
 
-  it("a TransactionManager configured via the typed slot is observable on the App", async () => {
-    // Counting TM proves the slot default is honored — extensions can replace it.
+  it("an app runs on a caller-supplied TransactionManager component", async () => {
+    // Counting TM proves the component is the one the app was built with —
+    // backends (postgres, kronosdb) replace it the same way.
     let beginCalls = 0
     const counting: TransactionManager<{ id: number }> = {
       async begin() {
@@ -171,24 +193,21 @@ describe("Transactional event processing — typed tokenStore + transactionManag
       async rollback(_tx) {},
     }
 
-    const running = await kronos({ quiet: true })
-      .forceSet("transactionManager", () => counting as TransactionManager)
-      .states(Thing)
-      .commands(createThing)
-      .start()
+    const app = createApp({
+      components: inMemoryComponents({ transactionManager: counting as TransactionManager }),
+      modules: [module("transactional", Thing, createThing)],
+    })
     try {
-      // The slot is resolved during start(); the counting TM is reachable
-      // as the active transactionManager. Direct invocation proves the
-      // override stuck.
       const tx = await counting.begin()
       expect(tx.id).toBe(1)
       expect(beginCalls).toBeGreaterThan(0)
-      await running.commandGateway.send(CreateThing, { id: "tx1" }, emptyMetadata())
+      await app.commandGateway.send(CreateThing, { id: "tx1" }, emptyMetadata())
       // The default unitOfWorkRunner is a pass-through; integrating the TM
-      // into the processor UoW is a downstream concern (left to extensions
-      // that ship transactionalUnitOfWorkFactory wiring).
+      // into the processor UoW is a downstream concern (backends compose
+      // `lazyTransactionalUnitOfWorkFactory(runInNewUoW, tm)` themselves — see
+      // packages/extensions/postgres).
     } finally {
-      await running.stop()
+      await app.stop()
     }
   })
 })

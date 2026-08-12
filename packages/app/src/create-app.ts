@@ -18,6 +18,12 @@ import {
   createSimpleCommandBus,
   createSimpleQueryBus,
   createTrackingEventProcessor,
+  createSubscribingEventProcessor,
+  createInterceptingCommandBus,
+  correlationDataDispatchInterceptor,
+  messageOriginProvider,
+  type CorrelationDataProvider,
+  type HandlerEnhancerDefinition,
   jsonSerializer,
   type EventProcessorModule,
   noTransactionManager,
@@ -61,7 +67,10 @@ export function inMemoryComponents(overrides: Partial<Components> = {}): Compone
   return {
     eventStore: createInMemoryEventStore(),
     snapshotStore: createInMemorySnapshotStore(),
-    commandBus: createSimpleCommandBus(unitOfWorkFactory),
+    // Wrapped so correlation/causation lineage is applied to outgoing commands.
+    // The container did this via a framework default decorator; here it is an
+    // ordinary wrap, but it still has to HAPPEN or lineage silently vanishes.
+    commandBus: defaultCommandBus(unitOfWorkFactory),
     queryBus: createSimpleQueryBus(),
     serializer: jsonSerializer(),
     unitOfWorkFactory,
@@ -82,6 +91,13 @@ export type Registration =
   | CommandHandlerDefinition<any, any>
   | QueryHandlerDefinition
   | EventProcessorModule
+
+/** The in-memory command bus with correlation lineage applied, as the container had. */
+function defaultCommandBus(unitOfWorkFactory: UoWRunner): CommandBus {
+  const bus = createInterceptingCommandBus(createSimpleCommandBus(unitOfWorkFactory))
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
+}
 
 /**
  * A module: a name, optionally its OWN persistence, and a flat list of what it
@@ -199,8 +215,17 @@ function shimFor(components: Components, eventStore: EventStore, stateManager: S
   }
 }
 
-export function createApp(opts: { components?: Components; modules: ReadonlyArray<AppModule> }): App {
+export function createApp(opts: {
+  components?: Components
+  modules: ReadonlyArray<AppModule>
+  /** Cross-cutting handler wrapper (tracing, metrics). Applied to commands, queries and processors. */
+  handlerEnhancer?: HandlerEnhancerDefinition
+  /** Seeds correlation data on each processed event. Defaults to messageOriginProvider(). */
+  correlationDataProviders?: ReadonlyArray<CorrelationDataProvider>
+}): App {
   const components = opts.components ?? inMemoryComponents()
+  const handlerEnhancer = opts.handlerEnhancer
+  const correlationDataProviders = opts.correlationDataProviders ?? [messageOriginProvider()]
   const stateManagers = new Map<string, StateManager>()
   const started: Array<{ start(): void; stop(): void }> = []
   const built: Array<{ start(): void; stop(): void }> = []
@@ -228,15 +253,40 @@ export function createApp(opts: { components?: Components; modules: ReadonlyArra
       commandBus: c.commandBus,
       config,
       moduleName: module.name,
+      ...(handlerEnhancer ? { handlerEnhancer } : {}),
     })
     registerQueryHandlersNatively(queries, {
       queryBus: c.queryBus,
       moduleName: module.name,
       config,
+      ...(handlerEnhancer ? { handlerEnhancer } : {}),
     })
 
     // Processors are BUILT here but not started — see the two-phase note below.
     for (const proc of processors) {
+      if (proc.kind === "subscribing") {
+        const subscribable = c.eventStore as unknown as { subscribe?: unknown }
+        if (!subscribable.subscribe) {
+          throw new Error(
+            `Event source does not support subscription. Cannot create subscribing processor "${proc.name}".`,
+          )
+        }
+        built.push(
+          createSubscribingEventProcessor({
+            name: proc.name,
+            eventSource: c.eventStore as never,
+            eventHandlers: proc.eventHandlers,
+            stateManager,
+            commandBus: c.commandBus,
+            queryBus: c.queryBus,
+            correlationDataProviders,
+            unitOfWorkRunner: proc.unitOfWorkRunner ?? c.unitOfWorkFactory,
+            ...(proc.errorHandler ? { errorHandler: proc.errorHandler } : {}),
+            ...(handlerEnhancer ? { handlerEnhancer } : {}),
+          }) as never,
+        )
+        continue
+      }
       built.push(
         createTrackingEventProcessor({
           name: proc.name,
@@ -245,9 +295,36 @@ export function createApp(opts: { components?: Components; modules: ReadonlyArra
           stateManager,
           commandBus: c.commandBus,
           queryBus: c.queryBus,
-          correlationDataProviders: [],
+          correlationDataProviders,
           unitOfWorkRunner: proc.unitOfWorkRunner ?? c.unitOfWorkFactory,
-          tokenStore: c.tokenStore,
+          // Per-processor override wins over the module/app token store.
+          tokenStore: proc.tokenStore ?? c.tokenStore,
+          // Everything else the builder accepts. Dropping any of these makes
+          // `.errorHandler(...)` / `.deadLetterQueue(...)` compile and silently
+          // do nothing — which is how a projection's propagate-never-skip
+          // semantics would quietly become an automation's.
+          ...(proc.batchSize !== undefined ? { batchSize: proc.batchSize } : {}),
+          ...(proc.pollingIntervalMs !== undefined ? { pollingIntervalMs: proc.pollingIntervalMs } : {}),
+          ...(proc.errorHandler ? { errorHandler: proc.errorHandler } : {}),
+          ...(proc.deadLetterQueue ? { deadLetterQueue: proc.deadLetterQueue } : {}),
+          ...(proc.enqueuePolicy ? { enqueuePolicy: proc.enqueuePolicy } : {}),
+          ...(proc.sequencingPolicy ? { sequencingPolicy: proc.sequencingPolicy } : {}),
+          ...(proc.deadLetterListener ? { deadLetterListener: proc.deadLetterListener } : {}),
+          ...(proc.resetClearsDeadLetters !== undefined
+            ? { resetClearsDeadLetters: proc.resetClearsDeadLetters }
+            : {}),
+          ...(proc.dlqRetryIntervalMs !== undefined ? { dlqRetryIntervalMs: proc.dlqRetryIntervalMs } : {}),
+          ...(proc.initialSegmentCount !== undefined
+            ? { initialSegmentCount: proc.initialSegmentCount }
+            : {}),
+          ...(proc.claimExtensionThresholdMs !== undefined
+            ? { claimExtensionThresholdMs: proc.claimExtensionThresholdMs }
+            : {}),
+          ...(proc.tokenClaimIntervalMs !== undefined
+            ? { tokenClaimIntervalMs: proc.tokenClaimIntervalMs }
+            : {}),
+          ...(proc.onReset ? { onReset: proc.onReset } : {}),
+          ...(handlerEnhancer ? { handlerEnhancer } : {}),
         }),
       )
     }

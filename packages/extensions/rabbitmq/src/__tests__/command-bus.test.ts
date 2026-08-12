@@ -4,18 +4,21 @@ import { emptyMetadata, qn } from "@kronos-ts/common"
 import { command } from "@kronos-ts/messaging"
 import { createSimpleCommandBus } from "@kronos-ts/messaging"
 import { createRabbitMqCommandBus, type RabbitMqCommandEnvelope, type RabbitMqCommandTransport } from "../command-bus.js"
-import { resolveRabbitMqConfig } from "../rabbitmq.js"
+import { resolveRabbitMqConfig, type RabbitMqConfig } from "../rabbitmq.js"
+import type { RabbitMqIdentity } from "../topology.js"
 
 const DoThing = command({
   name: qn("test", "DoThing"),
   payload: z.object({ id: z.string() }),
 })
 
-function appStub(overrides: any = {}) {
-  return {
-    identity: { serviceName: "svc", instanceId: "inst" },
-    ...overrides,
-  } as any
+const DEFAULT_IDENTITY: RabbitMqIdentity = { serviceName: "svc", instanceId: "inst" }
+
+function rabbitConfig(
+  config: Omit<RabbitMqConfig, "identity">,
+  identity: RabbitMqIdentity = DEFAULT_IDENTITY,
+) {
+  return resolveRabbitMqConfig({ identity, ...config })
 }
 
 function recordingTransport() {
@@ -40,7 +43,7 @@ describe("RabbitMQ command bus", () => {
     const bus = createRabbitMqCommandBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
+      config: rabbitConfig({ url: "amqp://test" }),
     })
 
     bus.subscribe("test.DoThing", async () => "local-ok")
@@ -63,7 +66,7 @@ describe("RabbitMQ command bus", () => {
     const bus = createRabbitMqCommandBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), {
+      config: rabbitConfig({
         url: "amqp://test",
         commands: { alwaysUseDistributedBus: true },
       }),
@@ -89,7 +92,7 @@ describe("RabbitMQ command bus", () => {
     const bus = createRabbitMqCommandBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), {
+      config: rabbitConfig({
         url: "amqp://test",
         commands: { alwaysUseDistributedBus: true },
       }),
@@ -117,7 +120,7 @@ describe("RabbitMQ command bus", () => {
     const bus = createRabbitMqCommandBus({
       localSegment: local,
       transport,
-      config: resolveRabbitMqConfig(appStub(), { url: "amqp://test" }),
+      config: rabbitConfig({ url: "amqp://test" }),
     })
 
     bus.subscribe("test.DoThing", async (message) => `handled:${(message.payload as { id: string }).id}`)

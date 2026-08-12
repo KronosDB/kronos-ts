@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn } from "@kronos-ts/common"
-import { kronos } from "@kronos-ts/app"
+import { createApp, inMemoryComponents, module, type Registration } from "@kronos-ts/app"
 import {
   command,
   commandHandler,
@@ -28,32 +28,61 @@ const PublishUpdate = command({
 })
 
 describe("RabbitMQ query transport integration", () => {
-  let rabbit: RunningRabbitMq
+  let broker: RunningRabbitMq
 
   beforeAll(async () => {
-    rabbit = await startRabbitMqContainer()
+    broker = await startRabbitMqContainer()
   }, 60_000)
 
   afterAll(async () => {
-    await rabbit?.stop()
+    await broker?.stop()
   }, 30_000)
+
+  /**
+   * One process, composed by hand: in-memory components, the RabbitMQ backend
+   * wrapping their buses, then the app on top of the merged record. `start()`
+   * after `createApp` is what the "processors" lifecycle stage used to be — it
+   * waits until every handler registered above is bound and consuming.
+   */
+  async function startNode(params: {
+    serviceName: string
+    prefix: string
+    registrations?: Registration[]
+  }) {
+    const base = inMemoryComponents()
+    const backend = await rabbitMq({
+      url: broker.url,
+      identity: { serviceName: params.serviceName, instanceId: `${params.prefix}-${params.serviceName}` },
+      topology: { prefix: params.prefix },
+      localCommandBus: base.commandBus,
+      localQueryBus: base.queryBus,
+    })
+    const app = createApp({
+      components: { ...base, ...backend.components },
+      modules: [module(params.serviceName, ...(params.registrations ?? []))],
+    })
+    await backend.start()
+    return {
+      app,
+      async stop() {
+        await app.stop()
+        await backend.close()
+      },
+    }
+  }
 
   it("routes a query to a remote handler and returns its result", async () => {
     const prefix = `kronos.it.${Date.now()}.query`
 
-    const worker = await kronos({ serviceName: "worker", instanceId: `${prefix}-worker`, quiet: true })
-      .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
-      .queries(
-        queryHandler(GetGreeting, async ({ payload: q }) => `hello, ${q.name}`),
-      )
-      .start()
-
-    const caller = await kronos({ serviceName: "caller", instanceId: `${prefix}-caller`, quiet: true })
-      .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
-      .start()
+    const worker = await startNode({
+      serviceName: "worker",
+      prefix,
+      registrations: [queryHandler(GetGreeting, async ({ payload: q }) => `hello, ${q.name}`)],
+    })
+    const caller = await startNode({ serviceName: "caller", prefix })
 
     try {
-      const result = await caller.queryGateway.query(GetGreeting, { name: "kronos" }, emptyMetadata())
+      const result = await caller.app.queryGateway.query(GetGreeting, { name: "kronos" }, emptyMetadata())
       expect(result).toBe("hello, kronos")
     } finally {
       await Promise.all([caller.stop(), worker.stop()])
@@ -65,22 +94,20 @@ describe("RabbitMQ query transport integration", () => {
 
     // The worker owns the query handler (for initial result) and the command
     // handler that emits the update. Subscriber lives on the caller.
-    const worker = await kronos({ serviceName: "worker", instanceId: `${prefix}-worker`, quiet: true })
-      .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
-      .queries(queryHandler(WatchValue, async () => "initial"))
-      .commands(
+    const worker = await startNode({
+      serviceName: "worker",
+      prefix,
+      registrations: [
+        queryHandler(WatchValue, async () => "initial"),
         commandHandler(PublishUpdate, async ({ payload: cmd }, ctx) => {
           ctx.emitUpdate(WatchValue, payloadEquals({ id: cmd.id }), cmd.value)
         }),
-      )
-      .start()
-
-    const caller = await kronos({ serviceName: "caller", instanceId: `${prefix}-caller`, quiet: true })
-      .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
-      .start()
+      ],
+    })
+    const caller = await startNode({ serviceName: "caller", prefix })
 
     try {
-      const sub = caller.queryGateway.subscriptionQuery(
+      const sub = caller.app.queryGateway.subscriptionQuery(
         WatchValue,
         { id: "x" },
         emptyMetadata(),
@@ -91,9 +118,9 @@ describe("RabbitMQ query transport integration", () => {
       // Give RabbitMQ a moment to settle the queue bindings before the worker emits.
       await new Promise((r) => setTimeout(r, 200))
 
-      await caller.commandGateway.send(PublishUpdate, { id: "x", value: "v-1" }, emptyMetadata())
-      await caller.commandGateway.send(PublishUpdate, { id: "y", value: "should-not-arrive" }, emptyMetadata())
-      await caller.commandGateway.send(PublishUpdate, { id: "x", value: "v-2" }, emptyMetadata())
+      await caller.app.commandGateway.send(PublishUpdate, { id: "x", value: "v-1" }, emptyMetadata())
+      await caller.app.commandGateway.send(PublishUpdate, { id: "y", value: "should-not-arrive" }, emptyMetadata())
+      await caller.app.commandGateway.send(PublishUpdate, { id: "x", value: "v-2" }, emptyMetadata())
 
       const received: unknown[] = []
       const reader = (async () => {
@@ -118,10 +145,11 @@ describe("RabbitMQ query transport integration", () => {
   it("delivers across instances when the filter is a function predicate", async () => {
     const prefix = `kronos.it.${Date.now()}.fn-filter`
 
-    const worker = await kronos({ serviceName: "worker", instanceId: `${prefix}-worker`, quiet: true })
-      .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
-      .queries(queryHandler(WatchValue, async () => "initial"))
-      .commands(
+    const worker = await startNode({
+      serviceName: "worker",
+      prefix,
+      registrations: [
+        queryHandler(WatchValue, async () => "initial"),
         commandHandler(PublishUpdate, async ({ payload: cmd }, ctx) => {
           // Function filter — only IDs starting with "hi-" match. This case
           // could not cross the wire under the broadcast model because JS
@@ -133,20 +161,17 @@ describe("RabbitMQ query transport integration", () => {
             cmd.value,
           )
         }),
-      )
-      .start()
-
-    const caller = await kronos({ serviceName: "caller", instanceId: `${prefix}-caller`, quiet: true })
-      .use(rabbitMq({ url: rabbit.url, topology: { prefix } }))
-      .start()
+      ],
+    })
+    const caller = await startNode({ serviceName: "caller", prefix })
 
     try {
-      const subHi = caller.queryGateway.subscriptionQuery(
+      const subHi = caller.app.queryGateway.subscriptionQuery(
         WatchValue,
         { id: "hi-one" },
         emptyMetadata(),
       )
-      const subLo = caller.queryGateway.subscriptionQuery(
+      const subLo = caller.app.queryGateway.subscriptionQuery(
         WatchValue,
         { id: "lo-one" },
         emptyMetadata(),
@@ -156,8 +181,8 @@ describe("RabbitMQ query transport integration", () => {
       // Let the gossip claims propagate to the worker.
       await new Promise((r) => setTimeout(r, 300))
 
-      await caller.commandGateway.send(PublishUpdate, { id: "ignored", value: "match-1" }, emptyMetadata())
-      await caller.commandGateway.send(PublishUpdate, { id: "ignored", value: "match-2" }, emptyMetadata())
+      await caller.app.commandGateway.send(PublishUpdate, { id: "ignored", value: "match-1" }, emptyMetadata())
+      await caller.app.commandGateway.send(PublishUpdate, { id: "ignored", value: "match-2" }, emptyMetadata())
 
       const received: unknown[] = []
       const reader = (async () => {

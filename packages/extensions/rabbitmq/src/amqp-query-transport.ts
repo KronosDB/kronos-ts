@@ -27,6 +27,7 @@ export class AmqpRabbitMqQueryTransport implements RabbitMqQueryTransport {
   private readonly handlers = new Map<string, (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>>()
   private readonly boundHandlers = new Set<string>()
   private readonly pending = new Map<string, PendingRequest>()
+  private readonly pendingBinds = new Set<Promise<void>>()
   private connectPromise: Promise<void> | undefined
   private closed = false
 
@@ -60,6 +61,18 @@ export class AmqpRabbitMqQueryTransport implements RabbitMqQueryTransport {
     this.boundHandlers.clear()
     for (const [queryName, handler] of this.handlers) {
       await this.bindQueryHandler(queryName, handler)
+    }
+  }
+
+  /**
+   * Resolve once the connection is up and every handler subscribed so far is
+   * bound to its queue and consuming — see
+   * {@link AmqpRabbitMqCommandTransport.ready}.
+   */
+  async ready(): Promise<void> {
+    await this.connect()
+    while (this.pendingBinds.size > 0) {
+      await Promise.all([...this.pendingBinds])
     }
   }
 
@@ -115,8 +128,17 @@ export class AmqpRabbitMqQueryTransport implements RabbitMqQueryTransport {
   ): void {
     this.handlers.set(queryName, handler)
     if (this.channel) {
-      void this.bindQueryHandler(queryName, handler)
+      this.trackBind(this.bindQueryHandler(queryName, handler))
     }
+  }
+
+  /** Keep a background bind awaitable by {@link ready} without leaving it unhandled. */
+  private trackBind(bind: Promise<void>): void {
+    this.pendingBinds.add(bind)
+    const forget = () => {
+      this.pendingBinds.delete(bind)
+    }
+    bind.then(forget, forget)
   }
 
   private async bindQueryHandler(

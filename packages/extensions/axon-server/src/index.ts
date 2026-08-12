@@ -19,7 +19,10 @@ export {
 
 export {
   axonServer,
-  type AxonServerExtensionConfig,
+  type AxonServerConfig,
+  type AxonServerBackend,
+  type AxonServerComponents,
+  type ManagedEventProcessor,
   type FlowControlConfig,
   type ProcessingInstructions,
 } from "./axon-server.js"

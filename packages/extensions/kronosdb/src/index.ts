@@ -16,7 +16,11 @@ export {
 
 export {
   kronosDb,
-  type KronosDbExtensionConfig,
+  createDistributedQueryBus,
+  type KronosDbConfig,
+  type KronosDbDependencies,
+  type KronosDbComponents,
+  type KronosDbBackend,
   type FlowControlConfig,
   type ProcessingInstructions,
 } from "./kronosdb.js"

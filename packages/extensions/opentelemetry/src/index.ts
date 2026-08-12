@@ -3,7 +3,12 @@ export {
   type OpenTelemetrySpanFactoryOptions,
 } from "./opentelemetry-span-factory.js"
 
-export { openTelemetry, openTelemetryMetrics } from "./opentelemetry.js"
+export {
+  openTelemetry,
+  openTelemetryMetrics,
+  tracingCommandBus,
+  type OpenTelemetryTracing,
+} from "./opentelemetry.js"
 
 export {
   createOpenTelemetryMetricsRecorder,

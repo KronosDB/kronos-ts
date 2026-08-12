@@ -35,7 +35,7 @@ export interface PlatformConnection {
    *
    * This replaces the legacy 1-second sleep at
    * kronosdb-configuration-enhancer.ts:216 (D-102): the kronosDb extension's
-   * `onStart('processors', ...)` hook polls this method via `withRetry` so the
+   * `start()` polls this method via `withRetry` so the
    * application waits exactly long enough for handler subscriptions to be
    * routable, no longer or shorter.
    *

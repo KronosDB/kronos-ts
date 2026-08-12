@@ -1,11 +1,10 @@
 /**
- * Axon Server integration test — exercises the native axonServer(...)
- * extension (Plan 09-04, D-95) against a real Axon Server container.
+ * Axon Server integration test — exercises the `axonServer(...)` backend
+ * factory against a real Axon Server container.
  *
- * Originally Phase 8 deferred (the legacy body drove the deleted configurer
- * + legacy enhancer trio). Rewritten here on the native (app: App) => void
- * shape; closes the last entry in
- * .planning/phases/08-configurer-deletion/deferred-items.md.
+ * Written on the functional composition shape: `axonServer()` connects, its
+ * components are spread into `createApp`, and `start()` waits for the server's
+ * routing tables. Requires docker (testcontainers).
  *
  * Coverage parity with the original deferred suite:
  *   1. dispatches a command through Axon Server and sources state
@@ -30,14 +29,15 @@ import {
   commandHandler,
   EventCriteria,
   jsonSerializer,
+  runInNewUoW,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
 import {
   type EventStore,
   type Snapshot
 } from "@kronos-ts/eventsourcing"
-import { kronos, type App, type RunningApp } from "@kronos-ts/app"
-import { axonServer } from "../axon-server.js"
+import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { axonServer, type AxonServerBackend } from "../axon-server.js"
 import {
   connectToAxonServer,
   type AxonServerConnection,
@@ -123,10 +123,10 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 // Tests
 // ============================================================================
 
-describe("Axon Server integration — native axonServer() extension", () => {
+describe("Axon Server integration — axonServer() backend", () => {
   let container: StartedTestContainer
-  let app: RunningApp
-  let capturedEventStore: EventStore | undefined
+  let app: App
+  let axon: AxonServerBackend
   let host: string
   let grpcPort: number
 
@@ -145,37 +145,38 @@ describe("Axon Server integration — native axonServer() extension", () => {
     // Extra delay for DCB event store stream endpoint initialization.
     await new Promise((r) => setTimeout(r, 3000))
 
-    // Capture eventStore via probe decorator (RunningApp has no eventStore field).
-    const captureExtension = (kronosApp: App) => {
-      kronosApp.decorate("eventStore", (inner) => {
-        capturedEventStore = inner
-        return inner
-      })
-    }
+    // The backend connects eagerly; its components are the app's. No probe
+    // decorator is needed to see the event store — it is a property.
+    const serializer = jsonSerializer()
+    axon = await axonServer({
+      componentName: "axon-it-suite",
+      host,
+      port: grpcPort,
+      context: "default",
+      serializer,
+      unitOfWorkFactory: runInNewUoW,
+    })
 
-    app = await kronos({ quiet: true })
-      .states(Course)
-      .commands(handleCreateCourse, handleEnrollStudent)
-      .use(captureExtension)
-      .use(
-        axonServer({
-          componentName: "axon-it-suite",
-          host,
-          port: grpcPort,
-          context: "default",
-        }),
-      )
-      .start()
+    app = createApp({
+      components: {
+        ...inMemoryComponents({ serializer, unitOfWorkFactory: runInNewUoW }),
+        ...axon.components,
+      },
+      modules: [module("axon-it", Course, handleCreateCourse, handleEnrollStudent)],
+    })
+
+    // Handlers are subscribed by now — wait until the server can route to them.
+    await axon.start()
   }, 120_000)
 
   afterAll(async () => {
     await app?.stop()
+    await axon?.close()
     await container?.stop()
   })
 
   function eventStore(): EventStore {
-    if (!capturedEventStore) throw new Error("eventStore capture failed — start() did not run probe decorator")
-    return capturedEventStore
+    return axon.components.eventStore
   }
 
   it("dispatches a command through Axon Server and sources state", async () => {
@@ -273,9 +274,8 @@ describe("Axon Server integration — native axonServer() extension", () => {
 
   it("snapshot store roundtrip via createAxonServerSnapshotStore", async () => {
     // Use a dedicated direct connection so the snapshot test does not depend
-    // on the framework wiring beyond the slot factory itself. This exercises
-    // the snapshot-store factory contract that the native extension's
-    // app.set("snapshotStore", ...) closure calls into.
+    // on the app wiring at all — this exercises the same snapshot-store factory
+    // contract that `axonServer()` calls into for `components.snapshotStore`.
     const directConnection: AxonServerConnection = connectToAxonServer({
       componentName: "axon-it-snapshot",
       host,

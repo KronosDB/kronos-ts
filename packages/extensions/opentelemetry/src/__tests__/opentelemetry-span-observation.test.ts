@@ -1,17 +1,34 @@
 /**
- * E2E span-observation test for the native `openTelemetry()` extension.
+ * E2E span-observation tests for the `openTelemetry()` factory (post-container
+ * cutover — see FUNCTIONAL-APP-FINDINGS.md).
  *
- * Resolves RESEARCH Open Question #2 (EXT-04 acceptance) by exercising a real
- * App through a real OTel TracerProvider with an `InMemorySpanExporter` and
- * asserting that:
- *   1. command dispatch through the App emits a span
- *   2. event handler invocation emits a child span
- *   3. without `.use(openTelemetry())` no spans are emitted (control case)
+ * There is no App to `.use(openTelemetry())` any more. Tracing is ordinary
+ * function composition, wired by the caller:
+ *
+ *   const { spanFactory, handlerEnhancer } = openTelemetry()
+ *   const commandBus = tracingCommandBus(baseCommandBus, spanFactory)
+ *
+ * These tests exercise a real OTel TracerProvider with an `InMemorySpanExporter`
+ * and assert that:
+ *   1. command dispatch through a real `createApp`-composed app, with its
+ *      commandBus wrapped via `tracingCommandBus`, emits a span
+ *   2. `handlerEnhancer.wrapHandler(...)` emits a handler span that is a real
+ *      child of the dispatch span it re-parents onto (command-kind messages)
+ *   3. `handlerEnhancer.wrapHandler(...)` emits a LINKED (not parented) span
+ *      for event-kind messages, matching what an event processor does when
+ *      it re-traces from a propagated event
+ *   4. without wrapping, no spans are emitted (control case)
+ *
+ * NOTE: `createApp` does not (yet) plumb a `handlerEnhancer` through to
+ * `registerCommandHandlersNatively` / event processors — that wiring is
+ * outside this package's scope (packages/app). Tests 2 and 3 exercise
+ * `handlerEnhancer` directly against real propagated-context messages
+ * instead of going through a processor, since that is exactly the shape a
+ * caller uses it in today.
  *
  * Span name expectations (from packages/messaging/src/tracing-command-bus.ts +
  * tracing-handler-enhancer.ts):
  *   - command dispatch: `dispatch(<commandQualifiedName>)`
- *   - command handle:   `handle(<commandQualifiedName>)`
  *   - handler enhancer: `<handlerGroup>.<messageName>`
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
@@ -19,18 +36,12 @@ import { trace } from "@opentelemetry/api"
 import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base"
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
 import { z } from "zod"
-import { qn, tag } from "@kronos-ts/common"
-import {
-  command,
-  event,
-  commandHandler,
-  eventHandler,
-  EventCriteria,
-  subscribingProcessor,
-} from "@kronos-ts/messaging"
+import { qn, tag, emptyMetadata } from "@kronos-ts/common"
+import { command, event, commandHandler, EventCriteria } from "@kronos-ts/messaging"
+import type { CommandBus, CommandMessage, EventMessage } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { kronos, type RunningApp } from "@kronos-ts/app"
-import { openTelemetry } from "../opentelemetry.js"
+import { createApp, inMemoryComponents, module, type App } from "@kronos-ts/app"
+import { openTelemetry, tracingCommandBus } from "../opentelemetry.js"
 
 // ---------------------------------------------------------------------------
 // In-memory exporter setup
@@ -94,122 +105,139 @@ const greet = commandHandler(Greet, async ({ payload: cmd }, ctx) => {
 
 describe("openTelemetry() span observation (E2E)", () => {
   let harness: ExporterHarness
-  let running: RunningApp | undefined
+  let app: App | undefined
 
   beforeEach(() => {
     harness = installInMemoryExporter()
   })
 
   afterEach(async () => {
-    await running?.stop()
-    running = undefined
+    if (app) await app.stop()
+    app = undefined
     await harness.uninstall()
   })
 
-  it("command dispatch emits a span", async () => {
-    // given
-    running = await kronos({ quiet: true })
-      .states(Greeting)
-      .commands(greet)
-      .use(openTelemetry())
-      .start()
+  it("command dispatch through a createApp-composed app emits a span", async () => {
+    // given — the caller wraps the commandBus themselves, ordinary function
+    // composition, no app mutation.
+    const { spanFactory } = openTelemetry()
+    const base = inMemoryComponents()
+    const components = { ...base, commandBus: tracingCommandBus(base.commandBus, spanFactory) }
+
+    app = createApp({ components, modules: [module("otel-test", Greeting, greet)] })
 
     // when
-    await running.commandGateway.send(Greet, { id: "g-1", who: "world" })
+    await app.commandGateway.send(Greet, { id: "g-1", who: "world" })
 
     // then
     const spans = harness.exporter.getFinishedSpans()
     expect(spans.length).toBeGreaterThanOrEqual(1)
-    // tracing-command-bus.ts emits a `dispatch(<name>)` span and a `handle(<name>)`
-    // span. The message attributes (kronos.message.name + kronos.message.id) carry
-    // the precise QualifiedName the handler dispatched.
     const dispatchSpan = spans.find((s) => s.name.startsWith("dispatch("))
     expect(dispatchSpan).toBeDefined()
     expect(dispatchSpan!.attributes["kronos.message.id"]).toBeDefined()
     expect(dispatchSpan!.attributes["kronos.message.name"]).toBeDefined()
   })
 
-  it("event handler invocation emits a child span", async () => {
-    // given
-    const seen: string[] = []
-    const onGreeted = eventHandler(Greeted, async ({ payload: e }, ctx) => {
-      seen.push(e.id)
-    })
-
-    running = await kronos({ quiet: true })
-      .states(Greeting)
-      .commands(greet)
-      .processors(
-        subscribingProcessor("greet-projection")
-          .eventHandlers(onGreeted)
-          .build(),
-      )
-      .use(openTelemetry())
-      .start()
+  it("emits no spans when the commandBus is not wrapped with tracingCommandBus", async () => {
+    // given — identical app, commandBus left undecorated
+    app = createApp({ modules: [module("otel-test", Greeting, greet)] })
 
     // when
-    await running.commandGateway.send(Greet, { id: "g-2", who: "world" })
-
-    // wait for handler to run
-    await new Promise((r) => setTimeout(r, 50))
-
-    // then — both command-side and handler-side spans appear
-    const spans = harness.exporter.getFinishedSpans()
-    expect(spans.length).toBeGreaterThanOrEqual(2)
-    expect(seen).toContain("g-2")
-
-    // dispatch span and at least one handler-enhancer span are present
-    const dispatchSpan = spans.find((s) => s.name.startsWith("dispatch("))
-    expect(dispatchSpan).toBeDefined()
-
-    // tracingHandlerEnhancerDefinition emits `<group>.<messageName>` spans —
-    // the projection group fires for the Greeted event handler.
-    const handlerSpan = spans.find((s) => s.name.includes("greet-projection"))
-    expect(handlerSpan).toBeDefined()
-  })
-
-  it("event handler span links back to the triggering event's trace across the event-store boundary", async () => {
-    // given
-    const onGreeted = eventHandler(Greeted, async () => {})
-
-    running = await kronos({ quiet: true })
-      .states(Greeting)
-      .commands(greet)
-      .processors(
-        subscribingProcessor("greet-projection")
-          .eventHandlers(onGreeted)
-          .build(),
-      )
-      .use(openTelemetry())
-      .start()
-
-    // when
-    await running.commandGateway.send(Greet, { id: "g-4", who: "world" })
-    await new Promise((r) => setTimeout(r, 50))
-
-    // then — the event handler runs in a NEW trace (the originating command
-    // trace may be long gone for async processors) that is LINKED to the
-    // producing span. The link only exists if the appended Greeted event
-    // carried the command handler's trace context — i.e. trace context was
-    // captured onto the UnitOfWork and applied to the appended event.
-    const spans = harness.exporter.getFinishedSpans()
-    const handlerSpan = spans.find((s) => s.name.includes("greet-projection"))
-    expect(handlerSpan).toBeDefined()
-    expect(handlerSpan!.links.length).toBeGreaterThanOrEqual(1)
-  })
-
-  it("emits no spans when openTelemetry() extension is not installed", async () => {
-    // given — identical app WITHOUT .use(openTelemetry())
-    running = await kronos({ quiet: true })
-      .states(Greeting)
-      .commands(greet)
-      .start()
-
-    // when
-    await running.commandGateway.send(Greet, { id: "g-3", who: "world" })
+    await app.commandGateway.send(Greet, { id: "g-3", who: "world" })
 
     // then
     const spans = harness.exporter.getFinishedSpans()
     expect(spans).toHaveLength(0)
+  })
+
+  it("handlerEnhancer re-parents a command-kind handler span onto the dispatch span", async () => {
+    // given — a commandBus whose delegate itself invokes a handlerEnhancer-
+    // wrapped handler; this is exactly the shape registerCommandHandlersNatively
+    // uses internally when a caller supplies a handlerEnhancer.
+    const { spanFactory, handlerEnhancer } = openTelemetry()
+
+    let handledMessage: CommandMessage | undefined
+    const wrappedHandler = handlerEnhancer.wrapHandler(
+      async (message: CommandMessage) => {
+        handledMessage = message
+        return "ok"
+      },
+      { handlerGroup: "otel-test", messageName: "Greet", messageType: "command" },
+    )
+
+    const delegate: CommandBus = {
+      dispatch: (message) => wrappedHandler(message as CommandMessage),
+      subscribe: () => {},
+    }
+    const commandBus = tracingCommandBus(delegate, spanFactory)
+
+    // when
+    await commandBus.dispatch({
+      kind: "command",
+      identifier: "id-1",
+      name: Greet.name,
+      payload: { id: "g-2", who: "world" },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    } as CommandMessage)
+
+    // then — both spans fired, and the handler span is a REAL child of the
+    // dispatch span (proves trace context propagated through message metadata).
+    expect(handledMessage).toBeDefined()
+    const spans = harness.exporter.getFinishedSpans()
+    const dispatchSpan = spans.find((s) => s.name.startsWith("dispatch("))
+    const handlerSpan = spans.find((s) => s.name === "otel-test.Greet")
+    expect(dispatchSpan).toBeDefined()
+    expect(handlerSpan).toBeDefined()
+    expect(handlerSpan!.parentSpanId).toBe(dispatchSpan!.spanContext().spanId)
+  })
+
+  it("handlerEnhancer links (not parents) an event-kind handler span, matching event-processor semantics", async () => {
+    // given — an event carrying trace context propagated at append time (what
+    // a real event processor's source event carries after `propagateContext`
+    // was applied during the command handler's append).
+    const { spanFactory, handlerEnhancer } = openTelemetry()
+
+    const rootSpan = spanFactory.createRootTrace("dispatch(otel-test.Greet)").start()
+    const propagatedMetadata = rootSpan.runActive!(() => spanFactory.propagateContext({
+      kind: "event",
+      identifier: "evt-1",
+      name: Greeted.name,
+      version: "1",
+      payload: { id: "g-4", who: "world" },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+      tags: [{ key: "id", value: "g-4" }],
+    } as EventMessage).metadata)
+    rootSpan.end()
+
+    const wrappedHandler = handlerEnhancer.wrapHandler(
+      async (_message: EventMessage) => "handled",
+      { handlerGroup: "greet-projection", messageName: "Greeted", messageType: "event" },
+    )
+
+    // when — process the event in a NEW trace, as a real event processor does
+    await wrappedHandler({
+      kind: "event",
+      identifier: "evt-1",
+      name: Greeted.name,
+      version: "1",
+      payload: { id: "g-4", who: "world" },
+      metadata: propagatedMetadata,
+      timestamp: Date.now(),
+      tags: [{ key: "id", value: "g-4" }],
+    } as EventMessage)
+
+    // then — the handler span is a NEW trace, LINKED back to the producing
+    // span (not parented to it) — the originating trace may be long finished
+    // by the time an asynchronous processor handles the event.
+    const spans = harness.exporter.getFinishedSpans()
+    const rootDispatchSpan = spans.find((s) => s.name === "dispatch(otel-test.Greet)")
+    const handlerSpan = spans.find((s) => s.name === "greet-projection.Greeted")
+    expect(rootDispatchSpan).toBeDefined()
+    expect(handlerSpan).toBeDefined()
+    expect(handlerSpan!.parentSpanId).toBeUndefined()
+    expect(handlerSpan!.links.length).toBeGreaterThanOrEqual(1)
+    expect(handlerSpan!.links[0]!.context.spanId).toBe(rootDispatchSpan!.spanContext().spanId)
   })
 })

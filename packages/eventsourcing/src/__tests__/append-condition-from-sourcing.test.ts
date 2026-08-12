@@ -1,14 +1,11 @@
 /**
- * Plan 09-01 Task 3 — unskips the original Plan 08-04 deferred coverage.
+ * Covers the append-condition flow derived from sourced state — the criteria +
+ * marker that the framework attaches to append() so the event store can reject
+ * stale-state writes.
  *
- * Original test (deleted with EventSourcingConfigurer.create({ eventStore })
- * + registerEntity in Plan 08-04) covered the append-condition flow derived
- * from sourced state — the criteria + marker that the framework attaches to
- * append() so the event store can reject stale-state writes.
- *
- * Resolution path: kronos() exposes `app.set('eventStore', ...)` so any
- * probe-wrapped event store can capture the AppendCondition the framework
- * derives from the sourced entity state.
+ * Composition: `createApp` takes a plain `Components` record, so a
+ * probe-wrapped event store is passed in directly — it is the `eventStore`
+ * field, not a slot factory registered under a string key.
  */
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
@@ -21,7 +18,7 @@ import {
   type EventMessage,
 } from "@kronos-ts/messaging"
 import { state } from "@kronos-ts/modelling"
-import { kronos } from "@kronos-ts/app"
+import { createApp, inMemoryComponents, module } from "@kronos-ts/app"
 import { append } from "../append.js"
 import { load } from "../load.js"
 import { createInMemoryEventStore } from "../in-memory-event-store.js"
@@ -68,6 +65,9 @@ function probeEventStore(): EventStore & { records: AppendRecord[] } {
     subscribe: inner.subscribe?.bind(inner),
     publish: inner.publish.bind(inner),
     appendEvents: inner.appendEvents.bind(inner),
+    firstToken: inner.firstToken.bind(inner),
+    latestToken: inner.latestToken.bind(inner),
+    getHeadPosition: inner.getHeadPosition.bind(inner),
     async append(events, condition) {
       records.push({ events, condition })
       return inner.append(events, condition)
@@ -78,16 +78,15 @@ function probeEventStore(): EventStore & { records: AppendRecord[] } {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-describe("Append condition derived from sourced state — eventStore override via app.set()", () => {
+describe("Append condition derived from sourced state — probe event store as a component", () => {
   it("appendCondition captures the sourcing criteria from the loaded entity", async () => {
     const probe = probeEventStore()
-    const running = await kronos({ quiet: true })
-      .set("eventStore", () => probe)
-      .states(Thing)
-      .commands(touchThing)
-      .start()
+    const app = createApp({
+      components: inMemoryComponents({ eventStore: probe }),
+      modules: [module("ac", Thing, touchThing)],
+    })
     try {
-      await running.commandGateway.send(
+      await app.commandGateway.send(
         TouchThing,
         { id: "ac-1" },
         emptyMetadata(),
@@ -102,20 +101,19 @@ describe("Append condition derived from sourced state — eventStore override vi
       const json = JSON.stringify(criteria)
       expect(json).toContain("ac-1")
     } finally {
-      await running.stop()
+      await app.stop()
     }
   })
 
   it("detects concurrent modification via append condition (probe surfaces the marker)", async () => {
     const probe = probeEventStore()
-    const running = await kronos({ quiet: true })
-      .set("eventStore", () => probe)
-      .states(Thing)
-      .commands(touchThing)
-      .start()
+    const app = createApp({
+      components: inMemoryComponents({ eventStore: probe }),
+      modules: [module("ac", Thing, touchThing)],
+    })
     try {
       // First touch — should record a condition with a marker (position-based).
-      await running.commandGateway.send(
+      await app.commandGateway.send(
         TouchThing,
         { id: "ac-2" },
         emptyMetadata(),
@@ -127,7 +125,7 @@ describe("Append condition derived from sourced state — eventStore override vi
       // the sourcing result, which carries the highest known position).
       expect(recorded.condition!.marker).toBeDefined()
     } finally {
-      await running.stop()
+      await app.stop()
     }
   })
 })

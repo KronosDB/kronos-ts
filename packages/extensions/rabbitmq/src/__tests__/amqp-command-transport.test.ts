@@ -65,10 +65,10 @@ function fakeAmqp() {
 }
 
 function config() {
-  return resolveRabbitMqConfig(
-    { identity: { serviceName: "faculty-service", instanceId: "pod-1" } } as any,
-    { url: "amqp://test" },
-  )
+  return resolveRabbitMqConfig({
+    identity: { serviceName: "faculty-service", instanceId: "pod-1" },
+    url: "amqp://test",
+  })
 }
 
 function envelope(): RabbitMqCommandEnvelope {
@@ -128,10 +128,11 @@ describe("AMQP RabbitMQ command transport", () => {
   it("times out pending command dispatches", async () => {
     const fake = fakeAmqp()
     const transport = new AmqpRabbitMqCommandTransport(
-      resolveRabbitMqConfig(
-        { identity: { serviceName: "faculty-service", instanceId: "pod-1" } } as any,
-        { url: "amqp://test", commands: { defaultTimeoutMs: 1 } },
-      ),
+      resolveRabbitMqConfig({
+        identity: { serviceName: "faculty-service", instanceId: "pod-1" },
+        url: "amqp://test",
+        commands: { defaultTimeoutMs: 1 },
+      }),
       createAmqpConnection("amqp://test", async () => fake.connection),
     )
     await transport.connect()

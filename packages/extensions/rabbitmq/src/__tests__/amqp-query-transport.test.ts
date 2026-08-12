@@ -65,10 +65,10 @@ function fakeAmqp() {
 }
 
 function config() {
-  return resolveRabbitMqConfig(
-    { identity: { serviceName: "faculty-service", instanceId: "pod-1" } } as any,
-    { url: "amqp://test" },
-  )
+  return resolveRabbitMqConfig({
+    identity: { serviceName: "faculty-service", instanceId: "pod-1" },
+    url: "amqp://test",
+  })
 }
 
 function envelope(): RabbitMqQueryEnvelope {
