@@ -44,3 +44,9 @@ export {
   type ModuleHandlerContext,
   type ModuleEventHandlerContext,
 } from "./module.js"
+export {
+  createApp,
+  inMemoryComponents,
+  type Components,
+  type AppModule,
+} from "./create-app.js"
