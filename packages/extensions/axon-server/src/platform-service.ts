@@ -36,9 +36,40 @@ export type InstructionHandler = (instruction: PlatformInstruction) => void | Pr
  * - Receives server-initiated instructions (pause, resume, split, merge segments)
  */
 export interface PlatformConnection {
-  /** Start the platform stream (register with Axon Server, begin heartbeats). */
+  /**
+   * DATA PATH. Open the platform stream, register this client, and arm the
+   * heartbeat that calls `connection.reconnect()` when the server stops
+   * answering.
+   *
+   * This is split out of {@link start} deliberately. Reconnect detection is a
+   * property of the CONNECTION, and the command/query buses hook
+   * `connection.onReconnect(...)` to re-establish their own streams — so a
+   * service that never opts into remote administration still needs it. When it
+   * lived only inside `start()` (which only the control plane calls), such a
+   * service had no heartbeat-driven reconnect detection on its data path at all
+   * and would sit on a dead channel indefinitely.
+   *
+   * Arms NOTHING control-plane-specific: no processor status reporting. Safe to
+   * call repeatedly; a stream that is already up is left alone.
+   */
+  armConnectionMonitoring(): Promise<void>
+  /**
+   * CONTROL PLANE. Everything {@link armConnectionMonitoring} does, plus
+   * periodic processor status reporting.
+   *
+   * Idempotent in both halves: if the data path already opened the stream, this
+   * only adds status reporting; if it did not, this opens the stream too.
+   */
   start(): Promise<void>
-  /** Stop the platform stream and heartbeats. */
+  /**
+   * Stop the platform stream, heartbeats and status reporting.
+   *
+   * Note that this tears down the SHARED stream — including the data path's
+   * reconnect detection. `axonServerControlPlane(...).close()` calls it, which
+   * is correct in the documented shutdown order (`app.stop()` → `control.close()`
+   * → `axon.close()`) but means closing a control plane on a still-running
+   * service disarms reconnect detection with it.
+   */
   stop(): void
   /** Register a handler for server-initiated instructions. */
   onInstruction(handler: InstructionHandler): void
@@ -109,10 +140,25 @@ export function platformConnection(
 
   const instructionHandlers: InstructionHandler[] = []
   const processorStatusSuppliers: ProcessorStatusSupplier[] = []
+  /**
+   * Instructions that arrived before anything registered a handler.
+   *
+   * The control plane registers its handler before calling `start()`, but the
+   * DATA path now opens the same stream via `armConnectionMonitoring()` — which
+   * runs before any control plane exists. That leaves a window in which Axon
+   * Server can push an instruction at a client with nothing to route it to.
+   * Buffering makes the window harmless instead of merely forbidden: the first
+   * `onInstruction` registration drains this queue in arrival order. Mirrors the
+   * kronosdb platform connection, which has had this since its backend started
+   * the stream for `subscriptionsAcked()`.
+   */
+  const pendingInstructions: PlatformInstruction[] = []
   let isConnected = false
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
   let heartbeatTimeoutTimer: ReturnType<typeof setTimeout> | null = null
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
+  /** Guards against arming the status-report timer twice — see `startProcessorStatusReporting`. */
+  let processorStatusArmed = false
   let lastHeartbeatResponse = Date.now()
   let outbound: ReturnType<typeof outboundStream<PlatformInboundInstruction>> | null = null
   /**
@@ -140,6 +186,11 @@ export function platformConnection(
         // Parse instruction type
         const instruction = parseInstruction(message)
         if (instruction) {
+          if (instructionHandlers.length === 0) {
+            // Nothing to route to yet — hold it for the first registration
+            // rather than dropping it.
+            pendingInstructions.push(instruction)
+          }
           for (const handler of instructionHandlers) {
             try {
               await handler(instruction)
@@ -240,6 +291,14 @@ export function platformConnection(
   }
 
   function startProcessorStatusReporting() {
+    // Idempotency guard. The control plane may call `start()` after the data
+    // path already brought the stream up, and `start()` is itself documented as
+    // safe to call twice. Without this flag a second call inside the initial
+    // delay window would leave TWO pending timeouts, each of which installs an
+    // interval, and only the last would be tracked in `processorStatusTimer` —
+    // the first would leak past `stop()`.
+    if (processorStatusArmed) return
+    processorStatusArmed = true
     if (processorStatusTimer) clearInterval(processorStatusTimer)
 
     // Initial delay before first report
@@ -273,57 +332,87 @@ export function platformConnection(
     }
   }
 
+  /**
+   * Open the platform stream and arm the heartbeat. Shared by
+   * `armConnectionMonitoring()` (data path) and `start()` (control plane);
+   * whichever runs first opens it, the other finds it up and returns.
+   */
+  function openPlatformStream() {
+    if (isConnected) return
+
+    // A heartbeat timeout clears `isConnected` WITHOUT going through `stop()`,
+    // so a later call can land here with the dropped stream's outbound still
+    // open. Close it before replacing the reference, or it leaks. This is more
+    // reachable now that the data path arms the heartbeat: previously only a
+    // control plane could get here after a timeout.
+    if (outbound) {
+      outbound.close()
+      outbound = null
+    }
+
+    // Re-arm the ack latch so a stop/start cycle correctly re-waits.
+    acked = false
+    outbound = outboundStream<PlatformInboundInstruction>()
+
+    // Register with Axon Server
+    outbound.send({
+      register: {
+        clientId: connection.config.clientId,
+        componentName: connection.config.componentName,
+        version: "1.0.0",
+        tags: {},
+      },
+      instructionId: "",
+    })
+
+    // Open bidirectional stream
+    const inbound = connection.platform.openStream(outbound.iterable, {
+      metadata: grpcMetadata,
+    })
+
+    isConnected = true
+    // DATA PATH: the heartbeat is what calls connection.reconnect() on
+    // timeout, which is what the command/query buses hang their stream
+    // re-establishment off. It belongs to every service, administered or not.
+    startHeartbeat()
+    processInboundInstructions(inbound)
+
+    // Axon Server's PlatformService does NOT proactively emit an inbound
+    // frame in response to `register` — the stream is held open silently
+    // until either (a) the server pushes a topology / instruction event,
+    // or (b) one of our heartbeat pings round-trips back. That means the
+    // first-inbound-frame ack signal used by kronosdb (Plan 09-03 / D-102)
+    // doesn't fire deterministically here, and the processors-stage
+    // `withRetry({event: "per-operation"})` poll would otherwise hang.
+    //
+    // Axon-specific ack derivation: latch `acked = true` immediately once
+    // the outbound `register` frame has been flushed to the gRPC layer.
+    // Bus subscriptions (sent on the command/query streams, NOT the
+    // platform stream) are an orthogonal concern handled by the
+    // command/query bus reconnect path — the legacy 1-second sleep that
+    // we replaced was always covering register processing, not bus-side
+    // routability. Structurally this is the Axon Server equivalent of
+    // D-102: drop the magic-number wait, use the earliest deterministic
+    // observable signal that fits the underlying protocol.
+    acked = true
+  }
+
   return {
+    async armConnectionMonitoring() {
+      openPlatformStream()
+    },
+
     async start() {
-      if (isConnected) return
-
-      // Re-arm the ack latch so a stop/start cycle correctly re-waits.
-      acked = false
-      outbound = outboundStream<PlatformInboundInstruction>()
-
-      // Register with Axon Server
-      outbound.send({
-        register: {
-          clientId: connection.config.clientId,
-          componentName: connection.config.componentName,
-          version: "1.0.0",
-          tags: {},
-        },
-        instructionId: "",
-      })
-
-      // Open bidirectional stream
-      const inbound = connection.platform.openStream(outbound.iterable, {
-        metadata: grpcMetadata,
-      })
-
-      isConnected = true
-      startHeartbeat()
+      openPlatformStream()
       startProcessorStatusReporting()
-      processInboundInstructions(inbound)
-
-      // Axon Server's PlatformService does NOT proactively emit an inbound
-      // frame in response to `register` — the stream is held open silently
-      // until either (a) the server pushes a topology / instruction event,
-      // or (b) one of our heartbeat pings round-trips back. That means the
-      // first-inbound-frame ack signal used by kronosdb (Plan 09-03 / D-102)
-      // doesn't fire deterministically here, and the processors-stage
-      // `withRetry({event: "per-operation"})` poll would otherwise hang.
-      //
-      // Axon-specific ack derivation: latch `acked = true` immediately once
-      // the outbound `register` frame has been flushed to the gRPC layer.
-      // Bus subscriptions (sent on the command/query streams, NOT the
-      // platform stream) are an orthogonal concern handled by the
-      // command/query bus reconnect path — the legacy 1-second sleep that
-      // we replaced was always covering register processing, not bus-side
-      // routability. Structurally this is the Axon Server equivalent of
-      // D-102: drop the magic-number wait, use the earliest deterministic
-      // observable signal that fits the underlying protocol.
-      acked = true
     },
 
     stop() {
       isConnected = false
+      // A stopped stream's un-routed backlog is stale — do not replay it if a
+      // handler registers later.
+      pendingInstructions.length = 0
+      processorStatusArmed = false
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer)
         heartbeatTimer = null
@@ -343,7 +432,22 @@ export function platformConnection(
     },
 
     onInstruction(handler) {
+      const isFirst = instructionHandlers.length === 0
       instructionHandlers.push(handler)
+
+      // Drain anything that arrived before a handler existed, in arrival order.
+      if (isFirst && pendingInstructions.length > 0) {
+        const backlog = pendingInstructions.splice(0, pendingInstructions.length)
+        void (async () => {
+          for (const instruction of backlog) {
+            try {
+              await handler(instruction)
+            } catch (err) {
+              console.error("Platform instruction handler error:", err)
+            }
+          }
+        })()
+      }
     },
 
     registerProcessorStatusSupplier(supplier) {

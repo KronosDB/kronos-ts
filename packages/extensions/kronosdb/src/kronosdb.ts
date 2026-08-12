@@ -38,7 +38,14 @@
  */
 import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer, withRetry, healthCheck, type ResilienceConfig } from "@kronos-ts/common"
 import type { CommandBus, CommandMessage, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UoWRunner, UpdateHandler } from "@kronos-ts/messaging"
-import { applySubscriptionFilter, updateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import {
+  applySubscriptionFilter,
+  correlationDataDispatchInterceptor,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  updateHandler,
+  runAfterCommitOrImmediately,
+} from "@kronos-ts/messaging"
 import type { KronosDbConnectionConfig } from "./connection.js"
 import { connectToKronosDb, kronosMetadata, type KronosDbConnection } from "./connection.js"
 import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
@@ -232,7 +239,7 @@ export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBacken
   if (config.messaging !== false) {
     const commandLatch = shutdownLatch()
     busLatches.push(commandLatch)
-    components.commandBus = createDistributedCommandBus(
+    components.commandBus = distributedCommandBus(
       connection,
       unitOfWorkFactory,
       commandLatch,
@@ -261,6 +268,27 @@ export async function kronosDb(options: KronosDbOptions): Promise<KronosDbBacken
     connection,
     platform,
     async start() {
+      // ASYMMETRY WITH axon-server, ON PURPOSE. The axon backend has a
+      // `platform.armConnectionMonitoring()` split — a data-path entry point
+      // that opens the platform stream and arms the heartbeat WITHOUT arming
+      // processor status reporting. KronosDB does not need one: its readiness
+      // barrier (`subscriptionsAcked()`) can only be answered by a live platform
+      // stream, so this backend has always called `platform.start()` itself, and
+      // the heartbeat that drives `connection.reconnect()` on timeout has always
+      // been armed on the data path regardless of whether anyone built a
+      // `kronosDbControlPlane`.
+      //
+      // Axon's exposure came from the opposite coupling: its barrier is a plain
+      // settle wait on the BUS streams, so nothing on its data path had reason
+      // to touch the platform stream, and after the control-plane extraction an
+      // un-administered service ended up with no reconnect detection at all.
+      //
+      // The cost of not splitting here is one idle timer: `platform.start()`
+      // also arms status reporting, and `reportProcessorStatus()` returns
+      // immediately while `processorStatusSuppliers` is empty. Harmless, and a
+      // control plane created later is picked up live because the reporter reads
+      // the supplier list on every tick rather than capturing it.
+      //
       // The readiness barrier needs a LIVE platform stream: the ack signal is
       // the first server-originated frame on it, so `subscriptionsAcked()` is
       // `false` until the stream is open. `platform.start()` is idempotent — if
@@ -313,7 +341,34 @@ function createPayloadHelpers(serializer: Serializer) {
 //   2) inbound-stream backoff replaced by the same withRetry path
 // ---------------------------------------------------------------------------
 
-function createDistributedCommandBus(
+/**
+ * A command bus backed by KronosDB.
+ *
+ * ## Correlation lineage and the interceptor layer
+ *
+ * The returned bus is wrapped in {@link interceptingCommandBus} carrying
+ * {@link correlationDataDispatchInterceptor}, so lineage is stamped onto the
+ * outgoing message BEFORE it is serialized onto the wire.
+ *
+ * This mirrors AxonFramework, where dispatch interception always sits outside
+ * the routing bus. AF4's `AxonServerCommandBus.dispatch` is
+ * `doDispatch(dispatchInterceptors.intercept(commandMessage), cb)`; AF5 expresses
+ * the same thing through decorator order —
+ * `DISTRIBUTED_COMMAND_BUS_ORDER = InterceptingCommandBus.DECORATION_ORDER - 50`
+ * stacks the buses `InterceptingCommandBus → DistributedCommandBus → SimpleCommandBus`.
+ *
+ * Without this, remote lineage was simply lost: the interceptor was registered
+ * only inside `@kronos-ts/app`'s default in-memory bus, and this bus REPLACES
+ * that one in `components` — every command left the process with no
+ * `correlationId` / `causationId`, even though the inbound side below faithfully
+ * rebuilds a UnitOfWork from `message.metadata`.
+ *
+ * There is no double-application concern here (unlike the RabbitMQ backend):
+ * this bus's local segment is a plain handler map, not a `CommandBus`, so the
+ * wrap below is the only interceptor in the chain — exactly AF5's shape, where
+ * the local `SimpleCommandBus` has no dispatch-interceptor support at all.
+ */
+export function distributedCommandBus(
   connection: KronosDbConnection,
   unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
@@ -461,7 +516,7 @@ function createDistributedCommandBus(
     }
   }
 
-  return {
+  const routing: CommandBus = {
     async dispatch(message: CommandMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
@@ -509,12 +564,33 @@ function createDistributedCommandBus(
       grantPermits()
     },
   }
+
+  // Interception OUTSIDE routing — see the note on this function.
+  const bus = interceptingCommandBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
 }
 
 // ---------------------------------------------------------------------------
 // Distributed Query Bus
 // ---------------------------------------------------------------------------
 
+/**
+ * A query bus backed by KronosDB.
+ *
+ * Wrapped in {@link interceptingQueryBus} with
+ * {@link correlationDataDispatchInterceptor} for the same reason the command bus
+ * is — AF runs dispatch interception at the top of `query` / `scatterGather` /
+ * `subscriptionQuery`, before anything is sent. `query()` below can also shortcut
+ * to a co-located handler, and wrapping outside means lineage is stamped
+ * identically on both branches.
+ *
+ * KNOWN GAP: `subscriptionQuery` / `subscribeToUpdates` build their proto
+ * straight from `message.metadata`, and `interceptingQueryBus` (in
+ * `@kronos-ts/messaging`) forwards those two calls to the delegate without
+ * running the dispatch chain. Subscription registrations therefore still travel
+ * without lineage. Closing that needs a change in the messaging package.
+ */
 export function distributedQueryBus(
   connection: KronosDbConnection,
   unitOfWorkRunner: UoWRunner,
@@ -755,7 +831,7 @@ export function distributedQueryBus(
     }
   }
 
-  return {
+  const routing: QueryBus = {
     async query(message: QueryMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
@@ -1018,4 +1094,8 @@ export function distributedQueryBus(
       })
     },
   }
+
+  const bus = interceptingQueryBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
 }

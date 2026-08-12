@@ -19,6 +19,8 @@ export {
 
 export {
   axonServer,
+  distributedCommandBus,
+  distributedQueryBus,
   type AxonServerConfig,
   type AxonServerBackend,
   type AxonServerComponents,

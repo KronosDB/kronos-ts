@@ -70,7 +70,14 @@ import type {
   UoWRunner,
   UpdateHandler,
 } from "@kronos-ts/messaging"
-import { applySubscriptionFilter, updateHandler, runAfterCommitOrImmediately } from "@kronos-ts/messaging"
+import {
+  applySubscriptionFilter,
+  correlationDataDispatchInterceptor,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  updateHandler,
+  runAfterCommitOrImmediately,
+} from "@kronos-ts/messaging"
 import { Metadata } from "nice-grpc"
 import type { AxonServerConnectionConfig } from "./connection.js"
 import { connectToAxonServer, type AxonServerConnection } from "./connection.js"
@@ -238,25 +245,32 @@ export type AxonServerOptions = AxonServerConfig & { serializer: Serializer; uni
 export interface AxonServerBackend {
   readonly components: AxonServerComponents
   /**
-   * The platform stream, built but NOT started.
+   * The platform stream. It is built here because the backend owns the gRPC
+   * connection it rides on and the `platformService` tuning that configures it.
    *
-   * This is the seam the control plane plugs into. It is built here because the
-   * backend owns the gRPC connection it rides on and the `platformService`
-   * tuning that configures it; it is left unstarted because starting it is the
-   * control plane's job — the instruction handler and status supplier have to
-   * be registered before the `register` frame goes out (see `control-plane.ts`).
+   * `start()` below brings it up for the DATA path — heartbeats and reconnect
+   * detection — via `platform.armConnectionMonitoring()`. What it deliberately
+   * does NOT do is arm processor status reporting or route instructions: that is
+   * remote administration, and it stays opt-in behind
+   * `axonServerControlPlane(axon.platform, …)`, which registers its handler and
+   * supplier and then calls `platform.start()` on this same live stream.
    *
-   * A service with no remote administration can ignore this entirely, or call
-   * `platform.start()` directly if it wants the heartbeat / registration
-   * without the processor-control wiring.
+   * An instruction that arrives before a control plane exists is buffered by the
+   * platform connection and drained on the first `onInstruction` registration,
+   * so opening the stream early costs nothing.
    */
   readonly platform: PlatformConnection
   /**
-   * DATA-PATH READINESS BARRIER. Wait until Axon Server can route to the
-   * handlers subscribed on the bus streams. Call AFTER `kronos` — the
-   * subscribe frames must already be on the wire for the wait to mean anything.
+   * DATA-PATH START. Two things, both data path:
    *
-   * Takes no arguments and touches no control-plane state.
+   *   1. arm heartbeat-driven reconnect detection on the platform stream, and
+   *   2. wait until Axon Server can route to the handlers subscribed on the bus
+   *      streams.
+   *
+   * Call AFTER `kronos` — the subscribe frames must already be on the wire for
+   * the readiness wait to mean anything.
+   *
+   * Takes no arguments and arms no control-plane state.
    */
   start(): Promise<void>
   /** Drain in-flight bus work, stop the platform stream, close the connection. */
@@ -303,7 +317,7 @@ export async function axonServer(
   const components: AxonServerComponents = {
     eventStore: axonServerEventStore(connection, serializer),
     snapshotStore: axonServerSnapshotStore(connection, serializer),
-    commandBus: createDistributedCommandBus(
+    commandBus: distributedCommandBus(
       connection,
       unitOfWorkFactory,
       commandLatch,
@@ -335,6 +349,21 @@ export async function axonServer(
     platform,
 
     async start() {
+      // RECONNECT DETECTION IS DATA PATH. The heartbeat on the platform stream
+      // is what notices a dead channel and calls `connection.reconnect()`; both
+      // buses above hook `connection.onReconnect(...)` to rebuild their own
+      // streams. Arming it used to be a side effect of `platform.start()`, which
+      // only `axonServerControlPlane(...)` calls — so a service that never opted
+      // into remote administration had NO reconnect detection at all and would
+      // sit on a dead channel forever. It is armed here, unconditionally,
+      // independent of whether anyone administers this service.
+      //
+      // `armConnectionMonitoring()` opens the stream and starts heartbeats but
+      // arms NO processor status reporting; that stays the control plane's, and
+      // a later `platform.start()` adds it to this same live stream. Both calls
+      // are idempotent, so either order works.
+      await platform.armConnectionMonitoring()
+
       // The only thing the data path has to wait for: Axon Server's
       // command/query routing tables registering the subscribe frames sent on
       // the BUS streams. It cannot be derived from the platform stream, because
@@ -400,7 +429,36 @@ function createPayloadHelpers(serializer: Serializer) {
  *   routes an inbound command to this node, it's executed on the local segment
  *   within a UnitOfWork.
  */
-function createDistributedCommandBus(
+/**
+ * A command bus backed by Axon Server.
+ *
+ * ## Correlation lineage and the interceptor layer
+ *
+ * The returned bus is wrapped in {@link interceptingCommandBus} carrying
+ * {@link correlationDataDispatchInterceptor}, so lineage is stamped onto the
+ * outgoing message BEFORE it is serialized onto the wire.
+ *
+ * This is precisely how the Java client does it. AF4's `AxonServerCommandBus`
+ * holds its own `DispatchInterceptors` and dispatches as
+ * `doDispatch(dispatchInterceptors.intercept(commandMessage), cb)` — one call
+ * site, at the top, ahead of any routing; and its `doDispatch` (like this one)
+ * always goes to the server, letting Axon Server decide where the command lands.
+ * AF5 keeps the property via decorator order:
+ * `DISTRIBUTED_COMMAND_BUS_ORDER = InterceptingCommandBus.DECORATION_ORDER - 50`
+ * stacks `InterceptingCommandBus → DistributedCommandBus → SimpleCommandBus`.
+ *
+ * Before this wrap, an Axon-backed service lost lineage on EVERY command: the
+ * only registration of `correlationDataDispatchInterceptor` lives in
+ * `@kronos-ts/app`'s in-memory default bus, and `components.commandBus` from
+ * this backend replaces it wholesale.
+ *
+ * No double-application risk: the local segment here is a plain handler map, not
+ * a `CommandBus`, so this is the only interceptor in the chain. Inbound commands
+ * from the server are invoked through that map directly, which matches AF —
+ * `CommandProcessingTask` runs the local segment WITHOUT re-running dispatch
+ * interceptors.
+ */
+export function distributedCommandBus(
   connection: AxonServerConnection,
   unitOfWorkRunner: UoWRunner,
   shutdownLatch: ShutdownLatch,
@@ -563,7 +621,7 @@ function createDistributedCommandBus(
     }
   }
 
-  return {
+  const routing: CommandBus = {
     async dispatch(message: CommandMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
@@ -612,6 +670,11 @@ function createDistributedCommandBus(
       grantPermits()
     },
   }
+
+  // Interception OUTSIDE routing — see the note on this function.
+  const bus = interceptingCommandBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +689,18 @@ function createDistributedCommandBus(
  * - **Local segment**: Handlers registered here are stored locally and
  *   registered with Axon Server for inbound routing. Inbound queries
  *   are executed within a UnitOfWork.
+ *
+ * Wrapped in {@link interceptingQueryBus} with
+ * {@link correlationDataDispatchInterceptor}, matching AF4's
+ * `AxonServerQueryBus`, which calls `dispatchInterceptors.intercept(...)` at the
+ * top of `query`, `streamingQuery`, `scatterGather` and `subscriptionQuery`.
+ * Because the wrap is outside, the `shortcutQueriesToLocalHandlers` branch in
+ * `query()` gets identical lineage to the remote branch.
+ *
+ * KNOWN GAP: `subscriptionQuery` / `subscribeToUpdates` build their proto
+ * straight from `message.metadata`, and `interceptingQueryBus` (in
+ * `@kronos-ts/messaging`) forwards those two calls to the delegate without
+ * running the dispatch chain. Closing that needs a messaging-package change.
  */
 export function distributedQueryBus(
   connection: AxonServerConnection,
@@ -877,7 +952,7 @@ export function distributedQueryBus(
     }
   }
 
-  return {
+  const routing: QueryBus = {
     async query(message: QueryMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
@@ -1157,4 +1232,8 @@ export function distributedQueryBus(
       })
     },
   }
+
+  const bus = interceptingQueryBus(routing)
+  bus.registerDispatchInterceptor(correlationDataDispatchInterceptor())
+  return bus
 }

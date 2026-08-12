@@ -46,7 +46,7 @@
     },
     "packages/app": {
       "name": "@kronos-ts/app",
-      "version": "0.1.0",
+      "version": "0.5.3",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
@@ -57,7 +57,7 @@
     },
     "packages/common": {
       "name": "@kronos-ts/common",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "dependencies": {
         "uuid": "^11",
         "zod": "^4.3.6",
@@ -65,7 +65,7 @@
     },
     "packages/eventsourcing": {
       "name": "@kronos-ts/eventsourcing",
-      "version": "0.1.0",
+      "version": "0.3.3",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
@@ -78,7 +78,7 @@
     },
     "packages/extensions/axon-server": {
       "name": "@kronos-ts/axon-server",
-      "version": "0.1.0",
+      "version": "0.2.11",
       "dependencies": {
         "@bufbuild/protobuf": "^2.3",
         "@grpc/grpc-js": "^1.12",
@@ -100,7 +100,7 @@
     },
     "packages/extensions/drizzle": {
       "name": "@kronos-ts/drizzle",
-      "version": "0.1.0",
+      "version": "0.3.3",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
@@ -111,7 +111,7 @@
     },
     "packages/extensions/knex": {
       "name": "@kronos-ts/knex",
-      "version": "0.1.0",
+      "version": "0.3.3",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
@@ -122,11 +122,10 @@
     },
     "packages/extensions/kronosdb": {
       "name": "@kronos-ts/kronosdb",
-      "version": "0.1.0",
+      "version": "0.3.1",
       "dependencies": {
         "@bufbuild/protobuf": "^2.3",
         "@grpc/grpc-js": "^1.12",
-        "@kronos-ts/app": "workspace:*",
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
@@ -136,6 +135,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
+        "@kronos-ts/app": "workspace:*",
         "grpc-tools": "^1.12",
         "grpc_tools_node_protoc_ts": "^5.3",
         "testcontainers": "^11.13.0",
@@ -144,7 +144,7 @@
     },
     "packages/extensions/kysely": {
       "name": "@kronos-ts/kysely",
-      "version": "0.1.0",
+      "version": "0.2.8",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
@@ -155,7 +155,7 @@
     },
     "packages/extensions/opentelemetry": {
       "name": "@kronos-ts/opentelemetry",
-      "version": "0.1.0",
+      "version": "0.4.4",
       "dependencies": {
         "@kronos-ts/app": "workspace:*",
         "@kronos-ts/common": "workspace:*",
@@ -172,7 +172,7 @@
     },
     "packages/extensions/postgres": {
       "name": "@kronos-ts/postgres",
-      "version": "0.1.0",
+      "version": "0.8.3",
       "dependencies": {
         "@kronos-ts/app": "workspace:*",
         "@kronos-ts/common": "workspace:*",
@@ -196,7 +196,7 @@
     },
     "packages/extensions/prisma": {
       "name": "@kronos-ts/prisma",
-      "version": "0.1.0",
+      "version": "0.2.8",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
@@ -207,15 +207,15 @@
     },
     "packages/extensions/rabbitmq": {
       "name": "@kronos-ts/rabbitmq",
-      "version": "0.2.0",
+      "version": "0.3.11",
       "dependencies": {
-        "@kronos-ts/app": "workspace:*",
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
         "@kronos-ts/modelling": "workspace:*",
       },
       "devDependencies": {
+        "@kronos-ts/app": "workspace:*",
         "@types/amqplib": "^0.10.7",
         "amqplib": "^0.10.5",
         "testcontainers": "^11.14.0",
@@ -230,7 +230,7 @@
     },
     "packages/extensions/typeorm": {
       "name": "@kronos-ts/typeorm",
-      "version": "0.1.0",
+      "version": "0.2.8",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
@@ -241,7 +241,7 @@
     },
     "packages/messaging": {
       "name": "@kronos-ts/messaging",
-      "version": "0.1.0",
+      "version": "0.9.2",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/eventsourcing": "workspace:*",
@@ -253,7 +253,7 @@
     },
     "packages/modelling": {
       "name": "@kronos-ts/modelling",
-      "version": "0.1.0",
+      "version": "0.2.10",
       "dependencies": {
         "@kronos-ts/common": "workspace:*",
         "@kronos-ts/messaging": "workspace:*",
@@ -262,7 +262,7 @@
     },
     "packages/test": {
       "name": "@kronos-ts/test",
-      "version": "0.1.0",
+      "version": "0.1.13",
       "dependencies": {
         "@kronos-ts/app": "workspace:*",
         "@kronos-ts/common": "workspace:*",

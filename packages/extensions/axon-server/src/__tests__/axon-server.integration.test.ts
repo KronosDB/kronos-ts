@@ -167,10 +167,13 @@ describe("Axon Server integration — axonServer() backend", () => {
     })
 
     // Handlers are subscribed by now — wait until the server can route to them.
-    // NOTE: this is the DATA-PATH readiness barrier only. No platform (control)
-    // stream is started anywhere in this suite — every command/query/event test
-    // below runs with `axon.platform.connected === false`, which is what proves
-    // remote administration is genuinely orthogonal to the data path.
+    // NOTE: this is the DATA PATH only. `start()` arms heartbeat-driven
+    // reconnect detection on the platform stream and waits for bus routability;
+    // it arms NO remote administration. No `axonServerControlPlane` is built
+    // until the dedicated test below, so every command/query/event test in
+    // between runs with instruction routing and processor status reporting
+    // switched off — which is what proves remote administration is genuinely
+    // orthogonal to the data path.
     await axon.start()
   }, 120_000)
 
@@ -277,20 +280,24 @@ describe("Axon Server integration — axonServer() backend", () => {
     ).rejects.toThrow()
   }, 60_000)
 
-  it("start() leaves the platform stream down; the control plane brings it up", async () => {
-    // The whole point of the extraction: a service that is not remotely
-    // administered never opens the control stream, yet everything above worked.
-    expect(axon.platform.connected).toBe(false)
+  it("start() arms the data path's platform stream; the control plane layers admin on top", async () => {
+    // The data path owns reconnect detection, so `axon.start()` has the platform
+    // stream up already — a service nobody administers still notices a dead
+    // channel. What it does NOT have is instruction routing or status
+    // reporting; those arrive with the control plane, on this same stream.
+    expect(axon.platform.connected).toBe(true)
 
     const proc: ManagedEventProcessor = { name: "course-projection", running: true, position: 3n }
     const control = await axonServerControlPlane(axon.platform, [proc])
     try {
+      // start() over an already-armed stream is a no-op for the stream itself.
       expect(axon.platform.connected).toBe(true)
       expect(await axon.platform.subscriptionsAcked()).toBe(true)
       expect(control.processors.get("course-projection")).toBe(proc)
     } finally {
       await control.close()
     }
+    // close() tears down the SHARED stream — see the note on PlatformConnection.stop().
     expect(axon.platform.connected).toBe(false)
   }, 60_000)
 

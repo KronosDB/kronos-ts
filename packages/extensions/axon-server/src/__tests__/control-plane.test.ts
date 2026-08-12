@@ -32,6 +32,12 @@ function fakePlatform(): FakePlatform {
 
   return {
     calls,
+    async armConnectionMonitoring() {
+      // The DATA path's half. The control plane must never call it — if it
+      // shows up in `calls`, the split has leaked back into this file.
+      calls.push("armConnectionMonitoring")
+      connected = true
+    },
     async start() {
       calls.push("start")
       connected = true
@@ -93,11 +99,20 @@ describe("axonServerControlPlane — registration ordering", () => {
     expect(platform.calls.indexOf("start")).toBe(platform.calls.length - 1)
   })
 
-  it("starts the platform stream (the backend leaves it unstarted)", async () => {
+  it("starts the platform stream itself", async () => {
     const platform = fakePlatform()
     expect(platform.connected).toBe(false)
     await axonServerControlPlane(platform, [])
     expect(platform.connected).toBe(true)
+  })
+
+  it("arms nothing on the data path — that is the backend's half", async () => {
+    // `platform.start()` is idempotent about the stream, so the control plane
+    // works whether or not `axon.start()` already armed connection monitoring.
+    // What it must NOT do is reach for the data path's entry point itself.
+    const platform = fakePlatform()
+    await axonServerControlPlane(platform, [])
+    expect(platform.calls).not.toContain("armConnectionMonitoring")
   })
 
   it("close() stops the platform stream", async () => {

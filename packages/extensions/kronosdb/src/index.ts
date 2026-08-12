@@ -16,6 +16,7 @@ export {
 
 export {
   kronosDb,
+  distributedCommandBus,
   distributedQueryBus,
   type KronosDbConfig,
   type KronosDbDependencies,

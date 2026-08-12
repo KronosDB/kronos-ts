@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/rabbitmq",
   "version": "0.3.11",
-  "description": "RabbitMQ extension for Kronos — distributed command and query transport.",
+  "description": "RabbitMQ extension for Kronos \u2014 distributed command and query transport.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",
@@ -53,7 +53,6 @@
   },
   "dependencies": {
     "@kronos-ts/common": "workspace:*",
-    "@kronos-ts/app": "workspace:*",
     "@kronos-ts/eventsourcing": "workspace:*",
     "@kronos-ts/messaging": "workspace:*",
     "@kronos-ts/modelling": "workspace:*"
@@ -67,8 +66,9 @@
     }
   },
   "devDependencies": {
-    "amqplib": "^0.10.5",
+    "@kronos-ts/app": "workspace:*",
     "@types/amqplib": "^0.10.7",
+    "amqplib": "^0.10.5",
     "testcontainers": "^11.14.0",
     "zod": "^4.3.6"
   }
