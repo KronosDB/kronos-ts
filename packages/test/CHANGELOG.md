@@ -1,5 +1,12 @@
 # @kronos-ts/test
 
+## 0.2.2
+
+### Patch Changes
+
+- 16c32e3: EventPair is readonly (and exported): `as const` event tuples in specs now
+  satisfy `.events(...)` / `.expectEvents(...)` instead of failing TS4104.
+
 ## 0.2.1
 
 ### Patch Changes
