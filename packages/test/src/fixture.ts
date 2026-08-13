@@ -33,7 +33,7 @@ import {
 // Public types
 // ---------------------------------------------------------------------------
 
-type EventPair = [EventDescriptor<any>, unknown]
+export type EventPair = readonly [EventDescriptor<any>, unknown]
 type CommandPair = [CommandDescriptor<any>, unknown]
 
 // ---------------------------------------------------------------------------
