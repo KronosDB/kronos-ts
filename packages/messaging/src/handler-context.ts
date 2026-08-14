@@ -119,11 +119,14 @@ export interface EventHandlerContext {
  * through `runInUoW`), so the ambient machinery a context needs is present;
  * what was missing was only the seeding and the argument. Deliberately narrow:
  * no `append` (a query must not write), and no `send` (dispatching a command
- * from a query breaks command/query separation).
+ * from a query breaks command/query separation). `query` IS here: a read
+ * composing another module's read stays a read.
  */
 export interface QueryHandlerContext {
   /** Load event-sourced state within the active UnitOfWork (cached per UoW). */
   readonly load: ContextLoadFunction
+  /** Consult a query handler (cross-module read) within the active UnitOfWork. */
+  readonly query: ContextQueryFunction
   /** The active adapter transaction, so a query can read inside it. */
   readonly transaction: <T = unknown>() => Promise<T | undefined>
 }
@@ -157,6 +160,7 @@ export const EVENT_HANDLER_CONTEXT: EventHandlerContext = Object.freeze({
 /** Shared query-handler context instance. See {@link EVENT_HANDLER_CONTEXT}. */
 export const QUERY_HANDLER_CONTEXT: QueryHandlerContext = Object.freeze({
   load,
+  query,
   transaction: getOrBeginActiveTransaction,
 })
 

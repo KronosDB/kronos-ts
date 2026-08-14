@@ -5,6 +5,7 @@ import type { QueryMessage } from "./message.js"
 import type { HandlerEnhancerDefinition } from "./handler-enhancer.js"
 import { QUERY_HANDLER_CONTEXT } from "./handler-context.js"
 import { applyCorrelationData, type CorrelationDataProvider } from "./correlation-data.js"
+import { QUERY_BUS_KEY } from "./emit-update.js"
 import { setResource } from "./processing-state.js"
 import { STATE_MANAGER_KEY } from "@kronos-ts/eventsourcing"
 import type { MinimalConfiguration } from "./command-handling-module.js"
@@ -49,6 +50,8 @@ export function registerQueryHandlersNatively(
       if (config?.hasComponent("stateManager")) {
         setResource(STATE_MANAGER_KEY, config.getComponent<never>("stateManager"))
       }
+      // ctx.query from a query handler: reads may compose reads.
+      setResource(QUERY_BUS_KEY, deps.queryBus)
       return reg.handler(message, QUERY_HANDLER_CONTEXT)
     }
     if (deps.handlerEnhancer) {

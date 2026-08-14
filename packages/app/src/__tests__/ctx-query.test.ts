@@ -56,6 +56,18 @@ const Order = state({
 
 const priceOf = queryHandler(PriceOf, async ({ payload }) => ({ amount: payload.sku === "espresso" ? 4 : 2 }))
 
+const QuoteFor = query({
+  name: qn("ordering", "QuoteFor"),
+  payload: z.object({ sku: z.string() }),
+  result: z.object({ quoted: z.number() }),
+})
+
+/** A read composing another module's read — ctx.query from a QUERY handler. */
+const quoteFor = queryHandler(QuoteFor, async ({ payload }, ctx) => {
+  const price = await ctx.query(PriceOf, { sku: payload.sku })
+  return { quoted: price.amount * 2 }
+})
+
 describe("ctx.query", () => {
   it("lets a command handler consult another module's query handler in-UoW", async () => {
     const placeOrder = commandHandler(PlaceOrder, async ({ payload }, ctx) => {
@@ -76,6 +88,20 @@ describe("ctx.query", () => {
       amount: number
     }
     expect(result.amount).toBe(4)
+    await app.stop()
+  })
+
+  it("lets a query handler compose another module's query handler", async () => {
+    const app = kronos({
+      components: inMemoryComponents(),
+      modules: [
+        module("pricing", { eventStore: inMemoryEventStore(), tokenStore: inMemoryTokenStore() }, priceOf),
+        module("ordering", { eventStore: inMemoryEventStore(), tokenStore: inMemoryTokenStore() }, quoteFor),
+      ],
+    })
+
+    const result = (await app.queryGateway.query(QuoteFor, { sku: "espresso" })) as { quoted: number }
+    expect(result.quoted).toBe(8)
     await app.stop()
   })
 
