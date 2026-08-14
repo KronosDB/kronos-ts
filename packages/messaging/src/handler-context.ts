@@ -3,8 +3,9 @@ import { append } from "@kronos-ts/eventsourcing/append"
 import { load } from "@kronos-ts/eventsourcing/load"
 import { schedule, scheduleAfter, cancelSchedule } from "@kronos-ts/eventsourcing/schedule"
 import type { z } from "zod"
-import type { CommandDescriptor, EventDescriptor } from "./descriptor.js"
+import type { CommandDescriptor, EventDescriptor, QueryDescriptor } from "./descriptor.js"
 import { emitUpdate, type EmitUpdateFunction } from "./emit-update.js"
+import { query } from "./query.js"
 import { send } from "./send.js"
 import { getOrBeginActiveTransaction } from "./transaction.js"
 
@@ -62,6 +63,21 @@ export interface ContextSendFunction {
 }
 
 /**
+ * `query` as a context capability. Consults a query handler — local or across
+ * the distributed bus — inside the active UnitOfWork, with correlation
+ * metadata carried like `ctx.send`. The AF5 analogue is injecting the
+ * QueryGateway into a handler. Prefer a projection or a capability command;
+ * reach for this when a decision genuinely needs another module's answer,
+ * fresh.
+ */
+export interface ContextQueryFunction {
+  <P extends z.ZodType, R extends z.ZodType | undefined = undefined>(
+    descriptor: QueryDescriptor<P, R>,
+    payload: z.infer<P>,
+  ): Promise<R extends z.ZodType ? z.infer<R> : unknown>
+}
+
+/**
  * Capabilities available to event handlers running inside a processor's
  * UnitOfWork.
  *
@@ -83,6 +99,8 @@ export interface EventHandlerContext {
   readonly cancelSchedule: typeof import("@kronos-ts/eventsourcing/schedule").cancelSchedule
   /** Dispatch a command; it is handled in its own fresh UnitOfWork. */
   readonly send: ContextSendFunction
+  /** Consult a query handler (cross-module read) within the active UnitOfWork. */
+  readonly query: ContextQueryFunction
   /** Emit a subscription-query update through the active query bus. */
   readonly emitUpdate: EmitUpdateFunction
   /**
@@ -131,6 +149,7 @@ export const EVENT_HANDLER_CONTEXT: EventHandlerContext = Object.freeze({
   scheduleAfter,
   cancelSchedule,
   send,
+  query,
   emitUpdate,
   transaction: getOrBeginActiveTransaction,
 })

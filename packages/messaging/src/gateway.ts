@@ -14,7 +14,7 @@ import type { z } from "zod"
  * Infers the result type from a descriptor's `result` schema.
  * If no result schema, returns `unknown`.
  */
-type InferResult<R extends z.ZodType | undefined> =
+export type InferResult<R extends z.ZodType | undefined> =
   R extends z.ZodType ? z.infer<R> : unknown
 
 /**
