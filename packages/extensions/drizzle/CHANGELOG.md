@@ -1,5 +1,12 @@
 # @kronos-ts/drizzle
 
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [2f42ed2]
+  - @kronos-ts/messaging@0.11.0
+
 ## 0.4.1
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @kronos-ts/messaging
 
+## 0.11.0
+
+### Minor Changes
+
+- 2f42ed2: Add `ctx.query` to the command, event, and query handler contexts — the in-handler
+  consult, AF5-style (inject the query gateway anywhere): dispatches through the
+  active query bus inside the current UnitOfWork, carrying the caller's
+  correlation metadata like `ctx.send`. `InferResult` is now exported.
+
+### Patch Changes
+
+- @kronos-ts/eventsourcing@0.4.2
+
 ## 0.10.1
 
 ### Patch Changes
