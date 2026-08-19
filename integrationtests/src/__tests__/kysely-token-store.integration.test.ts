@@ -3,7 +3,7 @@ import { GenericContainer, type StartedTestContainer, Wait } from "testcontainer
 import { Kysely, PostgresDialect, sql } from "kysely"
 import pg from "pg"
 import { kyselyTokenStore } from "@kronos-ts/kysely"
-import { globalSequenceToken, UnableToClaimTokenError } from "@kronos-ts/messaging"
+import { globalSequenceToken, UnableToClaimTokenError } from "@kronos-ts/core"
 import { TOKEN_TABLE_DDL, DROP_TOKEN_TABLE } from "./shared-token-table.js"
 
 describe("Kysely TokenStore (PostgreSQL)", () => {

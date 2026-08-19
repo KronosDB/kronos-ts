@@ -1,0 +1,64 @@
+{
+  "name": "@kronos-ts/core",
+  "version": "0.1.0",
+  "description": "The Kronos core — task lifecycle, bus and store shapes, reference-following assembly, and the DCB model.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "author": "Theo Emanuelsson",
+  "homepage": "https://github.com/KronosDB/kronos-ts/tree/main/packages/core#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KronosDB/kronos-ts.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/KronosDB/kronos-ts/issues"
+  },
+  "keywords": [
+    "kronos",
+    "event-sourcing",
+    "cqrs",
+    "dcb",
+    "typescript"
+  ],
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./transaction": "./src/unit-of-work/transaction.ts"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/__tests__",
+    "!src/**/*.test.ts",
+    "!src/**/*.bench.ts"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./transaction": {
+        "types": "./dist/unit-of-work/transaction.d.ts",
+        "default": "./dist/unit-of-work/transaction.js"
+      }
+    }
+  },
+  "dependencies": {
+    "uuid": "^11",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2"
+  }
+}

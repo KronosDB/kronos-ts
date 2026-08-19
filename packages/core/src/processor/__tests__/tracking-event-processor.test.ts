@@ -1,0 +1,738 @@
+import { describe, expect, it, beforeEach } from "bun:test"
+import { qn, type QualifiedName } from "../../primitives/qualified-name.js"
+import { emptyMetadata } from "../../primitives/metadata.js"
+import { eventProcessor } from "../event-processor.js"
+import type { EventStore } from "../../stores/event-store.js"
+import { runEventProcessor } from "../running-processor.js"
+import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
+import { inMemoryTokenStore } from "../../stores/token-store.js"
+import type { StreamableEventSource, SequencedEvent, MessageStream } from "../event-source.js"
+import type { EventMessage } from "../../messages/message.js"
+import type { EventHandlerDefinition } from "../../handlers/event-handler.js"
+import type { TokenStore } from "../../stores/token-store.js"
+import type { TrackingToken } from "../tracking-token.js"
+import { globalSequenceToken } from "../tracking-token.js"
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+function makeEvent(name: QualifiedName, payload: unknown, sequence: bigint): SequencedEvent {
+  return {
+    sequence,
+    event: {
+      identifier: `evt-${sequence}`,
+      name,
+      version: "1.0",
+      payload,
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+      tags: [],
+    },
+  }
+}
+
+function createInMemoryEventSource(events: SequencedEvent[]): StreamableEventSource {
+  const listeners = new Set<() => void>()
+
+  return {
+    open(condition) {
+      let cursor = condition.position
+      let callback: (() => void) | null = null
+
+      const listener = () => {
+        if (callback) callback()
+      }
+      listeners.add(listener)
+
+      return {
+        next() {
+          const found = events.find((e) => e.sequence >= cursor)
+          if (!found) return undefined
+          cursor = found.sequence + 1n
+          return found
+        },
+        peek() {
+          return events.find((e) => e.sequence >= cursor)
+        },
+        hasNextAvailable() {
+          return events.some((e) => e.sequence >= cursor)
+        },
+        isCompleted() { return false },
+        error() { return undefined },
+        setCallback(cb) { callback = cb },
+        close() {
+          callback = null
+          listeners.delete(listener)
+        },
+      }
+    },
+    async getHeadPosition() {
+      if (events.length === 0) return 0n
+      return events[events.length - 1]!.sequence + 1n
+    },
+  }
+}
+
+function createRecordingTokenStore(): TokenStore & { stored: Array<{ name: string; segment: number; token: TrackingToken }> } {
+  const tokens = new Map<string, TrackingToken>()
+  const stored: Array<{ name: string; segment: number; token: TrackingToken }> = []
+
+  return {
+    stored,
+    async store(processorName, segment, token) {
+      tokens.set(`${processorName}:${segment}`, token)
+      stored.push({ name: processorName, segment, token })
+    },
+    async get(processorName, segment) {
+      return tokens.get(`${processorName}:${segment}`)
+    },
+    async initializeSegments() {},
+    async claimToken() { return undefined },
+    async extendClaim() {},
+    async releaseClaim() {},
+    async fetchSegments() { return [0] },
+    async fetchAvailableSegments() { return [0] },
+    async deleteToken() {},
+  }
+}
+
+const TEST_EVENT_NAME = qn("test", "SomethingHappened")
+
+/**
+ * Start one delivery over a purpose-built stream.
+ *
+ * The processor is a VALUE now, so the test builds one and hands it, plus the
+ * handlers that named it, to the runner. The fake source implements only the
+ * streaming half of `EventStore` — the half a processor actually reads — so it
+ * is cast at the seam rather than padded with unreachable append machinery.
+ */
+function runOver(config: {
+  name?: string
+  eventSource: StreamableEventSource
+  eventHandlers: ReadonlyArray<EventHandlerDefinition<any>>
+  tokenStore?: TokenStore
+  batchSize?: number
+  pollingIntervalMs?: number
+}) {
+  return runEventProcessor({
+    processor: eventProcessor({
+      name: config.name ?? "test-processor",
+      eventStore: config.eventSource as unknown as EventStore,
+      tokenStore: config.tokenStore ?? inMemoryTokenStore(),
+      unitOfWork,
+      ...(config.batchSize !== undefined ? { batchSize: config.batchSize } : {}),
+    }),
+    handlers: config.eventHandlers.map((definition) => ({ definition })),
+    ...(config.pollingIntervalMs !== undefined
+      ? { pollingIntervalMs: config.pollingIntervalMs }
+      : {}),
+  })
+}
+
+/** Wait for the processor to advance past a position, with a timeout. */
+async function waitForPosition(
+  proc: { position: bigint; running: boolean },
+  target: bigint,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (proc.position < target && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  if (proc.position < target) {
+    throw new Error(`Processor did not reach position ${target} within ${timeoutMs}ms (at ${proc.position})`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("event processor", () => {
+  describe("event delivery", () => {
+    it("reads events from the event source and delivers to handlers", async () => {
+      // given
+      const delivered: unknown[] = []
+      const events = [
+        makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n),
+        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
+        makeEvent(TEST_EVENT_NAME, { value: 3 }, 2n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      const handler: EventHandlerDefinition<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: ({ payload }) => { delivered.push(payload) },
+      }
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [handler],
+
+        pollingIntervalMs: 10,
+      })
+
+      // when
+      await processor.start()
+      await waitForPosition(processor, 3n)
+      processor.stop()
+
+      // then
+      expect(delivered).toEqual([{ value: 1 }, { value: 2 }, { value: 3 }])
+    })
+
+    it("ignores events with no matching handler", async () => {
+      // given
+      const delivered: unknown[] = []
+      const otherName = qn("test", "UnhandledEvent")
+      const events = [
+        makeEvent(otherName, { value: 1 }, 0n),
+        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      const handler: EventHandlerDefinition<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: ({ payload }) => { delivered.push(payload) },
+      }
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [handler],
+
+        pollingIntervalMs: 10,
+      })
+
+      // when
+      await processor.start()
+      await waitForPosition(processor, 2n)
+      processor.stop()
+
+      // then
+      expect(delivered).toEqual([{ value: 2 }])
+    })
+  })
+
+  describe("position tracking", () => {
+    it("advances position after each batch", async () => {
+      // given
+      const events = [
+        makeEvent(TEST_EVENT_NAME, {}, 0n),
+        makeEvent(TEST_EVENT_NAME, {}, 1n),
+        makeEvent(TEST_EVENT_NAME, {}, 2n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [{
+          kind: "event-handler",
+          descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+          handler: () => {},
+        }],
+
+        pollingIntervalMs: 10,
+      })
+
+      // when
+      expect(processor.position).toBe(0n) // starts at 0
+      await processor.start()
+      await waitForPosition(processor, 3n)
+      processor.stop()
+
+      // then
+      expect(processor.position).toBe(3n)
+    })
+  })
+
+  describe("token store integration", () => {
+    it("stores token at PREPARE_COMMIT when token store is configured", async () => {
+      // given
+      const tokenStore = createRecordingTokenStore()
+      const events = [
+        makeEvent(TEST_EVENT_NAME, {}, 0n),
+        makeEvent(TEST_EVENT_NAME, {}, 1n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [{
+          kind: "event-handler",
+          descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+          handler: () => {},
+        }],
+
+        tokenStore,
+        pollingIntervalMs: 10,
+      })
+
+      // when
+      await processor.start()
+      await waitForPosition(processor, 2n)
+      processor.stop()
+
+      // then
+      expect(tokenStore.stored.length).toBeGreaterThanOrEqual(1)
+      const lastStored = tokenStore.stored[tokenStore.stored.length - 1]!
+      expect(lastStored.token.position()).toBe(2n)
+      expect(lastStored.name).toBe("test-processor")
+    })
+
+    it("resumes from stored position on restart", async () => {
+      // given
+      const tokenStore = createRecordingTokenStore()
+      // Pre-seed token at position 2
+      await tokenStore.store("test-processor", 0, globalSequenceToken(2n))
+
+      const delivered: bigint[] = []
+      const events = [
+        makeEvent(TEST_EVENT_NAME, {}, 0n),
+        makeEvent(TEST_EVENT_NAME, {}, 1n),
+        makeEvent(TEST_EVENT_NAME, {}, 2n),
+        makeEvent(TEST_EVENT_NAME, {}, 3n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [{
+          kind: "event-handler",
+          descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+          handler: () => {
+            delivered.push(BigInt(delivered.length))
+          },
+        }],
+
+        tokenStore,
+        pollingIntervalMs: 10,
+      })
+
+      // when
+      await processor.start()
+      await waitForPosition(processor, 4n)
+      processor.stop()
+
+      // then -- should only deliver events at position 2 and 3 (skipped 0, 1)
+      expect(delivered).toHaveLength(2)
+      expect(processor.position).toBe(4n)
+    })
+  })
+
+  describe("error handling", () => {
+    it("propagating error handler aborts the batch", async () => {
+      // given
+      const delivered: unknown[] = []
+      const events = [
+        makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n),
+        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      const handler: EventHandlerDefinition<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: ({ payload }) => {
+          delivered.push(payload)
+          throw new Error("handler failed")
+        },
+      }
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [handler],
+        pollingIntervalMs: 10,
+      })
+
+      // when
+      await processor.start()
+      await new Promise((r) => setTimeout(r, 200))
+      processor.stop()
+
+      // then -- position should NOT advance past the failing event
+      expect(processor.position).toBe(0n)
+    })
+
+    it("redelivers a failed batch on the next poll without a restart", async () => {
+      // given -- a handler that throws the first time it sees sequence 1n,
+      // then succeeds. Before the fix, the live stream cursor advanced past
+      // the failed batch during accumulation while the token did not, so the
+      // event was skipped until a restart and the position never reached 2n.
+      const attempts: bigint[] = []
+      const events = [
+        makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n),
+        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      let thrown = false
+      const handler: EventHandlerDefinition<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: ({ sequence }: any) => {
+          attempts.push(sequence)
+          if (sequence === 1n && !thrown) {
+            thrown = true
+            throw new Error("transient handler failure")
+          }
+        },
+      }
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [handler],
+        pollingIntervalMs: 10,
+      })
+
+      // when -- never restarted; reaching 2n requires redelivery of the failed event
+      await processor.start()
+      await waitForPosition(processor, 2n)
+      processor.stop()
+
+      // then -- the failed event was retried and the checkpoint advanced past it
+      expect(processor.position).toBe(2n)
+      expect(attempts.filter((s) => s === 1n).length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  describe("stop and restart", () => {
+    it("can be stopped and restarted", async () => {
+      // given
+      const delivered: unknown[] = []
+      const events = [
+        makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n),
+        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
+      ]
+      const mutableEvents = [...events]
+
+      const listeners = new Set<() => void>()
+      const eventSource: StreamableEventSource = {
+        open(condition) {
+          let cursor = condition.position
+          let cb: (() => void) | null = null
+          const listener = () => { if (cb) cb() }
+          listeners.add(listener)
+          return {
+            next() {
+              const found = mutableEvents.find((e) => e.sequence >= cursor)
+              if (!found) return undefined
+              cursor = found.sequence + 1n
+              return found
+            },
+            peek() { return mutableEvents.find((e) => e.sequence >= cursor) },
+            hasNextAvailable() { return mutableEvents.some((e) => e.sequence >= cursor) },
+            isCompleted() { return false },
+            error() { return undefined },
+            setCallback(callback) { cb = callback },
+            close() { cb = null; listeners.delete(listener) },
+          }
+        },
+        async getHeadPosition() {
+          if (mutableEvents.length === 0) return 0n
+          return mutableEvents[mutableEvents.length - 1]!.sequence + 1n
+        },
+      }
+
+      const handler: EventHandlerDefinition<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: ({ payload }) => { delivered.push(payload) },
+      }
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [handler],
+
+        pollingIntervalMs: 10,
+      })
+
+      // when -- first run
+      await processor.start()
+      await waitForPosition(processor, 2n)
+      processor.stop()
+      expect(processor.running).toBe(false)
+
+      // Add more events
+      mutableEvents.push(makeEvent(TEST_EVENT_NAME, { value: 3 }, 2n))
+
+      // when -- restart
+      await processor.start()
+      expect(processor.running).toBe(true)
+      await waitForPosition(processor, 3n)
+      processor.stop()
+
+      // then
+      expect(delivered).toEqual([{ value: 1 }, { value: 2 }, { value: 3 }])
+    })
+  })
+
+  describe("reset and replay", () => {
+    it("reset stores a ReplayToken and rewinds the position", async () => {
+      // given
+      const events = [
+        makeEvent(TEST_EVENT_NAME, {}, 0n),
+        makeEvent(TEST_EVENT_NAME, {}, 1n),
+        makeEvent(TEST_EVENT_NAME, {}, 2n),
+      ]
+      const tokenStore = createRecordingTokenStore()
+      const eventSource = createInMemoryEventSource(events)
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [{
+          kind: "event-handler",
+          descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+          handler: () => {},
+        }],
+
+        tokenStore,
+        pollingIntervalMs: 10,
+      })
+
+      // when -- process all events, then stop and reset
+      await processor.start()
+      await waitForPosition(processor, 3n)
+      processor.stop()
+
+      await processor.resetTokens()
+
+      // then — clearing whatever the projection wrote is the HOST's business
+      // now; the processor owns the cursor and nothing else, so there is no
+      // `onReset` callback to fire.
+      expect(processor.replaying).toBe(true)
+      expect(processor.position).toBe(0n)
+      const lastStored = tokenStore.stored[tokenStore.stored.length - 1]!
+      expect(lastStored.token.kind).toBe("replay")
+    })
+
+    it("throws when resetting while running", async () => {
+      // given
+      const eventSource = createInMemoryEventSource([])
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [],
+
+        pollingIntervalMs: 10,
+      })
+
+      await processor.start()
+
+      // when / then
+      await expect(processor.resetTokens()).rejects.toThrow("must be stopped before resetting")
+
+      processor.stop()
+    })
+
+    it("handlers see isReplaying=true during replay", async () => {
+      // given
+      const replayStates: boolean[] = []
+      const events = [
+        makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n),
+        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
+        makeEvent(TEST_EVENT_NAME, { value: 3 }, 2n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      const handler: EventHandlerDefinition<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: (_payload, ctx) => {
+          replayStates.push(ctx.isReplay())
+        },
+      }
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [handler],
+
+        pollingIntervalMs: 10,
+      })
+
+      // First pass
+      await processor.start()
+      await waitForPosition(processor, 3n)
+      processor.stop()
+
+      // Reset and replay
+      replayStates.length = 0
+      await processor.resetTokens()
+      await processor.start()
+      await waitForPosition(processor, 3n)
+      processor.stop()
+
+      // then
+      expect(replayStates).toHaveLength(3)
+      expect(replayStates.every((s) => s === true)).toBe(true)
+    })
+
+    it("replay completes when position passes the reset point", async () => {
+      // given
+      const events = [
+        makeEvent(TEST_EVENT_NAME, {}, 0n),
+        makeEvent(TEST_EVENT_NAME, {}, 1n),
+        makeEvent(TEST_EVENT_NAME, {}, 2n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [{
+          kind: "event-handler",
+          descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+          handler: () => {},
+        }],
+
+        pollingIntervalMs: 10,
+      })
+
+      // Process all events
+      await processor.start()
+      await waitForPosition(processor, 3n)
+      processor.stop()
+
+      // Reset to beginning
+      await processor.resetTokens()
+      expect(processor.replaying).toBe(true)
+
+      // Replay
+      await processor.start()
+      await waitForPosition(processor, 3n)
+      await new Promise((r) => setTimeout(r, 100))
+      processor.stop()
+
+      // then
+      expect(processor.replaying).toBe(false)
+      expect(processor.position).toBe(3n)
+    })
+  })
+
+  describe("processor properties", () => {
+    it("exposes name and running state", async () => {
+      // given
+      const eventSource = createInMemoryEventSource([])
+      const processor = runOver({
+        name: "my-processor",
+        eventSource,
+        eventHandlers: [],
+
+      })
+
+      // then
+      expect(processor.name).toBe("my-processor")
+      expect(processor.running).toBe(false)
+
+      await processor.start()
+      expect(processor.running).toBe(true)
+
+      processor.stop()
+      expect(processor.running).toBe(false)
+    })
+
+    it("is not replaying when freshly created", () => {
+      // given
+      const eventSource = createInMemoryEventSource([])
+      const processor = runOver({
+        name: "test-processor",
+        eventSource,
+        eventHandlers: [],
+
+      })
+
+      // then
+      expect(processor.replaying).toBe(false)
+    })
+  })
+
+  describe("status() — admin/observability snapshot", () => {
+    it("reports caught-up with the advanced position after draining the stream", async () => {
+      const events = [
+        makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n),
+        makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n),
+      ]
+      const eventSource = createInMemoryEventSource(events)
+      const handler: EventHandlerDefinition<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: () => {},
+      }
+      const processor = runOver({
+        name: "balances",
+        eventSource,
+        eventHandlers: [handler],
+        pollingIntervalMs: 10,
+      })
+
+      await processor.start()
+      await waitForPosition(processor, 2n)
+      // Let one empty poll run so caughtUp flips true.
+      await new Promise((r) => setTimeout(r, 30))
+      const status = processor.status()
+      processor.stop()
+
+      expect(status.running).toBe(true)
+      expect(status.position).toBe(2n)
+      expect(status.caughtUp).toBe(true)
+      expect(status.replaying).toBe(false)
+      expect(status.error).toBeUndefined()
+    })
+
+    it("surfaces the last error and clears it once a later batch succeeds", async () => {
+      let failOnce = true
+      const events = [makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n)]
+      const eventSource = createInMemoryEventSource(events)
+      const handler: EventHandlerDefinition<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: () => {
+          if (failOnce) {
+            failOnce = false
+            throw new Error("boom")
+          }
+        },
+      }
+      // No DLQ + propagating handler → the batch rolls back and redelivers, so
+      // the first failure surfaces in status().error, then clears on the retry.
+      const processor = runOver({
+        name: "balances",
+        eventSource,
+        eventHandlers: [handler],
+        pollingIntervalMs: 10,
+      })
+
+      await processor.start()
+      await waitForPosition(processor, 1n) // recovers on retry
+      await new Promise((r) => setTimeout(r, 30))
+      const status = processor.status()
+      processor.stop()
+
+      expect(status.position).toBe(1n)
+      expect(status.error).toBeUndefined() // cleared after the successful retry
+    })
+
+    it("reports not-running before start", () => {
+      const processor = runOver({
+        name: "balances",
+        eventSource: createInMemoryEventSource([]),
+        eventHandlers: [],
+      })
+      const status = processor.status()
+      expect(status.running).toBe(false)
+      expect(status.position).toBe(0n)
+    })
+  })
+})

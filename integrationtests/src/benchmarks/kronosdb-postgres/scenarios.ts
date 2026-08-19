@@ -1,13 +1,18 @@
 import { z } from "zod"
-import { emptyMetadata, qn, tag, type Metadata } from "@kronos-ts/common"
+import { emptyMetadata, qn, tag, type Metadata } from "@kronos-ts/core"
 import {
-  EventCriteria,
-  trackingEventProcessor,
+  type EventQuery,
+  type EventMessage,
   event,
   eventHandler,
-  type EventMessage,
-} from "@kronos-ts/messaging"
-import type { EventStore } from "@kronos-ts/eventsourcing"
+  eventProcessor,
+  inMemoryTokenStore,
+  kronos,
+  simpleCommandBus,
+  simpleQueryBus,
+  unitOfWork,
+} from "@kronos-ts/core"
+import type { EventStore } from "@kronos-ts/core"
 import type { BackendHarness } from "./backends.js"
 import {
   BENCH_EVENT_NAME,
@@ -34,7 +39,7 @@ const BenchEvent = event({
       labels: z.array(z.string()),
     }),
   }),
-  tags: (payload) => [tag("aggregateId", payload.aggregateId)],
+  tags: { aggregateId: (payload) => payload.aggregateId },
 })
 
 export interface ScenarioRun {
@@ -83,7 +88,7 @@ function verifyPayloads(events: readonly EventMessage[], expected: number, label
 }
 
 async function sourceAggregate(store: EventStore, aggregateId: string) {
-  return store.source({ criteria: EventCriteria.havingTags(tag("aggregateId", aggregateId)) })
+  return store.source({ query: { tags: { aggregateId: aggregateId } } })
 }
 
 async function seedEvents(
@@ -234,7 +239,7 @@ async function workflowPass(
       assert(state.count === seedDepth + operation, `${aggregateId}: unexpected sourced history length`)
       await harness.store.append(
         [makeEvent(aggregateId, state.count, seed)],
-        { criteria: EventCriteria.havingTags(tag("aggregateId", aggregateId)), marker: sourced.marker },
+        { query: { tags: { aggregateId: aggregateId } }, marker: sourced.marker },
       )
       latencies.push(performance.now() - before)
     }
@@ -294,8 +299,8 @@ async function runWorkflow(harness: BackendHarness, options: BenchmarkOptions): 
 // ---------------------------------------------------------------------------
 // DCB scenario — a consistency boundary spanning many event types.
 //
-// Each command's criteria is an OR of DCB_KINDS branches, one per event type,
-// each restricted to that type's own tag key. This is the "wide" DCB shape
+// Each command's query is an OR of DCB_KINDS items, one per event type, each
+// restricted to that type's own tag key. This is the "wide" DCB shape
 // (multi-entity invariant) as opposed to the workflow scenario's single
 // aggregateId tag: the store has to resolve many type+tag branches per
 // source AND per conditional-append conflict check, against a log that also
@@ -321,12 +326,11 @@ function makeDcbEvent(caseId: string, kind: number, ordinal: number, seed: strin
   } as EventMessage
 }
 
-function dcbCriteria(caseId: string): EventCriteria {
-  return EventCriteria.either(
-    ...Array.from({ length: DCB_KINDS }, (_, kind) =>
-      EventCriteria.havingTags(tag(`entity${kind}`, caseId)).ofTypes(dcbEventName(kind)),
-    ),
-  )
+function dcbQuery(caseId: string): EventQuery {
+  return Array.from({ length: DCB_KINDS }, (_, kind) => ({
+    tags: { [`entity${kind}`]: caseId },
+    types: [dcbEventName(kind)],
+  }))
 }
 
 async function dcbPass(
@@ -349,10 +353,10 @@ async function dcbPass(
   let checks = 0
   await Promise.all(caseIds.map((caseId) => (async () => {
     const seed = `${options.seed}:${harness.name}:${caseId}`
-    const criteria = dcbCriteria(caseId)
+    const query = dcbQuery(caseId)
     for (let operation = 0; operation < perWorker; operation++) {
       const before = performance.now()
-      const sourced = await harness.store.source({ criteria })
+      const sourced = await harness.store.source({ query })
       let value = 0
       for (const message of sourced.events) value += payloadOf(message).delta
       assert(
@@ -362,7 +366,7 @@ async function dcbPass(
       assert(value > 0, `${caseId}: reduced state is empty`)
       await harness.store.append(
         [makeDcbEvent(caseId, operation % DCB_KINDS, DCB_KINDS + operation, seed)],
-        { criteria, marker: sourced.marker },
+        { query, marker: sourced.marker },
       )
       latencies.push(performance.now() - before)
     }
@@ -371,7 +375,7 @@ async function dcbPass(
   const elapsedMs = performance.now() - started
 
   for (const caseId of caseIds) {
-    const sourced = await harness.store.source({ criteria: dcbCriteria(caseId) })
+    const sourced = await harness.store.source({ query: dcbQuery(caseId) })
     assert(
       sourced.events.length === DCB_KINDS + perWorker,
       `${caseId}: final boundary has ${sourced.events.length} events, expected ${DCB_KINDS + perWorker}`,
@@ -384,7 +388,7 @@ async function dcbPass(
 }
 
 async function runDcb(harness: BackendHarness, options: BenchmarkOptions): Promise<ScenarioRun> {
-  // Noise the criteria must discriminate against: same event types, foreign
+  // Noise the query must discriminate against: same event types, foreign
   // case ids, spread across every kind.
   const noiseSeed = `${options.seed}:${harness.name}:dcb-noise`
   for (let from = 0; from < options.profile.dcbNoiseEvents; from += 500) {
@@ -414,7 +418,7 @@ async function runDcb(harness: BackendHarness, options: BenchmarkOptions): Promi
       samples.push({
         backend: harness.name,
         scenario: "dcb",
-        parameters: { concurrency: workers, criteriaWidth: DCB_KINDS },
+        parameters: { concurrency: workers, queryWidth: DCB_KINDS },
         sample,
         metrics: metrics({
           throughputName: "commandsPerSec",
@@ -425,7 +429,7 @@ async function runDcb(harness: BackendHarness, options: BenchmarkOptions): Promi
           elapsedMs: result.elapsedMs,
           operations,
           noiseEvents: options.profile.dcbNoiseEvents,
-          criteriaWidth: DCB_KINDS,
+          queryWidth: DCB_KINDS,
         },
       })
     }
@@ -503,15 +507,25 @@ async function catchupPass(
     deliveries++
     seen.add(payload.ordinal)
   })
-  const processor = trackingEventProcessor({
-    name,
-    eventSource: store,
-    eventHandlers: [handler],
-    ...(batchSize === undefined ? {} : { batchSize }),
+  const app = kronos({
+    eventHandlers: [
+      {
+        ...handler,
+        commandBus: simpleCommandBus(unitOfWork),
+        queryBus: simpleQueryBus(unitOfWork),
+        processor: eventProcessor({
+          name,
+          eventStore: store,
+          tokenStore: inMemoryTokenStore(),
+          unitOfWork,
+          ...(batchSize === undefined ? {} : { batchSize }),
+        }),
+      },
+    ],
   })
+  const processor = app.processors.get(name)!
 
   const before = performance.now()
-  await processor.start()
   try {
     await waitFor(
       () => seen.size === expected && processor.status().caughtUp,
@@ -526,7 +540,7 @@ async function catchupPass(
     }
     return { elapsedMs, position: processor.position, checks: expected + 2 }
   } finally {
-    processor.stop()
+    await app.stop()
     await sleep(50)
   }
 }
@@ -590,13 +604,24 @@ async function runLive(harness: BackendHarness, options: BenchmarkOptions): Prom
     pending.delete(identifier)
     entry.resolve(performance.now() - entry.startedAt)
   })
-  const processor = trackingEventProcessor({
-    name: `live-${harness.name}`,
-    eventSource: harness.store,
-    eventHandlers: [handler],
-    batchSize: 100,
+  const liveName = `live-${harness.name}`
+  const app = kronos({
+    eventHandlers: [
+      {
+        ...handler,
+        commandBus: simpleCommandBus(unitOfWork),
+        queryBus: simpleQueryBus(unitOfWork),
+        processor: eventProcessor({
+          name: liveName,
+          eventStore: harness.store,
+          tokenStore: inMemoryTokenStore(),
+          unitOfWork,
+          batchSize: 100,
+        }),
+      },
+    ],
   })
-  await processor.start()
+  const processor = app.processors.get(liveName)!
   await waitFor(() => processor.status().caughtUp, 30_000, `${harness.name} live processor startup`)
 
   function track(eventMessage: EventMessage): Promise<number> {
@@ -699,7 +724,7 @@ async function runLive(harness: BackendHarness, options: BenchmarkOptions): Prom
     checks += 2
     return { samples, correctnessChecks: checks }
   } finally {
-    processor.stop()
+    await app.stop()
     await sleep(50)
   }
 }

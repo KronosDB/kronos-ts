@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
-import { emptyMetadata, qn, tag, type Metadata } from "@kronos-ts/common"
-import type { EventMessage } from "@kronos-ts/messaging"
+import { emptyMetadata, qn, tag, type Metadata } from "@kronos-ts/core"
+import type { EventMessage } from "@kronos-ts/core"
 
 export type BackendName = "kronosdb" | "postgres"
 export type ScenarioName = "append" | "append-c" | "workflow" | "dcb" | "rehydration" | "catchup-default" | "catchup-100" | "live"
@@ -19,10 +19,10 @@ export interface BenchmarkProfile {
   readonly workflowPerWorker: number
   readonly workflowConcurrency: readonly number[]
   readonly workflowSeedDepth: number
-  /** DCB scenario: commands per worker; each command sources one wide multi-type criteria. */
+  /** DCB scenario: commands per worker; each command sources one wide multi-type query. */
   readonly dcbPerWorker: number
   readonly dcbConcurrency: readonly number[]
-  /** Unrelated events seeded up front so the criteria have to discriminate. */
+  /** Unrelated events seeded up front so the query has to discriminate. */
   readonly dcbNoiseEvents: number
   /** Concurrency sweep: batch-1 appends split across this many workers. */
   readonly appendConcurrency: readonly number[]

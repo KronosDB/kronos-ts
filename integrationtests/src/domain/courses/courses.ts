@@ -1,15 +1,18 @@
-import type { Registration } from "@kronos-ts/app"
+import type {
+  CommandHandlerDefinition,
+  EventHandlerDefinition,
+  EventProcessor,
+  EventStore,
+  QueryHandlerDefinition,
+  SnapshotStore,
+  StateModule,
+  TokenStore,
+  UnitOfWork,
+} from "@kronos-ts/core"
+import { eventProcessor } from "@kronos-ts/core"
 import { z } from "zod"
-import { tag } from "@kronos-ts/common"
-import {
-  withNamespace,
-  EventCriteria,
-  commandHandler,
-  eventHandler,
-  queryHandler,
-  trackingProcessor,
-} from "@kronos-ts/messaging"
-import { state } from "@kronos-ts/modelling"
+import { withNamespace, commandHandler, eventHandler, queryHandler } from "@kronos-ts/core"
+import { state } from "@kronos-ts/core"
 
 // ---------------------------------------------------------------------------
 // Namespace + messages (private to the slice)
@@ -35,22 +38,22 @@ const UnsubscribeStudent = ns.command("UnsubscribeStudent", {
 
 const CourseCreated = ns.event("CourseCreated", {
   payload: z.object({ courseId: z.string(), name: z.string(), capacity: z.number() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const CourseCapacityChanged = ns.event("CourseCapacityChanged", {
   payload: z.object({ courseId: z.string(), capacity: z.number() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const StudentSubscribed = ns.event("StudentSubscribed", {
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  tags: (p) => [tag("courseId", p.courseId), tag("studentId", p.studentId)],
+  tags: { courseId: (p) => p.courseId, studentId: (p) => p.studentId },
 })
 
 const StudentUnsubscribed = ns.event("StudentUnsubscribed", {
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  tags: (p) => [tag("courseId", p.courseId), tag("studentId", p.studentId)],
+  tags: { courseId: (p) => p.courseId, studentId: (p) => p.studentId },
 })
 
 const GetCourseView = ns.query("GetCourseView", {
@@ -76,20 +79,20 @@ const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (): CourseState => ({ created: false, name: "", capacity: 0, enrolled: [] }),
-  criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: (on) => [
-    on(CourseCreated, (s, { payload }) => ({
+  tags: (id) => ({ courseId: id.courseId }),
+  evolve: [
+    [CourseCreated, (s, { payload }) => ({
       ...s, created: true, name: payload.name, capacity: payload.capacity,
-    })),
-    on(CourseCapacityChanged, (s, { payload }) => ({
+    })],
+    [CourseCapacityChanged, (s, { payload }) => ({
       ...s, capacity: payload.capacity,
-    })),
-    on(StudentSubscribed, (s, { payload }) => ({
+    })],
+    [StudentSubscribed, (s, { payload }) => ({
       ...s, enrolled: [...s.enrolled, payload.studentId],
-    })),
-    on(StudentUnsubscribed, (s, { payload }) => ({
+    })],
+    [StudentUnsubscribed, (s, { payload }) => ({
       ...s, enrolled: s.enrolled.filter((sid) => sid !== payload.studentId),
-    })),
+    })],
   ],
 })
 
@@ -200,33 +203,57 @@ const getAllCourses = queryHandler(GetAllCourses, async () => {
 // ---------------------------------------------------------------------------
 
 /**
- * Course domain slice — Phase 11 canonical single-file slice convention.
+ * Course domain slice — the canonical single-file slice convention.
  *
  * All domain primitives (messages, entity, command/event handlers, projection
- * state, query handlers) are module-private `const`. Only this flat
- * registration list is exposed to production callers. The re-exports at the
- * bottom of this file exist solely for integration-test inspection — they
- * are not API.
+ * state, query handlers) are module-private `const`. Only this Slice-shaped
+ * record and {@link courses} are exposed to production callers; the re-exports at
+ * the bottom of this file exist solely for integration-test inspection.
  *
- * Compose at the app's composition root via `module("courses", ...courseRegistrations)`
- * (see `packages/app/src/kronos.ts`), which partitions the list by each
- * registration's own `kind` discriminator — no configurer callback needed.
+ * The four lists carry BARE definitions: no event store, no buses, no processor.
+ * A composition root attaches the site, because which log a slice lives in and
+ * where its cursor is kept are deployment facts.
  */
-export const courseRegistrations: Registration[] = [
-  Course,
-  createCourse,
-  changeCourseCapacity,
-  subscribeStudent,
-  unsubscribeStudent,
-  getCourseView,
-  getAllCourses,
-  trackingProcessor("course-projection")
-    .eventHandlers(onCreated, onCapChanged, onSubscribed, onUnsubscribed)
-    .onReset(async () => {
-      courseViews.clear()
-    })
-    .build(),
-]
+export const courseSlice: {
+  states: ReadonlyArray<StateModule<any, any>>
+  commandHandlers: ReadonlyArray<CommandHandlerDefinition<any, any>>
+  queryHandlers: ReadonlyArray<QueryHandlerDefinition<any, any>>
+  eventHandlers: ReadonlyArray<EventHandlerDefinition<any, any>>
+} = {
+  states: [Course],
+  commandHandlers: [createCourse, changeCourseCapacity, subscribeStudent, unsubscribeStudent],
+  queryHandlers: [getCourseView, getAllCourses],
+  eventHandlers: [onCreated, onCapChanged, onSubscribed, onUnsubscribed],
+}
+
+/** The durable name the course projection's cursor is stored under. */
+export const COURSE_PROJECTION = "course-projection"
+
+
+/**
+ * The course slice as a COMPOSITION ROOT: a function of the resources it runs on.
+ *
+ * This is what a process deploys and what `testFixture` runs — the same function,
+ * called the same way. The projection is left PARTIAL: the slice closes out its
+ * own semantics (its durable name, global stream order, no dead-letter queue for
+ * a lane-free projection) and leaves its resources in the parameter list, so the
+ * site calls it full-handed. Three parameters, not four, declines the queue by
+ * assignability.
+ */
+export function courses(eventStore: EventStore, snapshotStore: SnapshotStore) {
+  const projection = (
+    log: EventStore,
+    tokenStore: TokenStore,
+    unitOfWork: () => UnitOfWork,
+  ): EventProcessor => eventProcessor({ name: COURSE_PROJECTION, eventStore: log, tokenStore, unitOfWork })
+
+  return {
+    states: courseSlice.states.map((s) => ({ ...s, eventStore, snapshotStore })),
+    commandHandlers: courseSlice.commandHandlers.map((h) => ({ ...h, eventStore, snapshotStore })),
+    queryHandlers: courseSlice.queryHandlers.map((h) => ({ ...h })),
+    eventHandlers: courseSlice.eventHandlers.map((h) => ({ ...h, processor: projection })),
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Test inspection helpers — used by integration tests only, not API
@@ -243,7 +270,7 @@ export function clearCourseViews(): void {
 // ---------------------------------------------------------------------------
 // Re-exports — message descriptors + entity needed by integration tests
 // to construct command / query messages and assert on entity behavior.
-// Production code outside the test suite imports ONLY `courseRegistrations`.
+// Production code outside the test suite imports ONLY `courseSlice`.
 // ---------------------------------------------------------------------------
 
 export {

@@ -4,11 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@kronos-ts/common": "workspace:*",
-    "@kronos-ts/app": "workspace:*",
-    "@kronos-ts/messaging": "workspace:*",
-    "@kronos-ts/modelling": "workspace:*",
-    "@kronos-ts/eventsourcing": "workspace:*",
+    "@kronos-ts/core": "workspace:*",
     "@kronos-ts/test": "workspace:*",
     "@kronos-ts/axon-server": "workspace:*",
     "@kronos-ts/kronosdb": "workspace:*",
@@ -17,7 +13,7 @@
     "@kronos-ts/drizzle": "workspace:*",
     "@kronos-ts/knex": "workspace:*",
     "@kronos-ts/kysely": "workspace:*",
-    "@kronos-ts/opentelemetry": "workspace:*",
+    "@kronos-ts/otlp": "workspace:*",
     "zod": "^4.3.6"
   },
   "devDependencies": {

@@ -3,39 +3,188 @@
  *
  * Validates the complete framework without external dependencies:
  * - Command dispatch → event sourcing → state management
- * - Tracking event processor → projection updates
+ * - Event processor → projection updates
  * - Query dispatch → read model
  * - Snapshots with per-entity policy
  * - Correlation data propagation
  * - Business rule enforcement
  *
- * Wired against the functional composition root: `kronos({ components,
- * modules })`. There is no container, so nothing has to be probed back out of
- * one — the event store is an ordinary value the test creates and hands to
- * `inMemoryComponents({ eventStore })`, then asserts against directly.
+ * Wired against the functional composition root: `kronos({ states,
+ * commandHandlers, queryHandlers, eventHandlers })`. There is no container, so
+ * nothing has to be probed back out of one — the event store is an ordinary
+ * value the test creates and hands to each entry's own `{ eventStore }`, then
+ * asserts against directly.
  */
 import { describe, expect, it, afterEach } from "bun:test"
 import { z } from "zod"
-import { qn, tag } from "@kronos-ts/common"
+import { qn } from "@kronos-ts/core"
 import {
-  command,
-  event,
-  query,
-  commandHandler,
-  eventHandler,
-  queryHandler,
-  EventCriteria,
-  trackingProcessor,
-  subscribingProcessor,
-} from "@kronos-ts/messaging"
-import { state } from "@kronos-ts/modelling"
+  command, event, query, send, commandHandler, eventHandler, queryHandler,
+  eventProcessor, type EventProcessor,
+  type CommandHandlerDefinition, type QueryHandlerDefinition, type EventHandlerDefinition,
+  inMemoryTokenStore, type TokenStore,
+} from "@kronos-ts/core"
+import { state, type StateModule } from "@kronos-ts/core"
 import {
   type SnapshotStore,
   inMemoryEventStore,
   inMemorySnapshotStore,
   afterEvents,
-} from "@kronos-ts/eventsourcing"
-import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
+} from "@kronos-ts/core"
+import {
+  kronos,
+  type App,
+  type CommandHandlerEntry,
+  type QueryHandlerEntry,
+  type EventHandlerEntry,
+  type HandlerSite,
+  type Sited,
+  type StateEntry,
+  type StateOptions,
+} from "@kronos-ts/core"
+import {
+  lineage,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  unitOfWork,
+  simpleCommandBus,
+  simpleQueryBus,
+  type UnitOfWork,
+  type CommandBus,
+  type QueryBus,
+} from "@kronos-ts/core"
+
+/**
+ * The two things `kronos` needs that are not handlers. The UoW runner is
+ * named once and handed to `simpleCommandBus` (which captures it at
+ * construction) — writing it on an adjacent line is what makes that checkable.
+ */
+function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
+  return {
+    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
+    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+  }
+}
+
+/**
+ * Everything `sitedOn` accepts, BEFORE a site is attached — deliberately loose
+ * (`any, any`) generics on the command/query/event definitions, because a
+ * caller here typically spreads an already-inferred heterogeneous array (e.g.
+ * `...queryHandlers`) into this rest parameter, and the precise per-handler
+ * payload/result types would otherwise fail the standard
+ * `CommandHandlerEntry`/`QueryHandlerEntry`/`EventHandlerEntry` unions'
+ * structural (contravariant) check.
+ */
+type SitedItem =
+  | Sited<StateModule<any, any>>
+  | readonly [Sited<StateModule<any, any>>, StateOptions]
+  | Sited<CommandHandlerDefinition<any, any>>
+  | Sited<QueryHandlerDefinition<any, any>>
+  | EventHandlerDefinition<any, any>
+
+/** What a host attaches uniformly here. There is no `stores` record any more —
+ * this is the ARGUMENT LIST of a local helper, and every entry comes out
+ * carrying BARE properties. `commandBus`/`queryBus` are required: `kronos`
+ * takes them PER ENTRY now, not once for the whole app. */
+type Site = HandlerSite & {
+  commandBus: CommandBus
+  queryBus: QueryBus
+  tokenStore?: TokenStore
+  unitOfWork?: () => UnitOfWork
+  /**
+   * Durable name for any bare event-handler entries in this call. All event
+   * handlers passed to ONE `sitedOn` call share ONE processor built here —
+   * for more than one processor in an app, call `sitedOn` once per processor
+   * and combine the results with `mergeSited`.
+   */
+  processorName?: string
+}
+
+/**
+ * Attach one site to a flat list of entries — the composition root's job,
+ * replacing the old `module(name, stores, ...handlers)` — and sort them into
+ * the four fields `kronos` now takes. Honours the `[state, options]` tuple
+ * shape. Spread the result straight into `kronos({ ...sitedOn(site, ...) })`.
+ *
+ * `tokenStore` and `unitOfWork` are defaulted here because this is a test rig:
+ * an event handler needs both to build its shared processor, and every caller
+ * below wants the same in-memory cursor store and the same factory for the
+ * whole app.
+ */
+function sitedOn(
+  site: Site,
+  ...items: ReadonlyArray<SitedItem>
+): {
+  states: StateEntry[]
+  commandHandlers: CommandHandlerEntry[]
+  queryHandlers: QueryHandlerEntry[]
+  eventHandlers: EventHandlerEntry[]
+} {
+  const {
+    tokenStore = inMemoryTokenStore(),
+    unitOfWork: uow = unitOfWork,
+    commandBus,
+    queryBus,
+    processorName,
+    ...handlerSite
+  } = site
+  const states: StateEntry[] = []
+  const commandHandlers: CommandHandlerEntry[] = []
+  const queryHandlers: QueryHandlerEntry[] = []
+  const eventHandlers: EventHandlerEntry[] = []
+  let processor: EventProcessor | undefined
+
+  for (const item of items) {
+    if (Array.isArray(item)) {
+      const [stateDef, options] = item
+      states.push([{ ...stateDef, ...handlerSite }, options] as StateEntry)
+      continue
+    }
+    const kind = (item as { kind?: string }).kind
+    if (kind === "state-module") {
+      states.push({ ...(item as object), ...handlerSite } as StateEntry)
+    } else if (kind === "command-handler") {
+      commandHandlers.push({ ...(item as object), ...handlerSite, commandBus, queryBus } as CommandHandlerEntry)
+    } else if (kind === "query-handler") {
+      queryHandlers.push({ ...(item as object), ...handlerSite, queryBus } as QueryHandlerEntry)
+    } else if (kind === "event-handler") {
+      if (!processor) {
+        if (!processorName) {
+          throw new Error("sitedOn: an event handler was given but no `processorName` on the site")
+        }
+        if (!handlerSite.eventStore) {
+          throw new Error("sitedOn: an event handler needs an `eventStore` on the site")
+        }
+        processor = eventProcessor({
+          name: processorName,
+          eventStore: handlerSite.eventStore,
+          tokenStore,
+          unitOfWork: uow,
+        })
+      }
+      eventHandlers.push({ ...(item as object), commandBus, queryBus, processor } as EventHandlerEntry)
+    }
+  }
+  return { states, commandHandlers, queryHandlers, eventHandlers }
+}
+
+/** Combine several `sitedOn` groups (e.g. one per processor) into one. */
+function mergeSited(
+  ...groups: ReadonlyArray<ReturnType<typeof sitedOn>>
+): {
+  states: StateEntry[]
+  commandHandlers: CommandHandlerEntry[]
+  queryHandlers: QueryHandlerEntry[]
+  eventHandlers: EventHandlerEntry[]
+} {
+  return {
+    states: groups.flatMap((g) => g.states),
+    commandHandlers: groups.flatMap((g) => g.commandHandlers),
+    queryHandlers: groups.flatMap((g) => g.queryHandlers),
+    eventHandlers: groups.flatMap((g) => g.eventHandlers),
+  }
+}
+
 
 // ============================================================================
 // Domain: University Course Management
@@ -62,19 +211,19 @@ const SubscribeStudent = command({
 const CourseCreated = event({
   name: qn("university", "CourseCreated"),
   payload: z.object({ courseId: z.string(), name: z.string(), capacity: z.number() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const CourseCapacityChanged = event({
   name: qn("university", "CourseCapacityChanged"),
   payload: z.object({ courseId: z.string(), capacity: z.number() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const StudentSubscribed = event({
   name: qn("university", "StudentSubscribed"),
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const CloseEnrollment = command({
@@ -85,7 +234,7 @@ const CloseEnrollment = command({
 const EnrollmentClosed = event({
   name: qn("university", "EnrollmentClosed"),
   payload: z.object({ courseId: z.string() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const GetCourseView = query({
@@ -110,18 +259,18 @@ const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
-  criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: (on) => [
-    on(CourseCreated, (s, { payload: e }) => ({
+  tags: (id) => ({ courseId: id.courseId }),
+  evolve: [
+    [CourseCreated, (s, { payload: e }) => ({
       ...s, created: true, name: e.name, capacity: e.capacity,
-    })),
-    on(CourseCapacityChanged, (s, { payload: e }) => ({
+    })],
+    [CourseCapacityChanged, (s, { payload: e }) => ({
       ...s, capacity: e.capacity,
-    })),
-    on(StudentSubscribed, (s, { payload: e }) => ({
+    })],
+    [StudentSubscribed, (s, { payload: e }) => ({
       ...s, enrolled: [...s.enrolled, e.studentId],
-    })),
-    on(EnrollmentClosed, (s) => ({ ...s, closed: true })),
+    })],
+    [EnrollmentClosed, (s) => ({ ...s, closed: true })],
   ],
 })
 
@@ -245,24 +394,20 @@ describe("E2E: In-memory full CQRS flow", () => {
   it("command → event → processor → projection → query", async () => {
     // given
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
+    const buses = inMemoryBuses()
 
     running = kronos({
-      components: inMemoryComponents(),
-      modules: [
-        module(
-          "university",
-          Course,
-          createCourse, changeCourseCapacity, subscribeStudent,
-          ...queryHandlers,
-          trackingProcessor("course-projection")
-            .eventHandlers(...projectionHandlers)
-            .build(),
-        ),
-      ],
+      ...sitedOn(
+        { eventStore: inMemoryEventStore(), ...buses, processorName: "course-projection" },
+        Course,
+        createCourse, changeCourseCapacity, subscribeStudent,
+        ...queryHandlers,
+        ...projectionHandlers,
+      ),
     })
 
     // when
-    await running.commandGateway.send(CreateCourse, {
+    await send(buses.commandBus, CreateCourse, {
       courseId: "cs-101",
       name: "Intro to CS",
       capacity: 30,
@@ -271,7 +416,7 @@ describe("E2E: In-memory full CQRS flow", () => {
     await waitFor(() => courseViews.has("cs-101"))
 
     // then
-    const view = await running.queryGateway.query(GetCourseView, { courseId: "cs-101" })
+    const view = await query(buses.queryBus, GetCourseView, { courseId: "cs-101" })
     expect(view).toBeDefined()
     expect((view as CourseView).name).toBe("Intro to CS")
     expect((view as CourseView).capacity).toBe(30)
@@ -280,76 +425,68 @@ describe("E2E: In-memory full CQRS flow", () => {
   it("enforces business rules across commands", async () => {
     // given
     const { projectionHandlers, queryHandlers } = createProjection()
+    const buses = inMemoryBuses()
 
     running = kronos({
-      components: inMemoryComponents(),
-      modules: [
-        module(
-          "university",
-          Course,
-          createCourse, subscribeStudent,
-          ...queryHandlers,
-          trackingProcessor("course-projection")
-            .eventHandlers(...projectionHandlers)
-            .build(),
-        ),
-      ],
+      ...sitedOn(
+        { eventStore: inMemoryEventStore(), ...buses, processorName: "course-projection" },
+        Course,
+        createCourse, subscribeStudent,
+        ...queryHandlers,
+        ...projectionHandlers,
+      ),
     })
 
     // when
-    await running.commandGateway.send(CreateCourse, {
+    await send(buses.commandBus, CreateCourse, {
       courseId: "small-101",
       name: "Small Course",
       capacity: 2,
     })
 
-    await running.commandGateway.send(SubscribeStudent, { courseId: "small-101", studentId: "stu-1" })
+    await send(buses.commandBus, SubscribeStudent, { courseId: "small-101", studentId: "stu-1" })
 
     // then — duplicate enrollment (before capacity is full)
     await expect(
-      running.commandGateway.send(SubscribeStudent, { courseId: "small-101", studentId: "stu-1" }),
+      send(buses.commandBus, SubscribeStudent, { courseId: "small-101", studentId: "stu-1" }),
     ).rejects.toThrow("Already enrolled")
 
     // fill the course
-    await running.commandGateway.send(SubscribeStudent, { courseId: "small-101", studentId: "stu-2" })
+    await send(buses.commandBus, SubscribeStudent, { courseId: "small-101", studentId: "stu-2" })
 
     // then — course is full (capacity 2, 2 enrolled)
     await expect(
-      running.commandGateway.send(SubscribeStudent, { courseId: "small-101", studentId: "stu-3" }),
+      send(buses.commandBus, SubscribeStudent, { courseId: "small-101", studentId: "stu-3" }),
     ).rejects.toThrow("Course is full")
   })
 
   // Per-STATE snapshot config (policy + its own store), declared as a
-  // [state, options] tuple in the registration list.
+  // [state, options] tuple in the handler list.
   it("snapshots accelerate entity loading", async () => {
     // given
     const eventStore = inMemoryEventStore()
     const snapshotStore: SnapshotStore = inMemorySnapshotStore()
     const { projectionHandlers, queryHandlers } = createProjection()
+    const buses = inMemoryBuses()
 
     running = kronos({
-      components: inMemoryComponents({ eventStore, snapshotStore }),
-      modules: [
-        module(
-          "university",
-          [Course, { snapshotPolicy: afterEvents(3), snapshotStore }],
-          createCourse, changeCourseCapacity,
-          ...queryHandlers,
-          trackingProcessor("course-projection")
-            .eventHandlers(...projectionHandlers)
-            .build(),
-        ),
-      ],
+      ...sitedOn(
+        { eventStore, snapshotStore, ...buses, processorName: "course-projection" },
+        [Course, { snapshotPolicy: afterEvents(3), snapshotStore }],
+        createCourse, changeCourseCapacity,
+        ...queryHandlers,
+        ...projectionHandlers,
+      ),
     })
 
     // when — create + 4 capacity changes (5 events total)
     // Snapshot triggers after 3+ events are replayed during a load.
-    await running.commandGateway.send(CreateCourse, { courseId: "snap-101", name: "Snap Course", capacity: 10 })
-    await running.commandGateway.send(ChangeCourseCapacity, { courseId: "snap-101", capacity: 20 })
-    await running.commandGateway.send(ChangeCourseCapacity, { courseId: "snap-101", capacity: 30 })
-    await running.commandGateway.send(ChangeCourseCapacity, { courseId: "snap-101", capacity: 40 })
+    await send(buses.commandBus, CreateCourse, { courseId: "snap-101", name: "Snap Course", capacity: 10 })
+    await send(buses.commandBus, ChangeCourseCapacity, { courseId: "snap-101", capacity: 20 })
+    await send(buses.commandBus, ChangeCourseCapacity, { courseId: "snap-101", capacity: 30 })
+    await send(buses.commandBus, ChangeCourseCapacity, { courseId: "snap-101", capacity: 40 })
     // This load replays 4 events → triggers snapshot with capacity=40
-    await running.commandGateway.send(ChangeCourseCapacity, { courseId: "snap-101", capacity: 50 })
+    await send(buses.commandBus, ChangeCourseCapacity, { courseId: "snap-101", capacity: 50 })
 
     // Wait for async snapshot storage
     await new Promise(r => setTimeout(r, 50))
@@ -360,63 +497,35 @@ describe("E2E: In-memory full CQRS flow", () => {
     expect((snapshot!.payload as CourseState).capacity).toBeGreaterThanOrEqual(30)
   })
 
-  it("subscribing processor delivers events synchronously", async () => {
-    // given
-    const received: string[] = []
-    const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
-      received.push(e.courseId)
-    })
-
-    running = kronos({
-      components: inMemoryComponents(),
-      modules: [
-        module(
-          "university",
-          Course,
-          createCourse,
-          subscribingProcessor("sync-projection")
-            .eventHandlers(onCourseCreated)
-            .build(),
-        ),
-      ],
-    })
-
-    // when — subscribing processor delivers synchronously with append
-    await running.commandGateway.send(CreateCourse, { courseId: "sync-1", name: "Sync", capacity: 10 })
-
-    // then — delivered immediately, no polling delay
-    expect(received).toContain("sync-1")
-  })
-
   it("multiple processors operate independently", async () => {
     // given
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
     const auditLog: string[] = []
+    const eventStore = inMemoryEventStore()
+    const buses = inMemoryBuses()
 
     const auditOnCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => { auditLog.push(`created:${e.courseId}`) })
     const auditOnStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => { auditLog.push(`enrolled:${e.studentId}`) })
 
     running = kronos({
-      components: inMemoryComponents(),
-      modules: [
-        module(
-          "university",
+      ...mergeSited(
+        sitedOn(
+          { eventStore, ...buses, processorName: "course-projection" },
           Course,
           createCourse, subscribeStudent,
           ...queryHandlers,
-          trackingProcessor("course-projection")
-            .eventHandlers(...projectionHandlers)
-            .build(),
-          trackingProcessor("audit-log")
-            .eventHandlers(auditOnCourseCreated, auditOnStudentSubscribed)
-            .build(),
+          ...projectionHandlers,
         ),
-      ],
+        sitedOn(
+          { eventStore, ...buses, processorName: "audit-log" },
+          auditOnCourseCreated, auditOnStudentSubscribed,
+        ),
+      ),
     })
 
     // when
-    await running.commandGateway.send(CreateCourse, { courseId: "multi-1", name: "Multi", capacity: 10 })
-    await running.commandGateway.send(SubscribeStudent, { courseId: "multi-1", studentId: "stu-1" })
+    await send(buses.commandBus, CreateCourse, { courseId: "multi-1", name: "Multi", capacity: 10 })
+    await send(buses.commandBus, SubscribeStudent, { courseId: "multi-1", studentId: "stu-1" })
 
     await waitFor(() => courseViews.has("multi-1") && auditLog.length >= 2)
 
@@ -433,15 +542,15 @@ describe("E2E: In-memory full CQRS flow", () => {
     // mechanism). Cross-message correlation is tested via the Axon Server
     // distributed tests.
     const eventStore = inMemoryEventStore()
+    const buses = inMemoryBuses()
 
     running = kronos({
-      components: inMemoryComponents({ eventStore }),
-      modules: [module("university", Course, createCourse)],
+      ...sitedOn({ eventStore, ...buses }, Course, createCourse),
     })
 
     // when — dispatch a command with custom metadata
     const metadata = { tenantId: "t-1", userId: "u-42" }
-    await running.commandGateway.send(CreateCourse, {
+    await send(buses.commandBus, CreateCourse, {
       courseId: "corr-1",
       name: "Correlation Test",
       capacity: 10,
@@ -449,7 +558,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
     // then — events inherit the command's metadata
     const { events } = await eventStore.source({
-      criteria: EventCriteria.havingTags(tag("courseId", "corr-1")),
+      query: { tags: { courseId: "corr-1" } },
     })
 
     expect(events.length).toBe(1)
@@ -460,30 +569,26 @@ describe("E2E: In-memory full CQRS flow", () => {
   it("query returns all courses", async () => {
     // given
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
+    const buses = inMemoryBuses()
 
     running = kronos({
-      components: inMemoryComponents(),
-      modules: [
-        module(
-          "university",
-          Course,
-          createCourse,
-          ...queryHandlers,
-          trackingProcessor("course-projection")
-            .eventHandlers(...projectionHandlers)
-            .build(),
-        ),
-      ],
+      ...sitedOn(
+        { eventStore: inMemoryEventStore(), ...buses, processorName: "course-projection" },
+        Course,
+        createCourse,
+        ...queryHandlers,
+        ...projectionHandlers,
+      ),
     })
 
     // when
-    await running.commandGateway.send(CreateCourse, { courseId: "all-1", name: "Course A", capacity: 10 })
-    await running.commandGateway.send(CreateCourse, { courseId: "all-2", name: "Course B", capacity: 20 })
+    await send(buses.commandBus, CreateCourse, { courseId: "all-1", name: "Course A", capacity: 10 })
+    await send(buses.commandBus, CreateCourse, { courseId: "all-2", name: "Course B", capacity: 20 })
 
     await waitFor(() => courseViews.size >= 2)
 
     // then
-    const allCourses = await running.queryGateway.query(GetAllCourses, {}) as CourseView[]
+    const allCourses = await query(buses.queryBus, GetAllCourses, {}) as CourseView[]
     expect(allCourses.length).toBeGreaterThanOrEqual(2)
     expect(allCourses.some(c => c.courseId === "all-1")).toBe(true)
     expect(allCourses.some(c => c.courseId === "all-2")).toBe(true)
@@ -492,34 +597,30 @@ describe("E2E: In-memory full CQRS flow", () => {
   it("stateful automation — an event handler sends a command in its own UoW", async () => {
     // given — a "close enrolment when full" automation on its own processor
     const eventStore = inMemoryEventStore()
+    const buses = inMemoryBuses()
 
     running = kronos({
-      components: inMemoryComponents({ eventStore }),
-      modules: [
-        module(
-          "university",
-          Course,
-          createCourse, subscribeStudent, closeEnrollment,
-          trackingProcessor("enrollment-automation")
-            .eventHandlers(closeEnrollmentWhenFull)
-            .build(),
-        ),
-      ],
+      ...sitedOn(
+        { eventStore, ...buses, processorName: "enrollment-automation" },
+        Course,
+        createCourse, subscribeStudent, closeEnrollment,
+        closeEnrollmentWhenFull,
+      ),
     })
 
     // when — a one-seat course is filled
-    await running.commandGateway.send(CreateCourse, { courseId: "auto-1", name: "One Seat", capacity: 1 })
-    await running.commandGateway.send(SubscribeStudent, { courseId: "auto-1", studentId: "stu-1" })
+    await send(buses.commandBus, CreateCourse, { courseId: "auto-1", name: "One Seat", capacity: 1 })
+    await send(buses.commandBus, SubscribeStudent, { courseId: "auto-1", studentId: "stu-1" })
 
     // then — the automation sources the now-full course and dispatches
     // CloseEnrollment, whose handler appends EnrollmentClosed in its own UoW
-    const criteria = EventCriteria.havingTags(tag("courseId", "auto-1"))
+    const courseQuery = { tags: { courseId: "auto-1" } }
     await waitFor(async () => {
-      const { events } = await eventStore.source({ criteria })
+      const { events } = await eventStore.source({ query: courseQuery })
       return events.some((ev) => ev.name.name === "EnrollmentClosed")
     })
 
-    const { events } = await eventStore.source({ criteria })
+    const { events } = await eventStore.source({ query: courseQuery })
     expect(events.map((ev) => ev.name.name)).toEqual([
       "CourseCreated",
       "StudentSubscribed",

@@ -46,6 +46,18 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # Package-level container suites. `test:unit` filters *.integration.test.ts
+      # out, and the cross-package job below only globs integrationtests/ — so
+      # without this step a broken postgres or RabbitMQ adapter ships green.
+      - name: Container tests (per package)
+        run: >
+          bun test
+          packages/postgres/src/__tests__
+          packages/rabbitmq/src/__tests__
+          packages/kronosdb/src/__tests__
+          packages/axon-server/src/__tests__
+        timeout-minutes: 15
+
       - name: Integration tests (live postgres, RabbitMQ, Axon Server, KronosDB)
         run: bun test integrationtests
         timeout-minutes: 15

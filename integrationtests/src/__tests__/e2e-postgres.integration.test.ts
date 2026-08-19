@@ -1,9 +1,8 @@
 /**
  * End-to-end integration test for @kronos-ts/postgres.
  *
- * Spins up postgres:16-alpine via testcontainers, spreads the components the
- * postgres() backend provides over the in-memory defaults, and exercises the
- * full CQRS/ES pipeline:
+ * Spins up postgres:16-alpine via testcontainers, builds each store as a plain
+ * function of one `postgresPool`, and exercises the full CQRS/ES pipeline:
  *
  *   command  → DCB-checked append (Postgres)
  *   sourcing → state reconstruction (Postgres)
@@ -11,7 +10,7 @@
  *   query    → projection read model
  *
  * Also verifies the DCB conflict path end-to-end: two concurrent appends with
- * the same criteria + marker race, exactly one commits, the other throws
+ * the same query + marker race, exactly one commits, the other throws
  * AppendConditionError (SQLSTATE KR001).
  *
  * Image: postgres:16-alpine. PG14+ is the floor (D-12.13) because the engine
@@ -21,31 +20,172 @@
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { z } from "zod"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
-import { qn, tag, generateIdentifier, emptyMetadata } from "@kronos-ts/common"
-import type { EventMessage } from "@kronos-ts/messaging"
+import { qn, generateIdentifier, emptyMetadata, send, query } from "@kronos-ts/core"
+import type { EventMessage } from "@kronos-ts/core"
 import {
-  command,
-  event,
-  query,
-  commandHandler,
-  eventHandler,
-  queryHandler,
-  EventCriteria,
-  jsonSerializer,
-  trackingProcessor,
-} from "@kronos-ts/messaging"
-import { state } from "@kronos-ts/modelling"
+  command, event, commandHandler, eventHandler, queryHandler, jsonSerializer,
+  eventProcessor, type EventProcessor,
+  type CommandHandlerDefinition, type QueryHandlerDefinition, type EventHandlerDefinition,
+  inMemoryTokenStore, type TokenStore,
+} from "@kronos-ts/core"
+import { state, type StateModule } from "@kronos-ts/core"
 import {
   type EventStore,
   afterEvents,
   descriptorBasedTagResolver,
-} from "@kronos-ts/eventsourcing"
-import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
-import { postgres, AppendConditionError } from "@kronos-ts/postgres"
-import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
+} from "@kronos-ts/core"
+import {
+  kronos,
+  type App,
+  type CommandHandlerEntry,
+  type QueryHandlerEntry,
+  type EventHandlerEntry,
+  type HandlerSite,
+  type Sited,
+  type StateEntry,
+  type StateOptions,
+} from "@kronos-ts/core"
+import {
+  lineage,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  unitOfWork,
+  simpleCommandBus,
+  simpleQueryBus,
+  type UnitOfWork,
+  type CommandBus,
+  type QueryBus,
+} from "@kronos-ts/core"
+import {
+  postgresPool,
+  postgresEventStore,
+  postgresSnapshotStore,
+  postgresUnitOfWork,
+  AppendConditionError,
+  type PostgresResource,
+} from "@kronos-ts/postgres"
 
-/** The backend handle `postgres()` returns — its type is not re-exported. */
-type PostgresBackend = Awaited<ReturnType<typeof postgres>>
+/**
+ * The two things `kronos` needs that are not handlers. The UoW runner is
+ * named once and handed to `simpleCommandBus` (which captures it at
+ * construction) — writing it on an adjacent line is what makes that checkable.
+ */
+function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
+  return {
+    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
+    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+  }
+}
+
+/**
+ * Everything `sitedOn` accepts, BEFORE a site is attached — deliberately loose
+ * (`any, any`) generics on the command/query/event definitions, because a
+ * caller here typically spreads an already-inferred heterogeneous array (e.g.
+ * `...queryHandlers`) into this rest parameter, and the precise per-handler
+ * payload/result types would otherwise fail the standard
+ * `CommandHandlerEntry`/`QueryHandlerEntry`/`EventHandlerEntry` unions'
+ * structural (contravariant) check.
+ */
+type SitedItem =
+  | Sited<StateModule<any, any>>
+  | readonly [Sited<StateModule<any, any>>, StateOptions]
+  | Sited<CommandHandlerDefinition<any, any>>
+  | Sited<QueryHandlerDefinition<any, any>>
+  | EventHandlerDefinition<any, any>
+
+/** What a host attaches uniformly here. There is no `stores` record any more —
+ * this is the ARGUMENT LIST of a local helper, and every entry comes out
+ * carrying BARE properties. `commandBus`/`queryBus` are required: `kronos`
+ * takes them PER ENTRY now, not once for the whole app. */
+type Site = HandlerSite & {
+  commandBus: CommandBus
+  queryBus: QueryBus
+  tokenStore?: TokenStore
+  unitOfWork?: () => UnitOfWork
+  /** Durable name for any bare event-handler entries in this call. */
+  processorName?: string
+}
+
+/**
+ * Attach one site to a flat list of entries — the composition root's job,
+ * replacing the old `module(name, stores, ...handlers)` — and sort them into
+ * the four fields `kronos` now takes. Honours the `[state, options]` tuple
+ * shape. Spread the result straight into `kronos({ ...sitedOn(site, ...) })`.
+ */
+function sitedOn(
+  site: Site,
+  ...items: ReadonlyArray<SitedItem>
+): {
+  states: StateEntry[]
+  commandHandlers: CommandHandlerEntry[]
+  queryHandlers: QueryHandlerEntry[]
+  eventHandlers: EventHandlerEntry[]
+} {
+  const {
+    tokenStore = inMemoryTokenStore(),
+    unitOfWork: uow = unitOfWork,
+    commandBus,
+    queryBus,
+    processorName,
+    ...handlerSite
+  } = site
+  const states: StateEntry[] = []
+  const commandHandlers: CommandHandlerEntry[] = []
+  const queryHandlers: QueryHandlerEntry[] = []
+  const eventHandlers: EventHandlerEntry[] = []
+  let processor: EventProcessor | undefined
+
+  for (const item of items) {
+    if (Array.isArray(item)) {
+      const [stateDef, options] = item
+      states.push([{ ...stateDef, ...handlerSite }, options] as StateEntry)
+      continue
+    }
+    const kind = (item as { kind?: string }).kind
+    if (kind === "state-module") {
+      states.push({ ...(item as object), ...handlerSite } as StateEntry)
+    } else if (kind === "command-handler") {
+      commandHandlers.push({ ...(item as object), ...handlerSite, commandBus, queryBus } as CommandHandlerEntry)
+    } else if (kind === "query-handler") {
+      queryHandlers.push({ ...(item as object), ...handlerSite, queryBus } as QueryHandlerEntry)
+    } else if (kind === "event-handler") {
+      if (!processor) {
+        if (!processorName) {
+          throw new Error("sitedOn: an event handler was given but no `processorName` on the site")
+        }
+        if (!handlerSite.eventStore) {
+          throw new Error("sitedOn: an event handler needs an `eventStore` on the site")
+        }
+        processor = eventProcessor({
+          name: processorName,
+          eventStore: handlerSite.eventStore,
+          tokenStore,
+          unitOfWork: uow,
+        })
+      }
+      eventHandlers.push({ ...(item as object), commandBus, queryBus, processor } as EventHandlerEntry)
+    }
+  }
+  return { states, commandHandlers, queryHandlers, eventHandlers }
+}
+
+
+/**
+ * Everything this app needs from postgres, named at one call site. There is no
+ * bundle to take apart: the pool is the only thing with a lifetime, and each
+ * store is a function of it. They share the pool, so they share transactions.
+ */
+function postgresStack(pool: PostgresResource) {
+  const eventStore = postgresEventStore(pool, {
+    serializer: jsonSerializer(),
+    tagResolver: descriptorBasedTagResolver(),
+  })
+  return {
+    eventStore,
+    snapshotStore: postgresSnapshotStore(pool, { serializer: jsonSerializer() }),
+    unitOfWork: postgresUnitOfWork(pool, unitOfWork),
+  }
+}
 
 // ============================================================================
 // Domain — university courses, same shape as e2e-inmemory / e2e-kronosdb
@@ -71,13 +211,13 @@ const GetCourse = query({
 const CourseCreated = event({
   name: qn("postgres-e2e", "CourseCreated"),
   payload: z.object({ courseId: z.string(), name: z.string(), capacity: z.number() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const StudentSubscribed = event({
   name: qn("postgres-e2e", "StudentSubscribed"),
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const CloseEnrollment = command({
@@ -89,7 +229,7 @@ const CloseEnrollment = command({
 const EnrollmentClosed = event({
   name: qn("postgres-e2e", "EnrollmentClosed"),
   payload: z.object({ courseId: z.string() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[]; closed: boolean }
@@ -98,11 +238,11 @@ const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: () => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
-  criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: (on) => [
-    on(CourseCreated, (s, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
-    on(StudentSubscribed, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
-    on(EnrollmentClosed, (s) => ({ ...s, closed: true })),
+  tags: (id) => ({ courseId: id.courseId }),
+  evolve: [
+    [CourseCreated, (s, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })],
+    [StudentSubscribed, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })],
+    [EnrollmentClosed, (s) => ({ ...s, closed: true })],
   ],
 })
 
@@ -188,7 +328,9 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
   let container: StartedTestContainer
   let connectionString: string
   let app: App
-  let backend: PostgresBackend
+  let pool: PostgresResource
+  let stack: ReturnType<typeof postgresStack>
+  let buses: { commandBus: CommandBus; queryBus: QueryBus }
 
   beforeAll(async () => {
     courseViews.clear()
@@ -207,67 +349,60 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
 
     connectionString = `postgresql://kronos_e2e:kronos_e2e@${container.getHost()}:${container.getMappedPort(5432)}/kronos_e2e`
 
-    // 2. Connect postgres — this bootstraps the schema and hands back the
-    //    components it provides. Nothing has to be probed back out of a
-    //    container: `backend.components.eventStore` IS the event store the app
-    //    runs on, because the same value is spread into `kronos` below.
-    backend = await postgres({
-      adapter: pgAdapter({ connectionString }),
-      serializer: jsonSerializer(),
-      tagResolver: descriptorBasedTagResolver(),
-    })
+    // 2. Open the pool — start() connects and bootstraps the schema. Nothing
+    //    has to be probed back out of a container: `stack.eventStore` IS the
+    //    event store the app runs on, because the same value is handed to
+    //    `kronos` below.
+    pool = postgresPool(connectionString)
+    await pool.start()
+    stack = postgresStack(pool)
 
     // 3. Compose. The in-memory command bus must be built around postgres's
     //    LAZY transactional UoW factory, so it is passed as an override rather
     //    than only spread on top — otherwise handlers would run in a plain
-    //    runInNewUoW and never see a transaction.
+    //    unitOfWork and never see a transaction.
+    buses = inMemoryBuses(stack.unitOfWork)
     app = kronos({
-      components: {
-        ...inMemoryComponents({ unitOfWorkFactory: backend.components.unitOfWorkFactory }),
-        ...backend.components,
-      },
-      modules: [
-        module(
-          "postgres-e2e",
-          // Per-state snapshot policy, declared in the registration list — see
-          // the "snapshot store" test below. The tuple is the state plus the
-          // options its repository is built from; the stores come from the
-          // module's components, i.e. postgres's.
-          [Course, { snapshotPolicy: afterEvents(1) }],
-          createCourse, subscribeStudent,
-          getCourse,
-          trackingProcessor("postgres-course-projection")
-            .eventHandlers(onCourseCreated, onStudentSubscribed)
-            .build(),
-        ),
-      ],
+      // Per-state snapshot policy, declared in the handler list — see
+      // the "snapshot store" test below. The tuple is the state plus the
+      // options its repository is built from; the stores come from
+      // postgres's components.
+      ...sitedOn(
+        {
+          eventStore: stack.eventStore,
+          snapshotStore: stack.snapshotStore,
+          ...buses,
+          processorName: "postgres-course-projection",
+        },
+        [Course, { snapshotPolicy: afterEvents(1) }],
+        createCourse, subscribeStudent,
+        getCourse,
+        onCourseCreated, onStudentSubscribed,
+      ),
     })
-
-    // 4. Background workers (the durable scheduler) — after handlers subscribe.
-    await backend.start()
   }, 60_000)
 
   afterAll(async () => {
     await app?.stop()
-    await backend?.close()
+    await pool?.close()
     await container?.stop()
   })
 
   function eventStore(): EventStore {
-    return backend.components.eventStore
+    return stack.eventStore
   }
 
   it("command persists events through @kronos-ts/postgres", async () => {
     const courseId = id("cs-101")
 
-    await app.commandGateway.send(CreateCourse, {
+    await send(buses.commandBus, CreateCourse, {
       courseId,
       name: "Intro to Postgres",
       capacity: 30,
     })
 
     const { events } = await eventStore().source({
-      criteria: EventCriteria.havingTags(tag("courseId", courseId)),
+      query: { tags: { courseId: courseId } },
     })
 
     expect(events.length).toBe(1)
@@ -277,10 +412,10 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
   it("command handler sources state from Postgres", async () => {
     const courseId = id("cs-101")
 
-    await app.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-1" })
+    await send(buses.commandBus, SubscribeStudent, { courseId, studentId: "stu-1" })
 
     const { events } = await eventStore().source({
-      criteria: EventCriteria.havingTags(tag("courseId", courseId)),
+      query: { tags: { courseId: courseId } },
     })
     expect(events.length).toBe(2)
     expect(events[1]!.name.name).toBe("StudentSubscribed")
@@ -289,18 +424,18 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
   it("DCB business rule: duplicate course creation rejected", async () => {
     const courseId = id("cs-101")
     await expect(
-      app.commandGateway.send(CreateCourse, { courseId, name: "Dup", capacity: 1 }),
+      send(buses.commandBus, CreateCourse, { courseId, name: "Dup", capacity: 1 }),
     ).rejects.toThrow()
   })
 
   it("DCB business rule: capacity enforced across commands", async () => {
     const courseId = id("cs-cap")
 
-    await app.commandGateway.send(CreateCourse, { courseId, name: "Tiny", capacity: 1 })
-    await app.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-1" })
+    await send(buses.commandBus, CreateCourse, { courseId, name: "Tiny", capacity: 1 })
+    await send(buses.commandBus, SubscribeStudent, { courseId, studentId: "stu-1" })
 
     await expect(
-      app.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-2" }),
+      send(buses.commandBus, SubscribeStudent, { courseId, studentId: "stu-2" }),
     ).rejects.toThrow("Course is full")
   })
 
@@ -320,17 +455,17 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     const courseId = id("cs-101")
     await waitFor(() => courseViews.has(courseId))
 
-    const view = (await app.queryGateway.query(GetCourse, { courseId })) as CourseView
+    const view = (await query(buses.queryBus, GetCourse, { courseId })) as CourseView
     expect(view.name).toBe("Intro to Postgres")
     expect(view.enrolledCount).toBe(1)
   })
 
   it("same-tag concurrent appends — exactly one commits, the other throws AppendConditionError", async () => {
     const courseId = id("conflict")
-    const criteria = EventCriteria.havingTags(tag("courseId", courseId))
+    const courseQuery = { tags: { courseId: courseId } }
 
     // Source once to capture a shared starting marker.
-    const { marker } = await eventStore().source({ criteria })
+    const { marker } = await eventStore().source({ query: courseQuery })
 
     // Two appends racing on the same tag with the same precondition marker.
     // Advisory locks serialise them; the loser hits the DCB conflict check
@@ -347,8 +482,8 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     })
 
     const results = await Promise.allSettled([
-      eventStore().append([ev("racer-a")], { criteria, marker }),
-      eventStore().append([ev("racer-b")], { criteria, marker }),
+      eventStore().append([ev("racer-a")], { query: courseQuery, marker }),
+      eventStore().append([ev("racer-b")], { query: courseQuery, marker }),
     ])
 
     const winners = results.filter((r) => r.status === "fulfilled")
@@ -368,9 +503,9 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     // afterEvents(1) triggers when a ctx.load() observes > 1 event. The second
     // SubscribeStudent's load sees 2 events, so snapshotting fires (async,
     // fire-and-forget — we poll for the row).
-    await app.commandGateway.send(CreateCourse, { courseId, name: "Snap", capacity: 10 })
-    await app.commandGateway.send(SubscribeStudent, { courseId, studentId: "snap-1" })
-    await app.commandGateway.send(SubscribeStudent, { courseId, studentId: "snap-2" })
+    await send(buses.commandBus, CreateCourse, { courseId, name: "Snap", capacity: 10 })
+    await send(buses.commandBus, SubscribeStudent, { courseId, studentId: "snap-1" })
+    await send(buses.commandBus, SubscribeStudent, { courseId, studentId: "snap-2" })
 
     const { Client } = await import("pg")
     const client = new Client({ connectionString })
@@ -392,10 +527,10 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     }
   })
 
-  it("schema was bootstrapped by the postgres() backend", async () => {
-    // `await postgres(...)` ran bootstrapSchema() before it returned, which is
-    // the only reason the previous tests' inserts worked. As a direct sanity
-    // check, look the tables up over a fresh client.
+  it("schema was bootstrapped by pool.start()", async () => {
+    // `await pool.start()` ran bootstrapSchema(), which is the only reason the
+    // previous tests' inserts worked. As a direct sanity check, look the tables
+    // up over a fresh client.
     const { Client } = await import("pg")
     const client = new Client({ connectionString })
     await client.connect()
@@ -406,6 +541,10 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       const tables = res.rows.map((r) => r.table_name)
       expect(tables).toContain("kronos_events")
       expect(tables).toContain("kronos_snapshots")
+      // The pool bootstraps the whole family's schema, including the processor
+      // stores this app happens not to use.
+      expect(tables).toContain("kronos_token_entries")
+      expect(tables).toContain("kronos_dead_letters")
     } finally {
       await client.end()
     }
@@ -414,44 +553,39 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
   it("stateful automation — an event handler sends a command in its own UoW", async () => {
     // A dedicated app isolates the automation processor from the shared app's
     // assertions; it connects to the same Postgres database.
-    const autoBackend = await postgres({
-      adapter: pgAdapter({ connectionString }),
-      serializer: jsonSerializer(),
-      tagResolver: descriptorBasedTagResolver(),
-    })
-    const autoEventStore: EventStore = autoBackend.components.eventStore
+    const autoPool = postgresPool(connectionString)
+    await autoPool.start()
+    const autoStack = postgresStack(autoPool)
+    const autoEventStore: EventStore = autoStack.eventStore
+    const autoBuses = inMemoryBuses(autoStack.unitOfWork)
     const autoApp = kronos({
-      components: {
-        ...inMemoryComponents({ unitOfWorkFactory: autoBackend.components.unitOfWorkFactory }),
-        ...autoBackend.components,
-      },
-      modules: [
-        module(
-          "postgres-e2e-automation",
-          Course,
-          createCourse, subscribeStudent, closeEnrollment,
-          trackingProcessor("postgres-enrollment-automation")
-            .eventHandlers(closeEnrollmentWhenFull)
-            .build(),
-        ),
-      ],
+      ...sitedOn(
+        {
+          eventStore: autoStack.eventStore,
+          snapshotStore: autoStack.snapshotStore,
+          ...autoBuses,
+          processorName: "postgres-enrollment-automation",
+        },
+        Course,
+        createCourse, subscribeStudent, closeEnrollment,
+        closeEnrollmentWhenFull,
+      ),
     })
-    await autoBackend.start()
 
     try {
       const courseId = id("auto-cap")
-      await autoApp.commandGateway.send(CreateCourse, { courseId, name: "One Seat", capacity: 1 })
-      await autoApp.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-1" })
+      await send(autoBuses.commandBus, CreateCourse, { courseId, name: "One Seat", capacity: 1 })
+      await send(autoBuses.commandBus, SubscribeStudent, { courseId, studentId: "stu-1" })
 
       // The automation sources the now-full course and dispatches
       // CloseEnrollment; its handler appends EnrollmentClosed in its own UoW.
-      const criteria = EventCriteria.havingTags(tag("courseId", courseId))
+      const courseQuery = { tags: { courseId: courseId } }
       await waitFor(async () => {
-        const { events } = await autoEventStore.source({ criteria })
+        const { events } = await autoEventStore.source({ query: courseQuery })
         return events.some((ev) => ev.name.name === "EnrollmentClosed")
       })
 
-      const { events } = await autoEventStore.source({ criteria })
+      const { events } = await autoEventStore.source({ query: courseQuery })
       expect(events.map((ev) => ev.name.name)).toEqual([
         "CourseCreated",
         "StudentSubscribed",
@@ -459,7 +593,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       ])
     } finally {
       await autoApp.stop()
-      await autoBackend.close()
+      await autoPool.close()
     }
   })
 })

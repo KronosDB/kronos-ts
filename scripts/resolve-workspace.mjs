@@ -21,10 +21,7 @@ if (!target) {
 }
 
 // Build name -> version from every workspace package.
-const dirs = [
-  ...readdirSync(join(root, "packages")).map((d) => join(root, "packages", d)),
-  ...readdirSync(join(root, "packages", "extensions")).map((d) => join(root, "packages", "extensions", d)),
-]
+const dirs = readdirSync(join(root, "packages")).map((d) => join(root, "packages", d))
 const versions = {}
 for (const d of dirs) {
   try {

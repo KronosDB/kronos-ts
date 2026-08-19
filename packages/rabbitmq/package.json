@@ -1,0 +1,71 @@
+{
+  "name": "@kronos-ts/rabbitmq",
+  "version": "0.4.2",
+  "description": "RabbitMQ extension for Kronos — distributed command and query transport.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "author": "Theo Emanuelsson",
+  "homepage": "https://github.com/KronosDB/kronos-ts/tree/main/packages/rabbitmq#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KronosDB/kronos-ts.git",
+    "directory": "packages/rabbitmq"
+  },
+  "bugs": {
+    "url": "https://github.com/KronosDB/kronos-ts/issues"
+  },
+  "keywords": [
+    "kronos",
+    "event-sourcing",
+    "cqrs",
+    "dcb",
+    "typescript",
+    "rabbitmq",
+    "amqp"
+  ],
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/__tests__",
+    "!src/**/*.test.ts",
+    "!src/**/*.bench.ts"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "dependencies": {
+    "@kronos-ts/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "amqplib": ">=0.10.0"
+  },
+  "peerDependenciesMeta": {
+    "amqplib": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.7",
+    "amqplib": "^0.10.5",
+    "testcontainers": "^11.14.0",
+    "zod": "^4.3.6"
+  }
+}
