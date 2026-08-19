@@ -1,154 +1,241 @@
-import { describe, it, expect } from "bun:test"
-import { z } from "zod"
-import { qn, tag, emptyMetadata } from "@kronos-ts/common"
-import { command, commandHandler, EventCriteria, event } from "@kronos-ts/messaging"
-import { state } from "@kronos-ts/modelling"
-import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
+import { describe, expect, it } from "bun:test"
 import {
-  recordings,
-  recordingComponents,
+  emptyMetadata,
+  generateIdentifier,
+  inMemoryEventStore,
+  qn,
+  send,
+  simpleCommandBus,
+  simpleQueryBus,
+  unitOfWork,
+} from "@kronos-ts/core"
+import type { EventDescriptor, EventMessage } from "@kronos-ts/core"
+import {
+  controllableScheduler,
+  recordingCommandBus,
   recordingEventStore,
-  type Recordings,
+  recordingQueryBus,
 } from "../recording.js"
+import { CloseCourse, CourseClosed, GetCourseView } from "./_university.js"
 
-// ============================================================================
-// Minimal domain inline — self-contained
-// ============================================================================
+// ---------------------------------------------------------------------------
+// The recorders on their own: thing-first, same shape, readable log. Nothing
+// here needs a fixture — which is the point of them being decorators.
+// ---------------------------------------------------------------------------
 
-const DoTestThing = command({
-  name: qn("rec-test", "DoTestThing"),
-  payload: z.object({ id: z.string() }),
-})
+const FROZEN = 1_700_000_000_000
 
-const TestThingHappened = event({
-  name: qn("rec-test", "TestThingHappened"),
-  payload: z.object({ id: z.string() }),
-  tags: (p) => [tag("id", p.id)],
-})
-
-type ThingState = { exists: boolean }
-
-const Thing = state({
-  name: "RecThing",
-  id: { id: z.string() },
-  initial: (_id) => ({ exists: false }) as ThingState,
-  criteria: (id) => EventCriteria.havingTags(tag("id", id.id)),
-  evolve: (on) => [on(TestThingHappened, (s) => ({ ...s, exists: true }))],
-})
-
-const doTestThingHandler = commandHandler(DoTestThing, async ({ payload: cmd }, ctx) => {
-  await ctx.load(Thing, { id: cmd.id })
-  ctx.append(TestThingHappened, { id: cmd.id })
-})
-
-function bootWithRecording(recordings: Recordings) {
-  return kronos({
-    components: recordingComponents(inMemoryComponents(), recordings),
-    modules: [module("rec-test", Thing, doTestThingHandler)],
-  })
+function message(descriptor: EventDescriptor<any>, payload: any): EventMessage {
+  return {
+    kind: "event",
+    identifier: generateIdentifier(),
+    name: descriptor.name,
+    version: descriptor.version,
+    payload,
+    metadata: emptyMetadata(),
+    timestamp: FROZEN,
+    tags: descriptor.tags ? descriptor.tags(payload) : [],
+  }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
-describe("recording wrappers", () => {
-  it("starts with empty recordings", async () => {
-    const rec = recordings()
-    const app = bootWithRecording(rec)
-    try {
-      expect(rec.events()).toHaveLength(0)
-      expect(rec.commands()).toHaveLength(0)
-    } finally {
-      await app.stop()
-    }
+describe("recordingEventStore", () => {
+  it("wraps the store it is given and starts empty", () => {
+    expect(recordingEventStore(inMemoryEventStore()).appended).toHaveLength(0)
   })
 
-  it("records events appended via the event store after a command dispatch", async () => {
-    const rec = recordings()
-    const app = bootWithRecording(rec)
-    try {
-      await app.commandGateway.send(DoTestThing, { id: "thing-1" }, emptyMetadata())
-      const recorded = rec.events()
-      expect(recorded.length).toBeGreaterThanOrEqual(1)
-      const evt = recorded[0]!
-      expect(evt.name.name).toBe("TestThingHappened")
-      expect((evt.payload as any).id).toBe("thing-1")
-    } finally {
-      await app.stop()
-    }
+  it("records what `append` commits, in order, and still serves it", async () => {
+    const store = recordingEventStore(inMemoryEventStore())
+
+    await store.append([message(CourseClosed, { courseId: "cs-101" })])
+    await store.append([message(CourseClosed, { courseId: "cs-202" })])
+
+    expect(store.appended.map((e) => (e.payload as { courseId: string }).courseId)).toEqual([
+      "cs-101",
+      "cs-202",
+    ])
+    const sourced = await store.source({ query: { tags: { courseId: "cs-101" } } })
+    expect(sourced.events).toHaveLength(1)
+    expect(await store.getHeadPosition()).toBe(2n)
   })
 
-  it("records dispatched commands", async () => {
-    const rec = recordings()
-    const app = bootWithRecording(rec)
-    try {
-      await app.commandGateway.send(DoTestThing, { id: "thing-2" }, emptyMetadata())
-      const recordedCmds = rec.commands()
-      expect(recordedCmds.length).toBeGreaterThanOrEqual(1)
-      const cmd = recordedCmds[recordedCmds.length - 1]!
-      expect(cmd.name.name).toBe("DoTestThing")
-      expect((cmd.payload as any).id).toBe("thing-2")
-    } finally {
-      await app.stop()
-    }
+  it("records a two-phase append at COMMIT, and nothing at all on rollback", async () => {
+    const store = recordingEventStore(inMemoryEventStore())
+
+    const staged = await store.appendEvents([message(CourseClosed, { courseId: "staged" })])
+    expect(store.appended).toHaveLength(0)
+    await staged.commit()
+    expect(store.appended).toHaveLength(1)
+
+    const doomed = await store.appendEvents([message(CourseClosed, { courseId: "doomed" })])
+    doomed.rollback()
+    expect(store.appended).toHaveLength(1)
   })
 
-  it("reset() clears both events and commands", async () => {
-    const rec = recordings()
-    const app = bootWithRecording(rec)
-    try {
-      await app.commandGateway.send(DoTestThing, { id: "thing-3" }, emptyMetadata())
-      expect(rec.events().length).toBeGreaterThan(0)
-      expect(rec.commands().length).toBeGreaterThan(0)
+  it("`reset` forgets the recording, not the events", async () => {
+    const store = recordingEventStore(inMemoryEventStore())
+    await store.append([message(CourseClosed, { courseId: "cs-101" })])
 
-      rec.reset()
-      expect(rec.events()).toHaveLength(0)
-      expect(rec.commands()).toHaveLength(0)
+    store.reset()
 
-      // Subsequent activity records into a clean array
-      await app.commandGateway.send(DoTestThing, { id: "thing-4" }, emptyMetadata())
-      expect(rec.events().length).toBeGreaterThan(0)
-      expect(rec.commands().length).toBeGreaterThan(0)
-    } finally {
-      await app.stop()
-    }
+    expect(store.appended).toHaveLength(0)
+    expect(await store.getHeadPosition()).toBe(1n)
+  })
+})
+
+describe("recordingCommandBus", () => {
+  it("records at entry, delegates, and returns the handler's result", async () => {
+    const bus = recordingCommandBus(simpleCommandBus(() => unitOfWork(() => FROZEN)))
+    bus.subscribe("university.CloseCourse", async () => "closed")
+
+    const result = await send(bus, CloseCourse, { courseId: "cs-101" })
+
+    expect(result).toBe("closed")
+    expect(bus.dispatched.map((m) => m.name.name)).toEqual(["CloseCourse"])
+    expect(bus.dispatched[0]!.payload).toEqual({ courseId: "cs-101" })
+
+    bus.reset()
+    expect(bus.dispatched).toHaveLength(0)
   })
 
-  it("recording sits INNERMOST: a store wrapped around the recording store sees it record", async () => {
-    const rec = recordings()
-    let observedInnerRecords = false
-
-    const base = inMemoryComponents()
-    // Recording first (innermost), then the probe on top — wrapping order IS
-    // the composition order; there is no registry deciding it for you.
-    const recorded = recordingEventStore(base.eventStore, rec)
-    const probed = {
-      ...recorded,
-      async append(events: any, condition?: any) {
-        const before = rec.events().length
-        const marker = await recorded.append(events, condition)
-        if (rec.events().length > before) observedInnerRecords = true
-        return marker
-      },
-    }
-
-    const app = kronos({
-      components: { ...base, eventStore: probed },
-      modules: [module("rec-test", Thing, doTestThingHandler)],
+  it("records the commands a handler dispatches AFTER the one that caused them", async () => {
+    const bus = recordingCommandBus(simpleCommandBus(() => unitOfWork(() => FROZEN)))
+    let nested = false
+    bus.subscribe("university.CloseCourse", async (message) => {
+      if (nested) return undefined
+      nested = true
+      await bus.dispatch({ ...message, identifier: "nested" })
+      return undefined
     })
-    try {
-      await app.commandGateway.send(DoTestThing, { id: "thing-inner" }, emptyMetadata())
-      expect(observedInnerRecords).toBe(true)
-    } finally {
-      await app.stop()
-    }
+
+    await send(bus, CloseCourse, { courseId: "cs-101" })
+
+    expect(bus.dispatched.map((m) => m.identifier).at(-1)).toBe("nested")
   })
 
-  it("rejects a recordings handle that did not come from recordings()", () => {
-    const fake = { events: () => [], commands: () => [], reset: () => {} }
-    expect(() => recordingEventStore(inMemoryComponents().eventStore, fake)).toThrow(
-      /missing internal writers/,
+  it("keeps the delegate's subscription rules — it adds nothing but the log", () => {
+    const bus = recordingCommandBus(simpleCommandBus(() => unitOfWork(() => FROZEN)))
+    bus.subscribe("university.CloseCourse", async () => undefined)
+    expect(() => bus.subscribe("university.CloseCourse", async () => undefined)).toThrow(
+      "A different handler is already registered",
     )
+  })
+})
+
+describe("recordingQueryBus", () => {
+  it("records what is asked, and answers it", async () => {
+    const bus = recordingQueryBus(simpleQueryBus(() => unitOfWork(() => FROZEN)))
+    bus.subscribe("university.GetCourseView", async () => ({ courseId: "cs-101" }))
+
+    const answer = await bus.query({
+      kind: "query",
+      identifier: generateIdentifier(),
+      name: GetCourseView.name,
+      payload: { courseId: "cs-101" },
+      metadata: emptyMetadata(),
+    })
+
+    expect(answer).toEqual({ courseId: "cs-101" })
+    expect(bus.queried.map((m) => m.name.name)).toEqual(["GetCourseView"])
+  })
+})
+
+describe("controllableScheduler", () => {
+  it("fires nothing until the clock is moved and `due` is asked", async () => {
+    let now = FROZEN
+    const scheduler = controllableScheduler(() => now)
+
+    const token = await unitOfWork(() => now).execute((uow) =>
+      scheduler.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(now + 1_000), uow),
+    )
+
+    expect(scheduler.schedules).toHaveLength(1)
+    expect(scheduler.due()).toHaveLength(0)
+
+    now = FROZEN + 999
+    expect(scheduler.due()).toHaveLength(0)
+
+    now = FROZEN + 1_000
+    const fired = scheduler.due()
+    expect(fired).toHaveLength(1)
+    // Born when it fires, not when it was arranged.
+    expect(fired[0]!.timestamp).toBe(FROZEN + 1_000)
+    // And never twice.
+    expect(scheduler.due()).toHaveLength(0)
+    expect(scheduler.schedules[0]!.status).toBe("fired")
+    expect(token.id).toBeDefined()
+  })
+
+  it("fires in fire-time order, not in the order they were arranged", async () => {
+    let now = FROZEN
+    const scheduler = controllableScheduler(() => now)
+
+    await unitOfWork(() => now).execute(async (uow) => {
+      await scheduler.schedule(
+        message(CourseClosed, { courseId: "late" }),
+        new Date(now + 900),
+        uow,
+      )
+      await scheduler.schedule(
+        message(CourseClosed, { courseId: "early" }),
+        new Date(now + 100),
+        uow,
+      )
+    })
+
+    now = FROZEN + 1_000
+    expect(scheduler.due().map((e) => (e.payload as { courseId: string }).courseId)).toEqual([
+      "early",
+      "late",
+    ])
+  })
+
+  it("a cancelled schedule never fires, and says it was cancelled", async () => {
+    let now = FROZEN
+    const scheduler = controllableScheduler(() => now)
+
+    await unitOfWork(() => now).execute(async (uow) => {
+      const token = await scheduler.schedule(
+        message(CourseClosed, { courseId: "cs-101" }),
+        new Date(now + 1_000),
+        uow,
+      )
+      expect(await scheduler.cancel(token, uow)).toEqual({ kind: "cancelled" })
+    })
+
+    now = FROZEN + 5_000
+    expect(scheduler.due()).toHaveLength(0)
+    expect(scheduler.schedules[0]!.status).toBe("cancelled")
+  })
+
+  it("a schedule a rolled-back handler asked for was never asked for", async () => {
+    let now = FROZEN
+    const scheduler = controllableScheduler(() => now)
+
+    await unitOfWork(() => now)
+      .execute(async (uow) => {
+        await scheduler.schedule(
+          message(CourseClosed, { courseId: "cs-101" }),
+          new Date(now + 1_000),
+          uow,
+        )
+        throw new Error("the handler blew up")
+      })
+      .catch(() => undefined)
+
+    now = FROZEN + 5_000
+    expect(scheduler.schedules).toHaveLength(0)
+    expect(scheduler.due()).toHaveLength(0)
+  })
+
+  it("refuses to be called outside a handler", async () => {
+    const scheduler = controllableScheduler(() => FROZEN)
+    await expect(
+      scheduler.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN)),
+    ).rejects.toThrow("requires a UnitOfWork")
+  })
+
+  it("reports a token it has never seen as not-found", async () => {
+    const scheduler = controllableScheduler(() => FROZEN)
+    expect(await scheduler.cancel({ id: "nope" })).toEqual({ kind: "not-found" })
   })
 })

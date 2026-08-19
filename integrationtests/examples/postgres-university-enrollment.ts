@@ -1,7 +1,7 @@
 /**
  * Example: full CQRS slice on @kronos-ts/postgres.
  *
- *   write side  : kronos() + postgres() on bunSqlAdapter (Bun.sql driver)
+ *   write side  : kronos() + postgresPool on bunSqlAdapter (Bun.sql driver)
  *                 → events land in kronos_events, snapshots in kronos_snapshots
  *
  *   read side   : drizzle-orm/bun-sql against the SAME database
@@ -19,27 +19,52 @@
  */
 import { z } from "zod"
 import { GenericContainer, Wait } from "testcontainers"
-import { qn, tag } from "@kronos-ts/common"
+import { qn, send } from "@kronos-ts/core"
 import {
-  command,
-  event,
-  commandHandler,
-  eventHandler,
-  jsonSerializer,
-  trackingProcessor,
-  EventCriteria,
-} from "@kronos-ts/messaging"
-import { state } from "@kronos-ts/modelling"
+  command, event, commandHandler, eventHandler, jsonSerializer,
+  eventProcessor, inMemoryTokenStore,
+} from "@kronos-ts/core"
+import { state } from "@kronos-ts/core"
 import {
   afterEvents,
   descriptorBasedTagResolver,
-} from "@kronos-ts/eventsourcing"
-import { kronos, inMemoryComponents, module } from "@kronos-ts/app"
-import { postgres } from "@kronos-ts/postgres"
+} from "@kronos-ts/core"
+import { kronos } from "@kronos-ts/core"
+import {
+  lineage,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  unitOfWork,
+  simpleCommandBus,
+  simpleQueryBus,
+  type UnitOfWork,
+  type CommandBus,
+  type QueryBus,
+} from "@kronos-ts/core"
+import {
+  postgresPool,
+  postgresEventStore,
+  postgresSnapshotStore,
+  postgresUnitOfWork,
+} from "@kronos-ts/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
 import { drizzle } from "drizzle-orm/bun-sql"
 import { pgTable, text, integer, timestamp } from "drizzle-orm/pg-core"
 import { eq, sql } from "drizzle-orm"
+
+/**
+ * The two things `kronos` needs that are not handlers. The UoW runner is named
+ * once and handed to BOTH `simpleCommandBus` (which captures it at construction)
+ * and the event processor below — writing them on adjacent lines is what makes
+ * that checkable.
+ */
+function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
+  return {
+    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
+    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+  }
+}
+
 
 // ============================================================================
 // Read-side schema (drizzle owns this table)
@@ -60,19 +85,19 @@ const courseViews = pgTable("course_views", {
 const CourseOpened = event({
   name: qn("university", "CourseOpened"),
   payload: z.object({ courseId: z.string(), title: z.string(), capacity: z.number() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const StudentRegistered = event({
   name: qn("university", "StudentRegistered"),
   payload: z.object({ studentId: z.string(), name: z.string(), maxCourses: z.number() }),
-  tags: (p) => [tag("studentId", p.studentId)],
+  tags: { studentId: (p) => p.studentId },
 })
 
 const StudentEnrolled = event({
   name: qn("university", "StudentEnrolled"),
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  tags: (p) => [tag("courseId", p.courseId), tag("studentId", p.studentId)],
+  tags: { courseId: (p) => p.courseId, studentId: (p) => p.studentId },
 })
 
 type CourseState = { opened: boolean; capacity: number; enrolled: string[] }
@@ -80,10 +105,10 @@ const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (): CourseState => ({ opened: false, capacity: 0, enrolled: [] }),
-  criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: (on) => [
-    on(CourseOpened, (s, { payload: e }) => ({ ...s, opened: true, capacity: e.capacity })),
-    on(StudentEnrolled, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
+  tags: (id) => ({ courseId: id.courseId }),
+  evolve: [
+    [CourseOpened, (s, { payload: e }) => ({ ...s, opened: true, capacity: e.capacity })],
+    [StudentEnrolled, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })],
   ],
 })
 
@@ -92,10 +117,10 @@ const Student = state({
   name: "Student",
   id: { studentId: z.string() },
   initial: (): StudentState => ({ registered: false, maxCourses: 0, courses: [] }),
-  criteria: (id) => EventCriteria.havingTags(tag("studentId", id.studentId)),
-  evolve: (on) => [
-    on(StudentRegistered, (s, { payload: e }) => ({ ...s, registered: true, maxCourses: e.maxCourses })),
-    on(StudentEnrolled, (s, { payload: e }) => ({ ...s, courses: [...s.courses, e.courseId] })),
+  tags: (id) => ({ studentId: id.studentId }),
+  evolve: [
+    [StudentRegistered, (s, { payload: e }) => ({ ...s, registered: true, maxCourses: e.maxCourses })],
+    [StudentEnrolled, (s, { payload: e }) => ({ ...s, courses: [...s.courses, e.courseId] })],
   ],
 })
 
@@ -165,9 +190,7 @@ function buildProjector(db: DrizzleDb) {
       })
       .where(eq(courseViews.courseId, e.courseId))
   })
-  return trackingProcessor("course-projection")
-    .eventHandlers(onCourseOpened, onStudentEnrolled)
-    .build()
+  return [onCourseOpened, onStudentEnrolled]
 }
 
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
@@ -206,69 +229,75 @@ async function main(): Promise<void> {
       )
     `)
 
-    // Write side: the postgres backend, connected and bootstrapped, then
-    // spread over the in-memory defaults. The lazy transactional UoW factory
-    // postgres provides is passed INTO inMemoryComponents so the command bus
-    // is built around it — spreading it on afterwards would leave the bus
-    // running handlers outside any transaction.
-    const pg = await postgres({
-      adapter: bunSqlAdapter({ connectionString }),
+    // Write side: one pool, then each store named as a plain function of it.
+    // There is no bundle — this app wants an event store, a snapshot store and
+    // a transactional unit of work, so it says exactly that.
+    //
+    // The lazy transactional UoW factory is passed INTO the bus builder so the
+    // command bus is built around it; handing it over afterwards would leave
+    // the bus running handlers outside any transaction.
+    const pg = postgresPool(bunSqlAdapter({ connectionString }))
+    await pg.start()
+    const eventStore = postgresEventStore(pg, {
       serializer: jsonSerializer(),
       tagResolver: descriptorBasedTagResolver(),
     })
-    const app = kronos({
-      components: {
-        ...inMemoryComponents({ unitOfWorkFactory: pg.components.unitOfWorkFactory }),
-        ...pg.components,
-      },
-      modules: [
-        module(
-          "university",
-          // Per-state snapshot config, declared where the state is registered.
-          [Course, { snapshotPolicy: afterEvents(1) }],
-          [Student, { snapshotPolicy: afterEvents(1) }],
-          openCourse, registerStudent, enrollStudent,
-          buildProjector(db),
-        ),
-      ],
+    const snapshotStore = postgresSnapshotStore(pg, { serializer: jsonSerializer() })
+    const uow = postgresUnitOfWork(pg, unitOfWork)
+    const buses = inMemoryBuses(uow)
+    const projection = eventProcessor({
+      name: "course-projection",
+      eventStore,
+      tokenStore: inMemoryTokenStore(),
+      unitOfWork: uow,
     })
-
-    // Background workers (the durable scheduler), once handlers are subscribed.
-    await pg.start()
+    const app = kronos({
+      // Per-state snapshot config, declared where the state is registered.
+      states: [
+        [{ ...Course, eventStore, snapshotStore }, { snapshotPolicy: afterEvents(1) }],
+        [{ ...Student, eventStore, snapshotStore }, { snapshotPolicy: afterEvents(1) }],
+      ],
+      commandHandlers: [
+        { ...openCourse, eventStore, ...buses },
+        { ...registerStudent, eventStore, ...buses },
+        { ...enrollStudent, eventStore, ...buses },
+      ],
+      eventHandlers: buildProjector(db).map((h) => ({ ...h, ...buses, processor: projection })),
+    })
 
     try {
       // ---- Scenario 1: open CS-101 (cap 2), register, enroll both --------
       console.log("\n== open CS-101 (cap 2), register alice + bob, enroll both ==")
-      await app.commandGateway.send(OpenCourse, {
+      await send(buses.commandBus, OpenCourse, {
         courseId: "CS-101", title: "Intro to DCB", capacity: 2,
       })
-      await app.commandGateway.send(RegisterStudent, {
+      await send(buses.commandBus, RegisterStudent, {
         studentId: "alice", name: "Alice", maxCourses: 2,
       })
-      await app.commandGateway.send(RegisterStudent, {
+      await send(buses.commandBus, RegisterStudent, {
         studentId: "bob", name: "Bob", maxCourses: 2,
       })
-      await app.commandGateway.send(EnrollStudent, {
+      await send(buses.commandBus, EnrollStudent, {
         courseId: "CS-101", studentId: "alice",
       })
-      await app.commandGateway.send(EnrollStudent, {
+      await send(buses.commandBus, EnrollStudent, {
         courseId: "CS-101", studentId: "bob",
       })
 
       // ---- Scenario 2: DCB conflict on CS-102 last seat -----------------
       console.log("\n== open CS-102 (cap 1), register carol + dave, race two enrolls ==")
-      await app.commandGateway.send(OpenCourse, {
+      await send(buses.commandBus, OpenCourse, {
         courseId: "CS-102", title: "Tiny Seminar", capacity: 1,
       })
-      await app.commandGateway.send(RegisterStudent, {
+      await send(buses.commandBus, RegisterStudent, {
         studentId: "carol", name: "Carol", maxCourses: 1,
       })
-      await app.commandGateway.send(RegisterStudent, {
+      await send(buses.commandBus, RegisterStudent, {
         studentId: "dave", name: "Dave", maxCourses: 1,
       })
       const results = await Promise.allSettled([
-        app.commandGateway.send(EnrollStudent, { courseId: "CS-102", studentId: "carol" }),
-        app.commandGateway.send(EnrollStudent, { courseId: "CS-102", studentId: "dave" }),
+        send(buses.commandBus, EnrollStudent, { courseId: "CS-102", studentId: "carol" }),
+        send(buses.commandBus, EnrollStudent, { courseId: "CS-102", studentId: "dave" }),
       ])
       const winners = results.filter((r) => r.status === "fulfilled").length
       const losers = results.filter((r) => r.status === "rejected")

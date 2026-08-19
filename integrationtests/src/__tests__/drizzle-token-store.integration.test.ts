@@ -2,23 +2,9 @@ import { describe, expect, it, beforeAll, afterAll, beforeEach } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
 import { drizzle } from "drizzle-orm/postgres-js"
 import postgres from "postgres"
-import { pgTable, varchar, integer, primaryKey } from "drizzle-orm/pg-core"
-
 import { drizzleTokenStore } from "@kronos-ts/drizzle"
-import { globalSequenceToken, UnableToClaimTokenError } from "@kronos-ts/messaging"
+import { globalSequenceToken, UnableToClaimTokenError } from "@kronos-ts/core"
 import { TOKEN_TABLE_DDL, DROP_TOKEN_TABLE } from "./shared-token-table.js"
-
-const kronosTokenEntries = pgTable("kronos_token_entries", {
-  processorName: varchar("processor_name", { length: 255 }).notNull(),
-  segment: integer("segment").notNull(),
-  mask: integer("mask").notNull().default(0),
-  tokenType: varchar("token_type", { length: 255 }),
-  token: varchar("token", { length: 10000 }),
-  timestamp: varchar("timestamp", { length: 255 }),
-  owner: varchar("owner", { length: 255 }),
-}, (table) => [
-  primaryKey({ columns: [table.processorName, table.segment] }),
-])
 
 describe("Drizzle TokenStore (PostgreSQL)", () => {
   let container: StartedTestContainer
@@ -51,7 +37,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   // -- Happy paths --
 
   it("store and get a token", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
     const token = globalSequenceToken(42n)
 
     await store.store("test-processor", 0, token)
@@ -62,7 +48,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("get returns undefined for nonexistent entry", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
 
     const retrieved = await store.get("nonexistent", 0)
 
@@ -70,7 +56,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("initializeSegments creates entries", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
 
     await store.initializeSegments("test-processor", 3)
     const segments = await store.fetchSegments("test-processor")
@@ -79,7 +65,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("claimToken succeeds on unclaimed segment", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
     await store.initializeSegments("test-processor", 1)
 
     const token = await store.claimToken("test-processor", 0, "owner-1")
@@ -88,7 +74,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("claimToken re-claim by same owner refreshes", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
     await store.store("test-processor", 0, globalSequenceToken(10n))
@@ -100,7 +86,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("extendClaim refreshes timestamp", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
 
@@ -109,7 +95,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("releaseClaim clears ownership", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
 
@@ -120,7 +106,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("fetchSegments lists all segments", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
     await store.initializeSegments("test-processor", 4)
 
     const segments = await store.fetchSegments("test-processor")
@@ -129,7 +115,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("fetchAvailableSegments returns unclaimed segments", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
     await store.initializeSegments("test-processor", 3)
     await store.claimToken("test-processor", 1, "owner-1")
 
@@ -141,7 +127,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   })
 
   it("deleteToken removes entry", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
     await store.store("test-processor", 0, globalSequenceToken(5n))
 
     await store.deleteToken("test-processor", 0)
@@ -153,22 +139,22 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
   // -- Unhappy paths --
 
   it("claimToken throws when claimed by another", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries })
+    const store = drizzleTokenStore(db)
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
 
-    expect(
-      store.claimToken("test-processor", 0, "owner-2"),
-    ).rejects.toThrow(UnableToClaimTokenError)
+    expect(store.claimToken("test-processor", 0, "owner-2")).rejects.toThrow(
+      UnableToClaimTokenError,
+    )
   })
 
   it("claimToken succeeds after claim expires", async () => {
-    const store = drizzleTokenStore({ db, table: kronosTokenEntries, claimTimeoutMs: 100 })
+    const store = drizzleTokenStore(db, { claimTimeoutMs: 100 })
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
 
     // Wait for claim to expire
-    await new Promise(r => setTimeout(r, 150))
+    await new Promise((r) => setTimeout(r, 150))
 
     // Should succeed — claim expired
     const token = await store.claimToken("test-processor", 0, "owner-2")

@@ -17,8 +17,8 @@
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
-import { qn, tag } from "@kronos-ts/common"
-import type { EventMessage } from "@kronos-ts/messaging"
+import { qn, tag } from "@kronos-ts/core"
+import type { EventMessage } from "@kronos-ts/core"
 import {
   connectToKronosDb,
   createKronosDbScheduler,

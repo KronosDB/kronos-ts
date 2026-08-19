@@ -1,5 +1,5 @@
 ---
-"@kronos-ts/messaging": minor
+"@kronos-ts/core": minor
 ---
 
 Add `ctx.query` to the command, event, and query handler contexts — the in-handler

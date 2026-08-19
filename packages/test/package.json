@@ -47,11 +47,7 @@
     }
   },
   "dependencies": {
-    "@kronos-ts/common": "workspace:*",
-    "@kronos-ts/app": "workspace:*",
-    "@kronos-ts/messaging": "workspace:*",
-    "@kronos-ts/modelling": "workspace:*",
-    "@kronos-ts/eventsourcing": "workspace:*",
+    "@kronos-ts/core": "workspace:*",
     "zod": "^4.3.6"
   }
 }

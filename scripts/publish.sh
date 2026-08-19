@@ -20,22 +20,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PACKAGES=(
-  packages/common
-  packages/messaging
-  packages/modelling
-  packages/eventsourcing
-  packages/app
+  packages/core
   packages/test
-  packages/extensions/axon-server
-  packages/extensions/drizzle
-  packages/extensions/knex
-  packages/extensions/kronosdb
-  packages/extensions/kysely
-  packages/extensions/opentelemetry
-  packages/extensions/postgres
-  packages/extensions/prisma
-  packages/extensions/rabbitmq
-  packages/extensions/typeorm
+  packages/rabbitmq
+  packages/kronosdb
+  packages/axon-server
+  packages/postgres
+  packages/drizzle
+  packages/knex
+  packages/kysely
+  packages/prisma
+  packages/typeorm
+  packages/otlp
 )
 
 published=0

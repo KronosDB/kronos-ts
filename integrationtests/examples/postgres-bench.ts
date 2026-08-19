@@ -11,7 +11,7 @@
  *   S2  Disjoint concurrent writers (scaling)
  *       1 / 4 / 8 / 16 workers on disjoint tag spaces. Should scale near-
  *       linearly: advisory-lock taxonomy permits parallel commits on
- *       disjoint criteria tags.
+ *       disjoint query tags.
  *
  *   S3  Same-tag contention (worst case)
  *       N workers fighting one tag with retry-on-AppendConditionError.
@@ -29,14 +29,14 @@
  * Requires docker for testcontainers and Bun >= 1.2 for bunSqlAdapter.
  */
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
-import { qn, tag, type Metadata } from "@kronos-ts/common"
-import { EventCriteria, jsonSerializer } from "@kronos-ts/messaging"
-import type { EventMessage } from "@kronos-ts/messaging"
-import type { EventStore } from "@kronos-ts/eventsourcing"
-import { descriptorBasedTagResolver } from "@kronos-ts/eventsourcing"
-import { postgresEventStore } from "@kronos-ts/postgres"
-import type { PostgresAdapter } from "@kronos-ts/postgres"
-import { bootstrapSchema, DEFAULT_TABLE_NAMES } from "@kronos-ts/postgres"
+import { qn, tag, type Metadata } from "@kronos-ts/core"
+import { jsonSerializer } from "@kronos-ts/core"
+import type { EventMessage } from "@kronos-ts/core"
+import type { EventStore } from "@kronos-ts/core"
+import { descriptorBasedTagResolver } from "@kronos-ts/core"
+import { postgresEventStore, postgresPool } from "@kronos-ts/postgres"
+import type { PostgresAdapter, PostgresResource } from "@kronos-ts/postgres"
+import { DEFAULT_TABLE_NAMES } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 import { postgresAdapter } from "@kronos-ts/postgres/adapters/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
@@ -83,19 +83,18 @@ function percentile(sortedMs: number[], p: number): number {
   return sortedMs[idx]!
 }
 
-async function buildStore(adapter: PostgresAdapter): Promise<EventStore> {
-  await adapter.connect()
-  await bootstrapSchema(adapter)
-  return postgresEventStore({
-    adapter,
+/** The pool owns connect + bootstrap; the store is a function of it. */
+async function buildStore(pool: PostgresResource): Promise<EventStore> {
+  await pool.start()
+  return postgresEventStore(pool, {
     serializer: jsonSerializer(),
     tagResolver: descriptorBasedTagResolver(),
   })
 }
 
-async function truncate(adapter: PostgresAdapter): Promise<void> {
-  await adapter.query(`TRUNCATE TABLE ${DEFAULT_TABLE_NAMES.events} RESTART IDENTITY`)
-  await adapter.query(`TRUNCATE TABLE ${DEFAULT_TABLE_NAMES.snapshots}`)
+async function truncate(pool: PostgresResource): Promise<void> {
+  await pool.query(`TRUNCATE TABLE ${DEFAULT_TABLE_NAMES.events} RESTART IDENTITY`)
+  await pool.query(`TRUNCATE TABLE ${DEFAULT_TABLE_NAMES.snapshots}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -119,10 +118,10 @@ async function scenario1(store: EventStore, total: number, windowSize: number): 
     // then we append one event under the precondition that nothing new matched
     // since marker. This is the cheapest possible "conditional append".
     const entityKey = `s1-${i}`
-    const criteria = EventCriteria.havingTags(tag("entity", entityKey))
+    const query = { tags: { entity: entityKey } }
     const t = performance.now()
-    const { marker } = await store.source({ criteria })
-    await store.append([makeEvent(entityKey, i)], { criteria, marker })
+    const { marker } = await store.source({ query })
+    await store.append([makeEvent(entityKey, i)], { query, marker })
     windowLatencies.push(performance.now() - t)
 
     if ((i + 1) % windowSize === 0) {
@@ -178,9 +177,9 @@ async function scenario2Run(store: EventStore, workers: number, perWorker: numbe
       (async () => {
         for (let i = 0; i < perWorker; i++) {
           const entityKey = `s2-w${w}-${i}`
-          const criteria = EventCriteria.havingTags(tag("entity", entityKey))
-          const { marker } = await store.source({ criteria })
-          await store.append([makeEvent(entityKey, i)], { criteria, marker })
+          const query = { tags: { entity: entityKey } }
+          const { marker } = await store.source({ query })
+          await store.append([makeEvent(entityKey, i)], { query, marker })
         }
       })(),
     ),
@@ -223,7 +222,7 @@ interface S3Run {
 
 async function scenario3Run(store: EventStore, workers: number, targetCommits: number): Promise<S3Run> {
   const sharedKey = "s3-shared"
-  const criteria = EventCriteria.havingTags(tag("entity", sharedKey))
+  const query = { tags: { entity: sharedKey } }
   let commits = 0
   let retries = 0
   const t0 = performance.now()
@@ -232,9 +231,9 @@ async function scenario3Run(store: EventStore, workers: number, targetCommits: n
     Array.from({ length: workers }, (_, w) =>
       (async () => {
         while (commits < targetCommits) {
-          const { marker } = await store.source({ criteria })
+          const { marker } = await store.source({ query })
           try {
-            await store.append([makeEvent(sharedKey, w)], { criteria, marker })
+            await store.append([makeEvent(sharedKey, w)], { query, marker })
             commits++
           } catch (err) {
             // AppendConditionError — refresh and retry
@@ -283,14 +282,14 @@ async function scenario4(connectionString: string, events: number): Promise<Adap
     { name: "postgresAdapter", build: () => postgresAdapter({ connectionString }) },
     { name: "bunSqlAdapter", build: () => bunSqlAdapter({ connectionString }) },
   ]) {
-    const adapter = build()
+    const pool = postgresPool(build())
     try {
-      const store = await buildStore(adapter)
-      await truncate(adapter)
+      const store = await buildStore(pool)
+      await truncate(pool)
       const result = await scenario1(store, events, Math.max(1000, Math.floor(events / 5)))
       results.push({ name, result })
     } finally {
-      await adapter.disconnect()
+      await pool.close()
     }
   }
   return results
@@ -331,14 +330,14 @@ async function main(): Promise<void> {
     `postgresql://demo:demo@${container.getHost()}:${container.getMappedPort(5432)}/demo`
 
   // Primary adapter for S1/S2/S3 — bunSqlAdapter as requested.
-  const adapter = bunSqlAdapter({ connectionString })
+  const pool = postgresPool(bunSqlAdapter({ connectionString }))
 
   try {
-    const store = await buildStore(adapter)
+    const store = await buildStore(pool)
 
     console.log("\n== S1: single-writer throughput + degradation ==")
     console.log(`  ${S1_EVENTS} appends, windows of ${S1_WINDOW}`)
-    await truncate(adapter)
+    await truncate(pool)
     const s1 = await scenario1(store, S1_EVENTS, S1_WINDOW)
     printS1(s1)
 
@@ -346,7 +345,7 @@ async function main(): Promise<void> {
     console.log(`  ${S2_PER_WORKER} appends per worker on disjoint tag spaces`)
     const s2Runs: S2Run[] = []
     for (const workers of S2_WORKER_COUNTS) {
-      await truncate(adapter)
+      await truncate(pool)
       const run = await scenario2Run(store, workers, S2_PER_WORKER)
       s2Runs.push(run)
     }
@@ -356,21 +355,21 @@ async function main(): Promise<void> {
     console.log(`  ${S3_TARGET_COMMITS} target commits, all workers on one shared tag`)
     const s3Runs: S3Run[] = []
     for (const workers of S3_WORKER_COUNTS) {
-      await truncate(adapter)
+      await truncate(pool)
       const run = await scenario3Run(store, workers, S3_TARGET_COMMITS)
       s3Runs.push(run)
     }
     printS3(s3Runs)
 
-    // Disconnect primary adapter before the shootout so each test owns its own connection pool.
-    await adapter.disconnect()
+    // Close the primary pool before the shootout so each run owns its own.
+    await pool.close()
 
     console.log("\n== S4: adapter shootout (S1 shape) ==")
     console.log(`  ${S4_EVENTS} appends per adapter`)
     const s4 = await scenario4(connectionString, S4_EVENTS)
     printS4(s4)
   } finally {
-    try { await adapter.disconnect() } catch { /* already disconnected */ }
+    try { await pool.close() } catch { /* already closed */ }
     await container.stop()
   }
 }

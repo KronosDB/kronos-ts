@@ -1,0 +1,58 @@
+{
+  "name": "@kronos-ts/otlp",
+  "version": "0.1.0",
+  "description": "OTLP tracing and metrics for Kronos — the protocol over fetch, zero OpenTelemetry SDK dependencies.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "author": "Theo Emanuelsson",
+  "homepage": "https://github.com/KronosDB/kronos-ts/tree/main/packages/otlp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KronosDB/kronos-ts.git",
+    "directory": "packages/otlp"
+  },
+  "bugs": {
+    "url": "https://github.com/KronosDB/kronos-ts/issues"
+  },
+  "keywords": [
+    "kronos",
+    "event-sourcing",
+    "cqrs",
+    "dcb",
+    "typescript",
+    "otlp",
+    "tracing",
+    "observability"
+  ],
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/__tests__",
+    "!src/**/*.test.ts",
+    "!src/**/*.bench.ts"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "dependencies": {
+    "@kronos-ts/core": "workspace:*"
+  }
+}

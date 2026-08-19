@@ -3,10 +3,16 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["packages/*/src", "packages/extensions/*/src", "integrationtests/src"],
+  "include": ["packages/*/src", "integrationtests/src"],
   "exclude": [
     "**/__tests__/**",
     "**/*.test.ts",
     "**/*.bench.ts"
-  ]
+  ],
+  // `files` is NOT subject to `exclude`, so a type-level test can live beside
+  // its runtime siblings in `__tests__` (where the package build and the
+  // published `files` list already drop it) and still be judged by this gate.
+  // Without it a `@ts-expect-error` claim would be decoration: nothing compiles
+  // the tests.
+  "files": ["packages/drizzle/src/__tests__/drizzle-handler-inference.types.ts"]
 }

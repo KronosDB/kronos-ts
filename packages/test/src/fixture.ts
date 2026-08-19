@@ -1,603 +1,576 @@
 import {
-  generateIdentifier,
   emptyMetadata,
-  qualifiedNameToString,
-  type Metadata,
-} from "@kronos-ts/common"
-import type {
-  CommandDescriptor,
-  EventDescriptor,
-  EventMessage,
-  CommandMessage,
-} from "@kronos-ts/messaging"
-import { runInNewUoW } from "@kronos-ts/messaging"
-import {
+  eventProcessor,
+  generateIdentifier,
+  inMemoryDeadLetterQueue,
+  inMemoryEventStore,
+  inMemorySnapshotStore,
+  inMemoryTokenStore,
   kronos,
-  inMemoryComponents,
-  module as appModule,
-  type App,
-  type AppModule,
-  type Components,
-  type Registration,
-} from "@kronos-ts/app"
-import type { EventStore } from "@kronos-ts/eventsourcing"
-import type { z } from "zod"
+  qualifiedNameToString,
+  simpleCommandBus,
+  simpleQueryBus,
+  unitOfWork,
+} from "@kronos-ts/core"
+import type {
+  Clock,
+  CommandHandlerDefinition,
+  CommandHandlerEntry,
+  CommandMessage,
+  EventHandlerDefinition,
+  EventHandlerEntry,
+  EventMessage,
+  EventProcessor,
+  EventScheduler,
+  EventStore,
+  QueryHandlerDefinition,
+  QueryHandlerEntry,
+  QueryMessage,
+  RunningProcessor,
+  SequencedDeadLetterQueue,
+  Sited,
+  SnapshotStore,
+  StateEntry,
+  StateModule,
+  StateOptions,
+  TokenStore,
+  UnitOfWork,
+  Unstamped,
+} from "@kronos-ts/core"
+import { evaluate, ScenarioAssertionError, type Observed } from "./diff.js"
 import {
-  recordings,
-  recordingComponents,
-  recordingOverrides,
-  type Recordings,
+  controllableScheduler,
+  recordingCommandBus,
+  recordingEventStore,
+  recordingQueryBus,
 } from "./recording.js"
+import type { Scenario } from "./scenario.js"
+import { isAny, type Action, type Duration, type EventValue } from "./values.js"
 
 // ---------------------------------------------------------------------------
-// Public types
+// The fixture: the SITE a scenario runs at.
+//
+// A scenario says what should happen. The fixture says where. It creates the
+// resources — one log, one snapshot cache, one cursor table, one dead-letter
+// queue, two buses, one clock, one scheduler — and HANDS THEM to the scope,
+// which is a FUNCTION of them. That is the whole inversion: production's
+// composition root is also a function of its resources, so a scope written for
+// the fixture is a scope you can deploy, and a scope written for production is
+// one you can test. Nothing is replaced behind anybody's back.
+//
+// Everything in here is deterministic. The clock does not tick unless a scenario
+// says `wait`; the scheduler has no timer; the processors are driven to the head
+// of the log and asked whether they are finished. There are no sleeps, so a suite
+// of a thousand scenarios runs in the time a thousand function calls take.
 // ---------------------------------------------------------------------------
 
-export type EventPair = readonly [EventDescriptor<any>, unknown]
-type CommandPair = [CommandDescriptor<any>, unknown]
+/**
+ * The instant a fixture's clock starts at when nobody says otherwise.
+ *
+ * A FIXED instant rather than the wall clock, because a timestamp a test can
+ * predict is worth more than one that is technically current: an assertion can
+ * name `FIXTURE_EPOCH + 30_000` and mean it.
+ */
+export const FIXTURE_EPOCH = Date.UTC(2024, 0, 1)
 
-// ---------------------------------------------------------------------------
-// Fixture entry point
-// ---------------------------------------------------------------------------
+/**
+ * A processor the scope has DESCRIBED but not built, because the resources it
+ * reads from belong to the site.
+ *
+ * This is the slice idiom, typed: the slice closes out the semantics that are
+ * its own — its durable name, its lane, whether it parks poison pills — and
+ * leaves the resources as its parameter list. A shorter parameter list is fine;
+ * a projection that wants global order and no queue writes
+ * `(eventStore, tokenStore, unitOfWork) => eventProcessor({ ... })` and declines
+ * the fourth argument by assignability.
+ */
+export type PartialProcessor = (
+  eventStore: EventStore,
+  tokenStore: TokenStore,
+  unitOfWork: () => UnitOfWork,
+  deadLetterQueue: SequencedDeadLetterQueue,
+) => EventProcessor
 
-/** Anything the variadic form accepts: a bare registration, or a whole module. */
-export type FixtureRegistration = Registration | AppModule
-
-/** The explicit form, for when the defaults are not what you want. */
-export interface TestFixtureOptions {
-  /** Components to run on. Defaults to `inMemoryComponents()`. */
-  components?: Components
-  /** Modules to boot, each with its own overrides. */
-  modules?: ReadonlyArray<AppModule>
-  /** Loose registrations, booted as a single module named `"test"`. */
-  register?: ReadonlyArray<Registration>
+/** An event handler entry as a scope writes one: the processor may still be partial. */
+export type FixtureEventHandler = Sited<EventHandlerDefinition<any, any>> & {
+  readonly processor?: EventProcessor | PartialProcessor
 }
 
 /**
- * Creates a BDD test fixture that runs your REAL application code against
- * in-memory components, with the event store and command bus wrapped so the
- * `then()` phase can assert on what was appended and dispatched.
+ * What a scope returns: the four lists `kronos` takes.
  *
- * Pass the same registrations you would pass to `module(...)` in production —
- * state modules, command handlers, query handlers, processors, in any order:
- *
- * ```typescript
- * const fixture = testFixture(Course, createCourse, subscribeStudent, getCourseView)
- *
- * await fixture
- *   .given()
- *     .events([CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }])
- *   .when()
- *     .command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" })
- *   .then()
- *     .expectSuccess()
- *     .expectEvents([StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" }])
- *
- * await fixture.stop()
- * ```
- *
- * Whole modules may be passed too — `testFixture(billing, ordering)` —
- * and the explicit form takes components and modules by name:
- *
- * ```typescript
- * const fixture = testFixture({
- *   components: inMemoryComponents({ serializer: avroSerializer() }),
- *   modules: [module("billing", { eventStore: postgresEventStore(pool) }, ...slice)],
- * })
- * ```
- *
- * The result is synchronous; `await testFixture(...)` also works, so the
- * awaited call sites of the previous fixture keep compiling.
+ * The same four, with the same meanings. A scope is not a special test shape —
+ * it is a composition root whose resources arrive as arguments.
  */
-export function testFixture(...registrations: FixtureRegistration[]): TestFixture
-export function testFixture(options: TestFixtureOptions): TestFixture
-export function testFixture(
-  ...args: [TestFixtureOptions] | FixtureRegistration[]
-): TestFixture {
-  const options = normalizeOptions(args)
-  const recorded = recordings()
+export interface FixtureLists {
+  readonly commandHandlers?: ReadonlyArray<Sited<CommandHandlerDefinition<any, any>>>
+  readonly queryHandlers?: ReadonlyArray<Sited<QueryHandlerDefinition<any, any>>>
+  readonly eventHandlers?: ReadonlyArray<FixtureEventHandler>
+  readonly states?: ReadonlyArray<StateEntry>
+}
 
-  // Recording is composition, not registration: wrap the two traffic-carrying
-  // components before handing them to kronos. Because the wrapper IS the
-  // component every handler resolves, it sits innermost by construction — no
-  // ordering rule to remember.
-  const components = recordingComponents(options.components ?? inMemoryComponents(), recorded)
+/**
+ * A composition root as a function of the resources the fixture owns.
+ *
+ * ```ts
+ * const fixture = testFixture((eventStore, snapshotStore) => courses(eventStore, snapshotStore))
+ * const fixture = testFixture((eventStore) => ({ states: [{ ...Course, eventStore }], … }))
+ * ```
+ */
+export type FixtureScope = (eventStore: EventStore, snapshotStore: SnapshotStore) => FixtureLists
 
-  const modules: AppModule[] = [
-    ...(options.register && options.register.length > 0
-      ? [appModule("test", ...options.register)]
-      : []),
-    // A module bringing its OWN store/bus gets its own wrapper, so recordings
-    // stay complete across module-scoped persistence.
-    ...(options.modules ?? []).map((m) => ({
-      ...m,
-      overrides: recordingOverrides(m.overrides, recorded),
-    })),
-  ]
+export interface FixtureOptions {
+  /**
+   * How long to keep re-judging the claims before calling them failed. Only ever
+   * used against a scope that brought resources the fixture does not own — an
+   * all-in-memory scope is deterministic, so a claim that does not hold on the
+   * first look will not hold on the second either, and waiting would be theatre.
+   * Default: 5000ms.
+   */
+  readonly within?: Duration
+  /**
+   * Where the fixture's time starts. Absent means {@link FIXTURE_EPOCH} — or
+   * system time under `realTime`, where the clock has to be real for a real wait
+   * to mean anything.
+   */
+  readonly clock?: Clock
+  /**
+   * Make `wait` genuinely elapse instead of jumping the clock. For a scope whose
+   * own infrastructure has its own timers — a database scheduler with a polling
+   * worker — where there is nothing for the fixture to jump.
+   */
+  readonly realTime?: boolean
+}
 
-  const app = kronos({ components, modules })
-  const eventStore = components.eventStore
+/** What one act did. `events` and `commands` cover THIS act only. */
+export interface RunOutcome {
+  /** A command handler's return, or a query's answer. `undefined` for an event act. */
+  readonly result: unknown
+  /** Events appended during the act — automations included, `given` excluded. */
+  readonly events: ReadonlyArray<EventMessage>
+  /** Commands dispatched during the act — the act's own command excluded. */
+  readonly commands: ReadonlyArray<Unstamped<CommandMessage>>
+}
+
+/**
+ * One timeline.
+ *
+ * Consecutive `run` calls continue the SAME log and the SAME processor cursors,
+ * which is how a saga is tested: each call reports only what it caused, and the
+ * world it caused it in is whatever the previous calls left behind.
+ */
+export interface TestFixture {
+  run(scenario: Scenario, opts?: { within?: Duration }): Promise<RunOutcome>
+}
+
+const DEFAULT_WITHIN = 5000
+
+/** Wire `scope` against resources the fixture owns, and run scenarios at it. */
+export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): TestFixture {
+  const realTime = opts.realTime ?? false
+  const base: Clock = opts.clock ?? (realTime ? Date.now : () => FIXTURE_EPOCH)
+  let offset = 0
+  /** The fixture's clock: the base instant, plus whatever `wait` has jumped. */
+  const clock: Clock = () => base() + offset
+  const uow = (): UnitOfWork => unitOfWork(clock)
+
+  const log = inMemoryEventStore()
+  const eventStore = recordingEventStore(log)
+  const snapshotStore = inMemorySnapshotStore()
+  const tokenStore = inMemoryTokenStore()
+  const deadLetterQueue = inMemoryDeadLetterQueue()
+  const commandBus = recordingCommandBus(simpleCommandBus(uow))
+  const queryBus = recordingQueryBus(simpleQueryBus(uow))
+  const eventScheduler = controllableScheduler(clock)
+
+  // ---- what the scope asked for -------------------------------------------
+  const lists = scope(eventStore, snapshotStore)
+
+  /**
+   * Whether anything in the scope is beyond the fixture's reach.
+   *
+   * The fixture can only jump a clock it owns and only settle a processor it
+   * drives. A scope that brought its own store, its own scheduler or an
+   * already-built processor over foreign resources is a REAL-INFRASTRUCTURE
+   * scope: `wait` cannot fake time for it, and its claims have to be re-judged
+   * until they settle rather than judged once.
+   */
+  let foreign = false
+  function ownStore(store: EventStore | undefined): void {
+    if (store !== undefined && store !== eventStore) foreign = true
+  }
+  function ownScheduler(scheduler: EventScheduler | undefined): void {
+    if (scheduler !== undefined && scheduler !== eventScheduler) foreign = true
+  }
+
+  const defaultProcessor = eventProcessor({
+    name: "fixture",
+    eventStore,
+    tokenStore,
+    unitOfWork: uow,
+  })
+
+  /**
+   * Which log each delivery reads, by the processor's durable name.
+   *
+   * Quiescing means "every delivery has reached the head of the log it reads" —
+   * and a processor the scope built over its own store reads a DIFFERENT log, so
+   * comparing it against the fixture's head would wait forever for events that
+   * were never going to arrive there.
+   */
+  const readsFrom = new Map<string, EventStore>()
+
+  /** Complete a partial processor with the fixture's resources; keep a whole one. */
+  function processorFor(entry: FixtureEventHandler): EventProcessor {
+    const declared = entry.processor
+    if (declared === undefined) return defaultProcessor
+    const built =
+      typeof declared === "function"
+        ? declared(eventStore, tokenStore, uow, deadLetterQueue)
+        : declared
+    if (built.eventStore !== eventStore || built.tokenStore !== tokenStore) foreign = true
+    readsFrom.set(built.name, built.eventStore)
+    return built
+  }
+
+  function sited(entry: StateEntry): StateEntry {
+    const [state, options] = Array.isArray(entry)
+      ? (entry as readonly [Sited<StateModule<any, any>>, StateOptions])
+      : ([entry as Sited<StateModule<any, any>>, undefined] as const)
+    ownStore(state.eventStore)
+    const withSite = { eventStore, snapshotStore, ...state }
+    return options === undefined ? withSite : [withSite, options]
+  }
+
+  const app = kronos({
+    states: (lists.states ?? []).map(sited),
+    commandHandlers: (lists.commandHandlers ?? []).map((h) => {
+      ownStore(h.eventStore)
+      ownScheduler(h.eventScheduler)
+      return {
+        eventStore,
+        snapshotStore,
+        eventScheduler,
+        ...h,
+        commandBus,
+        queryBus,
+      } as CommandHandlerEntry
+    }),
+    queryHandlers: (lists.queryHandlers ?? []).map((h) => {
+      ownStore(h.eventStore)
+      return { eventStore, snapshotStore, ...h, queryBus } as QueryHandlerEntry
+    }),
+    eventHandlers: (lists.eventHandlers ?? []).map((h) => {
+      ownStore(h.eventStore)
+      ownScheduler(h.eventScheduler)
+      return {
+        eventScheduler,
+        ...h,
+        commandBus,
+        queryBus,
+        // Last, so a PARTIAL processor is replaced by the built one rather than
+        // handed to `kronos` as a function it has no idea what to do with.
+        processor: processorFor(h),
+      } as EventHandlerEntry
+    }),
+  })
+
+  const processors: ReadonlyArray<RunningProcessor> = [...app.processors.values()]
+
+  // `kronos` starts every processor. The fixture drives them by hand — parking
+  // them to fast-forward a `given`, resuming them for an act — so the first
+  // thing it does is take them back. An in-flight `start()` flips `running` on
+  // after its own await, so parking waits for the turn of the loop and then
+  // stops them; every step begins by awaiting this.
+  const taken = (async () => {
+    await settle()
+    for (const processor of processors) processor.stop()
+  })()
+
+  async function parkAll(): Promise<void> {
+    for (const processor of processors) processor.stop()
+    await settle()
+    for (const processor of processors) processor.stop()
+  }
+
+  async function resumeAll(): Promise<void> {
+    for (const processor of processors) await processor.start()
+  }
+
+  /**
+   * Close the observation window and open a new one.
+   *
+   * The STORE keeps its events and the scheduler keeps its armed schedules —
+   * only the recordings are cleared, because the timeline is longer than one act
+   * and the next act still happens in the world this one left behind.
+   */
+  function resetRecorders(): void {
+    eventStore.reset()
+    commandBus.reset()
+    queryBus.reset()
+  }
+
+  /**
+   * Which schedules existed, and in what state, when the current act began.
+   *
+   * Schedules are the one recording that cannot simply be cleared: an armed
+   * schedule is LIVE STATE, and a deadline armed in one act is very often the
+   * subject of the next. So instead of forgetting them, the fixture remembers
+   * their states and reports the ones that CHANGED — which covers a schedule
+   * newly armed, one that fired, and one that was cancelled, without inventing a
+   * separate rule for each.
+   */
+  let priorSchedules = new Map<string, string>()
+  function markSchedules(): void {
+    priorSchedules = new Map(eventScheduler.schedules.map((s) => [s.token.id, s.status]))
+  }
+
+  /**
+   * Turn a scenario's event value into a real message, stamped from the fixture
+   * clock.
+   *
+   * A hole is refused here rather than written: `any()` is a claim about a value
+   * somebody else produced, and a fact with a hole in it is not a fact.
+   */
+  function toEventMessage(value: EventValue<any>): EventMessage {
+    const name = qualifiedNameToString(value.descriptor.name)
+    if (containsHole(value.payload)) {
+      throw new Error(
+        `@kronos-ts/test: event(${name}, …) contains \`any()\`, but this event is a FACT — ` +
+          `a \`given\` seeds the log and a \`when\` arrives in it, so every field has to have a ` +
+          `value. \`any()\` is only meaningful in \`then\`, where it declines to pin what ` +
+          `something else produced.`,
+      )
+    }
+    return {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: value.descriptor.name,
+      version: value.descriptor.version,
+      payload: value.payload,
+      metadata: value.metadata ?? emptyMetadata(),
+      timestamp: clock(),
+      tags: value.descriptor.tags ? value.descriptor.tags(value.payload) : [],
+    }
+  }
+
+  /**
+   * History: append the facts, then move every cursor PAST them without invoking
+   * a single handler.
+   *
+   * That is the difference between a `given` and a `when`, and it is the one the
+   * old fixture got wrong by letting the automations replay the past. `given`
+   * describes the world as it already is — the automations that would have fired
+   * already fired, long ago, and firing them now would make the world one the
+   * test never described.
+   */
+  async function applyGiven(events: ReadonlyArray<EventValue<any>>): Promise<void> {
+    await parkAll()
+    if (events.length > 0) await eventStore.append(events.map(toEventMessage))
+    const head = await log.getHeadPosition()
+    for (const processor of processors) await processor.resetTokens(head)
+    resetRecorders()
+    markSchedules()
+    await resumeAll()
+  }
+
+  /**
+   * Drive every processor to the head of the log, let what it dispatched settle,
+   * and repeat until nothing moves.
+   *
+   * A processor reports `caughtUp` only after a batch it awaited to completion,
+   * and its position is compared against the head — so an automation that
+   * dispatched a command that appended is still in flight when the loop looks:
+   * the head moved, and the loop goes round again.
+   */
+  async function quiesce(): Promise<void> {
+    if (processors.length === 0) return
+    const deadline = Date.now() + DEFAULT_WITHIN
+    let previous = ""
+    for (;;) {
+      const heads = new Map<string, bigint>()
+      for (const processor of processors) {
+        const store = readsFrom.get(processor.name) ?? eventStore
+        heads.set(processor.name, await store.getHeadPosition())
+      }
+      const settled = processors.every((p) => {
+        const status = p.status()
+        return status.caughtUp && status.position >= heads.get(p.name)!
+      })
+      const current = [...heads.values()].map(String).join(",")
+      // Settled AND the logs stopped moving. Both halves are needed: an
+      // automation that dispatched a command that appended is still in flight
+      // when the loop first looks, and the moving head is what says so.
+      if (settled && current === previous) return
+      previous = current
+      if (Date.now() > deadline) {
+        const behind = processors
+          .map(
+            (p) =>
+              `"${p.name}" at ${p.status().position} of ${heads.get(p.name)}` +
+              `${p.status().caughtUp ? "" : " (busy)"}`,
+          )
+          .join(", ")
+        throw new Error(
+          `@kronos-ts/test: the scope's automations did not go quiet within ${DEFAULT_WITHIN}ms. ` +
+            `${behind}. An event handler that dispatches a command whose events re-trigger it ` +
+            `will never settle.`,
+        )
+      }
+      await settle()
+    }
+  }
+
+  /** Time passing: jump the clock (or really wait), fire what is due, settle. */
+  async function wait(duration: Duration): Promise<void> {
+    if (realTime) {
+      await new Promise<void>((resolve) => setTimeout(resolve, duration))
+    } else if (foreign) {
+      throw new Error(
+        `@kronos-ts/test: \`wait(${duration})\` cannot move time for this scope. The scope brought ` +
+          `resources the fixture does not own — its own event store, its own scheduler, or a ` +
+          `processor built over both — so there is no clock here to jump and no timer here to ` +
+          `fire. Either let the fixture create the resources (take them as the scope's ` +
+          `parameters), or pass \`{ realTime: true }\` and the wait will genuinely elapse.`,
+      )
+    } else {
+      offset += duration
+    }
+
+    const due = eventScheduler.due()
+    if (due.length > 0) await eventStore.append(due)
+    await quiesce()
+  }
+
+  /** What the recorders currently hold, minus the act's own message. */
+  function observe(
+    actIdentifier: string | undefined,
+  ): Omit<Observed, "result" | "threw" | "thrown"> {
+    return {
+      events: [...eventStore.appended],
+      commands: commandBus.dispatched.filter((m) => m.identifier !== actIdentifier),
+      schedules: eventScheduler.schedules.filter(
+        (s) => priorSchedules.get(s.token.id) !== s.status,
+      ),
+    }
+  }
 
   return {
-    app,
-    recordings: recorded,
-    given() {
-      return new GivenPhaseImpl(app, recorded, eventStore)
-    },
-    async stop() {
-      await app.stop()
-    },
-  }
-}
+    async run(scenario: Scenario, runOpts?: { within?: Duration }): Promise<RunOutcome> {
+      await taken
+      resetRecorders()
+      markSchedules()
+      await resumeAll()
 
-function normalizeOptions(
-  args: [TestFixtureOptions] | FixtureRegistration[],
-): TestFixtureOptions {
-  const first = args[0] as Record<string, unknown> | undefined
-  const isOptions =
-    args.length === 1 &&
-    first !== undefined &&
-    !("kind" in first) &&
-    !("register" in first) &&
-    ("components" in first || "modules" in first)
-  if (isOptions) return args[0] as TestFixtureOptions
+      const act = actionOf(scenario)
+      let result: unknown
+      let thrown: unknown
+      let threw = false
+      let actIdentifier: string | undefined
 
-  const register: Registration[] = []
-  const modules: AppModule[] = []
-  for (const item of args as FixtureRegistration[]) {
-    if (item && !("kind" in item) && Array.isArray((item as AppModule).register)) {
-      modules.push(item as AppModule)
-    } else {
-      register.push(item as Registration)
-    }
-  }
-  return { register, modules }
-}
-
-export interface TestFixture {
-  /** The running app — gateways and per-module state managers. */
-  readonly app: App
-  /** What the wrapped store and bus have seen since the last reset. */
-  readonly recordings: Recordings
-  given(): GivenPhase
-  stop(): Promise<void>
-}
-
-// ---------------------------------------------------------------------------
-// Given phase
-// ---------------------------------------------------------------------------
-
-export interface GivenPhase {
-  /**
-   * Seed history by appending straight to the app-level event store.
-   *
-   * Note: a module that brings its OWN `eventStore` override reads from that
-   * store, not this one — seed such a module through `commands(...)` (which
-   * goes via the bus and lands in the right store) rather than `events(...)`.
-   */
-  events(...pairs: EventPair[]): GivenPhase
-  commands(...pairs: CommandPair[]): GivenPhase
-  execute(fn: (app: App) => void | Promise<void>): GivenPhase
-  noPriorActivity(): GivenPhase
-  when(): WhenPhase
-}
-
-class GivenPhaseImpl implements GivenPhase {
-  private readonly givenEvents: EventPair[] = []
-  private readonly givenCommands: CommandPair[] = []
-  private readonly givenSetupFns: Array<(app: App) => void | Promise<void>> = []
-  _prerequisite: Promise<void> | undefined
-
-  constructor(
-    private readonly app: App,
-    private readonly recordings: Recordings,
-    private readonly eventStore: EventStore,
-  ) {}
-
-  events(...pairs: EventPair[]): GivenPhase {
-    this.givenEvents.push(...pairs)
-    return this
-  }
-
-  commands(...pairs: CommandPair[]): GivenPhase {
-    this.givenCommands.push(...pairs)
-    return this
-  }
-
-  execute(fn: (app: App) => void | Promise<void>): GivenPhase {
-    this.givenSetupFns.push(fn)
-    return this
-  }
-
-  noPriorActivity(): GivenPhase {
-    return this
-  }
-
-  when(): WhenPhase {
-    return new WhenPhaseImpl(
-      this.app, this.recordings, this.eventStore,
-      this.givenEvents, this.givenCommands, this.givenSetupFns,
-      this._prerequisite,
-    )
-  }
-}
-
-// ---------------------------------------------------------------------------
-// When phase
-// ---------------------------------------------------------------------------
-
-export interface WhenPhase {
-  command<P extends z.ZodType>(descriptor: CommandDescriptor<P>, payload: z.infer<P>, metadata?: Metadata): WhenResult
-  event<P extends z.ZodType>(descriptor: EventDescriptor<P>, payload: z.infer<P>, metadata?: Metadata): WhenResult
-  nothing(): WhenResult
-}
-
-export interface WhenResult {
-  then(): ThenPhase
-}
-
-class WhenPhaseImpl implements WhenPhase {
-  constructor(
-    private readonly app: App,
-    private readonly recordings: Recordings,
-    private readonly eventStore: EventStore,
-    private readonly givenEvents: EventPair[],
-    private readonly givenCommands: CommandPair[],
-    private readonly givenSetupFns: Array<(app: App) => void | Promise<void>>,
-    private readonly prerequisite?: Promise<void>,
-  ) {}
-
-  command<P extends z.ZodType>(descriptor: CommandDescriptor<P>, payload: z.infer<P>, metadata?: Metadata): WhenResult {
-    const thenPhase = new ThenPhaseImpl(
-      this.app, this.recordings, this.eventStore,
-      this.givenEvents, this.givenCommands, this.givenSetupFns,
-      { kind: "command", descriptor, payload, metadata },
-      this.prerequisite,
-    )
-    return { then: () => thenPhase }
-  }
-
-  event<P extends z.ZodType>(descriptor: EventDescriptor<P>, payload: z.infer<P>, metadata?: Metadata): WhenResult {
-    const thenPhase = new ThenPhaseImpl(
-      this.app, this.recordings, this.eventStore,
-      this.givenEvents, this.givenCommands, this.givenSetupFns,
-      { kind: "event", descriptor, payload, metadata },
-      this.prerequisite,
-    )
-    return { then: () => thenPhase }
-  }
-
-  nothing(): WhenResult {
-    const thenPhase = new ThenPhaseImpl(
-      this.app, this.recordings, this.eventStore,
-      this.givenEvents, this.givenCommands, this.givenSetupFns,
-      { kind: "nothing" },
-      this.prerequisite,
-    )
-    return { then: () => thenPhase }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Then phase
-// ---------------------------------------------------------------------------
-
-type WhenAction =
-  | { kind: "command"; descriptor: CommandDescriptor<any>; payload: unknown; metadata?: Metadata }
-  | { kind: "event"; descriptor: EventDescriptor<any>; payload: unknown; metadata?: Metadata }
-  | { kind: "nothing" }
-
-export interface ThenPhase extends PromiseLike<void> {
-  expectEvents(...pairs: EventPair[]): ThenPhase
-  expectNoEvents(): ThenPhase
-  expectSuccess(): ThenPhase
-  expectResult(expected: unknown): ThenPhase
-  expectResultSatisfying(fn: (result: unknown) => void): ThenPhase
-  expectResultPayloadSatisfying<T>(fn: (payload: T) => void): ThenPhase
-  expectException(messageSubstring: string): ThenPhase
-  expectExceptionType(errorName: string): ThenPhase
-  expectExceptionSatisfying(fn: (error: unknown) => void): ThenPhase
-  expectEventsSatisfying(fn: (events: ReadonlyArray<EventMessage>) => void): ThenPhase
-  expectCommands(...pairs: CommandPair[]): ThenPhase
-  expectNoCommands(): ThenPhase
-  expectCommandsSatisfying(fn: (commands: ReadonlyArray<CommandMessage>) => void): ThenPhase
-  expect(fn: (app: App) => void | Promise<void>): ThenPhase
-  await(assertion: (app: App) => void | Promise<void>, timeoutMs?: number, intervalMs?: number): ThenPhase
-  and(): TestFixture
-}
-
-class ThenPhaseImpl implements ThenPhase {
-  private readonly assertions: Array<(result: unknown, error: unknown, events: ReadonlyArray<EventMessage>) => void | Promise<void>> = []
-  private executionPromise: Promise<void> | null = null
-
-  constructor(
-    private readonly app: App,
-    private readonly recordings: Recordings,
-    private readonly eventStore: EventStore,
-    private readonly givenEvents: EventPair[],
-    private readonly givenCommands: CommandPair[],
-    private readonly givenSetupFns: Array<(app: App) => void | Promise<void>>,
-    private readonly whenAction: WhenAction,
-    private readonly prerequisite?: Promise<void>,
-  ) {}
-
-  expectEvents(...pairs: EventPair[]): ThenPhase {
-    this.assertions.push((_result, _error, events) => {
-      if (events.length !== pairs.length) {
-        throw new FixtureAssertionError(
-          `Expected ${pairs.length} event(s) but got ${events.length}.\n` +
-          `  Expected: [${pairs.map(([d]) => qualifiedNameToString(d.name)).join(", ")}]\n` +
-          `  Actual:   [${events.map((e) => qualifiedNameToString(e.name)).join(", ")}]`,
-        )
-      }
-      for (let i = 0; i < pairs.length; i++) {
-        const [desc, payload] = pairs[i]!
-        const actual = events[i]!
-        const expectedName = qualifiedNameToString(desc.name)
-        const actualName = qualifiedNameToString(actual.name)
-        if (actualName !== expectedName) {
-          throw new FixtureAssertionError(`Event ${i}: expected "${expectedName}" but got "${actualName}"`)
+      for (const step of scenario.steps) {
+        if (step.kind === "given") {
+          await applyGiven(step.events)
+          continue
         }
-        assertDeepEqual(payload, actual.payload, `Event ${i} (${expectedName}) payload`)
-      }
-    })
-    return this
-  }
+        if (step.kind === "wait") {
+          await wait(step.duration)
+          continue
+        }
 
-  expectNoEvents(): ThenPhase {
-    this.assertions.push((_result, _error, events) => {
-      if (events.length !== 0) {
-        throw new FixtureAssertionError(
-          `Expected no events but got ${events.length}: ` + events.map((e) => qualifiedNameToString(e.name)).join(", "),
+        const action = step.action
+        try {
+          if (action.kind === "command") {
+            // The message is built HERE rather than through `send` for one
+            // reason: the fixture has to know its identifier, so the act's own
+            // command can be told apart from the ones its handler dispatched.
+            // Otherwise every `then` that mentions a command would have to
+            // restate the command the scenario just performed.
+            const message: Unstamped<CommandMessage> = {
+              kind: "command",
+              identifier: generateIdentifier(),
+              name: action.descriptor.name,
+              payload: action.payload,
+              metadata: action.metadata ?? emptyMetadata(),
+            }
+            actIdentifier = message.identifier
+            result = await commandBus.dispatch(message)
+          } else if (action.kind === "query") {
+            const message: Unstamped<QueryMessage> = {
+              kind: "query",
+              identifier: generateIdentifier(),
+              name: action.descriptor.name,
+              payload: action.payload,
+              metadata: action.metadata ?? emptyMetadata(),
+            }
+            actIdentifier = message.identifier
+            result = await queryBus.query(message)
+          } else {
+            // An event ARRIVES: it is appended, and the automations DO react —
+            // which is the whole point of the shape. It is not history.
+            await eventStore.append([toEventMessage(action)])
+          }
+        } catch (error) {
+          thrown = error
+          threw = true
+        }
+        await quiesce()
+      }
+
+      const claimsResult = scenario.then.some((a) => a.kind === "result")
+      if (claimsResult && act.kind === "event") {
+        throw new Error(
+          `@kronos-ts/test: \`result(…)\` claims the act's answer, but the act is an EVENT ` +
+            `arriving — an event answers nobody. Assert what it CAUSED instead: the events it ` +
+            `led to, or the commands its automations dispatched.`,
         )
       }
-    })
-    return this
-  }
 
-  expectSuccess(): ThenPhase {
-    this.assertions.push((_result, error) => {
-      if (error) throw new FixtureAssertionError(`Expected success but command failed: ${error instanceof Error ? error.message : String(error)}`)
-    })
-    return this
-  }
-
-  expectResult(expected: unknown): ThenPhase {
-    this.assertions.push((result, error) => {
-      if (error) throw new FixtureAssertionError(`Expected result but command failed: ${error}`)
-      assertDeepEqual(expected, result, "Command result")
-    })
-    return this
-  }
-
-  expectResultSatisfying(fn: (result: unknown) => void): ThenPhase {
-    this.assertions.push((result, error) => {
-      if (error) throw new FixtureAssertionError(`Expected result but command failed: ${error}`)
-      fn(result)
-    })
-    return this
-  }
-
-  expectResultPayloadSatisfying<T>(fn: (payload: T) => void): ThenPhase {
-    this.assertions.push((result, error) => {
-      if (error) throw new FixtureAssertionError(`Expected result but command failed: ${error}`)
-      fn(result as T)
-    })
-    return this
-  }
-
-  expectException(messageSubstring: string): ThenPhase {
-    this.assertions.push((_result, error) => {
-      if (!error) throw new FixtureAssertionError(`Expected exception containing "${messageSubstring}" but command succeeded`)
-      const msg = error instanceof Error ? error.message : String(error)
-      if (!msg.includes(messageSubstring)) {
-        throw new FixtureAssertionError(`Expected exception containing "${messageSubstring}" but got: "${msg}"`)
+      const claimsError = scenario.then.some((a) => a.kind === "error")
+      if (threw && !claimsError) {
+        // The scenario did not claim a throw, so the throw is the news — not a
+        // diff of the events an act that never ran did not append.
+        throw thrown
       }
-    })
-    return this
-  }
 
-  expectExceptionType(errorName: string): ThenPhase {
-    this.assertions.push((_result, error) => {
-      if (!error) throw new FixtureAssertionError(`Expected ${errorName} but command succeeded`)
-      const actualName = error instanceof Error ? error.name : "Error"
-      if (actualName !== errorName) {
-        throw new FixtureAssertionError(`Expected ${errorName} but got ${actualName}: ${error instanceof Error ? error.message : error}`)
+      const within = runOpts?.within ?? opts.within ?? DEFAULT_WITHIN
+      const deadline = Date.now() + within
+      for (;;) {
+        const outcome = observe(actIdentifier)
+        const failure = evaluate(scenario, { ...outcome, threw, thrown, result }, act.kind)
+        if (failure === undefined) {
+          return { result, events: outcome.events, commands: outcome.commands }
+        }
+        // An all-fixture scope is deterministic: what is not true now will not
+        // become true, so waiting for it would only make failures slow.
+        if (!foreign || Date.now() > deadline) throw new ScenarioAssertionError(failure)
+        await new Promise<void>((resolve) => setTimeout(resolve, 20))
+        await quiesce()
       }
-    })
-    return this
-  }
-
-  expectExceptionSatisfying(fn: (error: unknown) => void): ThenPhase {
-    this.assertions.push((_result, error) => {
-      if (!error) throw new FixtureAssertionError("Expected exception but command succeeded")
-      fn(error)
-    })
-    return this
-  }
-
-  expectEventsSatisfying(fn: (events: ReadonlyArray<EventMessage>) => void): ThenPhase {
-    this.assertions.push((_result, _error, events) => { fn(events) })
-    return this
-  }
-
-  expectCommands(...pairs: CommandPair[]): ThenPhase {
-    this.assertions.push(() => {
-      const actual = this.recordings.commands()
-      const handlerCommands = actual.slice(1)
-      if (handlerCommands.length !== pairs.length) {
-        throw new FixtureAssertionError(
-          `Expected ${pairs.length} dispatched command(s) but got ${handlerCommands.length}.`)
-      }
-      for (let i = 0; i < pairs.length; i++) {
-        const [desc, payload] = pairs[i]!
-        const actualCmd = handlerCommands[i]!
-        const expectedName = qualifiedNameToString(desc.name)
-        const actualName = qualifiedNameToString(actualCmd.name)
-        if (actualName !== expectedName) throw new FixtureAssertionError(`Command ${i}: expected "${expectedName}" but got "${actualName}"`)
-        assertDeepEqual(payload, actualCmd.payload, `Command ${i} (${expectedName}) payload`)
-      }
-    })
-    return this
-  }
-
-  expectNoCommands(): ThenPhase {
-    this.assertions.push(() => {
-      const handlerCommands = this.recordings.commands().slice(1)
-      if (handlerCommands.length !== 0) {
-        throw new FixtureAssertionError(`Expected no dispatched commands but got ${handlerCommands.length}`)
-      }
-    })
-    return this
-  }
-
-  expectCommandsSatisfying(fn: (commands: ReadonlyArray<CommandMessage>) => void): ThenPhase {
-    this.assertions.push(() => { fn(this.recordings.commands().slice(1)) })
-    return this
-  }
-
-  expect(fn: (app: App) => void | Promise<void>): ThenPhase {
-    this.assertions.push(async () => { await fn(this.app) })
-    return this
-  }
-
-  await(assertion: (app: App) => void | Promise<void>, timeoutMs: number = 5000, intervalMs: number = 50): ThenPhase {
-    this.assertions.push(async () => {
-      const start = Date.now()
-      let lastError: unknown
-      while (Date.now() - start < timeoutMs) {
-        try { await assertion(this.app); return } catch (err) { lastError = err; await new Promise((r) => setTimeout(r, intervalMs)) }
-      }
-      throw new FixtureAssertionError(`Assertion did not pass within ${timeoutMs}ms. Last error: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
-    })
-    return this
-  }
-
-  and(): TestFixture {
-    const prerequisite = this.getExecutionPromise()
-    return {
-      app: this.app,
-      recordings: this.recordings,
-      given: () => {
-        const given = new GivenPhaseImpl(this.app, this.recordings, this.eventStore)
-        given._prerequisite = prerequisite
-        return given
-      },
-      stop: async () => { await this.app.stop() },
-    }
-  }
-
-  then<TResult1 = void, TResult2 = never>(
-    onfulfilled?: ((value: void) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
-  ): PromiseLike<TResult1 | TResult2> {
-    return this.getExecutionPromise().then(onfulfilled, onrejected)
-  }
-
-  private getExecutionPromise(): Promise<void> {
-    if (!this.executionPromise) this.executionPromise = this.execute()
-    return this.executionPromise
-  }
-
-  private async execute(): Promise<void> {
-    if (this.prerequisite) await this.prerequisite
-
-    const eventStore = this.eventStore
-
-    // 1. Given: publish events within a UnitOfWork
-    if (this.givenEvents.length > 0) {
-      await runInNewUoW(emptyMetadata(), async () => {
-        const events: EventMessage[] = this.givenEvents.map(([desc, payload]) => {
-          const tags = desc.tags ? desc.tags(payload) : []
-          return { kind: "event" as const, identifier: generateIdentifier(), name: desc.name, version: desc.version, payload, metadata: emptyMetadata(), timestamp: Date.now(), tags }
-        })
-        await eventStore.append(events)
-      })
-    }
-
-    // 1b. Given: run custom setup
-    for (const fn of this.givenSetupFns) { await fn(this.app) }
-
-    // 1c. Given: dispatch commands via the gateway (matches user-facing semantics).
-    //     The recording decorator on the bus captures messages whether they
-    //     arrive via gateway or direct bus dispatch.
-    for (const [desc, payload] of this.givenCommands) {
-      await this.app.commandGateway.send(desc, payload, emptyMetadata())
-    }
-
-    // 2. Reset recordings
-    this.recordings.reset()
-
-    // 3. When
-    let result: unknown
-    let error: unknown
-
-    if (this.whenAction.kind === "command") {
-      try {
-        result = await this.app.commandGateway.send(
-          this.whenAction.descriptor,
-          this.whenAction.payload,
-          this.whenAction.metadata ?? emptyMetadata(),
-        )
-      } catch (err) { error = err }
-    } else if (this.whenAction.kind === "event") {
-      const desc = this.whenAction.descriptor
-      const payload = this.whenAction.payload
-      const tags = desc.tags ? desc.tags(payload) : []
-      try {
-        await eventStore.append([{ kind: "event", identifier: generateIdentifier(), name: desc.name, version: desc.version, payload, metadata: this.whenAction.metadata ?? emptyMetadata(), timestamp: Date.now(), tags }])
-      } catch (err) { error = err }
-    }
-
-    // 4. Then
-    const recordedEvents = this.recordings.events()
-    for (const assertion of this.assertions) { await assertion(result, error, recordedEvents) }
+    },
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-export class FixtureAssertionError extends Error {
-  constructor(message: string) { super(message); this.name = "FixtureAssertionError" }
-}
-
-export type FieldFilter = (fieldName: string, owner: unknown) => boolean
-export const allFieldsFilter: FieldFilter = () => true
-export function ignoreFields(...fieldNames: string[]): FieldFilter {
-  const ignored = new Set(fieldNames)
-  return (name) => !ignored.has(name)
-}
-
-function assertDeepEqual(expected: unknown, actual: unknown, label: string, fieldFilter: FieldFilter = allFieldsFilter): void {
-  const differences = deepCompare(expected, actual, "", fieldFilter)
-  if (differences.length > 0) throw new FixtureAssertionError(`${label} mismatch:\n${differences.map((d) => `  ${d}`).join("\n")}`)
-}
-
-function deepCompare(expected: unknown, actual: unknown, path: string, fieldFilter: FieldFilter): string[] {
-  if (expected === actual) return []
-  if (expected === null || actual === null) return [`${path || "root"}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`]
-  if (typeof expected !== typeof actual) return [`${path || "root"}: expected type ${typeof expected}, got type ${typeof actual}`]
-  if (typeof expected !== "object") return [`${path || "root"}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`]
-  if (Array.isArray(expected) !== Array.isArray(actual)) return [`${path || "root"}: expected ${Array.isArray(expected) ? "array" : "object"}, got ${Array.isArray(actual) ? "array" : "object"}`]
-  if (Array.isArray(expected) && Array.isArray(actual)) {
-    const diffs: string[] = []
-    for (let i = 0; i < Math.max(expected.length, actual.length); i++) {
-      if (i >= expected.length) diffs.push(`${path}[${i}]: unexpected extra element`)
-      else if (i >= actual.length) diffs.push(`${path}[${i}]: missing expected element`)
-      else diffs.push(...deepCompare(expected[i], actual[i], `${path}[${i}]`, fieldFilter))
-    }
-    return diffs
+/** The one act a scenario performs. The builder guarantees there is exactly one. */
+function actionOf(scenario: Scenario): Action {
+  for (const step of scenario.steps) {
+    if (step.kind === "when") return step.action
   }
-  const diffs: string[] = []
-  const allKeys = new Set([...Object.keys(expected as any), ...Object.keys(actual as any)])
-  for (const key of allKeys) {
-    if (!fieldFilter(key, expected)) continue
-    const fieldPath = path ? `${path}.${key}` : key
-    if (!(key in (expected as any))) diffs.push(`${fieldPath}: unexpected field`)
-    else if (!(key in (actual as any))) diffs.push(`${fieldPath}: missing expected value`)
-    else diffs.push(...deepCompare((expected as any)[key], (actual as any)[key], fieldPath, fieldFilter))
+  // Unreachable through the builder: `then` only exists after `when`.
+  throw new Error("@kronos-ts/test: this scenario has no `when` — there is nothing to run.")
+}
+
+/** True when a value has an `any()` hole anywhere inside it. */
+function containsHole(value: unknown): boolean {
+  if (isAny(value)) return true
+  if (Array.isArray(value)) return value.some(containsHole)
+  if (typeof value === "object" && value !== null) {
+    return Object.values(value as Record<string, unknown>).some(containsHole)
   }
-  return diffs
+  return false
+}
+
+/** One turn of the event loop — where "let the in-flight work run" is spelled. */
+function settle(): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0))
 }

@@ -1,5 +1,5 @@
-import { qn, emptyMetadata } from "@kronos-ts/common"
-import { deadLetter, type DeadLetter } from "@kronos-ts/messaging"
+import { qn, emptyMetadata } from "@kronos-ts/core"
+import { deadLetter, type DeadLetter } from "@kronos-ts/core"
 
 /**
  * Shared DDL for the Kronos dead-letter table. Mirrors the column set expected
@@ -29,6 +29,7 @@ const EVENT_NAME = qn("dlq-it", "SomethingHappened")
 export function makeDeadLetter(seqId: string, value: string, cause = new Error("boom")): DeadLetter {
   return deadLetter(
     {
+      kind: "event",
       identifier: `evt-${seqId}-${value}`,
       name: EVENT_NAME,
       version: "1.0",

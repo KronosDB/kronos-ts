@@ -11,24 +11,153 @@
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { z } from "zod"
-import { qn, tag } from "@kronos-ts/common"
+import { qn, send, query } from "@kronos-ts/core"
 import {
-  jsonSerializer,
-  command,
-  event,
-  query,
-  commandHandler,
-  eventHandler,
-  queryHandler,
-  EventCriteria,
-  trackingProcessor,
-} from "@kronos-ts/messaging"
-import { state } from "@kronos-ts/modelling"
+  jsonSerializer, command, event, commandHandler, eventHandler, queryHandler,
+  eventProcessor, type EventProcessor,
+  type CommandHandlerDefinition, type QueryHandlerDefinition, type EventHandlerDefinition,
+  inMemoryTokenStore, type TokenStore,
+} from "@kronos-ts/core"
+import { state, type StateModule } from "@kronos-ts/core"
 import {
   type EventStore,
-} from "@kronos-ts/eventsourcing"
-import { kronos, inMemoryComponents, module, type App } from "@kronos-ts/app"
-import { kronosDb, type KronosDbBackend } from "@kronos-ts/kronosdb"
+  type SnapshotStore,
+} from "@kronos-ts/core"
+import {
+  kronos,
+  type App,
+  type CommandHandlerEntry,
+  type QueryHandlerEntry,
+  type EventHandlerEntry,
+  type HandlerSite,
+  type Sited,
+  type StateEntry,
+  type StateOptions,
+} from "@kronos-ts/core"
+import {
+  lineage,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  unitOfWork,
+  simpleCommandBus,
+  simpleQueryBus,
+  type UnitOfWork,
+  type CommandBus,
+  type QueryBus,
+} from "@kronos-ts/core"
+import {
+  kronosDbConnection,
+  kronosDbCommandBus,
+  kronosDbQueryBus,
+  kronosDbEventStore,
+  kronosDbSnapshotStore,
+  type KronosDbConnectionHandle,
+} from "@kronos-ts/kronosdb"
+
+/**
+ * The two things `kronos` needs that are not handlers. The UoW runner is
+ * named once and handed to `simpleCommandBus` (which captures it at
+ * construction) — writing it on an adjacent line is what makes that checkable.
+ */
+function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
+  return {
+    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
+    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+  }
+}
+
+/**
+ * Everything `sitedOn` accepts, BEFORE a site is attached — deliberately loose
+ * (`any, any`) generics on the command/query/event definitions, because a
+ * caller here typically spreads an already-inferred heterogeneous array (e.g.
+ * `...queryHandlers`) into this rest parameter, and the precise per-handler
+ * payload/result types would otherwise fail the standard
+ * `CommandHandlerEntry`/`QueryHandlerEntry`/`EventHandlerEntry` unions'
+ * structural (contravariant) check.
+ */
+type SitedItem =
+  | Sited<StateModule<any, any>>
+  | readonly [Sited<StateModule<any, any>>, StateOptions]
+  | Sited<CommandHandlerDefinition<any, any>>
+  | Sited<QueryHandlerDefinition<any, any>>
+  | EventHandlerDefinition<any, any>
+
+/** What a host attaches uniformly here. There is no `stores` record any more —
+ * this is the ARGUMENT LIST of a local helper, and every entry comes out
+ * carrying BARE properties. `commandBus`/`queryBus` are required: `kronos`
+ * takes them PER ENTRY now, not once for the whole app. */
+type Site = HandlerSite & {
+  commandBus: CommandBus
+  queryBus: QueryBus
+  tokenStore?: TokenStore
+  unitOfWork?: () => UnitOfWork
+  /** Durable name for any bare event-handler entries in this call. */
+  processorName?: string
+}
+
+/**
+ * Attach one site to a flat list of entries — the composition root's job,
+ * replacing the old `module(name, stores, ...handlers)` — and sort them into
+ * the four fields `kronos` now takes. Honours the `[state, options]` tuple
+ * shape. Spread the result straight into `kronos({ ...sitedOn(site, ...) })`.
+ */
+function sitedOn(
+  site: Site,
+  ...items: ReadonlyArray<SitedItem>
+): {
+  states: StateEntry[]
+  commandHandlers: CommandHandlerEntry[]
+  queryHandlers: QueryHandlerEntry[]
+  eventHandlers: EventHandlerEntry[]
+} {
+  const {
+    tokenStore = inMemoryTokenStore(),
+    unitOfWork: uow = unitOfWork,
+    commandBus,
+    queryBus,
+    processorName,
+    ...handlerSite
+  } = site
+  const states: StateEntry[] = []
+  const commandHandlers: CommandHandlerEntry[] = []
+  const queryHandlers: QueryHandlerEntry[] = []
+  const eventHandlers: EventHandlerEntry[] = []
+  let processor: EventProcessor | undefined
+
+  for (const item of items) {
+    if (Array.isArray(item)) {
+      const [stateDef, options] = item
+      states.push([{ ...stateDef, ...handlerSite }, options] as StateEntry)
+      continue
+    }
+    const kind = (item as { kind?: string }).kind
+    if (kind === "state-module") {
+      states.push({ ...(item as object), ...handlerSite } as StateEntry)
+    } else if (kind === "command-handler") {
+      commandHandlers.push({ ...(item as object), ...handlerSite, commandBus, queryBus } as CommandHandlerEntry)
+    } else if (kind === "query-handler") {
+      queryHandlers.push({ ...(item as object), ...handlerSite, queryBus } as QueryHandlerEntry)
+    } else if (kind === "event-handler") {
+      if (!processor) {
+        if (!processorName) {
+          throw new Error("sitedOn: an event handler was given but no `processorName` on the site")
+        }
+        if (!handlerSite.eventStore) {
+          throw new Error("sitedOn: an event handler needs an `eventStore` on the site")
+        }
+        processor = eventProcessor({
+          name: processorName,
+          eventStore: handlerSite.eventStore,
+          tokenStore,
+          unitOfWork: uow,
+        })
+      }
+      eventHandlers.push({ ...(item as object), commandBus, queryBus, processor } as EventHandlerEntry)
+    }
+  }
+  return { states, commandHandlers, queryHandlers, eventHandlers }
+}
+
 
 // ============================================================================
 // Domain — same university model as the Axon Server E2E test
@@ -54,13 +183,13 @@ const GetCourse = query({
 const CourseCreated = event({
   name: qn("kronosdb-e2e", "CourseCreated"),
   payload: z.object({ courseId: z.string(), name: z.string(), capacity: z.number() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const StudentSubscribed = event({
   name: qn("kronosdb-e2e", "StudentSubscribed"),
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 const CloseEnrollment = command({
@@ -72,7 +201,7 @@ const CloseEnrollment = command({
 const EnrollmentClosed = event({
   name: qn("kronosdb-e2e", "EnrollmentClosed"),
   payload: z.object({ courseId: z.string() }),
-  tags: (p) => [tag("courseId", p.courseId)],
+  tags: { courseId: (p) => p.courseId },
 })
 
 type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[]; closed: boolean }
@@ -81,11 +210,11 @@ const Course = state({
   name: "Course",
   id: { courseId: z.string() },
   initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
-  criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
-  evolve: (on) => [
-    on(CourseCreated, (s, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })),
-    on(StudentSubscribed, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })),
-    on(EnrollmentClosed, (s) => ({ ...s, closed: true })),
+  tags: (id) => ({ courseId: id.courseId }),
+  evolve: [
+    [CourseCreated, (s, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })],
+    [StudentSubscribed, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })],
+    [EnrollmentClosed, (s) => ({ ...s, closed: true })],
   ],
 })
 
@@ -168,9 +297,12 @@ function id(name: string) { return `${name}-${runId}` }
 describe("E2E: KronosDB full stack", () => {
   let container: StartedTestContainer
   let app: App
-  let backend: KronosDbBackend
+  let backend: KronosDbConnectionHandle
+  let backendEventStore: EventStore
+  let backendSnapshotStore: SnapshotStore
   let kronosHost: string
   let kronosPort: number
+  let buses: { commandBus: CommandBus; queryBus: QueryBus }
 
   beforeAll(async () => {
     courseViews.clear()
@@ -186,41 +318,47 @@ describe("E2E: KronosDB full stack", () => {
     kronosHost = container.getHost()
     kronosPort = container.getMappedPort(50051)
 
-    // The projection processor is named once and used twice: it is registered
-    // in the module AND handed to the backend, whose platform control plane may
-    // pause / start / split / merge it. The container used to read this back
-    // out of itself via app.processors(); now it is an ordinary argument.
-    const courseProjection = trackingProcessor("kronosdb-course-projection")
-      .eventHandlers(onCourseCreated, onStudentSubscribed)
-      .build()
-
     // The app's serializer + UoW runner must be the SAME instances the
-    // distributed buses use, so they are built first and passed in.
-    const base = inMemoryComponents()
+    // distributed buses use, so the runner is named once and handed to both.
+    const uow = unitOfWork
+    const base = inMemoryBuses(uow)
 
-    backend = await kronosDb({
+    backend = await kronosDbConnection({
       componentName: "kronosdb-e2e-test",
       host: kronosHost,
       port: kronosPort,
       context: "default",
       serializer: jsonSerializer(),
-      unitOfWorkFactory: base.unitOfWorkFactory,
     })
+
+    backendEventStore = kronosDbEventStore(backend, "default")
+    backendSnapshotStore = kronosDbSnapshotStore(backend, "default")
+
+    // The KronosDB buses wrap the in-memory ones rather than replacing them:
+    // the local segment is a real bus now, so a command the server routes back
+    // here runs through the SAME `simpleCommandBus(uow)` a local dispatch would
+    // have used, and inherits its unit-of-work policy.
+    buses = {
+      commandBus: kronosDbCommandBus(backend, base.commandBus),
+      queryBus: kronosDbQueryBus(backend, base.queryBus),
+    }
 
     app = kronos({
-      components: { ...base, ...backend.components },
-      modules: [
-        module(
-          "kronosdb-e2e",
-          Course,
-          createCourse, subscribeStudent,
-          getCourse,
-          courseProjection,
-        ),
-      ],
+      ...sitedOn(
+        {
+          eventStore: backendEventStore,
+          snapshotStore: backendSnapshotStore,
+          ...buses,
+          processorName: "kronosdb-course-projection",
+        },
+        Course,
+        createCourse, subscribeStudent,
+        getCourse,
+        onCourseCreated, onStudentSubscribed,
+      ),
     })
 
-    // Wait until KronosDB has acked this client's registration — the handler
+    // Wait until KronosDB has acked this client's handler — the handler
     // subscribe frames are already on the wire by now.
     await backend.start()
     // Belt-and-braces: the legacy wait for KronosDB to process subscriptions.
@@ -234,20 +372,20 @@ describe("E2E: KronosDB full stack", () => {
   })
 
   function eventStore(): EventStore {
-    return backend.components.eventStore
+    return backendEventStore
   }
 
   it("command persists events to KronosDB event store", async () => {
     const courseId = id("cs-101")
 
-    await app.commandGateway.send(CreateCourse, {
+    await send(buses.commandBus, CreateCourse, {
       courseId,
       name: "Full Stack Course",
       capacity: 30,
     })
 
     const { events } = await eventStore().source({
-      criteria: EventCriteria.havingTags(tag("courseId", courseId)),
+      query: { tags: { courseId: courseId } },
     })
     expect(events.length).toBe(1)
     expect((events[0]!.payload as any).name).toBe("Full Stack Course")
@@ -257,13 +395,13 @@ describe("E2E: KronosDB full stack", () => {
     const courseId = id("cs-101")
 
     // Second command on same aggregate — state must be sourced from first event
-    await app.commandGateway.send(SubscribeStudent, {
+    await send(buses.commandBus, SubscribeStudent, {
       courseId,
       studentId: "stu-1",
     })
 
     const { events } = await eventStore().source({
-      criteria: EventCriteria.havingTags(tag("courseId", courseId)),
+      query: { tags: { courseId: courseId } },
     })
     expect(events.length).toBe(2)
   }, 30_000)
@@ -273,31 +411,31 @@ describe("E2E: KronosDB full stack", () => {
 
     // Duplicate creation should fail
     await expect(
-      app.commandGateway.send(CreateCourse, { courseId, name: "Duplicate", capacity: 5 }),
+      send(buses.commandBus, CreateCourse, { courseId, name: "Duplicate", capacity: 5 }),
     ).rejects.toThrow()
   }, 30_000)
 
   it("capacity enforcement across multiple commands", async () => {
     const courseId = id("cs-cap")
 
-    await app.commandGateway.send(CreateCourse, {
+    await send(buses.commandBus, CreateCourse, {
       courseId,
       name: "Small Class",
       capacity: 1,
     })
 
-    await app.commandGateway.send(SubscribeStudent, {
+    await send(buses.commandBus, SubscribeStudent, {
       courseId,
       studentId: "stu-1",
     })
 
     // Course is full
     await expect(
-      app.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-2" }),
+      send(buses.commandBus, SubscribeStudent, { courseId, studentId: "stu-2" }),
     ).rejects.toThrow()
 
     const { events } = await eventStore().source({
-      criteria: EventCriteria.havingTags(tag("courseId", courseId)),
+      query: { tags: { courseId: courseId } },
     })
     expect(events.length).toBe(2) // CourseCreated + StudentSubscribed
   }, 30_000)
@@ -306,11 +444,11 @@ describe("E2E: KronosDB full stack", () => {
     const courseA = id("cs-a")
     const courseB = id("cs-b")
 
-    await app.commandGateway.send(CreateCourse, { courseId: courseA, name: "Course A", capacity: 10 })
-    await app.commandGateway.send(CreateCourse, { courseId: courseB, name: "Course B", capacity: 20 })
+    await send(buses.commandBus, CreateCourse, { courseId: courseA, name: "Course A", capacity: 10 })
+    await send(buses.commandBus, CreateCourse, { courseId: courseB, name: "Course B", capacity: 20 })
 
-    const eventsA = await eventStore().source({ criteria: EventCriteria.havingTags(tag("courseId", courseA)) })
-    const eventsB = await eventStore().source({ criteria: EventCriteria.havingTags(tag("courseId", courseB)) })
+    const eventsA = await eventStore().source({ query: { tags: { courseId: courseA } } })
+    const eventsB = await eventStore().source({ query: { tags: { courseId: courseB } } })
 
     expect(eventsA.events.length).toBe(1)
     expect(eventsB.events.length).toBe(1)
@@ -333,7 +471,7 @@ describe("E2E: KronosDB full stack", () => {
 
     await waitFor(() => courseViews.has(courseA), 10000)
 
-    const result = await app.queryGateway.query(GetCourse, { courseId: courseA })
+    const result = await query(buses.queryBus, GetCourse, { courseId: courseA })
     expect((result as CourseView).name).toBe("Course A")
   }, 30_000)
 
@@ -341,47 +479,51 @@ describe("E2E: KronosDB full stack", () => {
     // A dedicated app isolates the automation processor so it cannot perturb
     // the event counts asserted by the tests above. It connects to the same
     // KronosDB instance.
-    const automation = trackingProcessor("kronosdb-enrollment-automation")
-      .eventHandlers(closeEnrollmentWhenFull)
-      .build()
-    const autoBase = inMemoryComponents()
-    const autoBackend = await kronosDb({
+    const autoUnitOfWork = unitOfWork
+    const autoBase = inMemoryBuses(autoUnitOfWork)
+    const autoBackend = await kronosDbConnection({
       componentName: "kronosdb-automation-test",
       host: kronosHost,
       port: kronosPort,
       context: "default",
       serializer: jsonSerializer(),
-      unitOfWorkFactory: autoBase.unitOfWorkFactory,
     })
-    const autoEventStore: EventStore = autoBackend.components.eventStore
+    const autoBuses = {
+      commandBus: kronosDbCommandBus(autoBackend, autoBase.commandBus),
+      queryBus: kronosDbQueryBus(autoBackend, autoBase.queryBus),
+    }
+    const autoEventStore: EventStore = kronosDbEventStore(autoBackend, "default")
+    const autoSnapshotStore = kronosDbSnapshotStore(autoBackend, "default")
     const autoApp = kronos({
-      components: { ...autoBase, ...autoBackend.components },
-      modules: [
-        module(
-          "kronosdb-e2e-automation",
-          Course,
-          createCourse, subscribeStudent, closeEnrollment,
-          automation,
-        ),
-      ],
+      ...sitedOn(
+        {
+          eventStore: autoEventStore,
+          snapshotStore: autoSnapshotStore,
+          ...autoBuses,
+          processorName: "kronosdb-enrollment-automation",
+        },
+        Course,
+        createCourse, subscribeStudent, closeEnrollment,
+        closeEnrollmentWhenFull,
+      ),
     })
     await autoBackend.start()
     await new Promise(r => setTimeout(r, 2000))
 
     try {
       const courseId = id("auto-cap")
-      await autoApp.commandGateway.send(CreateCourse, { courseId, name: "One Seat", capacity: 1 })
-      await autoApp.commandGateway.send(SubscribeStudent, { courseId, studentId: "stu-1" })
+      await send(autoBuses.commandBus, CreateCourse, { courseId, name: "One Seat", capacity: 1 })
+      await send(autoBuses.commandBus, SubscribeStudent, { courseId, studentId: "stu-1" })
 
       // The automation sources the now-full course and dispatches
       // CloseEnrollment; its handler appends EnrollmentClosed in its own UoW.
-      const criteria = EventCriteria.havingTags(tag("courseId", courseId))
+      const courseQuery = { tags: { courseId: courseId } }
       await waitFor(async () => {
-        const { events } = await autoEventStore.source({ criteria })
+        const { events } = await autoEventStore.source({ query: courseQuery })
         return events.some((ev) => ev.name.name === "EnrollmentClosed")
       }, 30000)
 
-      const { events } = await autoEventStore.source({ criteria })
+      const { events } = await autoEventStore.source({ query: courseQuery })
       expect(events.map((ev) => ev.name.name)).toEqual([
         "CourseCreated",
         "StudentSubscribed",

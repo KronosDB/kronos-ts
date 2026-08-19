@@ -4,7 +4,6 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "packages/extensions/*",
     "integrationtests"
   ],
   "scripts": {
@@ -14,14 +13,20 @@
     "test": "bun test",
     "test:unit": "bun test $(find packages -path '*/src/*' -name '*.test.ts' -not -name '*.integration.test.ts')",
     "benchmark:kronosdb-postgres": "bun run integrationtests/src/benchmarks/kronosdb-postgres/run.ts",
+    "biome:check": "biome check",
+    "biome:fix": "biome check --write",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "bun run build && bash scripts/publish.sh"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.8",
     "@changesets/cli": "2.31.0",
     "@types/node": "^25.9.0",
     "bun-types": "^1.3.14",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
+  },
+  "overrides": {
+    "drizzle-orm": "0.44.7"
   }
 }
