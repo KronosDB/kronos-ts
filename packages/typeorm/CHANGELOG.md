@@ -1,5 +1,12 @@
 # @kronos-ts/typeorm
 
+## 0.2.11
+
+### Patch Changes
+
+- Updated dependencies [2f42ed2]
+  - @kronos-ts/messaging@0.11.0
+
 ## 0.2.10
 
 ### Patch Changes

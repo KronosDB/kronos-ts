@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/kysely",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "Kysely extension for Kronos.",
   "license": "Apache-2.0",
   "type": "module",
