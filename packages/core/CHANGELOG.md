@@ -1,6 +1,6 @@
-# @kronos-ts/rabbitmq
+# @kronos-ts/core
 
-## 0.5.0
+## 0.2.0
 
 ### Minor Changes
 
@@ -243,79 +243,56 @@
   - `@kronos-ts/test`'s `testFixture` takes the four lists and exposes the
     `commandBus` / `queryBus` it built; there is no `processors` option.
 
-- 4d7b0ee: Connection is an explicit resource; everything else is a function over it.
+- 4d7b0ee: Explicit components, and plain functions for `TagResolver` / `HandlerEnhancer`.
 
-  All three transports shipped as a bundle that hid one connection behind a
-  `{ components, start, close }` record. A bundle is only legitimate when its
-  members share a hidden resource — so the resource is named, and each capability
-  becomes a function of it.
-
-  **RabbitMQ.** `rabbitMq(options)` is DELETED. `rabbitMqConnection(url, {
-serviceName, instanceId, topology?, retry? })` is the resource — one broker
-  connection, its three channels, and the lifecycle — and the buses are plain
-  functions over it.
+  **`kronos({ components })` is now required and must be complete.** There are no
+  implicit defaults: what you pass is what runs. `inMemoryComponents(overrides)` is
+  the explicit opt-in to in-memory fallbacks, and its `overrides` argument is the
+  ordering-safe position — it resolves AFTER the merge, so a supplied
+  `unitOfWorkFactory` is the one the command bus captures.
 
   ```ts
-  // before — one bundle, both buses whether you wanted them or not
-  const rabbit = await rabbitMq({
-    url,
-    identity: { serviceName, instanceId },
-    localCommandBus: base.commandBus,
-    localQueryBus: base.queryBus,
-  });
+  // before — kronos silently filled the gaps
+  kronos({ modules });
+  kronos({ components: { eventStore, snapshotStore }, modules });
 
-  // after — the resource is named; take only the capabilities you need
-  const rabbit = await rabbitMqConnection(url, { serviceName, instanceId });
-  const commandBus = interceptingCommandBus(
-    rabbitMqCommandBus(rabbit, base.commandBus),
-    lineage
-  );
-  await rabbit.start(); // unchanged: bind-and-consume barrier, after handlers register
+  // after — the defaults are something you ask for
+  kronos({ components: inMemoryComponents(), modules });
+  kronos({
+    components: inMemoryComponents({ eventStore, snapshotStore }),
+    modules,
+  });
   ```
 
-  The old channel-only `amqpConnection(url, connect)` is now `amqpChannelSource`,
-  which is what a transport borrows.
-
-  **KronosDB and Axon Server.** `kronosDb(options)` and `axonServer(options)` are
-  DELETED — each opened a gRPC channel, a platform stream and a heartbeat PER
-  CALL, so a service addressing N contexts paid N connections. `kronosDbConnection`
-  / `axonServerConnection` own the one channel.
-
-  `kronosDbContext(kdb, options)` — the four-components-at-once record that sat in
-  between — is DELETED too, and so is Axon's `AxonServerBackend`. A context is not
-  a thing you build; it is a STRING two functions take:
+  **`TagResolver` is a bare function type.** `descriptorBasedTagResolver`,
+  `metadataBasedTagResolver` and `multiTagResolver` return plain functions.
 
   ```ts
-  // before — one connection per context, then a bundle per context
-  const billing = await kronosDb({
-    componentName,
-    context: "billing",
-    serializer,
-    unitOfWorkFactory,
-  });
+  // before
+  interface TagResolver {
+    resolve(event: EventMessage): Tag[];
+  }
+  const tags = tagResolver.resolve(event);
 
-  // after — one channel, N contexts, one function per seam
-  const kdb = await kronosDbConnection({ componentName, serializer });
-  const billingEvents = kronosDbEventStore(kdb, "billing");
-  const catalogEvents = kronosDbEventStore(kdb, "catalog");
-  await kdb.start(); // ONE readiness barrier, idempotent, covering every context
+  // after
+  type TagResolver = (event: EventMessage) => Tag[];
+  const tags = tagResolver(event);
   ```
 
-  Both still share the one socket — the per-call context header is the whole
-  difference — and now the caller who wants only an event store builds only an
-  event store.
+  **`HandlerEnhancerDefinition` is now `HandlerEnhancer`, a bare function type.**
+  `multiHandlerEnhancerDefinition`, `tracingHandlerEnhancerDefinition`,
+  `meteringHandlerEnhancerDefinition` and `openTelemetry().handlerEnhancer` all
+  return the function directly rather than a `{ wrapHandler }` wrapper.
 
-  The SERIALIZER moves onto the connection options. It is a property of this
-  client's wire, not of a context or a bus, and a store keyed by
-  `(connection, context)` had nowhere honest to put it. The remaining per-bus
-  knobs (flow control, load factor, query timeout, the local-shortcut flag,
-  resilience) live in one trailing optional record.
+  ```ts
+  // before
+  const enhancer: HandlerEnhancerDefinition = { wrapHandler(handler, metadata) { … } }
+  const wrapped = enhancer.wrapHandler(handler, metadata)
 
-  `start()` keeps the platform-start / subscriptionsAcked ordering and is
-  memoised, so N contexts share one barrier. `close()` drains every bus latch
-  registered on the connection before stopping the platform stream and the
-  channel. `kronosDbControlPlane(kdb, app.processors)` /
-  `axonServerControlPlane(conn, app.processors)` take the connection.
+  // after
+  const enhancer: HandlerEnhancer = (handler, metadata) => { … }
+  const wrapped = enhancer(handler, metadata)
+  ```
 
 - 4d7b0ee: kronos is two buses and three plainly-typed lists; enhancement is a
   user-composed function.
@@ -566,6 +543,415 @@ processors })` is the entire options surface.** `module()`, `AppModule`, `Module
   `tracingHandlerEnhancerDefinition` → `tracingEnhancer`,
   `meteringHandlerEnhancerDefinition` → `meteringEnhancer`.
 
+- 4d7b0ee: State queries are derived PER EVENT TYPE, not once for the whole state.
+
+  Deriving one query item of (all folded types) × (the state's whole tag record) was
+  too coarse. It paired every folded type with tags that type may not even carry,
+  so the sourcing query — and the append condition derived from it — claimed a
+  conflict window wider than the events could ever justify, and a multi-stream
+  state had to spell its scope out as an explicit array of tag records.
+
+  **The derivation now intersects, per event type.** For each entry in `evolve`,
+  the state's tag record is intersected with the tag keys that event type declares;
+  the distinct intersections become the ITEMS of the derived query — items are ORed
+  — and each event type joins every item whose tag set it declares in full. Several
+  shared keys are ANDed within one item. An event type sharing NO key with the
+  state's tags is a boot error naming both — that fold can never fire, so it is a
+  modelling mistake rather than a silent no-op.
+
+  ```ts
+  // before — the array form was REQUIRED to span streams, and every folded type
+  // got paired with both tag records, including combinations that cannot match
+  const Subscription = state({
+    name: "CourseSubscription",
+    id: { courseId: z.string(), studentId: z.string() },
+    tags: (id) => [{ courseId: id.courseId }, { studentId: id.studentId }],
+    evolve: [
+      [CourseCreated, …],              // carries courseId only
+      [StudentEnrolledInFaculty, …],   // carries studentId only
+      [StudentSubscribedToCourse, …],  // carries both
+    ],
+  })
+
+  // after — one plain record; the scope falls out of what each event declares
+  const Subscription = state({
+    name: "CourseSubscription",
+    id: { courseId: z.string(), studentId: z.string() },
+    tags: (id) => ({ courseId: id.courseId, studentId: id.studentId }),
+    evolve: [ …unchanged… ],
+  })
+  ```
+
+  Both forms derive the same two-item OR for that state, but the derived one drops
+  the impossible pairings (`studentId` on a course event, `courseId` on a faculty
+  enrolment) that the array form could not. `Subscription.query({ courseId, studentId })`
+  returns exactly:
+
+  ```ts
+  [
+    {
+      tags: { courseId: "cs-101" },
+      types: ["CourseCreated", "StudentSubscribedToCourse"],
+    },
+    {
+      tags: { studentId: "stu-1" },
+      types: ["StudentEnrolledInFaculty", "StudentSubscribedToCourse"],
+    },
+  ];
+  ```
+
+  **This is a behavior refinement, and it applies to the APPEND CONDITION too** —
+  the same derived query is the sourcing query and the conflict window, so windows
+  get narrower and more accurate together. Nothing widens: every derived item
+  is at least as specific as what the previous derivation produced, and the derived
+  query can never be match-all (an item with no tags is impossible, because an
+  empty intersection throws first).
+
+  Note the one case that deliberately does NOT narrow to an exact AND. When a
+  sibling event type pins a narrower item, a type declaring that item's tags in
+  full joins it as well. A subscription event carrying both `courseId` and
+  `studentId` therefore also rides the `courseId`-only branch, which is what lets a
+  capacity check see OTHER students' subscriptions to the same course. Pinning it
+  to `courseId AND studentId` would under-source the fold and leave the append
+  condition too narrow to catch the conflict it exists to catch. Where nothing
+  forces the wider read, the full intersection is kept — a state scoped by
+  `{ tenantId, orderId }` folding only order events still ANDs both keys and never
+  sources a whole tenant.
+
+  **`EventDescriptor` gains `tagKeys`, and `event()` derives it.** The intersection
+  needs an event's tag KEYS without a payload in hand, so `tags` now also accepts a
+  record of extractors whose own keys ARE the tag keys:
+
+  ```ts
+  // before — keys buried inside a function body, unknowable to the framework
+  event({
+    name: qn("university", "StudentSubscribedToCourse"),
+    payload: z.object({ courseId: z.string(), studentId: z.string() }),
+    tags: (p) => [tag("courseId", p.courseId), tag("studentId", p.studentId)],
+  });
+
+  // after — keys are data; `tagKeys` is derived as ["courseId", "studentId"]
+  event({
+    name: qn("university", "StudentSubscribedToCourse"),
+    payload: z.object({ courseId: z.string(), studentId: z.string() }),
+    tags: { courseId: (p) => p.courseId, studentId: (p) => p.studentId },
+  });
+  ```
+
+  The `tags` FUNCTION form still works, for tag sets an extractor record cannot
+  express — a payload-dependent key, or a variable number of tags. Its keys are
+  genuinely not knowable, so `tagKeys` stays `undefined` and is NEVER guessed at:
+  a state folding such an event fails at boot telling you to convert the descriptor
+  or declare `tagKeys` explicitly.
+
+  ```ts
+  event({
+    name: qn("catalog", "ItemsRelabelled"),
+    payload: z.object({ items: z.array(z.string()) }),
+    tags: (p) => p.items.map((id) => tag("itemId", id)),
+    tagKeys: ["itemId"],
+  });
+  ```
+
+  An event with no `tags` at all declares the EMPTY key set rather than an unknown
+  one, so it is caught by the shared-key check like any other unmatchable fold.
+  Passing `tagKeys` alongside a `tags` record throws — the two cannot disagree.
+
+- 4d7b0ee: Handler wrappers move from the ENTRY to the FUNCTION. Every NAME is unchanged
+  from the entry era — `postgresHandler`, `drizzleHandler`, `kyselyHandler`,
+  `knexHandler`, `prismaHandler`, `typeormHandler`, `otlpHandler`,
+  `otlpMetricsHandler` — because a shared-package export has to carry its
+  provenance. What changed is the LEVEL: a wrapper is now a plain generic function
+  over a plain generic function — `(next, ...config) => (message, ctx) => result`,
+  with `<M, C, R>` inferred — and the host does the wrapping by spreading the entry
+  itself.
+
+  ```ts
+  // before — the wrapper owned the entry, and needed a type to describe one
+  kronos({
+    commandHandlers: billing
+      .map((h) => drizzleHandler(h, db))
+      .map((h) => otlpHandler({ ...h, name: "billing" }, exporter)),
+  });
+
+  // after — same names; the wrapper owns the handler, the entry is the host's business
+  kronos({
+    commandHandlers: billing.map((h) => ({
+      ...h,
+      handler: drizzleHandler(otlpHandler(h.handler, exporter), db),
+    })),
+  });
+  ```
+
+  ```ts
+  // before
+  export function drizzleHandler<D extends DrizzleHandlerEntry>(
+    entry: D,
+    db: DrizzleDb
+  ): WithDrizzleSupplied<D>;
+
+  // after
+  export function drizzleHandler<
+    M,
+    C extends DrizzleCapability & { readonly unitOfWork: UnitOfWork },
+    R
+  >(
+    next: (message: M, context: C) => R,
+    db: DrizzleDb
+  ): (message: M, context: Omit<C, "db">) => R;
+  ```
+
+  **Nothing is read off the entry any more.** The wrappers used to reach into
+  `entry.kind`, `entry.descriptor.name` and the optional `entry.name` label. All
+  three now come from the MESSAGE, at call time, because that is where they
+  honestly live:
+
+  - `otlpHandler` decides parent-vs-link and SERVER-vs-CONSUMER from
+    `message.kind`. No kind argument, no per-kind names, no sentinel.
+  - the span name and the metric series key default to the message's qualified
+    name; `label?: (message: Message) => string` overrides it. A function OF THE
+    MESSAGE — never a per-entry string closed over at wiring time.
+  - `kronos.handler.group` (span) and `handler_group` (metrics) are GONE, and
+    `message_type` is now the message's own kind (`"command"`, not
+    `"command-handler"`). Dashboards keyed on those attributes need updating.
+
+  Because no wrapper depends on an entry, every one of them is pre-appliable —
+  config bound once, outside the map, and composed by bare name.
+
+  **DELETED.** The entry-constraint types existed only to describe the argument
+  these wrappers no longer take: `DrizzleHandlerEntry`, `WithDrizzleSupplied`,
+  `PostgresHandlerDefinition`, `Supplied`, `KnexHandlerEntry`, `WithKnexSupplied`,
+  `KyselyHandlerEntry`, `WithKyselySupplied`, `PrismaHandlerEntry`,
+  `WithPrismaSupplied`, `TypeormHandlerEntry`, `WithTypeormSupplied`, and
+  `OtlpHandlerEntry`. The named context types stay — a slice still writes
+  `ctx: DrizzleContext`, which is the whole point.
+
+  **The erasure is directional, and the compiler enforces it.** A wrapper takes a
+  handler whose ctx has the capability and returns one whose ctx does not, so
+  wrapping twice — or wrapping a handler that never asked — is a compile error:
+
+  ```ts
+  const supplied = drizzleHandler(asksForDb, db); // (m, ctx: HandlerContext) => …
+  drizzleHandler(supplied, db); // ✗ nothing left to supply
+  ```
+
+  Wrappers that supply nothing (`otlpHandler`, `otlpMetricsHandler`) erase nothing
+  and compose on either side.
+  `packages/drizzle/src/__tests__/drizzle-handler-inference.types.ts` pins both
+  directions; it is listed in the root `tsconfig.json` `files` array, so
+  `bunx tsc --noEmit` judges it.
+
+- 4d7b0ee: The last four seams nobody implemented: no event bus, no monitors, no retrying bus, no connection manager.
+
+  **`simpleEventBus` is DELETED**, along with the `EventBus` and
+  `SubscribableEventSource` exports. Event delivery here is tracked-only — an
+  `eventProcessor` over an `EventStore`, reading a stream and keeping a token —
+  so there is no on-commit lane for an in-memory bus to serve and no caller it
+  could honestly have had. The two-method SHAPE survives as an INTERNAL type,
+  because `EventStore` really is both halves (it persists events and it notifies
+  subscribers) and `EventStore extends EventStorageEngine, EventBus` is how that
+  gets said once. A host names `EventStore`; it never names `EventBus`.
+
+  **`MessageMonitor`, `MonitorCallback`, `noOpMessageMonitor`,
+  `multiMessageMonitor`, `MessageMonitorRegistry` and `messageMonitorRegistry` are
+  DELETED.** A monitor is a wrapper over a bus you already have — that is exactly
+  what `otlpCommandBus(bus, exporter)` is — so the seam bought nothing over
+  writing the wrapper, and the registry existed to hold monitors nobody ever
+  registered. Registration is not a concept in this framework.
+
+  **`retryingCommandBus`, `RetryPolicy` and `exponentialBackoffRetryPolicy` are
+  DELETED.** Retrying a command generically is wrong by default: without knowing
+  whether the handler is idempotent, a retry at the bus is a duplicate write. The
+  transports that need it retry their own reconnect, where the failure is
+  transport-shaped and the answer is knowable.
+
+  **`connectionManager` / `AxonServerConnectionManager` are DELETED** from
+  `@kronos-ts/axon-server`. It cached one gRPC channel PER CONTEXT, which is the
+  thing this release stopped doing: a context is a per-call header on ONE channel,
+  so a per-context channel cache contradicts `axonServerEventStore(conn, ctx)`
+  outright. Nothing used it.
+
+  None of the five had a consumer anywhere in the tree.
+
+- 4d7b0ee: `@kronos-ts/opentelemetry` is REMOVED, replaced by `@kronos-ts/otlp`: the protocol, not the ecosystem.
+
+  The old package took the OpenTelemetry API as a peer and an SDK pair as dev
+  dependencies, and reached core through a pair of seams core had to carry for its
+  benefit — `SpanFactory` and `MetricsRecorder`, plus `tracingHandler` and
+  `meteringHandler`. Those seams are DELETED from core, which now contains ZERO
+  tracing vocabulary. Observability is a package of functions over the public
+  shapes, which anybody could have written — so it is one.
+
+  `@kronos-ts/otlp` speaks OTLP/JSON over `fetch` and depends on
+  `@kronos-ts/core` and nothing else. No SDK, no global tracer, no patching, and
+  no OpenTelemetry dependency anywhere in the tree.
+
+  ```ts
+  const exporter = otlpExporter({
+    endpoint: "http://collector:4318",
+    serviceName: "billing",
+  });
+
+  const commandBus = otlpCommandBus(
+    interceptingCommandBus(bus, lineage),
+    exporter
+  );
+  const handlers = slice.commandHandlers.map((h) => ({
+    ...h,
+    handler: otlpHandler(h.handler, exporter),
+  }));
+  ```
+
+  - `otlpExporter({ endpoint, serviceName, flushIntervalMs? })` — a resource:
+    batches spans and metrics, flushes on an interval, POSTs to `/v1/traces` and
+    `/v1/metrics`, and `close()` flushes then stops. W3C trace and span ids are
+    generated here; 64-bit nanosecond times are encoded as strings, as OTLP/JSON
+    requires.
+  - `otlpCommandBus(bus, exporter)` / `otlpQueryBus(bus, exporter)` — a span per
+    dispatch, with `traceparent` injected into the outgoing message metadata.
+  - `otlpHandler(handler, exporter, label?)` — wraps the handler FUNCTION and
+    extracts `traceparent` from the handled message. Command and query MESSAGES
+    become CHILDREN of the extracted context; event messages get their own trace
+    with a LINK back to the producing span, so a projection catching up over a
+    batch of old events is not swallowed into whatever produced them. Which leg it
+    is comes from `message.kind` — there is no kind argument and no entry to ask.
+  - `otlpMetricsHandler(handler, exporter, label?)` — duration, throughput and failure
+    counters, sliced by `message_type` and `message_name`, both read off the
+    message.
+  - `label` ABSENT names the span (and keys the series) by the message's qualified
+    name. Pass a `(message: Message) => string` to name it otherwise — a function
+    OF THE MESSAGE, never a per-handler string closed over at wiring time.
+
+  otel-js interop is a consumer concern: write wrappers over the same public
+  shapes. That was always the honest boundary, and pretending otherwise cost core
+  two seams.
+
+- 4d7b0ee: A state says what it is scoped BY. The query is derived.
+
+  **`state()` takes `tags` as plain data — `criteria` is gone.**
+
+  ```ts
+  // before — a criteria expression, built by a fluent builder, at every state
+  state({
+    name: "Course",
+    id: { courseId: z.string() },
+    criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
+    evolve: [[CourseCreated, …], [CourseCapacityChanged, …]],
+  })
+
+  // after — the scope is a record
+  state({
+    id: { courseId: z.string() },
+    tags: (id) => ({ courseId: id.courseId }),
+    evolve: [[CourseCreated, …], [CourseCapacityChanged, …]],
+  })
+  ```
+
+  ONE record is the answer even for a state spanning several streams — the
+  derivation scopes each tag key to the event types that declare it. See the
+  "granular query derivation" changeset for the rules. An ARRAY of records remains
+  available as an explicit override for scopes the derivation cannot express:
+
+  ```ts
+  tags: (id) => [{ courseId: id.courseId }, { studentId: id.studentId }];
+  ```
+
+  **The event-TYPE half of the query is DERIVED from `evolve`.** A fold only
+  reacts to what it lists, so the types are already stated; `state()` assembles
+  the DCB query from the tags and the folded types, and you never write the type
+  list twice.
+
+  This NARROWS the DCB conflict window, deliberately. Every state previously
+  passed tags only, so its sourcing query — which flows through
+  `SourcingCondition` into the `AppendCondition` conflict detection runs against —
+  claimed a conflict over EVERY event carrying that tag, including types it never
+  folded. It now conflicts on the folded types only. Reviewed and accepted: no
+  existing state relied on the wider window. If one ever needs it, that will be an
+  explicit optional field on `state()`, not a return to hand-written queries.
+  A state with no evolvers gets no type filter — an empty fold means "all", not
+  "none".
+
+  **The public `EventCriteria` builder is DELETED, and so is the `eventQuery()`
+  compiler that briefly replaced it.** A read is now described by PLAIN DATA in the
+  DCB specification's own vocabulary (dcb.events): a **query** is one **query
+  item** — `{ types?: any-of, tags?: all-of }` — or an array of items ORed
+  together. There is nothing to call and nothing to construct.
+
+  ```ts
+  // before — a fluent builder at every reading surface
+  EventCriteria.havingTags(tag("courseId", "cs-101")).ofTypes(CourseCreated)
+  EventCriteria.either(EventCriteria.havingTags(a), EventCriteria.havingTags(b))
+
+  // then — a function wrapping a record literal, which is ceremony
+  eventQuery({ tags: { courseId: "cs-101" }, types: [CourseCreated] })
+  eventQuery([{ tags: a }, { tags: b }])
+
+  // now — the query IS the literal
+  { tags: { courseId: "cs-101" }, types: [CourseCreated] }
+  [{ tags: a }, { tags: b }]                      // an array is the OR
+  ```
+
+  `@kronos-ts/messaging` exports `QueryItem` and
+  `EventQuery = QueryItem | readonly QueryItem[]`, and
+  `packages/messaging/src/event-criteria.ts` is now `event-query.ts`.
+
+  **Every reading surface takes the query directly, under the field name `query`.**
+  The old `criteria` field is gone from `SourcingCondition`, `AppendCondition`,
+  `StreamingCondition`, `SourcingInfo` and `StateModule`:
+
+  ```ts
+  // before
+  eventStore.source({ criteria: eventQuery({ tags: { courseId } }) });
+  eventStore.append(events, { criteria, marker });
+  Course.criteria({ courseId });
+
+  // after
+  eventStore.source({ query: { tags: { courseId } } });
+  eventStore.append(events, { query, marker });
+  Course.query({ courseId });
+  ```
+
+  A `commandHandler`'s `appendCondition` override now receives and returns an
+  `EventQuery` rather than an `EventCriteria`:
+
+  ```ts
+  // before
+  appendCondition: (command, sourcedCriteria) => EventCriteria.havingAnyTag();
+  // after
+  appendCondition: (command, sourcedQuery) => ({
+    tags: { billId: command.payload.billId },
+  });
+  ```
+
+  **The `EventCriteria` union survives as the STORE side of the boundary** — the
+  tagged shape the in-memory matcher, the Postgres WHERE builder and the KronosDB /
+  Axon Server criterion converters switch on. It is produced in exactly one way:
+  `compileQuery(query)`, called once per read at each store's entry point.
+  `queryItems(query)` is the single normalisation step for the one-item-vs-array
+  split, and the single place a malformed query is rejected — an empty item array
+  ("zero ORed items match nothing") and a non-item or nested-array query each fail
+  with an error that names what was passed. Nothing downstream re-tests the shape;
+  combining the queries of several `load()` calls into one append condition is now
+  a flat concat of their items rather than a hand-built `either` node.
+
+  Excess-property checking still bites at literal call sites despite `EventQuery`
+  being a union — `{ tags: { … }, typ: [] }` is an error at the typo, in single and
+  array positions alike — so no overloads were needed to keep it.
+
+  **`name` is now OPTIONAL on `state()`.** Its only job is durable snapshot
+  identity — the key snapshots are written under — so it is required only when
+  that state is configured with a `snapshotPolicy` or a `snapshotStore`. `kronos`
+  refuses to boot otherwise, with an error naming the state by its index in
+  `states` and the events it folds (it has no name to quote).
+
+  Everything else keys on a new `identity` the definition carries: a
+  process-unique token `state()` assigns per definition. It is a property, not the
+  object reference, because hosts spread states to attach stores
+  (`{ ...Course, stores }`) — the identity rides through the spread, the reference
+  does not. `StateManager` registers and resolves repositories by it, and the
+  per-UnitOfWork `ctx.load` cache keys on `${identity}:${id}` instead of
+  `${name}:${id}`. `StateRepository.stateName` is optional and diagnostic.
+
 - 4d7b0ee: A transport takes your local bus and returns a bus. Core learns no transport vocabulary.
 
   Core briefly owned a generic routing layer — `distributedCommandBus` /
@@ -763,6 +1149,32 @@ PREPARE_COMMIT → COMMIT → AFTER_COMMIT`, same numeric values, same
 
 ### Patch Changes
 
+- 4d7b0ee: `lineage` seeds roots instead of clobbering every hop's cause.
+
+  `causationId` was stamped unconditionally as the dispatched message's own
+  identifier. That is right for a message born at an edge and wrong for every
+  other message in the system: `ctx.send` / `ctx.query` / `ctx.append` already
+  stamp the handled message's identifier onto everything a handler emits — the
+  TRUE cause — and the bus edge then overwrote it. Every message ended up claiming
+  to have caused itself, so the causal graph was a set of self-loops and no
+  multi-hop chain could be reconstructed.
+
+  ```ts
+  // before
+  causationId: message.identifier;
+
+  // after
+  causationId: String(message.metadata.causationId ?? message.identifier);
+  ```
+
+  Both fields are `??` seeds now, which also makes double application a true
+  no-op — a transport bus may wrap a local segment that is itself intercepting.
+  `correlationId` is unchanged in behaviour.
+
+  Tests that encoded the old behaviour are updated, including the real-broker
+  RabbitMQ one: a command sent from a handler across the wire now arrives with the
+  OUTER command's identifier as its cause.
+
 - 4d7b0ee: The `extensions/` directory is gone, and so is the concept.
 
   ```
@@ -777,252 +1189,3 @@ PREPARE_COMMIT → COMMIT → AFTER_COMMIT`, same numeric values, same
 
   Published package names are unchanged; only repository paths, the workspace
   globs, the tsconfig include and the CI globs moved.
-
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-- Updated dependencies [4d7b0ee]
-  - @kronos-ts/core@0.2.0
-
-## 0.4.2
-
-### Patch Changes
-
-- Updated dependencies [2f42ed2]
-  - @kronos-ts/messaging@0.11.0
-  - @kronos-ts/eventsourcing@0.4.2
-  - @kronos-ts/modelling@0.3.2
-
-## 0.4.1
-
-### Patch Changes
-
-- Updated dependencies [9ad1a3c]
-  - @kronos-ts/eventsourcing@0.4.1
-  - @kronos-ts/messaging@0.10.1
-  - @kronos-ts/modelling@0.3.1
-
-## 0.4.0
-
-### Minor Changes
-
-- b46a045: Functional composition — the container is gone.
-
-  BREAKING. The app builder, slot registry, decorator pipeline, lifecycle
-  stages, extensions-as-mutators and `defineModule` are removed. The entry
-  point is `kronos({ components, modules })`; a module is
-  `module(name, overrides?, ...registrations)` with per-state snapshot
-  options as `[state, options]` tuples; dependencies are plain function
-  arguments.
-
-  Handlers receive their capabilities as a typed context argument
-  (`load`/`append`/`send`/`emitUpdate`/`schedule`/`transaction`); the
-  module-level `append`/`load`/`send`/`emitUpdate` helpers are no longer
-  exported. Query handlers get a read-only context (`load`/`transaction`).
-  `append` accepts a batch of `[descriptor, payload]` tuples. `on()` is
-  evolver/query only; `onEvent()` is removed.
-
-  Every backend extension is an async factory returning
-  `{ components, start(), close() }` with a uniform no-arg `start()`.
-  Remote processor administration moved to opt-in control planes
-  (`kronosDbControlPlane`, `axonServerControlPlane`) fed by
-  `app.processors`. Correlation lineage now survives distributed dispatch
-  (interception sits above the local/remote fork) and is seeded from
-  incoming messages in the invocation wrappers. Axon reconnect detection is
-  armed by the data path, independent of the control plane.
-
-  All 59 `create*`-prefixed factories are renamed to what they return
-  (`inMemoryEventStore`, `simpleCommandBus`, `postgresEventStore`, …).
-  Drizzle stores no longer take the ORM operator bundle — only
-  `{ db, table }`.
-
-### Patch Changes
-
-- Updated dependencies [b46a045]
-  - @kronos-ts/messaging@0.10.0
-  - @kronos-ts/eventsourcing@0.4.0
-  - @kronos-ts/modelling@0.3.0
-
-## 0.3.11
-
-### Patch Changes
-
-- Updated dependencies [f3f9fbc]
-  - @kronos-ts/common@0.1.2
-  - @kronos-ts/messaging@0.9.2
-  - @kronos-ts/modelling@0.2.10
-  - @kronos-ts/eventsourcing@0.3.3
-  - @kronos-ts/app@0.5.3
-
-## 0.3.10
-
-### Patch Changes
-
-- Updated dependencies [ad944b9]
-  - @kronos-ts/messaging@0.9.1
-  - @kronos-ts/app@0.5.2
-  - @kronos-ts/eventsourcing@0.3.2
-  - @kronos-ts/modelling@0.2.9
-
-## 0.3.9
-
-### Patch Changes
-
-- Updated dependencies [9eb84ff]
-  - @kronos-ts/messaging@0.9.0
-  - @kronos-ts/app@0.5.1
-  - @kronos-ts/eventsourcing@0.3.1
-  - @kronos-ts/modelling@0.2.8
-
-## 0.3.8
-
-### Patch Changes
-
-- Updated dependencies [56bfb6d]
-- Updated dependencies [56bfb6d]
-- Updated dependencies [56bfb6d]
-  - @kronos-ts/messaging@0.8.0
-  - @kronos-ts/app@0.5.0
-  - @kronos-ts/eventsourcing@0.3.0
-  - @kronos-ts/modelling@0.2.7
-
-## 0.3.7
-
-### Patch Changes
-
-- Updated dependencies [dafdf12]
-  - @kronos-ts/messaging@0.7.0
-  - @kronos-ts/app@0.4.1
-  - @kronos-ts/eventsourcing@0.2.3
-  - @kronos-ts/modelling@0.2.6
-
-## 0.3.6
-
-### Patch Changes
-
-- Updated dependencies [291acd2]
-- Updated dependencies [291acd2]
-  - @kronos-ts/messaging@0.6.0
-  - @kronos-ts/app@0.4.0
-  - @kronos-ts/eventsourcing@0.2.2
-  - @kronos-ts/modelling@0.2.5
-
-## 0.3.5
-
-### Patch Changes
-
-- Updated dependencies [4ac26c0]
-  - @kronos-ts/eventsourcing@0.2.1
-  - @kronos-ts/app@0.3.4
-  - @kronos-ts/messaging@0.5.1
-  - @kronos-ts/modelling@0.2.4
-
-## 0.3.4
-
-### Patch Changes
-
-- Updated dependencies [6a3dca4]
-  - @kronos-ts/eventsourcing@0.2.0
-  - @kronos-ts/messaging@0.5.0
-  - @kronos-ts/app@0.3.3
-  - @kronos-ts/modelling@0.2.3
-
-## 0.3.3
-
-### Patch Changes
-
-- Updated dependencies [dc0f67e]
-- Updated dependencies [f5ed7da]
-  - @kronos-ts/messaging@0.4.0
-  - @kronos-ts/app@0.3.2
-  - @kronos-ts/eventsourcing@0.1.5
-  - @kronos-ts/modelling@0.2.2
-
-## 0.3.2
-
-### Patch Changes
-
-- Updated dependencies [4b8faa5]
-  - @kronos-ts/messaging@0.3.1
-  - @kronos-ts/app@0.3.1
-  - @kronos-ts/eventsourcing@0.1.4
-  - @kronos-ts/modelling@0.2.1
-
-## 0.3.1
-
-### Patch Changes
-
-- Updated dependencies [c1a1cf5]
-- Updated dependencies [74dc43d]
-  - @kronos-ts/modelling@0.2.0
-  - @kronos-ts/app@0.3.0
-  - @kronos-ts/messaging@0.3.0
-  - @kronos-ts/eventsourcing@0.1.3
-
-## 0.3.0
-
-### Minor Changes
-
-- Add distributed subscription queries via a gossip-mirror subscriber registry.
-  Every `subscribe` publishes a claim over a fanout gossip exchange; each
-  instance maintains a cluster-wide `Map<subId, SubscriberRecord>` mirror.
-  `emitUpdate` walks the local mirror (where every subscriber's payload lives),
-  applies the `SubscriptionFilter`, and routes per-subscriber delivery over a
-  direct exchange keyed by the owner's instanceId — so function-form filters
-  work across instances by executing colocated with their payloads. A joiner
-  publishes a syncRequest on connect and peers re-broadcast owned claims to fill
-  its mirror. Topology: `kronos.subscribers.gossip` (fanout) +
-  `kronos.subscribers.direct` (direct). Instance-death failover and owner
-  election are out of scope.
-
-### Patch Changes
-
-- Updated dependencies
-- Updated dependencies
-  - @kronos-ts/messaging@0.2.0
-  - @kronos-ts/app@0.2.0
-  - @kronos-ts/eventsourcing@0.1.2
-  - @kronos-ts/modelling@0.1.2
-
-## 0.2.1
-
-### Patch Changes
-
-- Publish via `bun publish` so `workspace:*` resolves to concrete versions in published manifests. Previously `changeset publish` shelled out to `npm publish`, which does not understand Bun's workspace protocol, leaving literal `"workspace:*"` strings in published manifests and breaking installs for consumers.
-- Updated dependencies
-  - @kronos-ts/common@0.1.1
-  - @kronos-ts/messaging@0.1.1
-  - @kronos-ts/modelling@0.1.1
-  - @kronos-ts/eventsourcing@0.1.1
-  - @kronos-ts/app@0.1.1
-
-## 0.2.0
-
-### Minor Changes
-
-- f50be5e: Add distributed query transport. The RabbitMQ extension now decorates the
-  `queryBus` alongside the `commandBus`: direct request/reply queries route over a
-  dedicated `kronos.queries` exchange with per-query handler queues and a
-  per-process reply queue, mirroring the command transport. Subscription queries
-  remain process-local. Adds a `queries` config block (`preferLocalHandlers`,
-  `alwaysUseDistributedBus`, `defaultTimeoutMs`).
-
-  The command and query transports now share a single broker connection (one per
-  process), each taking its own channel, instead of opening a connection each.
-
-## 0.1.1
-
-### Patch Changes
-
-- Correct the package description — the RabbitMQ extension provides distributed
-  command and query transport, not event transport.
