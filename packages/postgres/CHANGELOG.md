@@ -1,5 +1,588 @@
 # @kronos-ts/postgres
 
+## 0.10.0
+
+### Minor Changes
+
+- 4d7b0ee: One core package, and edge verbs instead of gateways.
+
+  `@kronos-ts/common`, `@kronos-ts/messaging`, `@kronos-ts/eventsourcing`,
+  `@kronos-ts/modelling` and `@kronos-ts/app` are gone. They were one thing split
+  five ways: every one of them depended on the next, no host ever installed a
+  subset, and the split bought nothing but five version numbers to keep in step.
+  They are now `@kronos-ts/core`, whose internal layout still separates them —
+  `unit-of-work/`, `messages/`, `query/`, `buses/`, `handlers/`, `processor/`,
+  `state/`, `stores/`, `assembly/` — because the SECTIONS were the real idea and
+  the package boundaries were not.
+
+  ```ts
+  // before
+  import { qn } from "@kronos-ts/common";
+  import { commandHandler, simpleCommandBus } from "@kronos-ts/messaging";
+  import { inMemoryEventStore } from "@kronos-ts/eventsourcing";
+  import { state } from "@kronos-ts/modelling";
+  import { kronos } from "@kronos-ts/app";
+
+  // after
+  import {
+    qn,
+    commandHandler,
+    simpleCommandBus,
+    inMemoryEventStore,
+    state,
+    kronos,
+  } from "@kronos-ts/core";
+  ```
+
+  ## Edge verbs replace the gateways
+
+  A gateway was an object with one method that closed over a bus. The verb is the
+  same operation with the bus as its first argument — a function of all its real
+  arguments, which a host partially applies itself if it wants the bus fixed.
+
+  ```ts
+  // before
+  const result = await app.commandGateway.send(
+    CreateCourse,
+    { courseId },
+    metadata
+  );
+  const view = await app.queryGateway.query(GetCourse, { courseId });
+
+  // after
+  const result = await send(commandBus, CreateCourse, { courseId }, metadata);
+  const view = await query(queryBus, GetCourse, { courseId });
+  ```
+
+  `subscriptionQuery(queryBus, descriptor, payload, metadata?)` completes the set.
+  `App` loses both gateways and its state managers: it is now
+  `{ processors: ReadonlyMap<string, RunningProcessor>; stop(): Promise<void> }`.
+
+  ## One interceptor, one function
+
+  `correlatingCommandBus`/`correlatingQueryBus` took a VARIADIC list of metadata
+  providers, so two far-apart call sites could fight over the order. There is one
+  seam and one function now, and plurality composes in function space where the
+  order is written down:
+
+  ```ts
+  // before
+  correlatingCommandBus(bus, lineageProvider, tenancyProvider);
+
+  // after
+  interceptingCommandBus(bus, (m) => tenancy(lineage(m)));
+  ```
+
+  `Intercept<M> = (message: M) => M` takes the MESSAGE, not its metadata, because
+  `causationId` is the message's identifier and a metadata transform cannot see
+  it. `lineage` is exported as the rule everybody needs. `MetadataProvider` and
+  `CorrelationDataProvider` are both deleted: `ctx` carries the handled message's
+  metadata outward on `send` / `query` / `append` — uniformly, command leg and
+  event leg alike — so there is nothing left for a provider seam to do.
+
+  ## The processor is a value
+
+  The `trackingProcessor(...)` / `subscribingProcessor(...)` builders, the
+  `processors` list on `kronos`, `SequencingPolicy` objects and the whole
+  enqueue-policy machinery are deleted.
+
+  ```ts
+  // before
+  processors: [
+    {
+      ...trackingProcessor("balances")
+        .eventHandlers(onDebited, onCredited)
+        .build(),
+      eventStore,
+      tokenStore,
+      unitOfWork,
+      sequencingPolicy: sequentialPerTag("accountId"),
+      deadLetterQueue: dlq,
+    },
+  ];
+
+  // after
+  const balances = eventProcessor({
+    name: "balances",
+    eventStore,
+    tokenStore,
+    unitOfWork,
+    sequence: sequentialPerTag("accountId"),
+    deadLetterQueue: dlq,
+  });
+  eventHandlers: [
+    { ...onDebited, commandBus, queryBus, processor: balances },
+    { ...onCredited, commandBus, queryBus, processor: balances },
+  ];
+  ```
+
+  `Sequence = (event) => string` is TOTAL — "no ordering constraint" is the lane
+  `(e) => e.identifier`, not a missing answer — and `eventProcessor` REJECTS a
+  `deadLetterQueue` given without a `sequence`, because parking is a lane
+  operation. Subscribing (on-commit) delivery is gone; delivery is tracked.
+
+  ## `kronos` takes four lists and nothing else
+
+  ```ts
+  kronos({ commandHandlers, queryHandlers, eventHandlers, states });
+  ```
+
+  Buses ride on the entries that use them, under their own names, exactly as the
+  event store already did. Stores group by OBJECT identity; processors group by
+  NAME, because a token persists under that name across restarts — two entries
+  naming `"balances"` are one delivery, and two that name it with conflicting
+  config are a boot error naming both entries.
+
+  ## Seams carry their partition per call
+
+  `SequencedDeadLetterQueue` now takes `processingGroup` as its first argument on
+  every method, mirroring `TokenStore`'s `processorName`. One queue object is one
+  table, and which partition a call touches is a property of the caller — not
+  something baked into a constructor, which made `clear()` mean two different
+  things depending on which object you were holding.
+
+  ```ts
+  // before
+  const dlq = drizzleDeadLetterQueue(db, kronosDeadLetters, "balances");
+  await dlq.enqueue(letter, uow);
+
+  // after
+  const dlq = drizzleDeadLetterQueue(db); // the table is the adapter's
+  await dlq.enqueue("balances", letter, uow);
+  ```
+
+  Drizzle's table moved into the adapter and is exported as `kronosDeadLetters`
+  for migrations; it is no longer passed back in.
+
+  ## Core contains zero tracing vocabulary
+
+  `SpanFactory`, `MetricsRecorder`, `tracingHandler`, `meteringHandler` and
+  `tracingCommandBus` are out of core. Observability is a package of functions
+  over the public shapes.
+
+  ## Also
+
+  - The named type `UnitOfWorkFactory` is deleted — seams spell it `() => UnitOfWork`.
+  - `@kronos-ts/test`'s `testFixture` takes the four lists and exposes the
+    `commandBus` / `queryBus` it built; there is no `processors` option.
+
+- 4d7b0ee: Handler wrappers move from the ENTRY to the FUNCTION. Every NAME is unchanged
+  from the entry era — `postgresHandler`, `drizzleHandler`, `kyselyHandler`,
+  `knexHandler`, `prismaHandler`, `typeormHandler`, `otlpHandler`,
+  `otlpMetricsHandler` — because a shared-package export has to carry its
+  provenance. What changed is the LEVEL: a wrapper is now a plain generic function
+  over a plain generic function — `(next, ...config) => (message, ctx) => result`,
+  with `<M, C, R>` inferred — and the host does the wrapping by spreading the entry
+  itself.
+
+  ```ts
+  // before — the wrapper owned the entry, and needed a type to describe one
+  kronos({
+    commandHandlers: billing
+      .map((h) => drizzleHandler(h, db))
+      .map((h) => otlpHandler({ ...h, name: "billing" }, exporter)),
+  });
+
+  // after — same names; the wrapper owns the handler, the entry is the host's business
+  kronos({
+    commandHandlers: billing.map((h) => ({
+      ...h,
+      handler: drizzleHandler(otlpHandler(h.handler, exporter), db),
+    })),
+  });
+  ```
+
+  ```ts
+  // before
+  export function drizzleHandler<D extends DrizzleHandlerEntry>(
+    entry: D,
+    db: DrizzleDb
+  ): WithDrizzleSupplied<D>;
+
+  // after
+  export function drizzleHandler<
+    M,
+    C extends DrizzleCapability & { readonly unitOfWork: UnitOfWork },
+    R
+  >(
+    next: (message: M, context: C) => R,
+    db: DrizzleDb
+  ): (message: M, context: Omit<C, "db">) => R;
+  ```
+
+  **Nothing is read off the entry any more.** The wrappers used to reach into
+  `entry.kind`, `entry.descriptor.name` and the optional `entry.name` label. All
+  three now come from the MESSAGE, at call time, because that is where they
+  honestly live:
+
+  - `otlpHandler` decides parent-vs-link and SERVER-vs-CONSUMER from
+    `message.kind`. No kind argument, no per-kind names, no sentinel.
+  - the span name and the metric series key default to the message's qualified
+    name; `label?: (message: Message) => string` overrides it. A function OF THE
+    MESSAGE — never a per-entry string closed over at wiring time.
+  - `kronos.handler.group` (span) and `handler_group` (metrics) are GONE, and
+    `message_type` is now the message's own kind (`"command"`, not
+    `"command-handler"`). Dashboards keyed on those attributes need updating.
+
+  Because no wrapper depends on an entry, every one of them is pre-appliable —
+  config bound once, outside the map, and composed by bare name.
+
+  **DELETED.** The entry-constraint types existed only to describe the argument
+  these wrappers no longer take: `DrizzleHandlerEntry`, `WithDrizzleSupplied`,
+  `PostgresHandlerDefinition`, `Supplied`, `KnexHandlerEntry`, `WithKnexSupplied`,
+  `KyselyHandlerEntry`, `WithKyselySupplied`, `PrismaHandlerEntry`,
+  `WithPrismaSupplied`, `TypeormHandlerEntry`, `WithTypeormSupplied`, and
+  `OtlpHandlerEntry`. The named context types stay — a slice still writes
+  `ctx: DrizzleContext`, which is the whole point.
+
+  **The erasure is directional, and the compiler enforces it.** A wrapper takes a
+  handler whose ctx has the capability and returns one whose ctx does not, so
+  wrapping twice — or wrapping a handler that never asked — is a compile error:
+
+  ```ts
+  const supplied = drizzleHandler(asksForDb, db); // (m, ctx: HandlerContext) => …
+  drizzleHandler(supplied, db); // ✗ nothing left to supply
+  ```
+
+  Wrappers that supply nothing (`otlpHandler`, `otlpMetricsHandler`) erase nothing
+  and compose on either side.
+  `packages/drizzle/src/__tests__/drizzle-handler-inference.types.ts` pins both
+  directions; it is listed in the root `tsconfig.json` `files` array, so
+  `bunx tsc --noEmit` judges it.
+
+- 4d7b0ee: Six persistence packages, one identical seven-function family.
+
+  A processor's token store, its dead-letter queue and its handlers must write
+  through the SAME client handle, or the token advances in a transaction the
+  events never joined. That makes a persistence package a FAMILY keyed by
+  transaction identity — not a bag of adapters — so all six now expose the same
+  seven functions for their own client type, and none of them delegates to
+  another.
+
+  ```ts
+  xUnitOfWork(client, make: () => UnitOfWork): () => UnitOfWork
+  xTokenStore(client): TokenStore
+  xDeadLetterQueue(client): SequencedDeadLetterQueue
+  xTransaction(uow): Promise<Tx>          // opens; REJECTS a foreign uow
+  activeXTransaction(uow): Tx | undefined // observes, never opens
+  xHandler(handler, client): handler      // wraps the FUNCTION; ctx gains the accessor
+  interface XContext extends HandlerContext { … }   // + Event / Query variants
+  ```
+
+  **`@kronos-ts/postgres` gains the whole family.** The `postgres()` bundle is
+  DELETED and decomposed: `postgresPool(connectionString | adapter)` is the
+  resource, with `postgresEventStore(pg, { serializer, tagResolver })` and
+  `postgresSnapshotStore(pg)` split out of it. NEW: `postgresTokenStore(pg)`,
+  `postgresDeadLetterQueue(pg)`, `postgresHandler(handler, pg)` and
+  `PostgresContext { sql(): Sql | Tx }`. They are written against the existing
+  `PostgresAdapter`, so they work over `pg`, `postgres.js` and `Bun.sql` alike,
+  and they use the same table shapes as the ORM families with the schema DDL
+  exported for migrations. You no longer need an ORM to run a durable processor.
+
+  `postgresUnitOfWork(pg, make)` opens its transaction LAZILY — that is postgres's
+  honest default, where drizzle's is eager. Neither conjures a delegate: `make` is
+  explicit in both.
+
+  **The other five are aligned to the drizzle template.** Deleted along the way:
+  the five `TransactionManager` remnants, fifteen
+  `xCommandHandler`/`xEventHandler`/`xQueryHandler` triples collapsed into one
+  generic wrapper each, every DLQ constructor `tableName`/group parameter (the
+  seam carries the processing group per call), and the config-record constructors
+  — `drizzleTokenStore({ db, table, claimTimeoutMs })` becomes
+  `drizzleTokenStore(db, { claimTimeoutMs? })`, a positional handle with a
+  trailing options record for genuine tuning only.
+
+  Never mix families within one processor. That was always true; now the
+  signatures say so.
+
+- 4d7b0ee: The unit of work is handed down as a parameter. AsyncLocalStorage is deleted.
+
+  **`UoWRunner` hands the unit of work to the action.** Per-message state used to
+  live in an `AsyncLocalStorage` holding a `Map<symbol, unknown>`; every capability
+  a handler used reached into it at call time. There is now an explicit
+  `UnitOfWork` handle, and it travels as an argument.
+
+  ```ts
+  // before — the action took nothing; state was ambient
+  export type UoWRunner = <R>(
+    metadata: Metadata | undefined,
+    action: () => Promise<R>
+  ) => Promise<R>;
+
+  // after — the action is given the unit of work
+  export type UoWRunner = <R>(
+    metadata: Metadata | undefined,
+    action: (uow: UnitOfWork) => Promise<R>
+  ) => Promise<R>;
+  ```
+
+  `UnitOfWork` carries as REAL TYPED FIELDS what the resource-key map held loosely:
+  `metadata`, `phase`, `closed`, the lifecycle registrations (`on` /
+  `onPrepareCommit` / `onCommit` / `onAfterCommit` / `onError` / `whenComplete`),
+  `correlationData()` / `contributeCorrelationData()`, the append buffer and
+  sourcing infos (`uow.events`), the per-UoW state cache (`uow.stateCache`),
+  `replaying`, and the adapter transaction (`transaction()` /
+  `activeTransaction()` / `setTransaction()` / `setTransactionOpener()`).
+
+  The phase model is UNCHANGED — `PRE_INVOCATION → INVOCATION → POST_INVOCATION →
+PREPARE_COMMIT → COMMIT → AFTER_COMMIT`, same numeric values, same
+  late-registration draining (an action registered while its own phase is running
+  still runs in that phase; earlier phases are already past).
+
+  **Deleted.** `processing-state.ts` and the whole resource-key system:
+  `resourceKey` / `ResourceKey`, `getResource` / `setResource` /
+  `computeIfAbsent` / `removeResource` / `hasResource` / `updateResource`,
+  `withOverride`, `processingStateStorage`, `initialProcessingState`,
+  `requireInvocationPhase`, and every `*_KEY` (`COMMAND_BUS_KEY`, `QUERY_BUS_KEY`,
+  `TRANSACTION_KEY`, `CORRELATION_DATA_KEY`, `BUFFERED_EVENTS_KEY`,
+  `SOURCING_INFOS_KEY`, `STATE_MANAGER_KEY`, `STATE_CACHE_KEY`,
+  `STATE_MODULES_KEY`, `EVENT_SCHEDULER_KEY`, `REPLAY_STATE_KEY`,
+  `EVENT_FLUSH_REGISTERED_KEY`, `MARKER_RESOURCE_KEY`, `TAG_RESOURCE_KEY`). Also
+  gone: `getActiveTransaction` / `getOrBeginActiveTransaction`,
+  `activeCorrelationData`, the module-level `contributeCorrelationData`, the
+  no-arg `isReplay()`, the frozen `HANDLER_CONTEXT` / `EVENT_HANDLER_CONTEXT` /
+  `QUERY_HANDLER_CONTEXT` singletons, and the `MinimalConfiguration` config-shim.
+
+  `NoActiveUnitOfWork` and `WrongUoWPhase` REMAIN. `closed` replaces the
+  ALS-absence check: a ctx used after its unit of work committed throws
+  `NoActiveUnitOfWork`; a mutator called outside INVOCATION throws
+  `WrongUoWPhase`.
+
+  **Handler contexts are built fresh per invocation.** They were three frozen
+  shared singletons that only worked because every capability re-resolved through
+  ALS. Each is now a closure over that invocation's unit of work, the buses the
+  caller already holds, and the item's stores.
+
+  ```ts
+  // before — one frozen object, every capability an ambient lookup
+  export const HANDLER_CONTEXT: HandlerContext = Object.freeze({ load, append, send, … })
+  handler(message, HANDLER_CONTEXT)
+
+  // after — a closure over this invocation's unit of work
+  handler(message, handlerContext({ uow, stateManager, commandBus, queryBus, eventScheduler }))
+  ```
+
+  `handlerContext` / `eventHandlerContext` / `queryHandlerContext` are exported.
+  Contexts gain `unitOfWork`, `contributeCorrelationData`, and — on the event and
+  command contexts — `isReplay()`, which replaces the deleted module-level
+  `isReplay()`.
+
+  **Correlation lineage rides on the message.** `correlatingCommandBus` /
+  `correlatingQueryBus` no longer read ambient correlation data; they apply their
+  `MetadataProvider`s and nothing else. `ctx.send` / `ctx.query` stamp the unit of
+  work's lineage onto the outgoing message BEFORE any bus sees it, so the local
+  and the remote branch carry identical metadata. End-to-end lineage behaviour is
+  unchanged. `applyCorrelationData(uow, message, providers)` takes the unit of
+  work first.
+
+  **`TokenStore` and `SequencedDeadLetterQueue` take the unit of work as a
+  trailing parameter**, on every method. It is OPTIONAL, because the lifecycle and
+  admin paths (`initializeSegments`, the startup `get`, `resetTokens`, `clear`,
+  `sequenceIdentifiers`) legitimately run outside any unit of work — exactly where
+  the old permissive `getActiveTransaction()` returned `undefined`.
+
+  ```ts
+  // before
+  store(processorName: string, segment: number, token: TrackingToken): Promise<void>
+  enqueue(letter: DeadLetter): Promise<void>
+
+  // after
+  store(processorName: string, segment: number, token: TrackingToken, uow?: UnitOfWork): Promise<void>
+  enqueue(letter: DeadLetter, uow?: UnitOfWork): Promise<void>
+  ```
+
+  Every implementation follows suit — the in-memory ones plus `drizzle`, `knex`,
+  `kysely`, `postgres`, `prisma` and `typeorm`. Their writer helper changes shape
+  and nothing else:
+
+  ```ts
+  // before
+  function getDb() {
+    return getActiveTransaction<DrizzleTransaction>() ?? config.db;
+  }
+
+  // after
+  function getDb(uow?: UnitOfWork) {
+    return uow?.activeTransaction<DrizzleTransaction>() ?? config.db;
+  }
+  ```
+
+  `EventScheduler.schedule/cancel`, `EventSink.publish` and
+  `EventStorageEngine.append/appendEvents` gain the same trailing `uow?`, so a
+  scheduler insert, an event append and a token write inside one unit of work land
+  in one adapter transaction.
+
+  **Bus signatures.** `CommandBus.subscribe` and `QueryBus.subscribe` hand the unit
+  of work to the handler: `(message, uow) => Promise<unknown>`. `QueryBus.query`
+  takes a trailing `uow?` — passing one NESTS the read in that unit of work, which
+  is how `ctx.query` shares the handler's transaction. `QueryBus.emitUpdate` /
+  `completeSubscription` / `completeSubscriptionExceptionally` take a trailing
+  `uow?` so updates defer to its AFTER_COMMIT. `CommandBus.dispatch` deliberately
+  does NOT take one: every command is its own fresh unit of work.
+
+  `runInNewUoW` (always fresh) and `runInUoW` (reuse if given) stay distinct;
+  `runInUoW(uow, metadata, action, runner?)` now expresses "is one active" as
+  "was one passed in".
+
+### Patch Changes
+
+- 4d7b0ee: The `extensions/` directory is gone, and so is the concept.
+
+  ```
+  packages/{core,test,rabbitmq,kronosdb,axon-server,postgres,drizzle,knex,kysely,prisma,typeorm,otlp}
+  ```
+
+  An "extension" implied a plugin contract that this framework does not have and
+  does not want: every one of these is a package of ordinary functions over the
+  public core shapes, no more privileged than something you write yourself. Nested
+  under `extensions/` they read as a second tier, which made "should this be core
+  or an extension?" a question anybody could ask about anything.
+
+  Published package names are unchanged; only repository paths, the workspace
+  globs, the tsconfig include and the CI globs moved.
+
+- 4d7b0ee: A state says what it is scoped BY. The query is derived.
+
+  **`state()` takes `tags` as plain data — `criteria` is gone.**
+
+  ```ts
+  // before — a criteria expression, built by a fluent builder, at every state
+  state({
+    name: "Course",
+    id: { courseId: z.string() },
+    criteria: (id) => EventCriteria.havingTags(tag("courseId", id.courseId)),
+    evolve: [[CourseCreated, …], [CourseCapacityChanged, …]],
+  })
+
+  // after — the scope is a record
+  state({
+    id: { courseId: z.string() },
+    tags: (id) => ({ courseId: id.courseId }),
+    evolve: [[CourseCreated, …], [CourseCapacityChanged, …]],
+  })
+  ```
+
+  ONE record is the answer even for a state spanning several streams — the
+  derivation scopes each tag key to the event types that declare it. See the
+  "granular query derivation" changeset for the rules. An ARRAY of records remains
+  available as an explicit override for scopes the derivation cannot express:
+
+  ```ts
+  tags: (id) => [{ courseId: id.courseId }, { studentId: id.studentId }];
+  ```
+
+  **The event-TYPE half of the query is DERIVED from `evolve`.** A fold only
+  reacts to what it lists, so the types are already stated; `state()` assembles
+  the DCB query from the tags and the folded types, and you never write the type
+  list twice.
+
+  This NARROWS the DCB conflict window, deliberately. Every state previously
+  passed tags only, so its sourcing query — which flows through
+  `SourcingCondition` into the `AppendCondition` conflict detection runs against —
+  claimed a conflict over EVERY event carrying that tag, including types it never
+  folded. It now conflicts on the folded types only. Reviewed and accepted: no
+  existing state relied on the wider window. If one ever needs it, that will be an
+  explicit optional field on `state()`, not a return to hand-written queries.
+  A state with no evolvers gets no type filter — an empty fold means "all", not
+  "none".
+
+  **The public `EventCriteria` builder is DELETED, and so is the `eventQuery()`
+  compiler that briefly replaced it.** A read is now described by PLAIN DATA in the
+  DCB specification's own vocabulary (dcb.events): a **query** is one **query
+  item** — `{ types?: any-of, tags?: all-of }` — or an array of items ORed
+  together. There is nothing to call and nothing to construct.
+
+  ```ts
+  // before — a fluent builder at every reading surface
+  EventCriteria.havingTags(tag("courseId", "cs-101")).ofTypes(CourseCreated)
+  EventCriteria.either(EventCriteria.havingTags(a), EventCriteria.havingTags(b))
+
+  // then — a function wrapping a record literal, which is ceremony
+  eventQuery({ tags: { courseId: "cs-101" }, types: [CourseCreated] })
+  eventQuery([{ tags: a }, { tags: b }])
+
+  // now — the query IS the literal
+  { tags: { courseId: "cs-101" }, types: [CourseCreated] }
+  [{ tags: a }, { tags: b }]                      // an array is the OR
+  ```
+
+  `@kronos-ts/messaging` exports `QueryItem` and
+  `EventQuery = QueryItem | readonly QueryItem[]`, and
+  `packages/messaging/src/event-criteria.ts` is now `event-query.ts`.
+
+  **Every reading surface takes the query directly, under the field name `query`.**
+  The old `criteria` field is gone from `SourcingCondition`, `AppendCondition`,
+  `StreamingCondition`, `SourcingInfo` and `StateModule`:
+
+  ```ts
+  // before
+  eventStore.source({ criteria: eventQuery({ tags: { courseId } }) });
+  eventStore.append(events, { criteria, marker });
+  Course.criteria({ courseId });
+
+  // after
+  eventStore.source({ query: { tags: { courseId } } });
+  eventStore.append(events, { query, marker });
+  Course.query({ courseId });
+  ```
+
+  A `commandHandler`'s `appendCondition` override now receives and returns an
+  `EventQuery` rather than an `EventCriteria`:
+
+  ```ts
+  // before
+  appendCondition: (command, sourcedCriteria) => EventCriteria.havingAnyTag();
+  // after
+  appendCondition: (command, sourcedQuery) => ({
+    tags: { billId: command.payload.billId },
+  });
+  ```
+
+  **The `EventCriteria` union survives as the STORE side of the boundary** — the
+  tagged shape the in-memory matcher, the Postgres WHERE builder and the KronosDB /
+  Axon Server criterion converters switch on. It is produced in exactly one way:
+  `compileQuery(query)`, called once per read at each store's entry point.
+  `queryItems(query)` is the single normalisation step for the one-item-vs-array
+  split, and the single place a malformed query is rejected — an empty item array
+  ("zero ORed items match nothing") and a non-item or nested-array query each fail
+  with an error that names what was passed. Nothing downstream re-tests the shape;
+  combining the queries of several `load()` calls into one append condition is now
+  a flat concat of their items rather than a hand-built `either` node.
+
+  Excess-property checking still bites at literal call sites despite `EventQuery`
+  being a union — `{ tags: { … }, typ: [] }` is an error at the typo, in single and
+  array positions alike — so no overloads were needed to keep it.
+
+  **`name` is now OPTIONAL on `state()`.** Its only job is durable snapshot
+  identity — the key snapshots are written under — so it is required only when
+  that state is configured with a `snapshotPolicy` or a `snapshotStore`. `kronos`
+  refuses to boot otherwise, with an error naming the state by its index in
+  `states` and the events it folds (it has no name to quote).
+
+  Everything else keys on a new `identity` the definition carries: a
+  process-unique token `state()` assigns per definition. It is a property, not the
+  object reference, because hosts spread states to attach stores
+  (`{ ...Course, stores }`) — the identity rides through the spread, the reference
+  does not. `StateManager` registers and resolves repositories by it, and the
+  per-UnitOfWork `ctx.load` cache keys on `${identity}:${id}` instead of
+  `${name}:${id}`. `StateRepository.stateName` is optional and diagnostic.
+
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+- Updated dependencies [4d7b0ee]
+  - @kronos-ts/core@0.2.0
+
 ## 0.9.2
 
 ### Patch Changes
