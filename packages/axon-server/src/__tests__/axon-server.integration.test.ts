@@ -148,8 +148,6 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     const httpPort = container.getMappedPort(8024)
 
     await initClusterWithDcb(host, httpPort)
-    // Extra delay for DCB event store stream endpoint initialization.
-    await new Promise((r) => setTimeout(r, 3000))
 
     // The connection is the shared resource and it connects eagerly; the four
     // components are plain functions over it. The serializer is named ONCE, on
@@ -170,6 +168,21 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       axon,
       "default",
     )
+
+    // The REST context listing races the DCB gRPC endpoint actually serving
+    // the context — on a slow runner the gap is seconds, and a fixed sleep is
+    // a coin-flip. Probe the real endpoint until it answers: readiness is the
+    // thing itself working, not a proxy for it.
+    const probeStart = Date.now()
+    for (;;) {
+      try {
+        await eventStore.latestToken()
+        break
+      } catch (err) {
+        if (!/Unknown Context/i.test(String(err)) || Date.now() - probeStart > 60_000) throw err
+        await new Promise((r) => setTimeout(r, 500))
+      }
+    }
     // The local segment is a REAL bus: a command Axon Server routes back to us
     // runs under the unit-of-work policy chosen HERE. Interception stays
     // outside, so it covers the message on its way to the wire.
