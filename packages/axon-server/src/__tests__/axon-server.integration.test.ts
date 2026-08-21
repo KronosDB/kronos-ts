@@ -159,6 +159,11 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       port: grpcPort,
       context: "default",
       serializer: jsonSerializer(),
+      // Liveness thresholds sized for CI runners, where a JVM Axon Server can
+      // pause past the 7.5s production default. The timeout MECHANISM has its
+      // own unit test with tight thresholds — this suite tests the data path,
+      // and a liveness false-positive here fails tests that never touch it.
+      platformService: { heartbeatIntervalMs: 10_000, heartbeatTimeoutMs: 60_000 },
     })
 
     // Contexts are a per-call header, so the log and its cache ride the ONE
@@ -339,6 +344,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       port: grpcPort,
       context: "default",
       serializer: jsonSerializer(),
+      platformService: { heartbeatIntervalMs: 10_000, heartbeatTimeoutMs: 60_000 },
     })
     try {
       const capable = axonServerSnapshottingEventStore(
