@@ -1,6 +1,5 @@
-import type { EventQuery } from "../query/event-query.js"
-import type { EventMessage } from "../messages/message.js"
-import type { Clock } from "../primitives/clock.js"
+import type { EventQuery } from "../event-sourcing/dcb-query.js"
+import type { EventMessage } from "../messaging/messages.js"
 
 /**
  * Lifecycle phases for message processing, ordered by execution priority.
@@ -74,7 +73,7 @@ export class WrongUoWPhase extends Error {
  * What one `load()` contributed to the append condition: the query it sourced
  * and the position it read up to.
  */
-export interface SourcingInfo {
+export type SourcingInfo = {
   readonly query: EventQuery
   readonly markerPosition: bigint
 }
@@ -86,7 +85,7 @@ export interface SourcingInfo {
  * (see `event-flush.ts`) turns the buffer plus the sourcing infos into one
  * conditional event-store write — the DCB consistency check.
  */
-export interface UoWEventBuffer {
+export type UoWEventBuffer = {
   /** Events appended during INVOCATION, flushed as one atomic write. */
   readonly buffered: EventMessage[]
   /** One entry per `load()`, combined into the append condition. */
@@ -104,7 +103,7 @@ export interface UoWEventBuffer {
  * `ctx.append` evolves the cached state so a handler that appends then loads
  * sees its own writes.
  */
-export interface UoWStateCache {
+export type UoWStateCache = {
   /** Cache key → in-flight or settled load result. */
   readonly entries: Map<string, Promise<unknown>>
   /** Cache key → the module and id it was loaded for, so evolvers can be applied. */
@@ -118,12 +117,16 @@ export interface UoWStateCache {
  * command, a processor opens one per BATCH. It therefore holds no message and
  * no message metadata — the message belongs to the BINDING, and the
  * per-invocation `ctx` already closes over both the message and this handle.
- * Lineage that must cross from a message onto what a handler emits arrives
- * through {@link contributeCorrelationData}, which works identically for a
- * one-message task and for each event in a batch.
  *
- * The phase lifecycle, the event buffer, the state cache and correlation
- * lineage hang off this one object. A TRANSACTION does NOT: the base has no
+ * It holds no CORRELATION either. Correlation is not knowledge a task is born
+ * with — it is a capability composed onto one: `correlating(unitOfWork())`
+ * returns a unit of work that also carries a correlation map, and
+ * `correlatingHandler` is what fills it and overlays it onto what a handler
+ * emits. A deployment that does not want the concept never mentions it, and
+ * nothing here changes shape to accommodate one that does.
+ *
+ * The phase lifecycle, the event buffer and the state cache hang off this one
+ * object. A TRANSACTION does NOT: the base has no
  * transaction concept, no `transaction()` and no `activeTransaction()`. Those
  * were typed by assertion — `uow.transaction<DrizzleTransaction>()` asserted a
  * type the handle could not know — and they put database vocabulary on a
@@ -141,7 +144,7 @@ export interface UoWStateCache {
  * dead-letter queues, event stores, schedulers) takes it as a trailing
  * parameter.
  */
-export interface UnitOfWork {
+export type UnitOfWork = {
   /** The phase currently executing. `null` before the lifecycle starts. */
   readonly phase: PhaseValue | null
   /**
@@ -179,8 +182,8 @@ export interface UnitOfWork {
 
   // ── the task's instant ────────────────────────────────────────────────
   /**
-   * The current instant in epoch milliseconds, from the {@link Clock} this unit
-   * of work was minted with.
+   * The current instant in epoch milliseconds, from the clock this unit of work
+   * was minted with.
    *
    * Every message this task gives birth to stamps its `timestamp` from HERE —
    * `ctx.append`, `ctx.send`, `ctx.query`, `ctx.schedule`, and the bus that
@@ -190,12 +193,6 @@ export interface UnitOfWork {
    * make that instant whatever it likes by handing `unitOfWork` a clock.
    */
   now(): number
-
-  // ── correlation lineage ───────────────────────────────────────────────
-  /** The lineage this unit of work stamps on everything it sends or appends. */
-  correlationData(): Record<string, string>
-  /** Merge extra lineage keys — an OpenTelemetry `traceparent`, say. */
-  contributeCorrelationData(partial: Record<string, string>): void
 
   // ── per-message buffers ───────────────────────────────────────────────
   /** Appended events and the sourcing infos that condition their write. */
@@ -211,195 +208,196 @@ export interface UnitOfWork {
 // A unit-of-work FACTORY is written `() => UnitOfWork` wherever a seam takes
 // one. There is no name for it: naming a one-arrow type buys an import and
 // hides the arrow, and the arrow is the whole contract. `unitOfWork` itself is
-// one; an adapter's `drizzleUnitOfWork(db, unitOfWork)` is another, and they are
+// one; an adapter's `drizzleUnitOfWork(unitOfWork, db)` is another, and they are
 // interchangeable because they are the same shape.
 //
-//   simpleCommandBus(unitOfWork)                        // bare
-//   simpleCommandBus(drizzleUnitOfWork(db, unitOfWork)) // transactional
+//   localCommandBus(unitOfWork)                        // bare
+//   localCommandBus(drizzleUnitOfWork(unitOfWork, db)) // transactional
 
 
 // ── implementation ──────────────────────────────────────────────────────
 
 type Status = "not_started" | "started" | "completed" | "error"
 
-class ManagedUnitOfWork implements UnitOfWork {
-  phase: PhaseValue | null = null
-  closed = false
-  replaying = false
+/**
+ * THE unit-of-work factory: a fresh, bare unit of work per call.
+ *
+ * This is the public primitive. Hand it to whatever opens units of work —
+ * `localCommandBus(unitOfWork)` — or hand that seam an adapter's factory
+ * instead when the units of work should carry a transaction. Nothing is
+ * ambient and nothing is defaulted behind you: a seam that mints units of work
+ * says which factory it mints them from.
+ *
+ * `clock` — `() => number` — is where the task's idea of "now" comes from:
+ * `uow.now()`, and therefore the `timestamp` on every message the task gives
+ * birth to. It reads an INSTANT, in epoch milliseconds — not a duration and not
+ * a monotonic tick. It is the same number a message's `timestamp` carries,
+ * which is what makes a clock substitutable at every message-birth site without
+ * converting anything.
+ *
+ * THERE IS NO `Clock` TYPE, here or anywhere. The arrow IS the contract, the
+ * same way a unit-of-work factory is spelled `() => UnitOfWork` and never
+ * named: a one-arrow alias buys an import and hides the one thing the reader
+ * needed to see. Every seam that takes a clock writes `clock?: () => number`
+ * inline — this one, the schedulers, the fixture, the recorders.
+ *
+ * ABSENT means system time, which is the null behaviour rather than a defaulted
+ * dependency: `Date.now` IS a clock, and passing it explicitly says the same
+ * thing as passing nothing. A test hands in its own and every timestamp under
+ * the task becomes whatever it says:
+ *
+ * ```ts
+ * localCommandBus(unitOfWork)                      // system time
+ * localCommandBus(() => unitOfWork(fixtureClock))  // the fixture's instant
+ * ```
+ *
+ * Driving the lifecycle is `uow.execute(action)`, on the handle.
+ *
+ * The phase state and the buffers are CLOSED OVER, not fields: nothing outside
+ * this function can reach `status` or the phase buckets, and `phase`/`closed`
+ * are accessors precisely because the lifecycle — and only the lifecycle —
+ * advances them.
+ *
+ * What comes back is PURE TASK LIFECYCLE. Correlation is composed on top —
+ * `correlating(unitOfWork(clock))` — and nothing here knows the word.
+ */
+export function unitOfWork(clock?: () => number): UnitOfWork {
+  // `clock` stays OPTIONAL rather than defaulted in the parameter list: a
+  // default would drop `unitOfWork.length` to 0, and the arity is the claim
+  // that a task takes a clock and nothing else.
+  const tick = clock ?? Date.now
 
-  readonly events: UoWEventBuffer = {
+  let phase: PhaseValue | null = null
+  let closed = false
+  let replaying = false
+  let status: Status = "not_started"
+
+  const events: UoWEventBuffer = {
     buffered: [],
     sourcingInfos: [],
     flushRegistered: false,
   }
 
-  readonly stateCache: UoWStateCache = {
+  const stateCache: UoWStateCache = {
     entries: new Map<string, Promise<unknown>>(),
     modules: new Map<string, { module: unknown; id: unknown }>(),
   }
 
-  status: Status = "not_started"
+  const phaseActions = new Map<PhaseValue, PhaseAction[]>()
+  const errorHandlers: UoWErrorHandler[] = []
+  const completeHandlers: CompleteHandler[] = []
 
-  readonly phaseActions = new Map<PhaseValue, PhaseAction[]>()
-  readonly errorHandlers: UoWErrorHandler[] = []
-  readonly completeHandlers: CompleteHandler[] = []
-
-  private correlation: Record<string, string> = {}
-
-  constructor(private readonly clock: Clock) {}
-
-  now(): number {
-    return this.clock()
-  }
-
-  /**
-   * Run `action` inside this unit of work, driving the phase protocol:
-   * PRE_INVOCATION → INVOCATION → the action → POST_INVOCATION →
-   * PREPARE_COMMIT → COMMIT → AFTER_COMMIT, or the error handlers on failure.
-   *
-   * The protocol lives HERE, on the handle, rather than in a free `run*`
-   * function, because it is the unit of work's own lifecycle — nothing else
-   * can drive it correctly, and a caller that forgets the rollback ordering
-   * has no way to be caught. One unit of work executes exactly once.
-   */
-  execute<R>(action: (uow: UnitOfWork) => Promise<R>): Promise<R> {
-    if (this.status !== "not_started") {
-      throw new Error("UnitOfWork.execute: this unit of work has already been executed")
-    }
-    return drivePhases(this, () => action(this))
-  }
-
-  on(phase: PhaseValue, action: PhaseAction): void {
-    let bucket = this.phaseActions.get(phase)
+  const on = (at: PhaseValue, action: PhaseAction): void => {
+    let bucket = phaseActions.get(at)
     if (!bucket) {
       bucket = []
-      this.phaseActions.set(phase, bucket)
+      phaseActions.set(at, bucket)
     }
     bucket.push(action)
   }
 
-  onPrepareCommit(action: PhaseAction): void {
-    this.on(Phase.PREPARE_COMMIT, action)
-  }
+  // ── private: the lifecycle-driving loop ───────────────────────────────
+  //
+  // Re-sort semantics: actions registered during a phase's own execution at
+  // EARLIER phase values are silently dropped (the phase is already past).
+  // `runPhase` drains its own bucket repeatedly so actions registered for the
+  // SAME phase during execution are picked up before moving on.
 
-  onCommit(action: PhaseAction): void {
-    this.on(Phase.COMMIT, action)
-  }
-
-  onAfterCommit(action: PhaseAction): void {
-    this.on(Phase.AFTER_COMMIT, action)
-  }
-
-  onError(handler: UoWErrorHandler): void {
-    this.errorHandlers.push(handler)
-  }
-
-  whenComplete(handler: CompleteHandler): void {
-    this.completeHandlers.push(handler)
-  }
-
-  correlationData(): Record<string, string> {
-    return this.correlation
-  }
-
-  contributeCorrelationData(partial: Record<string, string>): void {
-    this.correlation = { ...this.correlation, ...partial }
-  }
-}
-
-/**
- * THE unit-of-work factory: a fresh, bare unit of work per call.
- *
- * This is the public primitive. Hand it to whatever opens units of work —
- * `simpleCommandBus(unitOfWork)` — or hand that seam an adapter's factory
- * instead when the units of work should carry a transaction. Nothing is
- * ambient and nothing is defaulted behind you: a seam that mints units of work
- * says which factory it mints them from.
- *
- * `clock` is where the task's idea of "now" comes from — `uow.now()`, and
- * therefore the `timestamp` on every message the task gives birth to. ABSENT
- * means system time, which is the null behaviour rather than a defaulted
- * dependency: `Date.now` IS the clock, and passing it explicitly says the same
- * thing as passing nothing. A test hands in its own and every timestamp under
- * the task becomes whatever it says:
- *
- * ```ts
- * simpleCommandBus(unitOfWork)                      // system time
- * simpleCommandBus(() => unitOfWork(fixtureClock))  // the fixture's instant
- * ```
- *
- * Driving the lifecycle is `uow.execute(action)`, on the handle.
- */
-export function unitOfWork(clock?: Clock): UnitOfWork {
-  return new ManagedUnitOfWork(clock ?? Date.now)
-}
-
-// ── private: the lifecycle-driving loop ───────────────────────────────
-//
-// Re-sort semantics: actions registered during a phase's own execution at
-// EARLIER phase values are silently dropped (the phase is already past).
-// `runPhase` drains its own bucket repeatedly so actions registered for the
-// SAME phase during execution are picked up before moving on.
-
-async function drivePhases<R>(
-  uow: ManagedUnitOfWork,
-  action: () => Promise<R>,
-): Promise<R> {
-  uow.status = "started"
-  try {
-    await runPhase(uow, Phase.PRE_INVOCATION)
-
-    uow.phase = Phase.INVOCATION
-    let actions = uow.phaseActions.get(Phase.INVOCATION)
+  const runPhase = async (at: PhaseValue): Promise<void> => {
+    phase = at
+    // Late registration: actions registered during a phase's own execution fire
+    // next loop iteration (still within the same phase).
+    let actions = phaseActions.get(at)
     while (actions && actions.length > 0) {
       const bucket = actions
-      uow.phaseActions.set(Phase.INVOCATION, [])
+      phaseActions.set(at, [])
       for (const a of bucket) await a()
-      actions = uow.phaseActions.get(Phase.INVOCATION)
+      actions = phaseActions.get(at)
     }
-    const result = await action()
-
-    await runPhase(uow, Phase.POST_INVOCATION)
-    await runPhase(uow, Phase.PREPARE_COMMIT)
-    await runPhase(uow, Phase.COMMIT)
-    await runPhase(uow, Phase.AFTER_COMMIT)
-
-    uow.status = "completed"
-    uow.closed = true
-    for (const h of uow.completeHandlers) {
-      try {
-        h()
-      } catch (e) {
-        console.warn("UnitOfWork: completion handler threw an exception:", e)
-      }
-    }
-    return result
-  } catch (error) {
-    uow.status = "error"
-    const failedPhase = uow.phase ?? undefined
-    uow.closed = true
-    for (const h of uow.errorHandlers) {
-      try {
-        await h(error, failedPhase)
-      } catch (e) {
-        console.warn("UnitOfWork: error handler threw an exception:", e)
-      }
-    }
-    throw error
   }
-}
 
-async function runPhase(uow: ManagedUnitOfWork, phase: PhaseValue): Promise<void> {
-  uow.phase = phase
-  // Late registration: actions registered during a phase's own execution fire
-  // next loop iteration (still within the same phase).
-  let actions = uow.phaseActions.get(phase)
-  while (actions && actions.length > 0) {
-    const bucket = actions
-    uow.phaseActions.set(phase, [])
-    for (const a of bucket) await a()
-    actions = uow.phaseActions.get(phase)
+  const drivePhases = async <R>(action: () => Promise<R>): Promise<R> => {
+    status = "started"
+    try {
+      await runPhase(Phase.PRE_INVOCATION)
+
+      phase = Phase.INVOCATION
+      let actions = phaseActions.get(Phase.INVOCATION)
+      while (actions && actions.length > 0) {
+        const bucket = actions
+        phaseActions.set(Phase.INVOCATION, [])
+        for (const a of bucket) await a()
+        actions = phaseActions.get(Phase.INVOCATION)
+      }
+      const result = await action()
+
+      await runPhase(Phase.POST_INVOCATION)
+      await runPhase(Phase.PREPARE_COMMIT)
+      await runPhase(Phase.COMMIT)
+      await runPhase(Phase.AFTER_COMMIT)
+
+      status = "completed"
+      closed = true
+      for (const h of completeHandlers) {
+        try {
+          h()
+        } catch (e) {
+          console.warn("UnitOfWork: completion handler threw an exception:", e)
+        }
+      }
+      return result
+    } catch (error) {
+      status = "error"
+      const failedPhase = phase ?? undefined
+      closed = true
+      for (const h of errorHandlers) {
+        try {
+          await h(error, failedPhase)
+        } catch (e) {
+          console.warn("UnitOfWork: error handler threw an exception:", e)
+        }
+      }
+      throw error
+    }
   }
+
+  const uow: UnitOfWork = {
+    get phase() {
+      return phase
+    },
+    get closed() {
+      return closed
+    },
+    get replaying() {
+      return replaying
+    },
+    set replaying(value: boolean) {
+      replaying = value
+    },
+
+    events,
+    stateCache,
+
+    // The guard is SYNCHRONOUS — a second execute is a wiring bug, and a
+    // rejected promise would let it be swallowed by the caller's own error path.
+    execute: <R>(action: (handle: UnitOfWork) => Promise<R>): Promise<R> => {
+      if (status !== "not_started") {
+        throw new Error("UnitOfWork.execute: this unit of work has already been executed")
+      }
+      return drivePhases(() => action(uow))
+    },
+
+    on,
+    onPrepareCommit: (action) => { on(Phase.PREPARE_COMMIT, action) },
+    onCommit: (action) => { on(Phase.COMMIT, action) },
+    onAfterCommit: (action) => { on(Phase.AFTER_COMMIT, action) },
+    onError: (handler) => { errorHandlers.push(handler) },
+    whenComplete: (handler) => { completeHandlers.push(handler) },
+
+    now: () => tick(),
+  }
+
+  return uow
 }
 
 // ── guards ──────────────────────────────────────────────────────────────
@@ -407,15 +405,21 @@ async function runPhase(uow: ManagedUnitOfWork, phase: PhaseValue): Promise<void
 /**
  * Guard for mutating capabilities. Throws {@link NoActiveUnitOfWork} once the
  * unit of work has closed, {@link WrongUoWPhase} outside INVOCATION.
+ *
+ * Generic in the handle it is given, and returns THAT handle — a guard checks a
+ * unit of work, it does not launder one. Widening the return to `UnitOfWork`
+ * would silently strip whatever capability the caller had composed on
+ * (`correlating`, an adapter's), which is exactly the class of bug the
+ * parametric threading exists to make impossible.
  */
-export function requireInvocation(uow: UnitOfWork): UnitOfWork {
+export function requireInvocation<U extends UnitOfWork>(uow: U): U {
   if (uow.closed) throw new NoActiveUnitOfWork()
   if (uow.phase !== Phase.INVOCATION) throw new WrongUoWPhase(uow.phase)
   return uow
 }
 
-/** Guard for read-only capabilities: live unit of work, any phase. */
-export function requireLive(uow: UnitOfWork): UnitOfWork {
+/** Guard for read-only capabilities: live unit of work, any phase. Same non-laundering rule. */
+export function requireLive<U extends UnitOfWork>(uow: U): U {
   if (uow.closed) throw new NoActiveUnitOfWork()
   return uow
 }

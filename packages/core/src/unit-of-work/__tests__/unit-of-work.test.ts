@@ -8,7 +8,8 @@ import { Phase, unitOfWork, requireInvocation, requireLive, NoActiveUnitOfWork, 
  *
  *   - phase ordering around the action, and late-registration draining
  *   - lifecycle hooks fire in their phase; onError/whenComplete are exclusive
- *   - the handle's own state: correlation, buffers, closed flag
+ *   - the handle's own state: buffers, closed flag — and NOT correlation,
+ *     which is composed on top by `correlating(unitOfWork())` and tested there
  *   - every `unitOfWork()` call mints a fresh one; each executes exactly once
  */
 describe("unitOfWork — the () => UnitOfWork primitive", () => {
@@ -177,16 +178,16 @@ describe("unitOfWork — the () => UnitOfWork primitive", () => {
       expect(seenAtPrepare).toBe(1)
     })
 
-    it("merges contributed correlation data, later keys winning", async () => {
+    it("has no correlation vocabulary at all — that is composed on top", async () => {
+      // PURE TASK LIFECYCLE. Correlation is a carrying policy, and a policy is
+      // not something a primitive is born knowing: `correlating(unitOfWork())`
+      // is what adds the map, and `correlatingHandler(next, from)` is what
+      // decides what goes in it. A host that never composes either has no way
+      // to observe from here that the concept exists.
       await unitOfWork().execute(async (uow) => {
-        expect(uow.correlationData()).toEqual({})
-        uow.contributeCorrelationData({ correlationId: "a", causationId: "x" })
-        uow.contributeCorrelationData({ causationId: "y", traceparent: "t" })
-        expect(uow.correlationData()).toEqual({
-          correlationId: "a",
-          causationId: "y",
-          traceparent: "t",
-        })
+        expect("correlationData" in uow).toBe(false)
+        expect("contributeCorrelationData" in uow).toBe(false)
+        expect("attachCorrelationData" in uow).toBe(false)
       })
     })
 
@@ -338,7 +339,6 @@ describe("unitOfWork() — a handle with no lifecycle driven", () => {
     const uow = unitOfWork()
     expect(uow.closed).toBe(false)
     expect(uow.phase).toBeNull()
-    expect(uow.correlationData()).toEqual({})
     // Not in INVOCATION, so mutating capabilities refuse it.
     expect(() => requireInvocation(uow)).toThrow(WrongUoWPhase)
     expect(requireLive(uow)).toBe(uow)
