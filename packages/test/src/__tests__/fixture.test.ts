@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from "bun:test"
 import { z } from "zod"
 import {
   inMemoryEventStore,
-  inMemorySnapshotStore,
   inMemoryTokenStore,
   eventProcessor,
   unitOfWork,
@@ -206,7 +205,7 @@ describe("automation", () => {
   })
 
   it("GIVEN events do not fire the automations — they are established history", async () => {
-    // The seeded subscription fills the course. If `given` replayed through the
+    // The given subscription fills the course. If `given` replayed through the
     // automation lane, the course would close during `given` and this run's
     // events would carry a CourseClosed nobody asked for.
     const { events, commands } = await testFixture(withAutomation).run(
@@ -340,7 +339,7 @@ describe("wait", () => {
 
   it("refuses to fake time for a scope whose resources it does not own", async () => {
     const foreign = inMemoryEventStore()
-    const fixture = testFixture((_eventStore, snapshotStore) => decisions(foreign, snapshotStore))
+    const fixture = testFixture(() => decisions(foreign))
 
     const failure = await fixture
       .run(
@@ -684,25 +683,28 @@ describe("misuse", () => {
 // ===========================================================================
 
 describe("the scope", () => {
-  it("is called with the fixture's own log and snapshot cache", async () => {
-    let seen: unknown[] = []
-    await testFixture((eventStore, snapshotStore) => {
-      seen = [eventStore, snapshotStore]
-      return decisions(eventStore, snapshotStore)
+  it("is called with the fixture's own log — ONE store, capabilities and all", async () => {
+    let seen: unknown
+    await testFixture((eventStore) => {
+      seen = eventStore
+      return decisions(eventStore)
     }).run(
       scenario()
         .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
         .then(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 5 })),
     )
-    expect(seen).toHaveLength(2)
-    expect(seen[0]).toBeDefined()
-    expect(seen[1]).toBeDefined()
+    // ONE parameter, and it carries everything: the recorder's `appended`, the
+    // snapshotting capability's `storeSnapshot`, and the log underneath. The
+    // scope used to take a second snapshot store; there is nothing left for it
+    // to take, because the capability rides on the store it belongs to.
+    expect(seen).toBeDefined()
+    expect(typeof (seen as { storeSnapshot?: unknown }).storeSnapshot).toBe("function")
+    expect(Array.isArray((seen as { appended?: unknown }).appended)).toBe(true)
   })
 
   it("accepts a shorter parameter list", async () => {
     await testFixture((eventStore) => ({
-      states: [{ ...Course, eventStore }],
-      commandHandlers: decisions(eventStore, inMemorySnapshotStore()).commandHandlers!.map((h) => ({
+      commandHandlers: decisions(eventStore).commandHandlers!.map((h) => ({
         ...h,
         eventStore,
       })),
@@ -727,11 +729,11 @@ describe("the scope", () => {
 
   it("takes an already-built processor, and then owns nothing", async () => {
     const foreignStore = inMemoryEventStore()
-    const fixture = testFixture((eventStore, snapshotStore) => ({
-      ...decisions(eventStore, snapshotStore),
+    const fixture = testFixture((eventStore) => ({
+      ...decisions(eventStore),
       eventHandlers: [
         {
-          ...withAutomation(eventStore, snapshotStore).eventHandlers![0]!,
+          ...withAutomation(eventStore).eventHandlers![0]!,
           processor: eventProcessor({
             name: "foreign",
             eventStore: foreignStore,

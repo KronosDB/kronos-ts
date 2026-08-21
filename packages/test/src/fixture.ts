@@ -1,45 +1,45 @@
 import {
+  correlating,
+  correlatingHandler,
   emptyMetadata,
   eventProcessor,
   generateIdentifier,
   inMemoryDeadLetterQueue,
   inMemoryEventStore,
-  inMemorySnapshotStore,
+  inMemorySnapshottingEventStore,
   inMemoryTokenStore,
   kronos,
   qualifiedNameToString,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   unitOfWork,
 } from "@kronos-ts/core"
 import type {
-  Clock,
-  CommandHandlerDefinition,
+  CorrelatingUnitOfWork,
+  CommandHandler,
   CommandHandlerEntry,
   CommandMessage,
-  EventHandlerDefinition,
+  EventHandler,
   EventHandlerEntry,
   EventMessage,
+  Message,
+  Metadata,
   EventProcessor,
-  EventScheduler,
   EventStore,
-  QueryHandlerDefinition,
+  ScheduleCapability,
+  QueryHandler,
   QueryHandlerEntry,
   QueryMessage,
   RunningProcessor,
   SequencedDeadLetterQueue,
   Sited,
-  SnapshotStore,
-  StateEntry,
-  StateModule,
-  StateOptions,
+  SnapshotCapableEventStore,
   TokenStore,
   UnitOfWork,
-  Unstamped,
 } from "@kronos-ts/core"
 import { evaluate, ScenarioAssertionError, type Observed } from "./diff.js"
 import {
-  controllableScheduler,
+  controllableSchedulingEventStore,
   recordingCommandBus,
   recordingEventStore,
   recordingQueryBus,
@@ -51,15 +51,15 @@ import { isAny, type Action, type Duration, type EventValue } from "./values.js"
 // The fixture: the SITE a scenario runs at.
 //
 // A scenario says what should happen. The fixture says where. It creates the
-// resources — one log, one snapshot cache, one cursor table, one dead-letter
-// queue, two buses, one clock, one scheduler — and HANDS THEM to the scope,
+// resources — ONE log (which caches folds AND holds deadlines), one cursor
+// table, one dead-letter queue, two buses, one clock — and HANDS THEM to the scope,
 // which is a FUNCTION of them. That is the whole inversion: production's
 // composition root is also a function of its resources, so a scope written for
 // the fixture is a scope you can deploy, and a scope written for production is
 // one you can test. Nothing is replaced behind anybody's back.
 //
 // Everything in here is deterministic. The clock does not tick unless a scenario
-// says `wait`; the scheduler has no timer; the processors are driven to the head
+// says `wait`; the log's scheduling tier has no timer; the processors are driven to the head
 // of the log and asked whether they are finished. There are no sleeps, so a suite
 // of a thousand scenarios runs in the time a thousand function calls take.
 // ---------------------------------------------------------------------------
@@ -85,41 +85,69 @@ export const FIXTURE_EPOCH = Date.UTC(2024, 0, 1)
  * the fourth argument by assignability.
  */
 export type PartialProcessor = (
-  eventStore: EventStore,
+  eventStore: FixtureEventStore,
   tokenStore: TokenStore,
-  unitOfWork: () => UnitOfWork,
+  unitOfWork: () => FixtureUnitOfWork,
   deadLetterQueue: SequencedDeadLetterQueue,
-) => EventProcessor
+) => EventProcessor<FixtureUnitOfWork>
 
 /** An event handler entry as a scope writes one: the processor may still be partial. */
-export type FixtureEventHandler = Sited<EventHandlerDefinition<any, any>> & {
-  readonly processor?: EventProcessor | PartialProcessor
+export type FixtureEventHandler = Sited<EventHandler<any, any>, FixtureEventStore> & {
+  readonly processor?: EventProcessor<FixtureUnitOfWork> | PartialProcessor
 }
 
 /**
- * What a scope returns: the four lists `kronos` takes.
- *
- * The same four, with the same meanings. A scope is not a special test shape —
- * it is a composition root whose resources arrive as arguments.
+ * What the fixture's tasks are: a unit of work that CARRIES. The site composes
+ * `correlating(unitOfWork(clock))`, so a scope's partial processor is handed a
+ * factory of these and hands back a processor over them — without the scope
+ * ever having to name the type.
  */
-export interface FixtureLists {
-  readonly commandHandlers?: ReadonlyArray<Sited<CommandHandlerDefinition<any, any>>>
-  readonly queryHandlers?: ReadonlyArray<Sited<QueryHandlerDefinition<any, any>>>
+export type FixtureUnitOfWork = CorrelatingUnitOfWork
+
+/**
+ * What a scope returns: the three lists `kronos` takes.
+ *
+ * The same three, with the same meanings. A scope is not a special test shape —
+ * it is a composition root whose resources arrive as arguments. States appear
+ * in no list here for the same reason they appear in none there: a handler
+ * closes over the state it folds, so there is nothing for the fixture to wire.
+ */
+export type FixtureLists = {
+  readonly commandHandlers?: ReadonlyArray<Sited<CommandHandler<any, any>, FixtureEventStore>>
+  readonly queryHandlers?: ReadonlyArray<Sited<QueryHandler<any, any>, FixtureEventStore>>
   readonly eventHandlers?: ReadonlyArray<FixtureEventHandler>
-  readonly states?: ReadonlyArray<StateEntry>
 }
+
+/**
+ * The log the fixture hands a scope: in-memory, RECORDING, SNAPSHOT-CAPABLE and
+ * SCHEDULE-CAPABLE.
+ *
+ * ONE OBJECT, capabilities and all. It used to be three — a log, a snapshot
+ * cache and a scheduler, handed over as separate parameters — and a scope that
+ * wanted either had to accept them and put each in the right field. There is no
+ * second or third resource now, because both are tiers ON the log: a scope
+ * loading a state that declares a policy typechecks against this because this
+ * can serve it, a scope calling `ctx.schedule` typechecks for the same reason,
+ * and the same scope against a bare `inMemoryEventStore()` does neither.
+ */
+export type FixtureEventStore = SnapshotCapableEventStore &
+  ScheduleCapability & { readonly appended: ReadonlyArray<EventMessage>; reset(): void }
 
 /**
  * A composition root as a function of the resources the fixture owns.
  *
+ * ONE STORE PARAMETER. The old second parameter — a snapshot store — is gone
+ * along with the seam it belonged to; a scope that caches folds takes the one
+ * log and puts it on its entries, exactly as a scope that does not.
+ *
  * ```ts
- * const fixture = testFixture((eventStore, snapshotStore) => courses(eventStore, snapshotStore))
- * const fixture = testFixture((eventStore) => ({ states: [{ ...Course, eventStore }], … }))
+ * const fixture = testFixture((eventStore) => courses(eventStore))
+ * const fixture = testFixture((eventStore) => ({ commandHandlers: [{ ...openCourse, eventStore }], … }))
  * ```
  */
-export type FixtureScope = (eventStore: EventStore, snapshotStore: SnapshotStore) => FixtureLists
+export type FixtureScope = (eventStore: FixtureEventStore) => FixtureLists
 
-export interface FixtureOptions {
+export type FixtureOptions = {
   /**
    * How long to keep re-judging the claims before calling them failed. Only ever
    * used against a scope that brought resources the fixture does not own — an
@@ -133,7 +161,7 @@ export interface FixtureOptions {
    * system time under `realTime`, where the clock has to be real for a real wait
    * to mean anything.
    */
-  readonly clock?: Clock
+  readonly clock?: () => number
   /**
    * Make `wait` genuinely elapse instead of jumping the clock. For a scope whose
    * own infrastructure has its own timers — a database scheduler with a polling
@@ -143,13 +171,13 @@ export interface FixtureOptions {
 }
 
 /** What one act did. `events` and `commands` cover THIS act only. */
-export interface RunOutcome {
+export type RunOutcome = {
   /** A command handler's return, or a query's answer. `undefined` for an event act. */
   readonly result: unknown
   /** Events appended during the act — automations included, `given` excluded. */
   readonly events: ReadonlyArray<EventMessage>
   /** Commands dispatched during the act — the act's own command excluded. */
-  readonly commands: ReadonlyArray<Unstamped<CommandMessage>>
+  readonly commands: ReadonlyArray<CommandMessage>
 }
 
 /**
@@ -159,8 +187,13 @@ export interface RunOutcome {
  * which is how a saga is tested: each call reports only what it caused, and the
  * world it caused it in is whatever the previous calls left behind.
  */
-export interface TestFixture {
+export type TestFixture = {
   run(scenario: Scenario, opts?: { within?: Duration }): Promise<RunOutcome>
+  /**
+   * Stop the processors the fixture assembled and release their pollers.
+   * A test runner that force-exits never needs this; a plain script does.
+   */
+  stop(): Promise<void>
 }
 
 const DEFAULT_WITHIN = 5000
@@ -168,39 +201,72 @@ const DEFAULT_WITHIN = 5000
 /** Wire `scope` against resources the fixture owns, and run scenarios at it. */
 export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): TestFixture {
   const realTime = opts.realTime ?? false
-  const base: Clock = opts.clock ?? (realTime ? Date.now : () => FIXTURE_EPOCH)
+  const base: () => number = opts.clock ?? (realTime ? Date.now : () => FIXTURE_EPOCH)
   let offset = 0
   /** The fixture's clock: the base instant, plus whatever `wait` has jumped. */
-  const clock: Clock = () => base() + offset
-  const uow = (): UnitOfWork => unitOfWork(clock)
+  const clock: () => number = () => base() + offset
+  /**
+   * The fixture's tasks CORRELATE.
+   *
+   * A fixture is a composition root, so it makes a composition root's choices,
+   * and this is one of them: scenarios are about causal chains — a command
+   * appends an event, an automation reacts to it and dispatches another command
+   * — and a `then` that names `metadata` should be able to see that chain. So
+   * the fixture composes what a host composes: a correlating unit of work here,
+   * `correlatingHandler(handler, correlationFrom)` around every handler the
+   * scope hands it (see `carrying` below), with the id pair as its cargo —
+   * written out below like any host writes it — because the id pair is what a
+   * test can meaningfully assert about.
+   *
+   * A scope that wants different cargo wraps its own handlers before returning
+   * them; wrapping is idempotent in effect (the second attach writes the same
+   * keys), so composing on top of this costs nothing.
+   */
+  const uow = (): FixtureUnitOfWork => correlating(unitOfWork(clock))
 
   const log = inMemoryEventStore()
-  const eventStore = recordingEventStore(log)
-  const snapshotStore = inMemorySnapshotStore()
+  // THE FIXTURE COMPOSES WHAT A HOST COMPOSES — snapshotting AND scheduling —
+  // and it is the SAME stack a host writes, around the same one object. Three
+  // wrappers, all ADDITIVE, so every capability survives every layer above it:
+  // a scope loading a snapshotting state typechecks against what comes out, and
+  // so does a scope that arms a deadline.
+  //
+  // THE ORDER IS THE ONE THE STORY REQUIRES. The recorder is OUTERMOST so
+  // `appended` is what left the fixture, whatever the read path underneath
+  // does. The controllable scheduling tier sits UNDER it and is held by its own
+  // name below, because the fixture drives it directly: `wait` asks what is due
+  // and appends the result back in through the OUTERMOST store, so a fired
+  // deadline is recorded exactly like a handler's append instead of slipping in
+  // beneath the recorder.
+  const scheduling = controllableSchedulingEventStore(
+    inMemorySnapshottingEventStore(log),
+    clock,
+  )
+  const eventStore: FixtureEventStore = recordingEventStore(scheduling)
   const tokenStore = inMemoryTokenStore()
   const deadLetterQueue = inMemoryDeadLetterQueue()
-  const commandBus = recordingCommandBus(simpleCommandBus(uow))
-  const queryBus = recordingQueryBus(simpleQueryBus(uow))
-  const eventScheduler = controllableScheduler(clock)
+  const commandBus = recordingCommandBus(localCommandBus(uow))
+  const queryBus = recordingQueryBus(localQueryBus(uow))
 
   // ---- what the scope asked for -------------------------------------------
-  const lists = scope(eventStore, snapshotStore)
+  const lists = scope(eventStore)
 
   /**
    * Whether anything in the scope is beyond the fixture's reach.
    *
    * The fixture can only jump a clock it owns and only settle a processor it
-   * drives. A scope that brought its own store, its own scheduler or an
-   * already-built processor over foreign resources is a REAL-INFRASTRUCTURE
-   * scope: `wait` cannot fake time for it, and its claims have to be re-judged
-   * until they settle rather than judged once.
+   * drives. A scope that brought its own store or an already-built processor
+   * over foreign resources is a REAL-INFRASTRUCTURE scope: `wait` cannot fake
+   * time for it, and its claims have to be re-judged until they settle rather
+   * than judged once.
+   *
+   * ONE CHECK COVERS BOTH NOW. A scope used to be able to bring a foreign
+   * SCHEDULER as well as a foreign store, so there were two of these; a
+   * scheduler is a tier on a log, so bringing one IS bringing a store.
    */
   let foreign = false
   function ownStore(store: EventStore | undefined): void {
     if (store !== undefined && store !== eventStore) foreign = true
-  }
-  function ownScheduler(scheduler: EventScheduler | undefined): void {
-    if (scheduler !== undefined && scheduler !== eventScheduler) foreign = true
   }
 
   const defaultProcessor = eventProcessor({
@@ -221,7 +287,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
   const readsFrom = new Map<string, EventStore>()
 
   /** Complete a partial processor with the fixture's resources; keep a whole one. */
-  function processorFor(entry: FixtureEventHandler): EventProcessor {
+  function processorFor(entry: FixtureEventHandler): EventProcessor<FixtureUnitOfWork> {
     const declared = entry.processor
     if (declared === undefined) return defaultProcessor
     const built =
@@ -233,45 +299,57 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     return built
   }
 
-  function sited(entry: StateEntry): StateEntry {
-    const [state, options] = Array.isArray(entry)
-      ? (entry as readonly [Sited<StateModule<any, any>>, StateOptions])
-      : ([entry as Sited<StateModule<any, any>>, undefined] as const)
-    ownStore(state.eventStore)
-    const withSite = { eventStore, snapshotStore, ...state }
-    return options === undefined ? withSite : [withSite, options]
+  /**
+   * The handler, wrapped so what it gives birth to carries the id pair of the
+   * message it was handling. The scope wrote a plain handler; the SITE decides
+   * what propagates, exactly as a deployed composition root would.
+   *
+   * The cargo is the fixture's own two lines — the chain is inherited or seeded,
+   * the cause is the parent, unconditionally, so the causal graph walks one hop
+   * at a time. Any host writes exactly this.
+   */
+  const correlationFrom = (parent: Message): Metadata => ({
+    correlationId: String(parent.metadata.correlationId ?? parent.identifier),
+    causationId: String(parent.identifier),
+  })
+
+  function carrying<H extends { readonly handler: any }>(entry: H): H {
+    return { ...entry, handler: correlatingHandler(entry.handler, correlationFrom) }
   }
 
-  const app = kronos({
-    states: (lists.states ?? []).map(sited),
+  const app = kronos<FixtureUnitOfWork, FixtureEventStore>({
     commandHandlers: (lists.commandHandlers ?? []).map((h) => {
       ownStore(h.eventStore)
-      ownScheduler(h.eventScheduler)
-      return {
+      return carrying({
         eventStore,
-        snapshotStore,
-        eventScheduler,
         ...h,
         commandBus,
         queryBus,
-      } as CommandHandlerEntry
+      }) as CommandHandlerEntry<FixtureUnitOfWork, FixtureEventStore>
     }),
     queryHandlers: (lists.queryHandlers ?? []).map((h) => {
       ownStore(h.eventStore)
-      return { eventStore, snapshotStore, ...h, queryBus } as QueryHandlerEntry
+      return carrying({
+        eventStore,
+        ...h,
+        queryBus,
+      }) as QueryHandlerEntry<FixtureUnitOfWork, FixtureEventStore>
     }),
     eventHandlers: (lists.eventHandlers ?? []).map((h) => {
       ownStore(h.eventStore)
-      ownScheduler(h.eventScheduler)
-      return {
-        eventScheduler,
+      return carrying({
         ...h,
         commandBus,
         queryBus,
+        // NO `eventStore` DEFAULT HERE, deliberately. An event handler's
+        // `ctx` falls back to the log its PROCESSOR reads (see `contextFor` in
+        // `running-processor.ts`), which is the fixture's store in every
+        // arrangement the fixture owns — and injecting one would quietly
+        // redirect a handler whose scope built a processor over its own log.
         // Last, so a PARTIAL processor is replaced by the built one rather than
         // handed to `kronos` as a function it has no idea what to do with.
         processor: processorFor(h),
-      } as EventHandlerEntry
+      }) as EventHandlerEntry<FixtureUnitOfWork, FixtureEventStore>
     }),
   })
 
@@ -322,7 +400,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
    */
   let priorSchedules = new Map<string, string>()
   function markSchedules(): void {
-    priorSchedules = new Map(eventScheduler.schedules.map((s) => [s.token.id, s.status]))
+    priorSchedules = new Map(scheduling.schedules.map((s) => [s.token.id, s.status]))
   }
 
   /**
@@ -337,7 +415,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     if (containsHole(value.payload)) {
       throw new Error(
         `@kronos-ts/test: event(${name}, …) contains \`any()\`, but this event is a FACT — ` +
-          `a \`given\` seeds the log and a \`when\` arrives in it, so every field has to have a ` +
+          `a \`given\` fills the log and a \`when\` arrives in it, so every field has to have a ` +
           `value. \`any()\` is only meaningful in \`then\`, where it declines to pin what ` +
           `something else produced.`,
       )
@@ -428,16 +506,17 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     } else if (foreign) {
       throw new Error(
         `@kronos-ts/test: \`wait(${duration})\` cannot move time for this scope. The scope brought ` +
-          `resources the fixture does not own — its own event store, its own scheduler, or a ` +
-          `processor built over both — so there is no clock here to jump and no timer here to ` +
-          `fire. Either let the fixture create the resources (take them as the scope's ` +
+          `resources the fixture does not own — its own event store, or a processor built ` +
+          `over one — so there is no clock here to jump and no schedule book here to ` +
+          `fire from. Either let the fixture create the resources (take them as the scope's ` +
           `parameters), or pass \`{ realTime: true }\` and the wait will genuinely elapse.`,
       )
     } else {
       offset += duration
     }
 
-    const due = eventScheduler.due()
+    // Fired events go in through the OUTERMOST store, so the recorder sees them.
+    const due = scheduling.due()
     if (due.length > 0) await eventStore.append(due)
     await quiesce()
   }
@@ -449,13 +528,17 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     return {
       events: [...eventStore.appended],
       commands: commandBus.dispatched.filter((m) => m.identifier !== actIdentifier),
-      schedules: eventScheduler.schedules.filter(
+      schedules: scheduling.schedules.filter(
         (s) => priorSchedules.get(s.token.id) !== s.status,
       ),
     }
   }
 
   return {
+    async stop(): Promise<void> {
+      await taken
+      await app.stop()
+    },
     async run(scenario: Scenario, runOpts?: { within?: Duration }): Promise<RunOutcome> {
       await taken
       resetRecorders()
@@ -486,7 +569,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
             // command can be told apart from the ones its handler dispatched.
             // Otherwise every `then` that mentions a command would have to
             // restate the command the scenario just performed.
-            const message: Unstamped<CommandMessage> = {
+            const message: CommandMessage = {
               kind: "command",
               identifier: generateIdentifier(),
               name: action.descriptor.name,
@@ -496,7 +579,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
             actIdentifier = message.identifier
             result = await commandBus.dispatch(message)
           } else if (action.kind === "query") {
-            const message: Unstamped<QueryMessage> = {
+            const message: QueryMessage = {
               kind: "query",
               identifier: generateIdentifier(),
               name: action.descriptor.name,

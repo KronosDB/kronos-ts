@@ -1,5 +1,11 @@
-import type { CommandDescriptor, EventDescriptor, Metadata, QueryDescriptor } from "@kronos-ts/core"
-import type { z } from "zod"
+import type {
+  CommandDescriptor,
+  EventDescriptor,
+  InferOutput,
+  Metadata,
+  QueryDescriptor,
+  StandardSchemaV1,
+} from "@kronos-ts/core"
 
 // ---------------------------------------------------------------------------
 // The vocabulary a scenario is written in.
@@ -16,7 +22,7 @@ import type { z } from "zod"
 // looking at.
 // ---------------------------------------------------------------------------
 
-/** Milliseconds. The unit `Clock` reads and `timestamp` carries. */
+/** Milliseconds. The unit a clock reads and `timestamp` carries. */
 export type Duration = number
 
 // ── the payload hole ───────────────────────────────────────────────────────
@@ -30,10 +36,10 @@ export type Duration = number
  * pin) or dropping down to `expect()` on the raw record (which loses the diff).
  * Renders as `*` in a failure.
  */
-export interface Any {
+export type Any = {
   readonly kind: "any"
-  /** When given, the value must also parse against this schema. */
-  readonly schema?: z.ZodType
+  /** When given, the value must also validate against this schema. */
+  readonly schema?: StandardSchemaV1
 }
 
 /**
@@ -42,13 +48,13 @@ export interface Any {
  * ```ts
  * then(event(OrderPlaced, any()))                       // some OrderPlaced
  * then(event(OrderPlaced, { orderId: "o-1", at: any() }))   // this one, whenever
- * then(event(OrderPlaced, { orderId: any(z.string().uuid()) }))
+ * then(event(OrderPlaced, { orderId: any(z.uuid()) }))   // any Standard Schema
  * ```
  *
  * It is an ASSERTION value. A hole in a `given` fact would put a sentinel into
  * the event store, so the fixture rejects one there with an error saying so.
  */
-export function any(schema?: z.ZodType): Any {
+export function any(schema?: StandardSchemaV1): Any {
   return schema === undefined ? { kind: "any" } : { kind: "any", schema }
 }
 
@@ -83,7 +89,7 @@ export type Expected<T> =
 // ── message values ─────────────────────────────────────────────────────────
 
 /** A named event with a payload: a past fact, or an expected consequence. */
-export interface EventValue<P extends z.ZodType = z.ZodType> {
+export type EventValue<P extends StandardSchemaV1 = StandardSchemaV1> = {
   readonly kind: "event"
   readonly descriptor: EventDescriptor<P>
   readonly payload: unknown
@@ -92,10 +98,10 @@ export interface EventValue<P extends z.ZodType = z.ZodType> {
 }
 
 /** A named command with a payload: an act, or an expected dispatch. */
-export interface CommandValue<
-  P extends z.ZodType = z.ZodType,
-  R extends z.ZodType | undefined = any,
-> {
+export type CommandValue<
+  P extends StandardSchemaV1 = StandardSchemaV1,
+  R extends StandardSchemaV1 | undefined = any,
+> = {
   readonly kind: "command"
   readonly descriptor: CommandDescriptor<P, R>
   readonly payload: unknown
@@ -103,10 +109,10 @@ export interface CommandValue<
 }
 
 /** A named query with a payload. Only ever an act — a read is not a consequence. */
-export interface QueryValue<
-  P extends z.ZodType = z.ZodType,
-  R extends z.ZodType | undefined = any,
-> {
+export type QueryValue<
+  P extends StandardSchemaV1 = StandardSchemaV1,
+  R extends StandardSchemaV1 | undefined = any,
+> = {
   readonly kind: "query"
   readonly descriptor: QueryDescriptor<P, R>
   readonly payload: unknown
@@ -121,9 +127,9 @@ export interface QueryValue<
  * are not looked at, because nobody wants a test to fail over a `causationId`
  * they never asked about.
  */
-export function event<P extends z.ZodType>(
+export function event<P extends StandardSchemaV1>(
   descriptor: EventDescriptor<P>,
-  payload: Expected<z.infer<P>>,
+  payload: Expected<InferOutput<P>>,
   metadata?: Metadata,
 ): EventValue<P> {
   return metadata === undefined
@@ -132,9 +138,9 @@ export function event<P extends z.ZodType>(
 }
 
 /** A command: the act for `when`, or a dispatch expected in `then`. */
-export function command<P extends z.ZodType, R extends z.ZodType | undefined = undefined>(
+export function command<P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined = undefined>(
   descriptor: CommandDescriptor<P, R>,
-  payload: Expected<z.infer<P>>,
+  payload: Expected<InferOutput<P>>,
   metadata?: Metadata,
 ): CommandValue<P, R> {
   return metadata === undefined
@@ -143,9 +149,9 @@ export function command<P extends z.ZodType, R extends z.ZodType | undefined = u
 }
 
 /** A query: the act for `when`. */
-export function query<P extends z.ZodType, R extends z.ZodType | undefined = undefined>(
+export function query<P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined = undefined>(
   descriptor: QueryDescriptor<P, R>,
-  payload: Expected<z.infer<P>>,
+  payload: Expected<InferOutput<P>>,
   metadata?: Metadata,
 ): QueryValue<P, R> {
   return metadata === undefined
@@ -159,7 +165,7 @@ export type Action = CommandValue<any, any> | QueryValue<any, any> | EventValue<
 // ── assertion values ───────────────────────────────────────────────────────
 
 /** The act's answer: a command handler's return, or a query's result. */
-export interface ResultAssertion {
+export type ResultAssertion = {
   readonly kind: "result"
   readonly value: unknown
 }
@@ -185,7 +191,7 @@ export function result(value: unknown): ResultAssertion {
  */
 export type ErrorMatcher = string | RegExp | ((error: unknown) => boolean)
 
-export interface ErrorAssertion {
+export type ErrorAssertion = {
   readonly kind: "error"
   readonly matcher: ErrorMatcher
 }
@@ -201,7 +207,7 @@ export function error(matcher: ErrorMatcher): ErrorAssertion {
   return { kind: "error", matcher }
 }
 
-export interface NoEventsAssertion {
+export type NoEventsAssertion = {
   readonly kind: "no-events"
 }
 
@@ -210,7 +216,7 @@ export function noEvents(): NoEventsAssertion {
   return { kind: "no-events" }
 }
 
-export interface NoCommandsAssertion {
+export type NoCommandsAssertion = {
   readonly kind: "no-commands"
 }
 
@@ -219,7 +225,7 @@ export function noCommands(): NoCommandsAssertion {
   return { kind: "no-commands" }
 }
 
-export interface ScheduledAssertion {
+export type ScheduledAssertion = {
   readonly kind: "scheduled"
   readonly event: EventValue<any>
   readonly after: Duration
@@ -236,7 +242,7 @@ export function scheduled(event: EventValue<any>, after: Duration): ScheduledAss
   return { kind: "scheduled", event, after }
 }
 
-export interface CancelledAssertion {
+export type CancelledAssertion = {
   readonly kind: "cancelled"
   readonly event: EventValue<any>
 }
