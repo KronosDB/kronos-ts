@@ -2,12 +2,12 @@
 // Every test installs one, asserts on the JSON it received, and restores the
 // original in `afterEach` — no OTel SDK, no exporter double, no network.
 
-export interface OtlpPost {
+export type OtlpPost = {
   readonly url: string
   readonly body: any
 }
 
-export interface FetchStub {
+export type FetchStub = {
   readonly posts: OtlpPost[]
   /** Bodies POSTed to `/v1/traces`. */
   traces(): any[]
