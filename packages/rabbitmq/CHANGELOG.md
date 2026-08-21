@@ -1,5 +1,65 @@
 # @kronos-ts/rabbitmq
 
+## 0.6.0
+
+### Minor Changes
+
+- 1aef927: **BREAKING — transport buses take the local bus FIRST, connection after.** `rabbitMqCommandBus(rabbit, local)` was the last decorator family violating the standing rule: the decorated thing comes first, config after. A transport wraps YOUR bus — same species as `interceptingCommandBus(bus, intercept)` and `otlpCommandBus(bus, exporter)`, which already lead with the bus.
+
+  ```ts
+  // before
+  rabbitMqCommandBus(rabbit, local, { preferLocal });
+  kronosDbCommandBus(kdb, local);
+  axonServerCommandBus(conn, local);
+
+  // after — the wrapped bus leads, everywhere
+  rabbitMqCommandBus(local, rabbit, { preferLocal });
+  kronosDbCommandBus(local, kdb);
+  axonServerCommandBus(local, conn);
+  ```
+
+  The parameter is named `next` in every bus wrapper — transports, intercepting, otlp alike — the same word every handler wrapper uses for the thing it wraps. One pattern, whatever the species: take `next`, return the same shape, config trails.
+
+  Stores are unchanged (`kronosDbEventStore(kdb, context)`) — a store is built FROM a connection, not wrapped around a bus, so the resource leads there.
+
+  Also in core: interception moved into its own folder, `core/src/interception/` — it is a mechanism of the setup in its own right, built the same way as everything else (functions wrapping over the configuration, providing new capabilities, typechecked at the composition site), and now it sits beside `correlation/` as a peer. Barrel exports are unchanged.
+
+- 1aef927: Types are function signatures. The `interface` keyword is extinct across every package: 581 declarations are now `type` aliases, `extends` is an intersection, and an interface that was nothing but a call signature is a bare arrow (`ContextSendFunction`, `ContextQueryFunction`, `EmitUpdateFunction`). Nothing changed shape — a record of functions is still a record, because that is what shared state looks like — so this is source-compatible for anyone who was not declaration-merging our types, which nothing in the emitted `.d.ts` ever invited.
+
+  The handler definitions lose the word "Definition". It was the name for a shape that had to be registered somewhere, and nothing is registered any more:
+
+  - `CommandHandlerDefinition` → `CommandHandler`
+  - `QueryHandlerDefinition` → `QueryHandler`
+  - `EventHandlerDefinition` → `EventHandler`
+  - `StateModule` → `State`
+
+  Type and value namespaces are separate, so `type CommandHandler` and the `commandHandler` function coexist. The entry types (`CommandHandlerEntry`, `QueryHandlerEntry`, `EventHandlerEntry`) keep their names: an entry is a different thing from the handler it points at.
+
+  The last behaviour classes are closures. `unitOfWork()` no longer instantiates a `ManagedUnitOfWork` — the phase buckets, the status and the correlation map are closed over, `phase`/`closed` are accessors because only the lifecycle advances them, and the execute-once guard still throws synchronously. In `@kronos-ts/rabbitmq` the three AMQP components are constructed with a call instead of `new`:
+
+  - `new AmqpRabbitMqCommandTransport(config, channels)` → `amqpRabbitMqCommandTransport(config, channels)`
+  - `new AmqpRabbitMqQueryTransport(config, channels)` → `amqpRabbitMqQueryTransport(config, channels)`
+  - `new AmqpDistributedSubscriberRegistry(config, channels)` → `amqpDistributedSubscriberRegistry(config, channels)`
+
+  The two transport names survive as the TYPES those functions return. Classes are Errors only now, everywhere — `instanceof` is the one thing a type alias cannot do, and error discrimination is the only place we need it.
+
+  No types were removed. Every candidate we went looking for is still load-bearing: `AnyTagCriteria` is the `{ kind: "any-tag" }` shape four stores switch on, `EventBus`/`SubscribableEventSource`/`EventStorageEngine` are the halves `EventStore` is declared as, and `TagCriteria`/`TypeRestrictedCriteria`/`EitherCriteria` have live readers (`SchemaRegistry` and `IntermediateEventRepresentation` were still live at this point; both were deleted by later changes in this same release — see the upcasting and validation changesets).
+
+### Patch Changes
+
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+  - @kronos-ts/core@0.3.0
+
 ## 0.5.0
 
 ### Minor Changes
