@@ -17,7 +17,7 @@ export type Attributes = Readonly<Record<string, AttributeValue>>
  * The two ids that identify a span inside a trace — the whole of what a
  * W3C `traceparent` carries across a message boundary.
  */
-export interface TraceContext {
+export type TraceContext = {
   readonly traceId: string
   readonly spanId: string
 }
@@ -43,7 +43,7 @@ export type SpanKindValue = (typeof SpanKind)[keyof typeof SpanKind]
 const StatusCode = { UNSET: 0, OK: 1, ERROR: 2 } as const
 
 /** Everything that decides the shape of a span, in one order-free record. */
-export interface StartSpanOptions {
+export type StartSpanOptions = {
   readonly name: string
   readonly kind: SpanKindValue
   /**
@@ -60,7 +60,7 @@ export interface StartSpanOptions {
 }
 
 /** A started span. Ends exactly once — the second `end()`/`fail()` is a no-op. */
-export interface OtlpSpan extends TraceContext {
+export type OtlpSpan = TraceContext & {
   /** End with status OK. */
   end(): void
   /** End with status ERROR, recording `error`'s message. */
@@ -68,7 +68,7 @@ export interface OtlpSpan extends TraceContext {
 }
 
 /** One measurement handed to the exporter. */
-export interface Measurement {
+export type Measurement = {
   readonly name: string
   readonly value: number
   /** UCUM unit, e.g. `"ms"` or `"1"`. */
@@ -77,7 +77,7 @@ export interface Measurement {
   readonly attributes?: Attributes
 }
 
-export interface OtlpExporterOptions {
+export type OtlpExporterOptions = {
   /** Collector base URL — `/v1/traces` and `/v1/metrics` are appended. */
   readonly endpoint: string
   /** Value of the `service.name` resource attribute. */
@@ -90,7 +90,7 @@ export interface OtlpExporterOptions {
  * The RESOURCE: it owns a buffer, a timer and a socket's worth of work.
  * Build one per process, hand it to the wrappers, `close()` it on shutdown.
  */
-export interface OtlpExporter {
+export type OtlpExporter = {
   /** Start a span. It enters the batch when it ends. */
   startSpan(options: StartSpanOptions): OtlpSpan
   /** Add to a monotonic sum, keyed by name + unit + attributes. */
@@ -134,7 +134,7 @@ export function spanId(): string {
 // OTLP/JSON encoding helpers
 // ---------------------------------------------------------------------------
 
-interface KeyValue {
+type KeyValue = {
   key: string
   value: Record<string, unknown>
 }
@@ -175,7 +175,7 @@ function seriesKey(name: string, unit: string, attributes: Attributes | undefine
 // Buffered records
 // ---------------------------------------------------------------------------
 
-interface SpanRecord {
+type SpanRecord = {
   traceId: string
   spanId: string
   parentSpanId?: string
@@ -188,7 +188,7 @@ interface SpanRecord {
   status: { code: number; message?: string }
 }
 
-interface SumSeries {
+type SumSeries = {
   name: string
   unit: string
   description?: string
@@ -196,7 +196,7 @@ interface SumSeries {
   value: number
 }
 
-interface HistogramSeries {
+type HistogramSeries = {
   name: string
   unit: string
   description?: string
@@ -217,7 +217,7 @@ function errorMessage(error: unknown): string {
  *
  * ```ts
  * const exporter = otlpExporter({ endpoint: "http://localhost:4318", serviceName: "billing" })
- * const commandBus = otlpCommandBus(interceptingCommandBus(simpleCommandBus(uow), lineage), exporter)
+ * const commandBus = otlpCommandBus(interceptingCommandBus(localCommandBus(uow), correlation), exporter)
  * // …
  * await exporter.close()
  * ```

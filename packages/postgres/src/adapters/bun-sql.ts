@@ -29,13 +29,13 @@ import {
   resolveSessionTimeouts,
 } from "../session-timeouts.js"
 
-export interface BunSqlAdapterConfig extends SessionTimeoutOptions {
+export type BunSqlAdapterConfig = SessionTimeoutOptions & {
   readonly connectionString: string
 }
 
 // Minimal structural type for Bun.SQL we depend on (kept local to avoid
 // a hard dependency on @types/bun).
-interface BunSqlInstance {
+type BunSqlInstance = {
   (template: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>
   unsafe(text: string, params?: unknown[]): Promise<unknown[]>
   begin<T>(
@@ -93,7 +93,7 @@ function normalizeBunSqlError(err: unknown): never {
   throw err
 }
 
-interface BunSqlConstructor {
+type BunSqlConstructor = {
   new (config: { url: string }): BunSqlInstance
 }
 

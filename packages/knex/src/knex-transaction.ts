@@ -3,6 +3,7 @@ import type {
   HandlerContext,
   QueryHandlerContext,
   UnitOfWork,
+  PersistenceFamily,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -10,14 +11,45 @@ import {
   openTransaction,
   type TransactionHooks,
   transactionRegistry,
-} from "@kronos-ts/core/transaction"
+} from "./transaction-glue.js"
+
+/**
+ * THE KNEX FAMILY MARK — a phantom, type-only brand on every unit of work
+ * knexUnitOfWork(next, knex) mints, and the thing this package's token store and
+ * dead-letter queue demand back.
+ *
+ * WHY IT EXISTS. This family is keyed by TRANSACTION IDENTITY: the token store,
+ * the dead-letter queue and what a handler writes through `activeKnexTransaction(ctx.unitOfWork)` must all
+ * write through the SAME handle, or they do not commit together. Handing this
+ * package's token store a unit of work from another family does not throw — the
+ * store looks for ITS transaction, does not find one, and falls back to its
+ * plain handle, so the token update commits OUTSIDE the batch. Every test
+ * passes; then a crash lands between the projection write and the token write
+ * and a read model is permanently wrong. The mark turns that into a build
+ * error.
+ *
+ * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * unique symbol declared in core; nothing writes the property and nothing can
+ * read it. knexUnitOfWork(…) returns exactly what it always
+ * returned and asserts the branded type, so the emitted JavaScript is
+ * unchanged.
+ *
+ * THE FIX STRING IS THIS PACKAGE'S TO WRITE, and that is the point of putting
+ * it here. Core can only say "these two are different families"; this package
+ * knows precisely which factory the host should have called, so a mismatch
+ * prints that sentence at the wiring site.
+ */
+export type KnexFamily = PersistenceFamily<
+  "knex",
+  "build this processor's unitOfWork with knexUnitOfWork(next, knex) — this family's stores write through its transaction"
+>
 
 /**
  * A Knex instance. Declares only what this package needs of it — the ability
  * to open a transaction — because that is what the family is keyed by. The
  * query builder itself is reached through the handle at runtime.
  */
-export interface KnexClient {
+export type KnexClient = {
   transaction<T>(fn: (trx: any) => Promise<T>): Promise<T>
 }
 
@@ -25,7 +57,7 @@ export interface KnexClient {
 export type KnexTransaction = any
 
 /** Tuning for the transaction this package opens. */
-export interface KnexTransactionOptions {
+export type KnexTransactionOptions = {
   /**
    * Runs once on every transaction, right after it opens and before the UoW
    * gets the handle. This is where a Postgres-backed deployment arms session
@@ -34,7 +66,7 @@ export interface KnexTransactionOptions {
    * the database instead of pinning a connection indefinitely. No-op by default.
    *
    * ```ts
-   * knexUnitOfWork(knex, unitOfWork, {
+   * knexUnitOfWork(unitOfWork, knex, {
    *   onBeginTransaction: (trx) => trx.raw(
    *     "SET LOCAL idle_in_transaction_session_timeout = 30000"),
    * })
@@ -137,8 +169,8 @@ const registry = transactionRegistry<KnexTransaction>()
  * Same shape as the core `unitOfWork`, so it drops into any seam that takes one:
  *
  * ```ts
- * const uow = knexUnitOfWork(knex, unitOfWork)
- * const commandBus = interceptingCommandBus(simpleCommandBus(uow), lineage)
+ * const uow = knexUnitOfWork(unitOfWork, knex)
+ * const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
  * processors: projections.map((p) => ({ ...p, eventStore, tokenStore, unitOfWork: uow }))
  * ```
  *
@@ -146,17 +178,29 @@ const registry = transactionRegistry<KnexTransaction>()
  * letters, and the handler's own writes through {@link activeKnexTransaction} —
  * commits or rolls back together.
  *
- * `make` is the factory the unit of work is minted FROM — required, and
- * normally the core `unitOfWork`. It is not defaulted: a default argument hides
- * the composition chain, and the whole point of this shape is that a call site
- * shows what its units of work are made of. Pass another to stack concerns.
+ * THING-FIRST: `next` — the factory the unit of work is minted from — comes
+ * first, because that is the thing being decorated, and the client is the
+ * configuration. It is required and never defaulted: a default hides the
+ * composition chain, and the whole point of this shape is that a call site
+ * shows what its units of work are made of.
+ *
+ * It is also CAPABILITY-PRESERVING. The decorator returns `() => U` for
+ * whatever `U` it was handed, and it decorates the SAME handle rather than
+ * rebuilding a record from it — so a composed capability survives both the type
+ * and the runtime:
+ *
+ * ```ts
+ * const uow = knexUnitOfWork(() => correlating(unitOfWork(clock)), knex)
+ * //    ^ () => CorrelatingUnitOfWork, and its transactions are keyed on that
+ * //      very object, which is the one `ctx.unitOfWork` hands back
+ * ```
  */
-export function knexUnitOfWork(
+export function knexUnitOfWork<U extends UnitOfWork = UnitOfWork>(
+  next: () => U,
   knex: KnexClient,
-  make: () => UnitOfWork,
   options: KnexTransactionOptions = {},
-): () => UnitOfWork {
-  return adapterUnitOfWork(registry, transactionHooks(knex, options), make)
+): () => U & KnexFamily {
+  return adapterUnitOfWork(registry, transactionHooks(knex, options), next) as () => U & KnexFamily
 }
 
 /**
@@ -197,7 +241,7 @@ export function activeKnexTransaction(uow: UnitOfWork | undefined): KnexTransact
 //
 //   1. STORE IMPLEMENTATIONS — `knexTokenStore`, `knexDeadLetterQueue`, …
 //      ordinary objects satisfying the framework's store interfaces.
-//   2. A UNIT-OF-WORK WRAPPER — `knexUnitOfWork(knex, unitOfWork)`, a
+//   2. A UNIT-OF-WORK WRAPPER — `knexUnitOfWork(unitOfWork, knex)`, a
 //      unit-of-work factory that gives every unit of work a transaction.
 //   3. A HANDLER WRAPPER — `knexHandler(handler, knex)`, which adds a capability to
 //      the ctx a handler FUNCTION receives. The host spreads the entry.
@@ -209,7 +253,7 @@ export function activeKnexTransaction(uow: UnitOfWork | undefined): KnexTransact
 // ---------------------------------------------------------------------------
 
 /** The `knex()` capability this extension adds to a handler context. */
-export interface KnexCapability {
+export type KnexCapability = {
   /**
    * This invocation's Knex handle: the unit of work's transaction when one is
    * open, otherwise the base handle the wrapper was built with.
@@ -223,11 +267,11 @@ export interface KnexCapability {
 }
 
 /** A command handler's context, plus this extension's capability. */
-export interface KnexContext extends HandlerContext, KnexCapability {}
+export type KnexContext = HandlerContext & KnexCapability
 /** An event handler's context, plus this extension's capability. */
-export interface KnexEventContext extends EventHandlerContext, KnexCapability {}
+export type KnexEventContext = EventHandlerContext & KnexCapability
 /** A query handler's context, plus this extension's capability. */
-export interface KnexQueryContext extends QueryHandlerContext, KnexCapability {}
+export type KnexQueryContext = QueryHandlerContext & KnexCapability
 
 /**
  * Wrap a HANDLER FUNCTION — command, event or query — so its context gains

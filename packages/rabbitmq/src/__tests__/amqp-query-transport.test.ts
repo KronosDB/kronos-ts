@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { qn } from "@kronos-ts/core"
-import { AmqpRabbitMqQueryTransport } from "../amqp-query-transport.js"
+import { amqpRabbitMqQueryTransport } from "../amqp-query-transport.js"
 import { amqpChannelSource } from "../connection.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
 import type { RabbitMqQueryEnvelope } from "../query-bus.js"
@@ -89,7 +89,7 @@ function envelope(): RabbitMqQueryEnvelope {
 describe("AMQP RabbitMQ query transport", () => {
   it("declares the queries and dead-letter exchanges", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
+    const transport = amqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
     await transport.connect()
 
     expect(fake.exchanges).toContainEqual({
@@ -106,7 +106,7 @@ describe("AMQP RabbitMQ query transport", () => {
 
   it("publishes queries and resolves correlated replies", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
+    const transport = amqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
     await transport.connect()
 
     const resultPromise = transport.dispatch(envelope())
@@ -127,7 +127,7 @@ describe("AMQP RabbitMQ query transport", () => {
 
   it("times out pending query dispatches", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
+    const transport = amqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
     await transport.connect()
 
     const resultPromise = transport.dispatch({ ...envelope(), timeoutMs: 1 })
@@ -137,7 +137,7 @@ describe("AMQP RabbitMQ query transport", () => {
 
   it("declares query queues and sends replies for consumed queries", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
+    const transport = amqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
     transport.subscribe("faculty.GetThing", async (incoming) => ({
       requestId: incoming.requestId,
       ok: true,
@@ -181,7 +181,7 @@ describe("AMQP RabbitMQ query transport", () => {
 
   it("sends an error reply and nacks when consumed query handling fails", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
+    const transport = amqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
     transport.subscribe("faculty.GetThing", async () => {
       throw new Error("boom")
     })
@@ -206,7 +206,7 @@ describe("AMQP RabbitMQ query transport", () => {
 
   it("does not bind the same query handler more than once", async () => {
     const fake = fakeAmqp()
-    const transport = new AmqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
+    const transport = amqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
     transport.subscribe("faculty.GetThing", async (incoming) => ({ requestId: incoming.requestId, ok: true }))
     await transport.connect()
     transport.subscribe("faculty.GetThing", async (incoming) => ({ requestId: incoming.requestId, ok: true }))

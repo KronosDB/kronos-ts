@@ -3,12 +3,18 @@
 //   const pg = postgresPool(connectionString)
 //   await pg.start()
 //
-//   const eventStore    = postgresEventStore(pg, { serializer, tagResolver })
-//   const snapshotStore = postgresSnapshotStore(pg, { serializer })
-//   const tokenStore    = postgresTokenStore(pg)
-//   const deadLetters   = postgresDeadLetterQueue(pg)
-//   const uow           = postgresUnitOfWork(pg, unitOfWork)
-//   const scheduler     = postgresEventScheduler(pg, { eventStore, unitOfWork: uow, tagResolver })
+//   const uow        = postgresUnitOfWork(unitOfWork, pg)
+//   const eventStore = postgresSchedulingEventStore(
+//     postgresSnapshottingEventStore(
+//       postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+//     pg, { unitOfWork: uow, tagResolver })
+//   const tokenStore  = postgresTokenStore(pg)
+//   const deadLetters = postgresDeadLetterQueue(pg)
+//
+// TWO STORE TIERS, ONE OBJECT. Snapshotting and scheduling are both wrappers
+// on the log and both ADDITIVE, so the composed value carries both capabilities
+// and a host names it once. There is no `scheduler` const any more, because
+// there is no second thing to wire.
 //
 // Every one of them is a function of the pool, and the pool is the only thing
 // with a lifetime. There is no bundle: a host names the pieces this deployment
@@ -47,18 +53,17 @@ export {
   type PostgresPoolOptions,
 } from "./postgres-pool.js"
 
-// The four stores.
+// The stores.
 export {
   postgresEventStore,
   type PostgresEventStoreConfig,
-  type Serializer,
   type TagResolver,
 } from "./postgres-event-store.js"
 
 export {
-  postgresSnapshotStore,
-  type PostgresSnapshotStoreConfig,
-} from "./postgres-snapshot-store.js"
+  postgresSnapshottingEventStore,
+  type PostgresSnapshottingEventStoreConfig,
+} from "./postgres-snapshotting-event-store.js"
 
 export {
   postgresTokenStore,
@@ -76,6 +81,7 @@ export {
 // `activePostgresTransaction` the only way to observe one without opening it.
 export {
   postgresUnitOfWork,
+  type PostgresFamily,
   postgresTransaction,
   activePostgresTransaction,
 } from "./postgres-transaction.js"
@@ -102,13 +108,13 @@ export {
   applySessionTimeouts,
 } from "./session-timeouts.js"
 
-// Durable schedule() + cancel() + a polling worker that fires due schedules
-// into the event store.
+// THE SCHEDULING CAPABILITY TIER: durable schedule + cancel on the log itself,
+// plus a polling worker that fires due schedules into the store it wraps.
 export {
-  postgresEventScheduler,
-  type PostgresEventScheduler,
-  type PostgresEventSchedulerConfig,
-} from "./postgres-event-scheduler.js"
+  postgresSchedulingEventStore,
+  type PostgresSchedulingControl,
+  type PostgresSchedulingConfig,
+} from "./postgres-scheduling-event-store.js"
 
 // Schema bootstrap + DDL builders — the migration surface. `postgresPool` runs
 // bootstrapSchema for you; pass `{ bootstrap: false }` and run these yourself

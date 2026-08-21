@@ -3,20 +3,18 @@ import type {
   AppendCondition,
   AppendTransaction,
   CancelResult,
-  Clock,
   CommandBus,
   CommandMessage,
   ConsistencyMarker,
   EventMessage,
-  EventScheduler,
   EventStore,
   QueryBus,
   QueryMessage,
+  ScheduleCapability,
   ScheduleToken,
   SubscriptionFilter,
   SubscriptionQueryResult,
   UnitOfWork,
-  Unstamped,
 } from "@kronos-ts/core"
 
 // ---------------------------------------------------------------------------
@@ -25,7 +23,7 @@ import type {
 // Each takes the thing it records and returns THE SAME SHAPE plus a readable
 // log. That is what makes them composable in either direction and usable
 // outside the fixture: `recordingEventStore(postgresEventStore(pg))` records a
-// real store, and `recordingCommandBus(rabbitMqCommandBus(rabbit, local))`
+// real store, and `recordingCommandBus(rabbitMqCommandBus(local, rabbit))`
 // records what actually left. Nothing here decides what the recorded thing IS.
 //
 // `reset()` is on each of them because a timeline is longer than one act: a
@@ -43,15 +41,28 @@ import type {
  * two-phase `appendEvents`, recorded when its transaction commits and never
  * when it rolls back.
  */
-export interface RecordingEventStore extends EventStore {
+export type RecordingEventStore = EventStore & EventRecording
+
+/** WHAT RECORDING ADDS, named on its own so the wrapper can be ADDITIVE. */
+export type EventRecording = {
   /** Every event committed through this store since the last reset, oldest first. */
   readonly appended: ReadonlyArray<EventMessage>
   /** Forget the log. The STORE keeps its events; only the recording is cleared. */
   reset(): void
 }
 
-/** Record what is committed through `store`. */
-export function recordingEventStore(store: EventStore): RecordingEventStore {
+/**
+ * Record what is committed through `store`.
+ *
+ * ADDITIVE: `E & EventRecording`, never a collapse to `RecordingEventStore`.
+ * The fixture composes `recordingEventStore(inMemorySnapshottingEventStore(log))`
+ * — recorder OUTERMOST, so `appended` is what left the fixture — and a
+ * signature that returned the bare intersection would have thrown the
+ * snapshotting capability away one layer above the store that has it. Every
+ * scope loading a snapshotting state would then fail to compile against a
+ * fixture that serves it perfectly well.
+ */
+export function recordingEventStore<E extends EventStore>(store: E): E & EventRecording {
   const log: EventMessage[] = []
 
   return {
@@ -89,7 +100,7 @@ export function recordingEventStore(store: EventStore): RecordingEventStore {
         },
       }
     },
-  }
+  } as E & EventRecording
 }
 
 /**
@@ -99,22 +110,34 @@ export function recordingEventStore(store: EventStore): RecordingEventStore {
  * handler dispatches appear in causal order, which is the order a reader expects
  * and the order an automation test asserts.
  *
- * The log holds {@link Unstamped} messages because that is what a bus is handed:
- * the edge verb builds the message and the bus behind this one stamps the
- * instant. A recorder that pretended otherwise would be reporting a field it
- * never saw.
+ * The recorded messages may carry no `timestamp`, because that is what a bus is
+ * handed: the edge verb builds the message and the bus behind this one fills
+ * the instant in from the task it mints. A recorder that pretended otherwise
+ * would be reporting a field it never saw.
  */
-export interface RecordingCommandBus extends CommandBus {
-  readonly dispatched: ReadonlyArray<Unstamped<CommandMessage>>
+export type RecordingCommandBus<U extends UnitOfWork = UnitOfWork> = CommandBus<U> &
+  CommandRecording
+
+/** WHAT RECORDING ADDS, named on its own so the wrapper can be ADDITIVE. */
+export type CommandRecording = {
+  readonly dispatched: ReadonlyArray<CommandMessage>
   reset(): void
 }
 
-/** Record what is dispatched through `bus`. */
-export function recordingCommandBus(bus: CommandBus): RecordingCommandBus {
-  const log: Array<Unstamped<CommandMessage>> = []
+/**
+ * Record what is dispatched through `bus`. Whatever `bus` mints, this mints —
+ * and whatever `bus` could do, this can, because the wrapper is `B & CommandRecording`
+ * over a spread rather than a collapse to the base seam.
+ */
+export function recordingCommandBus<B extends CommandBus<any>>(
+  bus: B,
+): B & CommandRecording {
+  const log: Array<CommandMessage> = []
 
   return {
-    get dispatched(): ReadonlyArray<Unstamped<CommandMessage>> {
+    ...bus,
+
+    get dispatched(): ReadonlyArray<CommandMessage> {
       return log
     },
 
@@ -122,29 +145,36 @@ export function recordingCommandBus(bus: CommandBus): RecordingCommandBus {
       log.length = 0
     },
 
-    async dispatch(message: Unstamped<CommandMessage>): Promise<unknown> {
+    async dispatch(message: CommandMessage): Promise<unknown> {
       log.push(message)
       return bus.dispatch(message)
     },
 
-    subscribe(commandName, handler): void {
-      bus.subscribe(commandName, handler)
+    subscribe(commandName: string, handler: unknown): void {
+      bus.subscribe(commandName, handler as never)
     },
-  }
+  } as B & CommandRecording
 }
 
 /** A query bus that remembers every message asked through it, in order. */
-export interface RecordingQueryBus extends QueryBus {
-  readonly queried: ReadonlyArray<Unstamped<QueryMessage>>
+export type RecordingQueryBus<U extends UnitOfWork = UnitOfWork> = QueryBus<U> & QueryRecording
+
+/** WHAT RECORDING ADDS, named on its own so the wrapper can be ADDITIVE. */
+export type QueryRecording = {
+  readonly queried: ReadonlyArray<QueryMessage>
   reset(): void
 }
 
-/** Record what is asked through `bus`. */
-export function recordingQueryBus(bus: QueryBus): RecordingQueryBus {
-  const log: Array<Unstamped<QueryMessage>> = []
+/** Record what is asked through `bus`. Whatever `bus` mints, this mints. */
+export function recordingQueryBus<B extends QueryBus<any>>(
+  bus: B,
+): B & QueryRecording {
+  const log: Array<QueryMessage> = []
 
   return {
-    get queried(): ReadonlyArray<Unstamped<QueryMessage>> {
+    ...bus,
+
+    get queried(): ReadonlyArray<QueryMessage> {
       return log
     },
 
@@ -152,17 +182,17 @@ export function recordingQueryBus(bus: QueryBus): RecordingQueryBus {
       log.length = 0
     },
 
-    async query(message: Unstamped<QueryMessage>, uow?: UnitOfWork): Promise<unknown> {
+    async query(message: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       log.push(message)
       return bus.query(message, uow)
     },
 
-    subscribe(queryName, handler): void {
-      bus.subscribe(queryName, handler)
+    subscribe(queryName: string, handler: unknown): void {
+      bus.subscribe(queryName, handler as never)
     },
 
     subscriptionQuery(
-      message: Unstamped<QueryMessage>,
+      message: QueryMessage,
       bufferSize?: number,
     ): SubscriptionQueryResult {
       log.push(message)
@@ -170,7 +200,7 @@ export function recordingQueryBus(bus: QueryBus): RecordingQueryBus {
     },
 
     subscribeToUpdates(
-      message: Unstamped<QueryMessage>,
+      message: QueryMessage,
       bufferSize?: number,
     ): AsyncIterable<unknown> & { close(): void } {
       log.push(message)
@@ -202,13 +232,13 @@ export function recordingQueryBus(bus: QueryBus): RecordingQueryBus {
     ): Promise<void> {
       return bus.completeSubscriptionExceptionally(queryName, error, filter, uow)
     },
-  }
+  } as B & QueryRecording
 }
 
-// ── the controllable scheduler ─────────────────────────────────────────────
+// ── the controllable SCHEDULING TIER ───────────────────────────────────────
 
 /** One armed, fired or cancelled schedule, as a reader sees it. */
-export interface ScheduleRecord {
+export type ScheduleRecord = {
   readonly token: ScheduleToken
   /** The event this schedule will append when it fires. */
   readonly event: EventMessage
@@ -220,18 +250,46 @@ export interface ScheduleRecord {
 }
 
 /**
- * An {@link EventScheduler} with NO TIMER: nothing fires until somebody moves the
- * clock and asks what is due.
+ * WHAT THE CONTROLLABLE TIER ADDS BEYOND THE CAPABILITY, named on its own so
+ * the wrapper can be ADDITIVE.
  *
- * That is the whole difference from `inMemoryEventScheduler`, and it is the
- * difference between a deadline test that takes thirty seconds and one that takes
- * a millisecond. It has no event sink either: {@link due} HANDS BACK the fired
- * events, and whoever drives the clock decides where they go — in a fixture, into
- * the event store, which is where a scheduled event fires to.
+ * `resetSchedules` rather than `reset`, because this tier composes UNDER
+ * `recordingEventStore` and that one already owns a `reset`. Two different
+ * resets under one name on one object was a collision waiting to be found by
+ * somebody debugging at midnight; the recorder's `reset` clears the event log
+ * and this clears the schedule book, and now you can say which you meant.
+ */
+export type ScheduleRecording = {
+  /** Every schedule this store has seen since the last reset, oldest first. */
+  readonly schedules: ReadonlyArray<ScheduleRecord>
+  /**
+   * The events whose fire-time has arrived at the clock's current instant, in
+   * FIRE-TIME order, marked fired. Calling it twice does not fire anything twice.
+   */
+  due(): ReadonlyArray<EventMessage>
+  /** Forget every schedule. The LOG keeps its events; only the book is cleared. */
+  resetSchedules(): void
+}
+
+/**
+ * A scheduling capability tier with NO TIMER: nothing fires until somebody
+ * moves the clock and asks what is due.
  *
- * Unit-of-work semantics match the in-memory scheduler: a schedule is staged
- * during INVOCATION so a `cancel` in the same unit of work can see it, becomes
- * DUE-able only at AFTER_COMMIT, and is dropped if the unit of work fails.
+ * That is the whole difference from `inMemorySchedulingEventStore`, and it is
+ * the difference between a deadline test that takes thirty seconds and one that
+ * takes a millisecond. It does not append the fired events either: {@link
+ * ScheduleRecording.due} HANDS THEM BACK, and whoever drives the clock decides
+ * where they go — in a fixture, in through the OUTERMOST store, so the recorder
+ * above this one sees them exactly as it sees a handler's append.
+ *
+ * ADDITIVE: `E & ScheduleCapability & ScheduleRecording`, never a collapse. The
+ * fixture composes it over the snapshotting tier and under the recorder, and a
+ * signature that returned a bare intersection would throw one of the other two
+ * capabilities away on the way through.
+ *
+ * Unit-of-work semantics match the in-memory tier: a schedule is staged during
+ * INVOCATION so a `cancelSchedule` in the same task can see it, becomes
+ * DUE-able only at AFTER_COMMIT, and is dropped if the task fails.
  *
  * One thing it does NOT copy: a fired event is stamped with the instant it
  * FIRES, not the instant somebody arranged it. The arrangement is not the event —
@@ -239,20 +297,11 @@ export interface ScheduleRecord {
  * have happened thirty seconds ago would be reading a lie, and everything the
  * fired event then causes is stamped from the fire instant anyway.
  */
-export interface ControllableScheduler extends EventScheduler {
-  /** Every schedule this scheduler has seen since the last reset, oldest first. */
-  readonly schedules: ReadonlyArray<ScheduleRecord>
-  /**
-   * The events whose fire-time has arrived at the clock's current instant, in
-   * FIRE-TIME order, marked fired. Calling it twice does not fire anything twice.
-   */
-  due(): ReadonlyArray<EventMessage>
-  reset(): void
-}
-
-/** A scheduler that fires only when `clock` says so and `due()` is called. */
-export function controllableScheduler(clock: Clock): ControllableScheduler {
-  interface Entry {
+export function controllableSchedulingEventStore<E extends EventStore>(
+  next: E,
+  clock: () => number,
+): E & ScheduleCapability & ScheduleRecording {
+  type Entry = {
     record: ScheduleRecord
     armed: boolean
   }
@@ -263,11 +312,13 @@ export function controllableScheduler(clock: Clock): ControllableScheduler {
   }
 
   return {
+    ...next,
+
     get schedules(): ReadonlyArray<ScheduleRecord> {
       return entries.map((e) => e.record)
     },
 
-    reset(): void {
+    resetSchedules(): void {
       entries.length = 0
     },
 
@@ -290,7 +341,7 @@ export function controllableScheduler(clock: Clock): ControllableScheduler {
     async schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
       if (uow === undefined) {
         throw new NoActiveUnitOfWork(
-          "controllableScheduler.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",
+          "controllableSchedulingEventStore.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",
         )
       }
       requireInvocation(uow)
@@ -321,7 +372,7 @@ export function controllableScheduler(clock: Clock): ControllableScheduler {
       return token
     },
 
-    async cancel(token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult> {
+    async cancelSchedule(token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult> {
       const entry = find(token.id)
       if (!entry) return { kind: "not-found" }
       if (entry.record.status === "fired") return { kind: "already-appended" }
@@ -337,5 +388,7 @@ export function controllableScheduler(clock: Clock): ControllableScheduler {
       }
       return { kind: "cancelled" }
     },
-  }
+    // The spread of a generic is opaque to the checker, so the shape it
+    // produces is asserted rather than inferred; the probe keeps it honest.
+  } as E & ScheduleCapability & ScheduleRecording
 }

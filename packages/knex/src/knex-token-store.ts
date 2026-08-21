@@ -5,14 +5,14 @@ import {
   serializeToken as serializeTokenData,
   deserializeToken as deserializeTokenData,
 } from "@kronos-ts/core"
-import type { KnexClient } from "./knex-transaction.js"
+import type { KnexClient, KnexFamily } from "./knex-transaction.js"
 import { activeKnexTransaction } from "./knex-transaction.js"
 
 /** The table this adapter owns. Not a parameter — the columns are not the caller's choice. */
 export const KNEX_TOKEN_TABLE = "kronos_token_entries"
 
 /** Tuning only — everything required is a positional argument. */
-export interface KnexTokenStoreOptions {
+export type KnexTokenStoreOptions = {
   /** Claim timeout in ms. Default: 10000. */
   claimTimeoutMs?: number
 }
@@ -46,7 +46,7 @@ function nowIso(): string {
  * const tokenStore = knexTokenStore(knex)
  * ```
  */
-export function knexTokenStore(knex: KnexClient, options: KnexTokenStoreOptions = {}): TokenStore {
+export function knexTokenStore(knex: KnexClient, options: KnexTokenStoreOptions = {}): TokenStore<UnitOfWork & KnexFamily> {
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
   const table = KNEX_TOKEN_TABLE
 

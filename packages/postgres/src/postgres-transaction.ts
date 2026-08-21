@@ -11,16 +11,47 @@
  * there is no `TransactionManager` for a host to implement or pass in.
  */
 
-import type { UnitOfWork } from "@kronos-ts/core"
+import type { PersistenceFamily, UnitOfWork } from "@kronos-ts/core"
 import {
   activeTransaction,
   adapterUnitOfWork,
   claimed,
   openTransaction,
   transactionRegistry,
-} from "@kronos-ts/core/transaction"
+} from "./transaction-glue.js"
 import type { PostgresAdapter, PostgresAdapterTransaction } from "./adapter.js"
 import { IsolationLevel } from "./adapter.js"
+
+/**
+ * THE POSTGRES FAMILY MARK — a phantom, type-only brand on every unit of work
+ * postgresUnitOfWork(next, pg) mints, and the thing this package's token store and
+ * dead-letter queue demand back.
+ *
+ * WHY IT EXISTS. This family is keyed by TRANSACTION IDENTITY: the token store,
+ * the dead-letter queue and what a raw-SQL handler writes through `ctx.sql()` must all
+ * write through the SAME handle, or they do not commit together. Handing this
+ * package's token store a unit of work from another family does not throw — the
+ * store looks for ITS transaction, does not find one, and falls back to its
+ * plain handle, so the token update commits OUTSIDE the batch. Every test
+ * passes; then a crash lands between the projection write and the token write
+ * and a read model is permanently wrong. The mark turns that into a build
+ * error.
+ *
+ * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * unique symbol declared in core; nothing writes the property and nothing can
+ * read it. postgresUnitOfWork(…) returns exactly what it always
+ * returned and asserts the branded type, so the emitted JavaScript is
+ * unchanged.
+ *
+ * THE FIX STRING IS THIS PACKAGE'S TO WRITE, and that is the point of putting
+ * it here. Core can only say "these two are different families"; this package
+ * knows precisely which factory the host should have called, so a mismatch
+ * prints that sentence at the wiring site.
+ */
+export type PostgresFamily = PersistenceFamily<
+  "postgres",
+  "build this processor's unitOfWork with postgresUnitOfWork(next, pg) — this family's stores write through its transaction"
+>
 
 /**
  * Module-private symbol attaching commit/rollback control to a tx handle.
@@ -29,13 +60,13 @@ import { IsolationLevel } from "./adapter.js"
  */
 const TX_CONTROL = Symbol("kronos.postgresTxControl")
 
-interface TxControl {
+type TxControl = {
   readonly resolveCommit: () => void
   readonly rejectRollback: (err: unknown) => void
   readonly txPromise: Promise<void>
 }
 
-interface ManagedPostgresTransaction extends PostgresAdapterTransaction {
+type ManagedPostgresTransaction = PostgresAdapterTransaction & {
   [TX_CONTROL]: TxControl
 }
 
@@ -131,8 +162,8 @@ function txHooks(pg: PostgresAdapter, isolationLevel: IsolationLevel) {
  * Same shape as the core `unitOfWork`, so it drops into any seam that takes one:
  *
  * ```ts
- * const uow = postgresUnitOfWork(pg, unitOfWork)
- * const commandBus = interceptingCommandBus(simpleCommandBus(uow), lineage)
+ * const uow = postgresUnitOfWork(unitOfWork, pg)
+ * const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
  * eventProcessor({ name, eventStore, tokenStore, unitOfWork: uow })
  * ```
  *
@@ -144,17 +175,29 @@ function txHooks(pg: PostgresAdapter, isolationLevel: IsolationLevel) {
  * appended events, scheduled events, token updates, dead letters, and the
  * handler's own writes through `ctx.sql()` — commits or rolls back together.
  *
- * `make` is the factory the unit of work is minted FROM — required, and
- * normally the core `unitOfWork`. It is not defaulted: a default argument hides
- * the composition chain, and the whole point of this shape is that a call site
- * shows what its units of work are made of. Pass another to stack concerns.
+ * THING-FIRST: `next` — the factory the unit of work is minted from — comes
+ * first, because that is the thing being decorated, and the client is the
+ * configuration. It is required and never defaulted: a default hides the
+ * composition chain, and the whole point of this shape is that a call site
+ * shows what its units of work are made of.
+ *
+ * It is also CAPABILITY-PRESERVING. The decorator returns `() => U` for
+ * whatever `U` it was handed, and it decorates the SAME handle rather than
+ * rebuilding a record from it — so a composed capability survives both the type
+ * and the runtime:
+ *
+ * ```ts
+ * const uow = postgresUnitOfWork(() => correlating(unitOfWork(clock)), pg)
+ * //    ^ () => CorrelatingUnitOfWork, and its transactions are keyed on that
+ * //      very object, which is the one `ctx.unitOfWork` hands back
+ * ```
  */
-export function postgresUnitOfWork(
+export function postgresUnitOfWork<U extends UnitOfWork = UnitOfWork>(
+  next: () => U,
   pg: PostgresAdapter,
-  make: () => UnitOfWork,
   isolationLevel: IsolationLevel = IsolationLevel.READ_COMMITTED,
-): () => UnitOfWork {
-  return adapterUnitOfWork(registry, txHooks(pg, isolationLevel), make, { eager: false })
+): () => U & PostgresFamily {
+  return adapterUnitOfWork(registry, txHooks(pg, isolationLevel), next) as () => U & PostgresFamily
 }
 
 /**

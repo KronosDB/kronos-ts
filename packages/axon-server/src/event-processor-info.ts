@@ -4,7 +4,7 @@ import type { EventProcessorInfo, EventProcessorInfo_SegmentStatus } from "./gen
  * Status of a single event processor, reported to Axon Server.
  * Aligned with Java's EventProcessorInfo proto message.
  */
-export interface ProcessorStatus {
+export type ProcessorStatus = {
   readonly name: string
   readonly running: boolean
   readonly mode: "Tracking" | "Subscribing"
@@ -17,7 +17,7 @@ export interface ProcessorStatus {
   readonly segments: SegmentStatus[]
 }
 
-export interface SegmentStatus {
+export type SegmentStatus = {
   readonly segmentId: number
   readonly caughtUp: boolean
   readonly replaying: boolean

@@ -1,7 +1,7 @@
 /**
  * Full-stack E2E integration test for KronosDB.
  *
- * Spins up ghcr.io/kronosdb/kronosdb:latest via testcontainers — no local
+ * Spins up ghcr.io/kronosdb/kronosdb:0.8.0 via testcontainers — no local
  * server needed. The image's entrypoint runs kronosdb-server, which listens
  * for gRPC on 50051 and admin on 9240.
  *
@@ -15,13 +15,12 @@ import { qn, send, query } from "@kronos-ts/core"
 import {
   jsonSerializer, command, event, commandHandler, eventHandler, queryHandler,
   eventProcessor, type EventProcessor,
-  type CommandHandlerDefinition, type QueryHandlerDefinition, type EventHandlerDefinition,
+  type CommandHandler, type QueryHandler, type EventHandler,
   inMemoryTokenStore, type TokenStore,
 } from "@kronos-ts/core"
-import { state, type StateModule } from "@kronos-ts/core"
+import { state } from "@kronos-ts/core"
 import {
   type EventStore,
-  type SnapshotStore,
 } from "@kronos-ts/core"
 import {
   kronos,
@@ -31,16 +30,14 @@ import {
   type EventHandlerEntry,
   type HandlerSite,
   type Sited,
-  type StateEntry,
-  type StateOptions,
 } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   type UnitOfWork,
   type CommandBus,
   type QueryBus,
@@ -50,19 +47,19 @@ import {
   kronosDbCommandBus,
   kronosDbQueryBus,
   kronosDbEventStore,
-  kronosDbSnapshotStore,
+  kronosDbSnapshottingEventStore,
   type KronosDbConnectionHandle,
 } from "@kronos-ts/kronosdb"
 
 /**
  * The two things `kronos` needs that are not handlers. The UoW runner is
- * named once and handed to `simpleCommandBus` (which captures it at
+ * named once and handed to `localCommandBus` (which captures it at
  * construction) — writing it on an adjacent line is what makes that checkable.
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
 
@@ -76,11 +73,9 @@ function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: Comman
  * structural (contravariant) check.
  */
 type SitedItem =
-  | Sited<StateModule<any, any>>
-  | readonly [Sited<StateModule<any, any>>, StateOptions]
-  | Sited<CommandHandlerDefinition<any, any>>
-  | Sited<QueryHandlerDefinition<any, any>>
-  | EventHandlerDefinition<any, any>
+  | Sited<CommandHandler<any, any>>
+  | Sited<QueryHandler<any, any>>
+  | EventHandler<any, any>
 
 /** What a host attaches uniformly here. There is no `stores` record any more —
  * this is the ARGUMENT LIST of a local helper, and every entry comes out
@@ -98,14 +93,14 @@ type Site = HandlerSite & {
 /**
  * Attach one site to a flat list of entries — the composition root's job,
  * replacing the old `module(name, stores, ...handlers)` — and sort them into
- * the four fields `kronos` now takes. Honours the `[state, options]` tuple
- * shape. Spread the result straight into `kronos({ ...sitedOn(site, ...) })`.
+ * the three fields `kronos` now takes. States are in no list: a handler closes
+ * over the one it folds. Spread the result straight into
+ * `kronos({ ...sitedOn(site, ...) })`.
  */
 function sitedOn(
   site: Site,
   ...items: ReadonlyArray<SitedItem>
 ): {
-  states: StateEntry[]
   commandHandlers: CommandHandlerEntry[]
   queryHandlers: QueryHandlerEntry[]
   eventHandlers: EventHandlerEntry[]
@@ -118,22 +113,14 @@ function sitedOn(
     processorName,
     ...handlerSite
   } = site
-  const states: StateEntry[] = []
   const commandHandlers: CommandHandlerEntry[] = []
   const queryHandlers: QueryHandlerEntry[] = []
   const eventHandlers: EventHandlerEntry[] = []
   let processor: EventProcessor | undefined
 
   for (const item of items) {
-    if (Array.isArray(item)) {
-      const [stateDef, options] = item
-      states.push([{ ...stateDef, ...handlerSite }, options] as StateEntry)
-      continue
-    }
     const kind = (item as { kind?: string }).kind
-    if (kind === "state-module") {
-      states.push({ ...(item as object), ...handlerSite } as StateEntry)
-    } else if (kind === "command-handler") {
+    if (kind === "command-handler") {
       commandHandlers.push({ ...(item as object), ...handlerSite, commandBus, queryBus } as CommandHandlerEntry)
     } else if (kind === "query-handler") {
       queryHandlers.push({ ...(item as object), ...handlerSite, queryBus } as QueryHandlerEntry)
@@ -155,7 +142,7 @@ function sitedOn(
       eventHandlers.push({ ...(item as object), commandBus, queryBus, processor } as EventHandlerEntry)
     }
   }
-  return { states, commandHandlers, queryHandlers, eventHandlers }
+  return { commandHandlers, queryHandlers, eventHandlers }
 }
 
 
@@ -207,11 +194,10 @@ const EnrollmentClosed = event({
 type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[]; closed: boolean }
 
 const Course = state({
-  name: "Course",
   id: { courseId: z.string() },
-  initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
+    () => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
     [CourseCreated, (s, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })],
     [StudentSubscribed, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })],
     [EnrollmentClosed, (s) => ({ ...s, closed: true })],
@@ -299,7 +285,6 @@ describe("E2E: KronosDB full stack", () => {
   let app: App
   let backend: KronosDbConnectionHandle
   let backendEventStore: EventStore
-  let backendSnapshotStore: SnapshotStore
   let kronosHost: string
   let kronosPort: number
   let buses: { commandBus: CommandBus; queryBus: QueryBus }
@@ -310,9 +295,9 @@ describe("E2E: KronosDB full stack", () => {
     // Spin up KronosDB. The server logs "KronosDB starting" once it binds
     // its gRPC listener; testcontainers also waits for port 50051 to accept
     // connections before returning.
-    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:latest")
+    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:0.8.0")
       .withExposedPorts(50051, 9240)
-      .withWaitStrategy(Wait.forLogMessage(/KronosDB starting/))
+      .withWaitStrategy(Wait.forHttp("/ready", 9240).forStatusCode(200))
       .start()
 
     kronosHost = container.getHost()
@@ -331,23 +316,29 @@ describe("E2E: KronosDB full stack", () => {
       serializer: jsonSerializer(),
     })
 
-    backendEventStore = kronosDbEventStore(backend, "default")
-    backendSnapshotStore = kronosDbSnapshotStore(backend, "default")
+    // KronosDB serves BOTH halves natively now: `AppendSnapshot` for the write
+    // and `SnapshottedSource` for the fused read — one call that leads with the
+    // cached fold and continues with the events after it. The native path
+    // landed inside the wrapper, and this line never changed.
+    backendEventStore = kronosDbSnapshottingEventStore(
+      kronosDbEventStore(backend, "default"),
+      backend,
+      "default",
+    )
 
     // The KronosDB buses wrap the in-memory ones rather than replacing them:
     // the local segment is a real bus now, so a command the server routes back
-    // here runs through the SAME `simpleCommandBus(uow)` a local dispatch would
+    // here runs through the SAME `localCommandBus(uow)` a local dispatch would
     // have used, and inherits its unit-of-work policy.
     buses = {
-      commandBus: kronosDbCommandBus(backend, base.commandBus),
-      queryBus: kronosDbQueryBus(backend, base.queryBus),
+      commandBus: kronosDbCommandBus(base.commandBus, backend),
+      queryBus: kronosDbQueryBus(base.queryBus, backend),
     }
 
     app = kronos({
       ...sitedOn(
         {
           eventStore: backendEventStore,
-          snapshotStore: backendSnapshotStore,
           ...buses,
           processorName: "kronosdb-course-projection",
         },
@@ -489,16 +480,18 @@ describe("E2E: KronosDB full stack", () => {
       serializer: jsonSerializer(),
     })
     const autoBuses = {
-      commandBus: kronosDbCommandBus(autoBackend, autoBase.commandBus),
-      queryBus: kronosDbQueryBus(autoBackend, autoBase.queryBus),
+      commandBus: kronosDbCommandBus(autoBase.commandBus, autoBackend),
+      queryBus: kronosDbQueryBus(autoBase.queryBus, autoBackend),
     }
-    const autoEventStore: EventStore = kronosDbEventStore(autoBackend, "default")
-    const autoSnapshotStore = kronosDbSnapshotStore(autoBackend, "default")
+    const autoEventStore: EventStore = kronosDbSnapshottingEventStore(
+      kronosDbEventStore(autoBackend, "default"),
+      autoBackend,
+      "default",
+    )
     const autoApp = kronos({
       ...sitedOn(
         {
           eventStore: autoEventStore,
-          snapshotStore: autoSnapshotStore,
           ...autoBuses,
           processorName: "kronosdb-enrollment-automation",
         },

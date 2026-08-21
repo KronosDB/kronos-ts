@@ -9,12 +9,12 @@ import type { QualifiedName } from "@kronos-ts/core"
  * It used to be read off the container's `app.identity`. There is no container,
  * so it is an argument now.
  */
-export interface RabbitMqIdentity {
+export type RabbitMqIdentity = {
   readonly serviceName: string
   readonly instanceId: string
 }
 
-export interface RabbitMqTopologyConfig {
+export type RabbitMqTopologyConfig = {
   readonly prefix?: string
   readonly commandsExchange?: string
   readonly queriesExchange?: string
@@ -23,7 +23,7 @@ export interface RabbitMqTopologyConfig {
   readonly durableQueues?: boolean
 }
 
-export interface RabbitMqTopologyNames {
+export type RabbitMqTopologyNames = {
   readonly commandsExchange: string
   readonly queriesExchange: string
   readonly subscribersGossipExchange: string

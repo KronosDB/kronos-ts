@@ -9,13 +9,14 @@
  * const kdb = await kronosDbConnection({ componentName: "university-service", serializer })
  *
  * const eventStore    = kronosDbEventStore(kdb, "billing")
- * const snapshotStore = kronosDbSnapshotStore(kdb, "billing")
+ * const eventStore = kronosDbSnapshottingEventStore(
+ *   kronosDbEventStore(kdb, "billing"), kdb, "billing")
  * const commandBus    = interceptingCommandBus(
- *   kronosDbCommandBus(kdb, simpleCommandBus(unitOfWork)), lineage)
+ *   kronosDbCommandBus(localCommandBus(unitOfWork), kdb), correlation)
  * const queryBus      = interceptingQueryBus(
- *   kronosDbQueryBus(kdb, simpleQueryBus(unitOfWork)), lineage)
+ *   kronosDbQueryBus(localQueryBus(unitOfWork), kdb), correlation)
  *
- * const app = kronos({ commandHandlers, queryHandlers, states })
+ * const app = kronos({ commandHandlers, queryHandlers })
  * await kdb.start()                   // subscription-ack wait, after handlers subscribe
  * // …
  * await app.stop(); await kdb.close()
@@ -46,11 +47,11 @@
  * buses are constructed against a live channel — the lazy proxies and the
  * subscribe()-buffering wrappers the container era needed are gone.
  */
-import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer, withRetry, healthCheck, type ResilienceConfig } from "@kronos-ts/core"
-import type { CommandBus, CommandMessage, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UnitOfWork, Unstamped, UpdateHandler } from "@kronos-ts/core"
+import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer } from "@kronos-ts/core"
+import { withRetry, healthCheck, type ResilienceConfig } from "./resilience.js"
+import type { CommandBus, CommandMessage, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UnitOfWork, UpdateHandler } from "@kronos-ts/core"
 import {
   applySubscriptionFilter,
-  stamped,
   updateHandler,
   runAfterCommitOrImmediately,
 } from "@kronos-ts/core"
@@ -65,12 +66,12 @@ import { shutdownLatch as shutdownLatchValue, type ShutdownLatch } from "./shutd
 const DEFAULT_PERMITS = 5000n
 const DEFAULT_THRESHOLD = 2500n
 
-export interface FlowControlConfig {
+export type FlowControlConfig = {
   permits?: number
   refillThreshold?: number
 }
 
-export interface ProcessingInstructions {
+export type ProcessingInstructions = {
   routingKey?: string
   priority?: number
   timeoutMs?: number
@@ -106,7 +107,7 @@ function defaultQueryInstructions(timeoutMs: number): any[] {
 }
 
 /** Per-bus routing knobs. Everything shared lives on the connection. */
-export interface KronosDbCommandBusOptions {
+export type KronosDbCommandBusOptions = {
   /** Which KronosDB context to address. Defaults to the connection's own. */
   context?: string
   flowControl?: FlowControlConfig
@@ -117,7 +118,7 @@ export interface KronosDbCommandBusOptions {
 }
 
 /** @see KronosDbCommandBusOptions */
-export interface KronosDbQueryBusOptions {
+export type KronosDbQueryBusOptions = {
   /** Which KronosDB context to address. Defaults to the connection's own. */
   context?: string
   flowControl?: FlowControlConfig
@@ -137,7 +138,7 @@ export interface KronosDbQueryBusOptions {
  * property of this client's wire — one channel, one encoding — and because a
  * store keyed by `(connection, context)` has nowhere honest to put it.
  */
-export interface KronosDbConnectionOptions extends KronosDbConnectionConfig {
+export type KronosDbConnectionOptions = KronosDbConnectionConfig & {
   serializer: Serializer
   platformService?: PlatformServiceOptions
   /** Per-extension resilience config (D-100 / D-101). */
@@ -153,7 +154,7 @@ export interface KronosDbConnectionOptions extends KronosDbConnectionConfig {
  * The per-call `kronosdb-context` header is what separates them, and it is set
  * per context handle rather than baked into the channel.
  */
-export interface KronosDbConnectionHandle {
+export type KronosDbConnectionHandle = {
   /** The live connection, for callers that need the raw gRPC clients. */
   readonly connection: KronosDbConnection
   /** How payloads are encoded on this wire — shared by every store and bus. */
@@ -200,11 +201,11 @@ export interface KronosDbConnectionHandle {
  *
  * const eventStore = kronosDbEventStore(kdb, "billing")
  * const commandBus = interceptingCommandBus(
- *   kronosDbCommandBus(kdb, simpleCommandBus(unitOfWork)), lineage)
+ *   kronosDbCommandBus(localCommandBus(unitOfWork), kdb), correlation)
  * const queryBus = interceptingQueryBus(
- *   kronosDbQueryBus(kdb, simpleQueryBus(unitOfWork)), lineage)
+ *   kronosDbQueryBus(localQueryBus(unitOfWork), kdb), correlation)
  *
- * const app = kronos({ commandHandlers, queryHandlers, states })
+ * const app = kronos({ commandHandlers, queryHandlers })
  * await kdb.start()                   // subscription-ack wait, after handlers subscribe
  * // …
  * await app.stop(); await kdb.close()
@@ -327,49 +328,49 @@ function createPayloadHelpers(serializer: Serializer) {
 /**
  * A command bus backed by KronosDB.
  *
- * ## Correlation lineage and the interceptor layer
+ * ## correlation and the interceptor layer
  *
- * The returned bus stamps no lineage of its own. A host that wants it wraps
- * the OUTERMOST bus with `interceptingCommandBus(bus, lineage)`, so whatever
- * metadata providers a host adds run BEFORE the message is serialized onto the
- * wire. Lineage itself is already on `message.metadata` by then — `ctx.send`
- * stamps the unit of work's correlation data before any bus sees the message.
+ * The returned bus stamps no correlation of its own. A host that wants roots
+ * seeded wraps the OUTERMOST bus with `interceptingCommandBus(bus, correlation)`,
+ * so whatever a host transforms runs BEFORE the message is serialized onto the
+ * wire. A command born inside a handler already carries its correlation by then:
+ * `correlatingHandler` overlaid the task's map onto it before any bus saw it.
  *
  * This mirrors AxonFramework, where dispatch interception always sits outside
  * the routing bus. AF4's `AxonServerCommandBus.dispatch` is
  * `doDispatch(dispatchInterceptors.intercept(commandMessage), cb)`; AF5 expresses
  * the same thing through decorator order —
  * `DISTRIBUTED_COMMAND_BUS_ORDER = InterceptingCommandBus.DECORATION_ORDER - 50`
- * stacks the buses `InterceptingCommandBus → DistributedCommandBus → SimpleCommandBus`.
+ * stacks the buses `InterceptingCommandBus → DistributedCommandBus → LocalCommandBus`.
  *
- * Without this, remote lineage was simply lost: the interceptor was registered
+ * Without this, remote correlation was simply lost: the interceptor was registered
  * only inside `@kronos-ts/core`'s default in-memory bus, and this bus REPLACES
  * that one in `components` — every command left the process with no
  * `correlationId` / `causationId`, even though the inbound side below faithfully
  * rebuilds a UnitOfWork from `message.metadata`.
  *
- * Double application of `lineage` is harmless: both of its fields are `??`
- * seeds, so a `local` that is itself intercepting simply sees them already set.
+ * Double application of `correlation` is harmless: both of its fields are `??`
+ * seeds, so a `next` that is itself intercepting simply sees them already set.
  *
- * ## The local segment is a real bus
+ * ## The next segment is a real bus
  *
- * `local` is a `CommandBus`, not a private handler map. `subscribe` registers
+ * `next` is a `CommandBus`, not a private handler map. `subscribe` registers
  * on it AND announces the name to the server; a command the SERVER routes back
  * here is dispatched into it. That is what makes the unit-of-work policy you
- * chose for `local` — `postgresUnitOfWork(pg, unitOfWork)`, say — apply to
+ * chose for `next` — `postgresUnitOfWork(unitOfWork, pg)`, say — apply to
  * server-routed work exactly as it applies to anything else. It also removes
- * the `unitOfWork` parameter this function used to take: `local` carries that
+ * the `unitOfWork` parameter this function used to take: `next` carries that
  * policy now, and having it twice was a way to disagree with yourself.
  *
  * Server-side routing is unchanged: KronosDB is a smart hub, so an outbound
  * dispatch ALWAYS goes to the server, even for a command this instance handles.
- * There is no client-side prefer-local fork here (that is RabbitMQ's model).
+ * There is no client-side prefer-next fork here (that is RabbitMQ's model).
  */
-export function kronosDbCommandBus(
+export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
+  next: CommandBus<U>,
   kdb: Pick<KronosDbConnectionHandle, "connection" | "serializer" | "registerShutdownLatch">,
-  local: CommandBus,
   options: KronosDbCommandBusOptions = {},
-): CommandBus {
+): CommandBus<U> {
   const { flowControl, loadFactor: commandLoadFactor, resilience } = options
   const serializer = kdb.serializer
   const connection = contextView(kdb.connection, options.context ?? kdb.connection.config.context)
@@ -383,7 +384,7 @@ export function kronosDbCommandBus(
 
   // Names this instance announced. Kept so a reconnect can re-announce them and
   // so an unroutable inbound command still gets NO_HANDLER_FOR_COMMAND rather
-  // than whatever `local.dispatch` happens to throw for an unknown name.
+  // than whatever `next.dispatch` happens to throw for an unknown name.
   const localHandlers = new Set<string>()
 
   let outbound = outboundStream<any>()
@@ -468,16 +469,16 @@ export function kronosDbCommandBus(
             }
 
             // Into the LOCAL BUS, not a privately-held handler reference: the
-            // unit-of-work policy `local` was built with governs server-routed
+            // unit-of-work policy `next` was built with governs server-routed
             // work exactly as it governs everything else.
-            resultPayload = await local.dispatch(commandMessage)
+            resultPayload = await next.dispatch(commandMessage)
           } catch (err) {
             errorCode = KronosDbErrorCode.COMMAND_EXECUTION_ERROR
             errorMsg = err instanceof Error ? err.message : String(err)
           }
         } else {
           errorCode = KronosDbErrorCode.NO_HANDLER_FOR_COMMAND
-          errorMsg = `No local handler for command "${commandName}"`
+          errorMsg = `No next handler for command "${commandName}"`
         }
 
         const responseSerialized = resultPayload !== undefined
@@ -518,15 +519,14 @@ export function kronosDbCommandBus(
     }
   }
 
-  const routing: CommandBus = {
-    async dispatch(unstamped: Unstamped<CommandMessage>): Promise<unknown> {
+  const routing: CommandBus<U> = {
+    async dispatch(unstamped: CommandMessage): Promise<unknown> {
       // A transport is not a task: it has no unit of work, so it has no clock.
-      // A message that reaches the wire still {@link Unstamped} is therefore
-      // stamped from system time here — the envelope crosses a process boundary
-      // and must be fully formed. A locally-shortcut message is handed to
-      // `local` unstamped instead, so the task that handles it supplies the
-      // instant.
-      const message = stamped(unstamped, Date.now)
+      // A message that reaches the wire with no instant yet gets one from system
+      // time here — the envelope crosses a process boundary and must be fully
+      // formed. A locally-shortcut message is handed to `next` untouched
+      // instead, so the task that handles it supplies the instant.
+      const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const activity = shutdownLatch.registerActivity()
       try {
         const commandName = qualifiedNameToString(message.name)
@@ -558,7 +558,7 @@ export function kronosDbCommandBus(
 
     subscribe(commandName, handler) {
       localHandlers.add(commandName)
-      local.subscribe(commandName, handler)
+      next.subscribe(commandName, handler)
 
       ensureStreamStarted()
       outbound.send({
@@ -586,24 +586,24 @@ export function kronosDbCommandBus(
 /**
  * A query bus backed by KronosDB.
  *
- * Lineage, if wanted, is `interceptingQueryBus(bus, lineage)` at the host, for the same reason
+ * Correlation, if wanted, is `interceptingQueryBus(bus, correlation)` at the host, for the same reason
  * {@link kronosDbCommandBus} is wrapped — AF runs dispatch interception at the
  * top of `query` / `scatterGather` /
  * `subscriptionQuery`, before anything is sent. `query()` below can also shortcut
- * to a co-located handler, and wrapping outside means lineage is stamped
+ * to a co-located handler, and wrapping outside means correlation is stamped
  * identically on both branches.
  *
  * KNOWN GAP: `subscriptionQuery` / `subscribeToUpdates` build their proto
  * straight from `message.metadata`, and `interceptingQueryBus` (in
  * `@kronos-ts/core`) forwards those two calls to the delegate without
  * running the dispatch chain. Subscription handlers therefore still travel
- * without lineage. Closing that needs a change in the messaging package.
+ * without correlation. Closing that needs a change in the messaging package.
  */
-export function kronosDbQueryBus(
+export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
+  next: QueryBus<U>,
   kdb: Pick<KronosDbConnectionHandle, "connection" | "serializer" | "registerShutdownLatch">,
-  local: QueryBus,
   options: KronosDbQueryBusOptions = {},
-): QueryBus {
+): QueryBus<U> {
   const {
     flowControl,
     shortcutQueriesToLocalHandlers,
@@ -719,14 +719,14 @@ export function kronosDbQueryBus(
             timestamp: Number(proto.timestamp),
           }
           // Into the LOCAL BUS — see the note on kronosDbCommandBus.
-          resultPayload = await local.query(queryMessage)
+          resultPayload = await next.query(queryMessage)
         } catch (err) {
           errorCode = KronosDbErrorCode.QUERY_EXECUTION_ERROR
           errorMsg = err instanceof Error ? err.message : String(err)
         }
       } else {
         errorCode = KronosDbErrorCode.NO_HANDLER_FOR_QUERY
-        errorMsg = `No local handler for query "${queryName}"`
+        errorMsg = `No next handler for query "${queryName}"`
       }
 
       const responseSerialized = resultPayload !== undefined
@@ -788,14 +788,14 @@ export function kronosDbQueryBus(
             }
 
             // Into the LOCAL BUS — see the note on kronosDbCommandBus.
-            resultPayload = await local.query(queryMessage)
+            resultPayload = await next.query(queryMessage)
           } catch (err) {
             errorCode = KronosDbErrorCode.QUERY_EXECUTION_ERROR
             errorMsg = err instanceof Error ? err.message : String(err)
           }
         } else {
           errorCode = KronosDbErrorCode.NO_HANDLER_FOR_QUERY
-          errorMsg = `No local handler for query "${queryName}"`
+          errorMsg = `No next handler for query "${queryName}"`
         }
 
         const responseSerialized = resultPayload !== undefined
@@ -844,8 +844,8 @@ export function kronosDbQueryBus(
     }
   }
 
-  const routing: QueryBus = {
-    async query(unstamped: Unstamped<QueryMessage>, uow?: UnitOfWork): Promise<unknown> {
+  const routing: QueryBus<U> = {
+    async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
         const queryName = qualifiedNameToString(unstamped.name)
@@ -853,20 +853,19 @@ export function kronosDbQueryBus(
         if (shortcutQueriesToLocalHandlers && localHandlers.has(queryName)) {
           // Hand the unit of work through, so a `ctx.query` that shortcuts to a
           // co-located handler still nests in the caller's UoW exactly as the
-          // in-process bus does — otherwise the local and remote branches
-          // differ. `local` owns the nest-or-open decision now; that used to be
+          // in-process bus does — otherwise the next and remote branches
+          // differ. `next` owns the nest-or-open decision now; that used to be
           // duplicated here against a separately-supplied `unitOfWork`, which
           // was one more place for the two to disagree.
-          return local.query(unstamped, uow)
+          return next.query(unstamped, uow)
         }
 
       // A transport is not a task: it has no unit of work, so it has no clock.
-      // A message that reaches the wire still {@link Unstamped} is therefore
-      // stamped from system time here — the envelope crosses a process boundary
-      // and must be fully formed. A locally-shortcut message is handed to
-      // `local` unstamped instead, so the task that handles it supplies the
-      // instant.
-        const message = stamped(unstamped, Date.now)
+      // A message that reaches the wire with no instant yet gets one from system
+      // time here — the envelope crosses a process boundary and must be fully
+      // formed. A locally-shortcut message is handed to `next` untouched
+      // instead, so the task that handles it supplies the instant.
+        const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
         const serialized = serializePayload(queryName, message.payload)
 
         const responseStream = connection.queries.query({
@@ -898,7 +897,7 @@ export function kronosDbQueryBus(
 
     subscribe(queryName, handler) {
       localHandlers.add(queryName)
-      local.subscribe(queryName, handler)
+      next.subscribe(queryName, handler)
 
       ensureStreamStarted()
       outbound.send({
@@ -915,10 +914,10 @@ export function kronosDbQueryBus(
     },
 
     subscriptionQuery(
-      unstamped: Unstamped<QueryMessage>,
+      unstamped: QueryMessage,
       bufferSize?: number,
     ): SubscriptionQueryResult {
-      const message = stamped(unstamped, Date.now)
+      const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
@@ -1014,10 +1013,10 @@ export function kronosDbQueryBus(
     },
 
     subscribeToUpdates(
-      unstamped: Unstamped<QueryMessage>,
+      unstamped: QueryMessage,
       bufferSize?: number,
     ): AsyncIterable<unknown> & { close(): void } {
-      const message = stamped(unstamped, Date.now)
+      const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)

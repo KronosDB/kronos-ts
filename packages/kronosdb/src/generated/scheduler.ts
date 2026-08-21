@@ -11,7 +11,7 @@ import { TaggedEvent } from "./eventstore.js";
 
 export const protobufPackage = "kronosdb.scheduler";
 
-export interface ScheduleAppendRequest {
+export type ScheduleAppendRequest = {
   /**
    * When the event should be appended, in milliseconds since epoch. A time
    * in the past fires on the next scheduler tick.
@@ -25,30 +25,30 @@ export interface ScheduleAppendRequest {
   token: string;
 }
 
-export interface ScheduleAppendResponse {
+export type ScheduleAppendResponse = {
   /** Identifies the schedule for cancellation. */
   token: string;
 }
 
-export interface CancelScheduleRequest {
+export type CancelScheduleRequest = {
   token: string;
 }
 
-export interface CancelScheduleResponse {
+export type CancelScheduleResponse = {
 }
 
-export interface ListSchedulesRequest {
+export type ListSchedulesRequest = {
 }
 
 /** A schedule that has neither fired nor been cancelled. */
-export interface Schedule {
+export type Schedule = {
   token: string;
   dueMs: bigint;
   /** Type name of the event that will be appended. */
   eventName: string;
 }
 
-export interface ListSchedulesResponse {
+export type ListSchedulesResponse = {
   schedules: Schedule[];
 }
 
@@ -570,7 +570,7 @@ export const SchedulerServiceDefinition = {
   },
 } as const;
 
-export interface SchedulerServiceImplementation<CallContextExt = {}> {
+export type SchedulerServiceImplementation<CallContextExt = {}> = {
   /**
    * Schedules an event to be appended when `due_ms` arrives.
    *
@@ -600,7 +600,7 @@ export interface SchedulerServiceImplementation<CallContextExt = {}> {
   ): Promise<DeepPartial<ListSchedulesResponse>>;
 }
 
-export interface SchedulerServiceClient<CallOptionsExt = {}> {
+export type SchedulerServiceClient<CallOptionsExt = {}> = {
   /**
    * Schedules an event to be appended when `due_ms` arrives.
    *
@@ -642,7 +642,7 @@ function isSet(value: any): boolean {
   return value !== null && value !== undefined;
 }
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

@@ -10,7 +10,7 @@
  *
  * This is the TypeScript equivalent of AF5's ShutdownLatch pattern.
  */
-export interface ShutdownLatch {
+export type ShutdownLatch = {
   /**
    * Register an in-flight activity. Throws if shutdown is in progress.
    * Call `end()` on the returned handle when the activity completes.
@@ -31,7 +31,7 @@ export interface ShutdownLatch {
   readonly activeCount: number
 }
 
-export interface ActivityHandle {
+export type ActivityHandle = {
   /** Mark this activity as complete. */
   end(): void
 }

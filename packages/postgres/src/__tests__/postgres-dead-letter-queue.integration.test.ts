@@ -174,7 +174,7 @@ describe("postgresDeadLetterQueue", () => {
   it("commits the enqueue in the active unit of work's transaction — and rolls it back on failure", async () => {
     // Same premise as the token store: a parked letter and the token that
     // skipped past it are one transaction, or neither happened.
-    const make = postgresUnitOfWork(pool, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, pool)
 
     await expect(
       make().execute(async (uow) => {

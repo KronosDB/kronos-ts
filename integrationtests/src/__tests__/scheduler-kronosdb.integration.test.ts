@@ -17,15 +17,13 @@
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
-import { qn, tag } from "@kronos-ts/core"
-import type { EventMessage } from "@kronos-ts/core"
+import { inMemoryEventStore, qn, tag } from "@kronos-ts/core"
+import type { EventMessage, ScheduleCapability } from "@kronos-ts/core"
 import {
   connectToKronosDb,
-  createKronosDbScheduler,
-  ScheduleAlreadyExistsError,
-  ScheduleAlreadyResolvedError,
+  kronosDbSchedulingEventStore,
   type KronosDbConnection,
-  type KronosDbScheduler,
+  type KronosDbSchedulingControl,
 } from "@kronos-ts/kronosdb"
 
 const IMAGE = process.env.KRONOSDB_IMAGE ?? "ghcr.io/kronosdb/kronosdb:latest"
@@ -82,7 +80,7 @@ const waitUntil = async (probe: () => Promise<boolean>, timeoutMs = 15_000) => {
 describe("KronosDB scheduler (e2e)", () => {
   let container: StartedTestContainer
   let connection: KronosDbConnection
-  let scheduler: KronosDbScheduler
+  let scheduler: ScheduleCapability & KronosDbSchedulingControl
   let schedulerAvailable = false
 
   beforeAll(async () => {
@@ -100,11 +98,15 @@ describe("KronosDB scheduler (e2e)", () => {
       port: container.getMappedPort(50051),
       componentName: "scheduler-e2e",
     })
-    scheduler = createKronosDbScheduler(connection, serializer)
+    // THE TIER, over a throwaway in-memory log. The wrapped store is irrelevant
+    // to every claim here: KronosDB appends the fired event SERVER-SIDE, into
+    // the log the connection already owns, which is exactly the property this
+    // file exists to prove.
+    scheduler = kronosDbSchedulingEventStore(inMemoryEventStore(), connection, { serializer })
 
     // Probe once: an image without the service answers UNIMPLEMENTED.
     try {
-      await scheduler.list()
+      await scheduler.listSchedules()
       schedulerAvailable = true
     } catch (error) {
       // gRPC UNIMPLEMENTED = 12: this server predates the SchedulerService.
@@ -125,11 +127,11 @@ describe("KronosDB scheduler (e2e)", () => {
     if (!schedulerAvailable) return
 
     const orderId = `A-${crypto.randomUUID()}`
-    await scheduler.schedule(reminderEvent(orderId), Date.now() + 1_500)
+    await scheduler.schedule(reminderEvent(orderId), new Date(Date.now() + 1_500))
 
     // Before due: the schedule exists, but the client sees no event.
     expect((await sourceByOrder(connection, orderId)).events).toHaveLength(0)
-    expect((await scheduler.list()).length).toBeGreaterThan(0)
+    expect((await scheduler.listSchedules()).length).toBeGreaterThan(0)
 
     // After due: the event landed without any client appending it.
     const fired = await waitUntil(async () =>
@@ -154,27 +156,23 @@ describe("KronosDB scheduler (e2e)", () => {
     if (!schedulerAvailable) return
 
     const orderId = `B-${crypto.randomUUID()}`
-    const token = await scheduler.schedule(reminderEvent(orderId), Date.now() + 1_000, {
-      token: `cancel-${orderId}`,
-    })
-    await scheduler.cancel(token)
+    const token = await scheduler.schedule(reminderEvent(orderId), new Date(Date.now() + 1_000))
+    expect(await scheduler.cancelSchedule(token)).toEqual({ kind: "cancelled" })
 
     // Past the due time: nothing may appear.
     await new Promise((resolve) => setTimeout(resolve, 2_500))
     expect((await sourceByOrder(connection, orderId)).events).toHaveLength(0)
 
-    // Cancelling again reports the schedule already resolved.
-    expect(scheduler.cancel(token)).rejects.toThrow(ScheduleAlreadyResolvedError)
+    // Cancelling again is NEWS, not a throw: the schedule has resolved, and the
+    // server does not say whether it fired or was cancelled — so the capability
+    // reports the reading that makes a caller check for compensation.
+    expect(await scheduler.cancelSchedule(token)).toEqual({ kind: "already-appended" })
   }, 30_000)
 
-  it("refuses a duplicate token — retried schedules are idempotent", async () => {
-    if (!schedulerAvailable) return
-
-    const orderId = `C-${crypto.randomUUID()}`
-    const token = `idem-${orderId}`
-    await scheduler.schedule(reminderEvent(orderId), Date.now() + 60_000, { token })
-    expect(scheduler.schedule(reminderEvent(orderId), Date.now() + 60_000, { token }))
-      .rejects.toThrow(ScheduleAlreadyExistsError)
-    await scheduler.cancel(token)
-  }, 30_000)
+  // THE CALLER-SUPPLIED IDEMPOTENCY TOKEN IS GONE, and with it the test that
+  // covered it. `ScheduleCapability.schedule` has no such parameter, because
+  // neither the postgres nor the in-memory tier can honour one and a capability
+  // is what every member of the tier can promise. A host that needs KronosDB's
+  // idempotent retry reaches `connection.scheduler.scheduleAppend` directly —
+  // the service is still there, it is simply not part of the shared contract.
 })

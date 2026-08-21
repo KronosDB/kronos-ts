@@ -7,16 +7,15 @@ import {
   type QueryHandlerEntry,
   type EventHandlerEntry,
   type HandlerSite,
-  type StateEntry,
   eventProcessor,
 } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus, inMemoryTokenStore, type TokenStore,
+  localCommandBus,
+  localQueryBus, inMemoryTokenStore, type TokenStore,
   type UnitOfWork, type CommandBus, type QueryBus,
 } from "@kronos-ts/core"
 import {
@@ -44,13 +43,13 @@ import {
 
 /**
  * The two things `kronos` needs that are not modules. The UoW runner is named
- * once and handed to `simpleCommandBus` (which captures it at construction) —
+ * once and handed to `localCommandBus` (which captures it at construction) —
  * writing it on an adjacent line is what makes that checkable.
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
 
@@ -69,7 +68,7 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
 }
 
 /**
- * Attach a site to the course slice's four lists — spread the result straight
+ * Attach a site to the course slice's three lists — spread the result straight
  * into `kronos({ ...sitedCourses({ eventStore, ...buses }) })`.
  *
  * `site` is the ARGUMENT LIST of a local helper, not a stored record: every
@@ -94,7 +93,6 @@ function sitedCourses(site: HandlerSite & {
     unitOfWork: uow,
   })
   return {
-    states: courseSlice.states.map((s) => ({ ...s, ...handlerSite }) as StateEntry),
     commandHandlers: courseSlice.commandHandlers.map(
       (h) => ({ ...h, ...handlerSite, commandBus, queryBus }) as CommandHandlerEntry,
     ),

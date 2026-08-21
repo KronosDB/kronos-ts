@@ -27,14 +27,14 @@ import {
   resolveSessionTimeouts,
 } from "../session-timeouts.js"
 
-export interface PgAdapterConfig extends SessionTimeoutOptions {
+export type PgAdapterConfig = SessionTimeoutOptions & {
   /** Standard libpq URI: postgresql://user:pass@host:port/db */
   readonly connectionString: string
   /** Optional pg.Pool config overrides (max connections, idleTimeoutMillis, etc.). */
   readonly poolConfig?: Omit<PoolConfig, "connectionString">
 }
 
-interface ListenerSlot {
+type ListenerSlot = {
   channel: string
   callback: (payload: string | undefined) => void
 }

@@ -3,9 +3,9 @@ import { z } from "zod"
 import { emptyMetadata, qn } from "@kronos-ts/core"
 import { command, unitOfWork } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingCommandBus,
-  simpleCommandBus,
+  localCommandBus,
   type CommandBus,
 } from "@kronos-ts/core"
 import {
@@ -57,15 +57,15 @@ function busOver(
   config = rabbitConfig({ url: "amqp://test" }),
 ): CommandBus {
   return interceptingCommandBus(
-    rabbitMqCommandBus({ config, commandTransport: transport }, localSegment, options),
-    lineage,
+    rabbitMqCommandBus(localSegment, { config, commandTransport: transport }, options),
+    correlation,
   )
 }
 
 describe("RabbitMQ command bus", () => {
   it("prefers local handlers by default", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, simpleCommandBus(unitOfWork))
+    const bus = busOver(transport, localCommandBus(unitOfWork))
 
     bus.subscribe("test.DoThing", async () => "local-ok")
 
@@ -83,7 +83,7 @@ describe("RabbitMQ command bus", () => {
 
   it("routes through transport when distributed routing is forced", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, simpleCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
 
     bus.subscribe("test.DoThing", async () => "local-ok")
 
@@ -101,7 +101,7 @@ describe("RabbitMQ command bus", () => {
 
   it("carries command metadata across the transport envelope", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, simpleCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
 
     await bus.dispatch({
       identifier: "cmd-1",
@@ -111,8 +111,8 @@ describe("RabbitMQ command bus", () => {
       timestamp: Date.now(),
     })
 
-    // Correlation/causation lineage rides on message metadata, not a separate
-    // processing-context snapshot. `lineage` SEEDS both fields and clobbers
+    // Correlation/causation correlation rides on message metadata, not a separate
+    // processing-context snapshot. `correlation` SEEDS both fields and clobbers
     // neither: a message that already carries a cause was caused by something,
     // so "cause-1" survives the hop.
     expect(dispatched[0]!.message.metadata).toEqual({
@@ -121,9 +121,9 @@ describe("RabbitMQ command bus", () => {
     })
   })
 
-  it("seeds lineage on a root message that carries none", async () => {
+  it("seeds correlation on a root message that carries none", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, simpleCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
 
     await bus.dispatch({
       identifier: "cmd-1",
@@ -133,7 +133,7 @@ describe("RabbitMQ command bus", () => {
       timestamp: Date.now(),
     })
 
-    // No inbound lineage — this message IS the root, so both fields start at
+    // No inbound correlation — this message IS the root, so both fields start at
     // its own identifier.
     expect(dispatched[0]!.message.metadata).toEqual({
       correlationId: "cmd-1",
@@ -143,7 +143,7 @@ describe("RabbitMQ command bus", () => {
 
   it("stamps the connection's timeout on the envelope when routing names none", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, simpleCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
 
     await bus.dispatch({
       identifier: "cmd-1",
@@ -158,7 +158,7 @@ describe("RabbitMQ command bus", () => {
 
   it("lets the routing layer override the transport's timeout default", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, simpleCommandBus(unitOfWork), {
+    const bus = busOver(transport, localCommandBus(unitOfWork), {
       preferLocal: false,
       timeoutMs: 1_500,
     })
@@ -176,7 +176,7 @@ describe("RabbitMQ command bus", () => {
 
   it("handles an inbound command in its own UnitOfWork", async () => {
     const { transport, subscriptions } = recordingTransport()
-    const bus = busOver(transport, simpleCommandBus(unitOfWork))
+    const bus = busOver(transport, localCommandBus(unitOfWork))
 
     bus.subscribe("test.DoThing", async (message) => `handled:${(message.payload as { id: string }).id}`)
     const subscribed = subscriptions.get("test.DoThing")!
@@ -202,7 +202,7 @@ describe("RabbitMQ command bus", () => {
     // The transport nacks (and therefore dead-letters) on a rejection; a handler
     // that ran and threw is an answered message, so it must ack with ok:false.
     const { transport, subscriptions } = recordingTransport()
-    const bus = busOver(transport, simpleCommandBus(unitOfWork))
+    const bus = busOver(transport, localCommandBus(unitOfWork))
 
     bus.subscribe("test.DoThing", async () => {
       throw new Error("handler blew up")
@@ -236,7 +236,7 @@ describe("RabbitMQ command bus", () => {
       },
       subscribe() {},
     }
-    const bus = busOver(transport, simpleCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
 
     await expect(
       bus.dispatch({

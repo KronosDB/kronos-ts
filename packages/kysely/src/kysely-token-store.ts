@@ -5,24 +5,24 @@ import {
   serializeToken as serializeTokenData,
   deserializeToken as deserializeTokenData,
 } from "@kronos-ts/core"
-import type { KyselyDb } from "./kysely-transaction.js"
+import type { KyselyDb, KyselyFamily } from "./kysely-transaction.js"
 import { activeKyselyTransaction } from "./kysely-transaction.js"
 
 /** The table this adapter owns. Not a parameter — the columns are not the caller's choice. */
 export const KYSELY_TOKEN_TABLE = "kronos_token_entries"
 
 /** Tuning only — everything required is a positional argument. */
-export interface KyselyTokenStoreOptions {
+export type KyselyTokenStoreOptions = {
   /** Claim timeout in ms. Default: 10000. */
   claimTimeoutMs?: number
 }
 
 /**
- * Token table interface for Kysely. Users must define this table in their
- * Kysely database interface:
+ * Token table shape for Kysely. Users must define this table in their
+ * Kysely database type:
  *
  * ```typescript
- * interface Database {
+ * type Database = {
  *   kronos_token_entries: {
  *     processor_name: string
  *     segment: number
@@ -66,7 +66,7 @@ function nowIso(): string {
  * const tokenStore = kyselyTokenStore(db)
  * ```
  */
-export function kyselyTokenStore(db: KyselyDb, options: KyselyTokenStoreOptions = {}): TokenStore {
+export function kyselyTokenStore(db: KyselyDb, options: KyselyTokenStoreOptions = {}): TokenStore<UnitOfWork & KyselyFamily> {
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
   const table = KYSELY_TOKEN_TABLE
 

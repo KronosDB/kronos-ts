@@ -1,11 +1,9 @@
 import type {
-  CommandHandlerDefinition,
-  EventHandlerDefinition,
+  CommandHandler,
+  EventHandler,
   EventProcessor,
   EventStore,
-  QueryHandlerDefinition,
-  SnapshotStore,
-  StateModule,
+  QueryHandler,
   TokenStore,
   UnitOfWork,
 } from "@kronos-ts/core"
@@ -76,11 +74,10 @@ type CourseState = {
 }
 
 const Course = state({
-  name: "Course",
   id: { courseId: z.string() },
-  initial: (): CourseState => ({ created: false, name: "", capacity: 0, enrolled: [] }),
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
+    (): CourseState => ({ created: false, name: "", capacity: 0, enrolled: [] }),
     [CourseCreated, (s, { payload }) => ({
       ...s, created: true, name: payload.name, capacity: payload.capacity,
     })],
@@ -210,17 +207,16 @@ const getAllCourses = queryHandler(GetAllCourses, async () => {
  * record and {@link courses} are exposed to production callers; the re-exports at
  * the bottom of this file exist solely for integration-test inspection.
  *
- * The four lists carry BARE definitions: no event store, no buses, no processor.
+ * The three lists carry BARE definitions: no event store, no buses, no processor.
  * A composition root attaches the site, because which log a slice lives in and
- * where its cursor is kept are deployment facts.
+ * where its cursor is kept are deployment facts. `Course` is in no list at all —
+ * the handlers that fold it close over it, and `ctx.load` needs no introduction.
  */
 export const courseSlice: {
-  states: ReadonlyArray<StateModule<any, any>>
-  commandHandlers: ReadonlyArray<CommandHandlerDefinition<any, any>>
-  queryHandlers: ReadonlyArray<QueryHandlerDefinition<any, any>>
-  eventHandlers: ReadonlyArray<EventHandlerDefinition<any, any>>
+  commandHandlers: ReadonlyArray<CommandHandler<any, any>>
+  queryHandlers: ReadonlyArray<QueryHandler<any, any>>
+  eventHandlers: ReadonlyArray<EventHandler<any, any>>
 } = {
-  states: [Course],
   commandHandlers: [createCourse, changeCourseCapacity, subscribeStudent, unsubscribeStudent],
   queryHandlers: [getCourseView, getAllCourses],
   eventHandlers: [onCreated, onCapChanged, onSubscribed, onUnsubscribed],
@@ -239,8 +235,12 @@ export const COURSE_PROJECTION = "course-projection"
  * a lane-free projection) and leaves its resources in the parameter list, so the
  * site calls it full-handed. Three parameters, not four, declines the queue by
  * assignability.
+ *
+ * ONE STORE PARAMETER. There is no snapshot store beside the log any more —
+ * a site that caches folds hands in a log that CAN, and the entries point at
+ * the one object.
  */
-export function courses(eventStore: EventStore, snapshotStore: SnapshotStore) {
+export function courses(eventStore: EventStore) {
   const projection = (
     log: EventStore,
     tokenStore: TokenStore,
@@ -248,9 +248,8 @@ export function courses(eventStore: EventStore, snapshotStore: SnapshotStore) {
   ): EventProcessor => eventProcessor({ name: COURSE_PROJECTION, eventStore: log, tokenStore, unitOfWork })
 
   return {
-    states: courseSlice.states.map((s) => ({ ...s, eventStore, snapshotStore })),
-    commandHandlers: courseSlice.commandHandlers.map((h) => ({ ...h, eventStore, snapshotStore })),
-    queryHandlers: courseSlice.queryHandlers.map((h) => ({ ...h })),
+    commandHandlers: courseSlice.commandHandlers.map((h) => ({ ...h, eventStore })),
+    queryHandlers: courseSlice.queryHandlers.map((h) => ({ ...h, eventStore })),
     eventHandlers: courseSlice.eventHandlers.map((h) => ({ ...h, processor: projection })),
   }
 }

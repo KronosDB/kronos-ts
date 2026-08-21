@@ -41,6 +41,7 @@ export {
 // ── the site ───────────────────────────────────────────────────────────────
 export {
   type PartialProcessor,
+  type FixtureUnitOfWork,
   type FixtureEventHandler,
   type FixtureLists,
   type FixtureScope,
@@ -60,9 +61,9 @@ export {
   type RecordingCommandBus,
   type RecordingQueryBus,
   type ScheduleRecord,
-  type ControllableScheduler,
+  type ScheduleRecording,
   recordingEventStore,
   recordingCommandBus,
   recordingQueryBus,
-  controllableScheduler,
+  controllableSchedulingEventStore,
 } from "./recording.js"

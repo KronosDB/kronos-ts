@@ -19,7 +19,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       # npm itself does the publish (via `changeset publish`). Trusted
       # Publishing needs npm >= 11.5.1, newer than what runners ship.

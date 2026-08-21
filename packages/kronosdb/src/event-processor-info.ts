@@ -1,7 +1,7 @@
 /**
  * Status of a single event processor, reported to KronosDB.
  */
-export interface ProcessorStatus {
+export type ProcessorStatus = {
   readonly name: string
   readonly running: boolean
   readonly mode: "Tracking" | "Subscribing"
@@ -14,7 +14,7 @@ export interface ProcessorStatus {
   readonly segments: SegmentStatus[]
 }
 
-export interface SegmentStatus {
+export type SegmentStatus = {
   readonly segmentId: number
   readonly caughtUp: boolean
   readonly replaying: boolean

@@ -21,11 +21,13 @@ import { traceparentOf, withTraceparent } from "./traceparent.js"
  * handler's metadata outward), and starts a new trace when it does not.
  *
  * ```ts
- * const commandBus = otlpCommandBus(interceptingCommandBus(simpleCommandBus(uow), lineage), exporter)
+ * const commandBus = otlpCommandBus(interceptingCommandBus(localCommandBus(uow), correlation), exporter)
  * ```
  */
-export function otlpCommandBus(bus: CommandBus, exporter: OtlpExporter): CommandBus {
+export function otlpCommandBus<B extends CommandBus<any>>(next: B, exporter: OtlpExporter): B {
   return {
+    ...next,
+
     async dispatch(message: CommandMessage): Promise<unknown> {
       const span = exporter.startSpan({
         name: `dispatch(${qualifiedNameToString(message.name)})`,
@@ -38,7 +40,7 @@ export function otlpCommandBus(bus: CommandBus, exporter: OtlpExporter): Command
         metadata: withTraceparent(message.metadata, span),
       }
       try {
-        const result = await bus.dispatch(propagated)
+        const result = await next.dispatch(propagated)
         span.end()
         return result
       } catch (error) {
@@ -48,17 +50,26 @@ export function otlpCommandBus(bus: CommandBus, exporter: OtlpExporter): Command
     },
 
     subscribe(commandName, handler): void {
-      bus.subscribe(commandName, handler)
+      next.subscribe(commandName, handler)
     },
-  }
+    // CAPABILITY-PRESERVING. `B` in, `B` out, over a spread of everything the
+    // wrapped bus had — so tracing a bus that mints correlating units of work
+    // yields a bus that still mints them, and a handler demanding
+    // `HandlerContext<CorrelatingUnitOfWork>` still fits behind it. Typed
+    // `(CommandBus) => CommandBus` this erased `U` outright, which made
+    // tracing silently incompatible with correlation: the runtime worked and
+    // the build did not.
+  } as B
 }
 
 /**
  * A {@link QueryBus} that traces `query`. Everything else on the bus —
  * subscriptions, subscription queries, updates — delegates unchanged.
  */
-export function otlpQueryBus(bus: QueryBus, exporter: OtlpExporter): QueryBus {
+export function otlpQueryBus<B extends QueryBus<any>>(next: B, exporter: OtlpExporter): B {
   return {
+    ...next,
+
     async query(message: QueryMessage, uow?): Promise<unknown> {
       const span = exporter.startSpan({
         name: `query(${qualifiedNameToString(message.name)})`,
@@ -71,7 +82,7 @@ export function otlpQueryBus(bus: QueryBus, exporter: OtlpExporter): QueryBus {
         metadata: withTraceparent(message.metadata, span),
       }
       try {
-        const result = await bus.query(propagated, uow)
+        const result = await next.query(propagated, uow)
         span.end()
         return result
       } catch (error) {
@@ -81,27 +92,28 @@ export function otlpQueryBus(bus: QueryBus, exporter: OtlpExporter): QueryBus {
     },
 
     subscribe(queryName, handler): void {
-      bus.subscribe(queryName, handler)
+      next.subscribe(queryName, handler)
     },
 
     subscriptionQuery(message, bufferSize) {
-      return bus.subscriptionQuery(message, bufferSize)
+      return next.subscriptionQuery(message, bufferSize)
     },
 
     subscribeToUpdates(message, bufferSize) {
-      return bus.subscribeToUpdates(message, bufferSize)
+      return next.subscribeToUpdates(message, bufferSize)
     },
 
     emitUpdate(queryName, filter, update, uow) {
-      return bus.emitUpdate(queryName, filter, update, uow)
+      return next.emitUpdate(queryName, filter, update, uow)
     },
 
     completeSubscription(queryName, filter, uow) {
-      return bus.completeSubscription(queryName, filter, uow)
+      return next.completeSubscription(queryName, filter, uow)
     },
 
     completeSubscriptionExceptionally(queryName, error, filter, uow) {
-      return bus.completeSubscriptionExceptionally(queryName, error, filter, uow)
+      return next.completeSubscriptionExceptionally(queryName, error, filter, uow)
     },
-  }
+    // CAPABILITY-PRESERVING — see `otlpCommandBus`.
+  } as B
 }

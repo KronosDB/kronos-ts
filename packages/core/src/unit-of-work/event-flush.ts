@@ -1,5 +1,5 @@
-import { queryItems, type EventQuery, type QueryItem } from "../query/event-query.js"
-import type { EventMessage } from "../messages/message.js"
+import { queryItems, type EventQuery, type QueryItem } from "../event-sourcing/dcb-query.js"
+import type { EventMessage } from "../messaging/messages.js"
 import type { UnitOfWork } from "./unit-of-work.js"
 
 // ---------------------------------------------------------------------------
@@ -13,7 +13,7 @@ import type { UnitOfWork } from "./unit-of-work.js"
 // Event handlers deliberately have no `append` (see handler-context.ts).
 // ---------------------------------------------------------------------------
 
-export interface EventFlushStore {
+export type EventFlushStore = {
   append(
     events: ReadonlyArray<EventMessage>,
     condition?: unknown,
@@ -21,7 +21,7 @@ export interface EventFlushStore {
   ): Promise<unknown>
 }
 
-export interface EventFlushOptions {
+export type EventFlushOptions = {
   eventStore: EventFlushStore
   tagResolver?: (event: EventMessage) => Array<{ key: string; value: string }>
   /** Command-path hook: lets a handler definition override the sourced query. */
@@ -45,7 +45,7 @@ export function registerEventFlush(uow: UnitOfWork, options: EventFlushOptions):
     if (buffered.length === 0) return
 
     // Correlation data is applied per-event at append() time, so the buffer
-    // already carries the active lineage here.
+    // already carries the active correlation here.
     const resolvedEvents = options.tagResolver
       ? buffered.map((event) => ({
           ...event,

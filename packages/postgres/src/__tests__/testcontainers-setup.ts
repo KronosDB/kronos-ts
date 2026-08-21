@@ -17,7 +17,7 @@
 
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 
-export interface RunningPostgres {
+export type RunningPostgres = {
   /** libpq-format connection string the adapter expects. */
   readonly connectionString: string
   /** Host:port + db + user split out for adapters that don't parse URIs. */

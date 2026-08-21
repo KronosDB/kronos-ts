@@ -9,7 +9,7 @@ import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
  * seam; it is here now because the AMQP gossip mirror is the only thing that
  * ever implemented it.
  */
-export interface ClusterSubscriberRecord {
+export type ClusterSubscriberRecord = {
   readonly subId: string
   readonly queryName: string
   /** The subscribing query's payload — what a `SubscriptionFilter` matches on. */
@@ -33,7 +33,7 @@ export type SubscriptionDelivery =
  * The query bus only ever reads the {@link ClusterSubscriberRecord} half;
  * `ownerInstanceId` is how THIS transport knows where to send a delivery.
  */
-export interface SubscriberRecord extends ClusterSubscriberRecord {
+export type SubscriberRecord = ClusterSubscriberRecord & {
   readonly ownerInstanceId: string
 }
 
@@ -74,7 +74,7 @@ export type GossipEnvelope =
  * predicate work across instances, since it never has to cross the wire — and
  * then routes each matching delivery to the owning instance.
  */
-export interface DistributedSubscriberRegistry {
+export type DistributedSubscriberRegistry = {
   /** Stable identifier for this process. */
   readonly instanceId: string
 
@@ -126,125 +126,37 @@ export interface DistributedSubscriberRegistry {
  * dropped on the joiner side — by design, since the joiner can't have any of
  * its own subscribers yet either. The window self-closes as the mirror fills.
  */
-export class AmqpDistributedSubscriberRegistry implements DistributedSubscriberRegistry {
-  private channel: Channel | undefined
-  private connectPromise: Promise<void> | undefined
-  private closed = false
-  private deliverHandler: ((envelope: DeliverEnvelope) => void) | undefined
-  private readonly mirror = new Map<string, SubscriberRecord>()
-  private readonly locallyOwnedSubIds = new Set<string>()
+export function amqpDistributedSubscriberRegistry(
+  config: RabbitMqResolvedConfig,
+  connection: AmqpChannelSource,
+): DistributedSubscriberRegistry {
+  const instanceId = `${config.identity.serviceName}.${config.identity.instanceId}`
 
-  readonly instanceId: string
+  let channel: Channel | undefined
+  let connectPromise: Promise<void> | undefined
+  let closed = false
+  let deliverHandler: ((envelope: DeliverEnvelope) => void) | undefined
+  const mirror = new Map<string, SubscriberRecord>()
+  const locallyOwnedSubIds = new Set<string>()
 
-  constructor(
-    private readonly config: RabbitMqResolvedConfig,
-    private readonly connection: AmqpChannelSource,
-  ) {
-    this.instanceId = `${config.identity.serviceName}.${config.identity.instanceId}`
+  const requireChannel = (): Channel => {
+    if (!channel) throw new Error("Distributed subscriber registry is not connected")
+    return channel
   }
 
-  async connect(): Promise<void> {
-    if (this.connectPromise) return this.connectPromise
-    this.connectPromise = this.doConnect()
-    return this.connectPromise
-  }
-
-  private async doConnect(): Promise<void> {
-    this.channel = await this.connection.channel()
-    const ch = this.channel
-
-    await ch.assertExchange(this.config.topology.subscribersGossipExchange, "fanout", {
-      durable: true,
-    })
-    await ch.assertExchange(this.config.topology.subscribersDirectExchange, "direct", {
-      durable: true,
-    })
-
-    const gossipQueue = this.config.topology.subscribersGossipQueue()
-    const directQueue = this.config.topology.subscribersDirectQueue()
-
-    await ch.assertQueue(gossipQueue, { durable: false, exclusive: true, autoDelete: true })
-    await ch.assertQueue(directQueue, { durable: false, exclusive: true, autoDelete: true })
-
-    await ch.bindQueue(gossipQueue, this.config.topology.subscribersGossipExchange, "")
-    await ch.bindQueue(directQueue, this.config.topology.subscribersDirectExchange, this.instanceId)
-
-    await ch.consume(gossipQueue, (msg) => this.handleGossip(msg), { noAck: true })
-    await ch.consume(directQueue, (msg) => this.handleDirect(msg), { noAck: true })
-
-    // Announce ourselves so existing peers re-broadcast their owned claims.
-    this.publishGossip({ kind: "syncRequest", requesterId: this.instanceId })
-  }
-
-  async close(): Promise<void> {
-    this.closed = true
-    await this.channel?.close().catch(() => {})
-  }
-
-  async claim(record: ClusterSubscriberRecord): Promise<void> {
-    const full: SubscriberRecord = { ...record, ownerInstanceId: this.instanceId }
-    this.mirror.set(full.subId, full)
-    this.locallyOwnedSubIds.add(full.subId)
-    await this.connect()
-    if (this.closed) return
-    this.publishGossip({
-      kind: "claim",
-      ownerInstanceId: this.instanceId,
-      subId: full.subId,
-      queryName: full.queryName,
-      payload: full.payload,
-    })
-  }
-
-  async release(subId: string): Promise<void> {
-    this.mirror.delete(subId)
-    this.locallyOwnedSubIds.delete(subId)
-    await this.connect()
-    if (this.closed) return
-    this.publishGossip({ kind: "release", ownerInstanceId: this.instanceId, subId })
-  }
-
-  *records(): IterableIterator<SubscriberRecord> {
-    for (const record of this.mirror.values()) yield record
-  }
-
-  async deliver(envelope: DeliverEnvelope): Promise<void> {
-    const record = this.mirror.get(envelope.subId)
-    if (!record) return
-
-    if (record.ownerInstanceId === this.instanceId) {
-      this.deliverHandler?.(envelope)
-      return
-    }
-
-    await this.connect()
-    if (this.closed) return
-    const ch = this.requireChannel()
-    ch.publish(
-      this.config.topology.subscribersDirectExchange,
-      record.ownerInstanceId,
-      Buffer.from(JSON.stringify(envelope)),
-      { contentType: "application/json", persistent: false },
-    )
-  }
-
-  setDeliverHandler(handler: (envelope: DeliverEnvelope) => void): void {
-    this.deliverHandler = handler
-  }
-
-  private publishGossip(envelope: GossipEnvelope): void {
-    if (this.closed) return
-    const ch = this.channel
+  const publishGossip = (envelope: GossipEnvelope): void => {
+    if (closed) return
+    const ch = channel
     if (!ch) return
     ch.publish(
-      this.config.topology.subscribersGossipExchange,
+      config.topology.subscribersGossipExchange,
       "",
       Buffer.from(JSON.stringify(envelope)),
       { contentType: "application/json", persistent: false },
     )
   }
 
-  private handleGossip(msg: ConsumeMessage | null): void {
+  const handleGossip = (msg: ConsumeMessage | null): void => {
     if (!msg) return
     let envelope: GossipEnvelope
     try {
@@ -255,26 +167,26 @@ export class AmqpDistributedSubscriberRegistry implements DistributedSubscriberR
 
     if (envelope.kind === "claim") {
       // Loopback — local mirror already updated synchronously by claim().
-      if (envelope.ownerInstanceId === this.instanceId) return
-      this.mirror.set(envelope.subId, {
+      if (envelope.ownerInstanceId === instanceId) return
+      mirror.set(envelope.subId, {
         subId: envelope.subId,
         queryName: envelope.queryName,
         payload: envelope.payload,
         ownerInstanceId: envelope.ownerInstanceId,
       })
     } else if (envelope.kind === "release") {
-      if (envelope.ownerInstanceId === this.instanceId) return
-      this.mirror.delete(envelope.subId)
+      if (envelope.ownerInstanceId === instanceId) return
+      mirror.delete(envelope.subId)
     } else if (envelope.kind === "syncRequest") {
       // Skip our own announcement; respond to every other instance by
       // re-broadcasting our owned claims over the same fanout exchange.
-      if (envelope.requesterId === this.instanceId) return
-      for (const subId of this.locallyOwnedSubIds) {
-        const record = this.mirror.get(subId)
+      if (envelope.requesterId === instanceId) return
+      for (const subId of locallyOwnedSubIds) {
+        const record = mirror.get(subId)
         if (!record) continue
-        this.publishGossip({
+        publishGossip({
           kind: "claim",
-          ownerInstanceId: this.instanceId,
+          ownerInstanceId: instanceId,
           subId: record.subId,
           queryName: record.queryName,
           payload: record.payload,
@@ -283,20 +195,110 @@ export class AmqpDistributedSubscriberRegistry implements DistributedSubscriberR
     }
   }
 
-  private handleDirect(msg: ConsumeMessage | null): void {
+  const handleDirect = (msg: ConsumeMessage | null): void => {
     if (!msg) return
-    if (!this.deliverHandler) return
+    if (!deliverHandler) return
     let envelope: DeliverEnvelope
     try {
       envelope = JSON.parse(msg.content.toString("utf8")) as DeliverEnvelope
     } catch {
       return
     }
-    this.deliverHandler(envelope)
+    deliverHandler(envelope)
   }
 
-  private requireChannel(): Channel {
-    if (!this.channel) throw new Error("Distributed subscriber registry is not connected")
-    return this.channel
+  const doConnect = async (): Promise<void> => {
+    channel = await connection.channel()
+    const ch = channel
+
+    await ch.assertExchange(config.topology.subscribersGossipExchange, "fanout", {
+      durable: true,
+    })
+    await ch.assertExchange(config.topology.subscribersDirectExchange, "direct", {
+      durable: true,
+    })
+
+    const gossipQueue = config.topology.subscribersGossipQueue()
+    const directQueue = config.topology.subscribersDirectQueue()
+
+    await ch.assertQueue(gossipQueue, { durable: false, exclusive: true, autoDelete: true })
+    await ch.assertQueue(directQueue, { durable: false, exclusive: true, autoDelete: true })
+
+    await ch.bindQueue(gossipQueue, config.topology.subscribersGossipExchange, "")
+    await ch.bindQueue(directQueue, config.topology.subscribersDirectExchange, instanceId)
+
+    await ch.consume(gossipQueue, (msg) => handleGossip(msg), { noAck: true })
+    await ch.consume(directQueue, (msg) => handleDirect(msg), { noAck: true })
+
+    // Announce ourselves so existing peers re-broadcast their owned claims.
+    publishGossip({ kind: "syncRequest", requesterId: instanceId })
+  }
+
+  const connect = async (): Promise<void> => {
+    if (connectPromise) return connectPromise
+    connectPromise = doConnect()
+    return connectPromise
+  }
+
+  return {
+    instanceId,
+
+    connect,
+
+    async close() {
+      closed = true
+      await channel?.close().catch(() => {})
+    },
+
+    async claim(record: ClusterSubscriberRecord): Promise<void> {
+      const full: SubscriberRecord = { ...record, ownerInstanceId: instanceId }
+      mirror.set(full.subId, full)
+      locallyOwnedSubIds.add(full.subId)
+      await connect()
+      if (closed) return
+      publishGossip({
+        kind: "claim",
+        ownerInstanceId: instanceId,
+        subId: full.subId,
+        queryName: full.queryName,
+        payload: full.payload,
+      })
+    },
+
+    async release(subId: string): Promise<void> {
+      mirror.delete(subId)
+      locallyOwnedSubIds.delete(subId)
+      await connect()
+      if (closed) return
+      publishGossip({ kind: "release", ownerInstanceId: instanceId, subId })
+    },
+
+    *records(): IterableIterator<SubscriberRecord> {
+      for (const record of mirror.values()) yield record
+    },
+
+    async deliver(envelope: DeliverEnvelope): Promise<void> {
+      const record = mirror.get(envelope.subId)
+      if (!record) return
+
+      if (record.ownerInstanceId === instanceId) {
+        deliverHandler?.(envelope)
+        return
+      }
+
+      await connect()
+      if (closed) return
+      const ch = requireChannel()
+      ch.publish(
+        config.topology.subscribersDirectExchange,
+        record.ownerInstanceId,
+        Buffer.from(JSON.stringify(envelope)),
+        { contentType: "application/json", persistent: false },
+      )
+    },
+
+    setDeliverHandler(handler: (envelope: DeliverEnvelope) => void): void {
+      deliverHandler = handler
+    },
   }
 }

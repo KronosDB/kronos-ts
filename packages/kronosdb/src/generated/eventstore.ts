@@ -11,7 +11,7 @@ import type { CallContext, CallOptions } from "nice-grpc-common";
 export const protobufPackage = "kronosdb.eventstore";
 
 /** An event as provided by the client. */
-export interface Event {
+export type Event = {
   /** Client-provided unique identifier. */
   identifier: string;
   /** Timestamp in milliseconds since epoch. Client-provided. */
@@ -26,31 +26,31 @@ export interface Event {
   metadata: { [key: string]: string };
 }
 
-export interface Event_MetadataEntry {
+export type Event_MetadataEntry = {
   key: string;
   value: string;
 }
 
 /** A tag describing an event. Key-value pair using domain concepts. */
-export interface Tag {
+export type Tag = {
   key: Uint8Array;
   value: Uint8Array;
 }
 
 /** An event with its tags, used for appending. */
-export interface TaggedEvent {
+export type TaggedEvent = {
   event: Event | undefined;
   tags: Tag[];
 }
 
 /** An event with its assigned sequence position, returned on reads. */
-export interface SequencedEvent {
+export type SequencedEvent = {
   sequence: bigint;
   event: Event | undefined;
 }
 
 /** Request to append events. The repeated events field carries the batch. */
-export interface AppendRequest {
+export type AppendRequest = {
   /** Optional consistency condition. If omitted, events are appended unconditionally. */
   condition:
     | ConsistencyCondition
@@ -60,7 +60,7 @@ export interface AppendRequest {
 }
 
 /** Response to a successful append. */
-export interface AppendResponse {
+export type AppendResponse = {
   /** Sequence of the first event appended. */
   firstSequence: bigint;
   /** Number of events appended. */
@@ -73,7 +73,7 @@ export interface AppendResponse {
  * The consistency condition for conditional appends.
  * "Reject if any event matching the criteria exists after the consistency marker."
  */
-export interface ConsistencyCondition {
+export type ConsistencyCondition = {
   /** Position after which to check for conflicts. Events with sequence > this are checked. */
   consistencyMarker: bigint;
   /** Criteria defining which events would conflict. */
@@ -84,7 +84,7 @@ export interface ConsistencyCondition {
  * A single criterion. Matches an event if ALL tags are present AND the event name
  * is in the names list (if names is non-empty).
  */
-export interface Criterion {
+export type Criterion = {
   /** Event type names. If non-empty, the event name must match one of these. */
   names: string[];
   /** Tags that must ALL be present on the event. */
@@ -92,7 +92,7 @@ export interface Criterion {
 }
 
 /** Request to source (finite read) events matching criteria. */
-export interface SourceRequest {
+export type SourceRequest = {
   /** Inclusive starting sequence position. */
   fromSequence: bigint;
   /** Criteria to filter events. If empty, all events are returned. */
@@ -107,7 +107,7 @@ export interface SourceRequest {
 }
 
 /** A batch of sequenced events, in ascending sequence order. */
-export interface SequencedEventBatch {
+export type SequencedEventBatch = {
   events: SequencedEvent[];
   /**
    * Present on the FINAL batch of a Source stream: the next-exclusive
@@ -126,7 +126,7 @@ export interface SequencedEventBatch {
  * Response containing a batch of matching events. The final batch carries
  * the consistency marker — there is no separate marker frame.
  */
-export interface SourceResponse {
+export type SourceResponse = {
   /** A batch of matching events. */
   batch: SequencedEventBatch | undefined;
 }
@@ -135,7 +135,7 @@ export interface SourceResponse {
  * Client-to-server messages on the Stream RPC.
  * The first message MUST be a Subscribe; subsequent messages grant permits.
  */
-export interface StreamControl {
+export type StreamControl = {
   /** Initial subscription — sent once to start the stream. */
   subscribe?:
     | StreamSubscribe
@@ -145,7 +145,7 @@ export interface StreamControl {
 }
 
 /** Opens the event stream with criteria and initial permits. */
-export interface StreamSubscribe {
+export type StreamSubscribe = {
   /** Inclusive starting sequence position. */
   fromSequence: bigint;
   /** Criteria to filter events. If empty, all events are streamed. */
@@ -170,13 +170,13 @@ export interface StreamSubscribe {
 }
 
 /** Grants additional permits on an active stream. */
-export interface StreamPermits {
+export type StreamPermits = {
   /** Number of additional permits to grant. */
   permits: bigint;
 }
 
 /** A message on the event stream — a batch of matching events or a keep-alive heartbeat. */
-export interface StreamResponse {
+export type StreamResponse = {
   /**
    * Server heartbeat — sent periodically to detect slow/dead consumers.
    * Clients should ignore this (no response needed).
@@ -189,39 +189,106 @@ export interface StreamResponse {
 }
 
 /** Keep-alive heartbeat on event streams. */
-export interface StreamHeartbeat {
+export type StreamHeartbeat = {
 }
 
-export interface GetHeadRequest {
+export type GetHeadRequest = {
 }
 
-export interface GetHeadResponse {
+export type GetHeadResponse = {
   /** The sequence of the next event to be appended. 0 for an empty store. */
   sequence: bigint;
 }
 
-export interface GetTailRequest {
+export type GetTailRequest = {
 }
 
-export interface GetTailResponse {
+export type GetTailResponse = {
   /** The sequence of the first event in the store. 0 for an empty or non-truncated store. */
   sequence: bigint;
 }
 
-export interface GetTagsRequest {
+export type GetTagsRequest = {
   sequence: bigint;
 }
 
-export interface GetTagsResponse {
+export type GetTagsResponse = {
   tags: Tag[];
 }
 
-export interface GetSequenceAtRequest {
+/**
+ * A snapshot: opaque client state at a point in the log. The server never
+ * interprets it — fitness, invalidation, and versioning are the client's
+ * business (invalidation is the client renaming its key).
+ */
+export type Snapshot = {
+  /** Opaque state bytes, returned byte-exact. */
+  state: Uint8Array;
+  /**
+   * The client's fold-time consistency marker — NOT the snapshot record's
+   * own log position. Markers are next-exclusive, so this is the sequence
+   * the replay resumes AT: events with sequence >= position are not
+   * summarized by the state. Pass the marker from the read/append the
+   * state was folded from, unmodified.
+   */
+  position: bigint;
+}
+
+export type AppendSnapshotRequest = {
+  /**
+   * One client-composed opaque key; the client folds any entity id into it
+   * (e.g. "course:cs-101").
+   */
+  key: Uint8Array;
+  /** Opaque state, forever. */
+  state: Uint8Array;
+  /** The fold-time consistency marker (see Snapshot.position). */
+  position: bigint;
+}
+
+export type AppendSnapshotResponse = {
+  /** Log sequence of the snapshot record itself. Informational. */
+  sequence: bigint;
+}
+
+export type SnapshottedSourceRequest = {
+  /** Identical semantics to SourceRequest.criteria. */
+  criteria: Criterion[];
+  /** The snapshot key to resolve. */
+  key: Uint8Array;
+  /** Maximum events per batch message. 0 = server default (1024). */
+  batchSize: number;
+}
+
+/**
+ * Stream frames: at most one snapshot frame, always first if present, then
+ * event batches. The final batch carries the consistency marker exactly as
+ * Source does — a stream with no events still ends with one (empty)
+ * marker-carrying batch. A snapshot is never delivered as an event.
+ */
+export type SnapshottedSourceResponse = {
+  snapshot?: Snapshot | undefined;
+  batch?: SequencedEventBatch | undefined;
+}
+
+export type GetSnapshotRequest = {
+  key: Uint8Array;
+}
+
+export type GetSnapshotResponse = {
+  /**
+   * Absent if no snapshot exists under the key — a miss is always legal;
+   * the caller replays from the beginning.
+   */
+  snapshot: Snapshot | undefined;
+}
+
+export type GetSequenceAtRequest = {
   /** Timestamp in milliseconds since epoch. */
   timestamp: bigint;
 }
 
-export interface GetSequenceAtResponse {
+export type GetSequenceAtResponse = {
   /**
    * Sequence of the first event at or after the given timestamp.
    * -1 if no such event exists.
@@ -2036,6 +2103,537 @@ export const GetTagsResponse: MessageFns<GetTagsResponse> = {
   },
 };
 
+function createBaseSnapshot(): Snapshot {
+  return { state: new Uint8Array(0), position: 0n };
+}
+
+export const Snapshot: MessageFns<Snapshot> = {
+  encode(message: Snapshot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.state.length !== 0) {
+      writer.uint32(10).bytes(message.state);
+    }
+    if (message.position !== 0n) {
+      if (BigInt.asIntN(64, message.position) !== message.position) {
+        throw new globalThis.Error("value provided for field message.position of type int64 too large");
+      }
+      writer.uint32(16).int64(message.position);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): Snapshot {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSnapshot();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.state = reader.bytes();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.position = reader.int64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): Snapshot {
+    return {
+      state: isSet(object.state) ? bytesFromBase64(object.state) : new Uint8Array(0),
+      position: isSet(object.position) ? BigInt(object.position) : 0n,
+    };
+  },
+
+  toJSON(message: Snapshot): unknown {
+    const obj: any = {};
+    if (message.state.length !== 0) {
+      obj.state = base64FromBytes(message.state);
+    }
+    if (message.position !== 0n) {
+      obj.position = message.position.toString();
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<Snapshot>): Snapshot {
+    return Snapshot.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<Snapshot>): Snapshot {
+    const message = createBaseSnapshot();
+    message.state = object.state ?? new Uint8Array(0);
+    message.position = object.position ?? 0n;
+    return message;
+  },
+};
+
+function createBaseAppendSnapshotRequest(): AppendSnapshotRequest {
+  return { key: new Uint8Array(0), state: new Uint8Array(0), position: 0n };
+}
+
+export const AppendSnapshotRequest: MessageFns<AppendSnapshotRequest> = {
+  encode(message: AppendSnapshotRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key.length !== 0) {
+      writer.uint32(10).bytes(message.key);
+    }
+    if (message.state.length !== 0) {
+      writer.uint32(18).bytes(message.state);
+    }
+    if (message.position !== 0n) {
+      if (BigInt.asIntN(64, message.position) !== message.position) {
+        throw new globalThis.Error("value provided for field message.position of type int64 too large");
+      }
+      writer.uint32(24).int64(message.position);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AppendSnapshotRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAppendSnapshotRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.bytes();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.state = reader.bytes();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.position = reader.int64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AppendSnapshotRequest {
+    return {
+      key: isSet(object.key) ? bytesFromBase64(object.key) : new Uint8Array(0),
+      state: isSet(object.state) ? bytesFromBase64(object.state) : new Uint8Array(0),
+      position: isSet(object.position) ? BigInt(object.position) : 0n,
+    };
+  },
+
+  toJSON(message: AppendSnapshotRequest): unknown {
+    const obj: any = {};
+    if (message.key.length !== 0) {
+      obj.key = base64FromBytes(message.key);
+    }
+    if (message.state.length !== 0) {
+      obj.state = base64FromBytes(message.state);
+    }
+    if (message.position !== 0n) {
+      obj.position = message.position.toString();
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<AppendSnapshotRequest>): AppendSnapshotRequest {
+    return AppendSnapshotRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<AppendSnapshotRequest>): AppendSnapshotRequest {
+    const message = createBaseAppendSnapshotRequest();
+    message.key = object.key ?? new Uint8Array(0);
+    message.state = object.state ?? new Uint8Array(0);
+    message.position = object.position ?? 0n;
+    return message;
+  },
+};
+
+function createBaseAppendSnapshotResponse(): AppendSnapshotResponse {
+  return { sequence: 0n };
+}
+
+export const AppendSnapshotResponse: MessageFns<AppendSnapshotResponse> = {
+  encode(message: AppendSnapshotResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.sequence !== 0n) {
+      if (BigInt.asIntN(64, message.sequence) !== message.sequence) {
+        throw new globalThis.Error("value provided for field message.sequence of type int64 too large");
+      }
+      writer.uint32(8).int64(message.sequence);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AppendSnapshotResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAppendSnapshotResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.sequence = reader.int64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AppendSnapshotResponse {
+    return { sequence: isSet(object.sequence) ? BigInt(object.sequence) : 0n };
+  },
+
+  toJSON(message: AppendSnapshotResponse): unknown {
+    const obj: any = {};
+    if (message.sequence !== 0n) {
+      obj.sequence = message.sequence.toString();
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<AppendSnapshotResponse>): AppendSnapshotResponse {
+    return AppendSnapshotResponse.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<AppendSnapshotResponse>): AppendSnapshotResponse {
+    const message = createBaseAppendSnapshotResponse();
+    message.sequence = object.sequence ?? 0n;
+    return message;
+  },
+};
+
+function createBaseSnapshottedSourceRequest(): SnapshottedSourceRequest {
+  return { criteria: [], key: new Uint8Array(0), batchSize: 0 };
+}
+
+export const SnapshottedSourceRequest: MessageFns<SnapshottedSourceRequest> = {
+  encode(message: SnapshottedSourceRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.criteria) {
+      Criterion.encode(v!, writer.uint32(10).fork()).join();
+    }
+    if (message.key.length !== 0) {
+      writer.uint32(18).bytes(message.key);
+    }
+    if (message.batchSize !== 0) {
+      writer.uint32(24).uint32(message.batchSize);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SnapshottedSourceRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSnapshottedSourceRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.criteria.push(Criterion.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.key = reader.bytes();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.batchSize = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SnapshottedSourceRequest {
+    return {
+      criteria: globalThis.Array.isArray(object?.criteria)
+        ? object.criteria.map((e: any) => Criterion.fromJSON(e))
+        : [],
+      key: isSet(object.key) ? bytesFromBase64(object.key) : new Uint8Array(0),
+      batchSize: isSet(object.batchSize)
+        ? globalThis.Number(object.batchSize)
+        : isSet(object.batch_size)
+        ? globalThis.Number(object.batch_size)
+        : 0,
+    };
+  },
+
+  toJSON(message: SnapshottedSourceRequest): unknown {
+    const obj: any = {};
+    if (message.criteria?.length) {
+      obj.criteria = message.criteria.map((e) => Criterion.toJSON(e));
+    }
+    if (message.key.length !== 0) {
+      obj.key = base64FromBytes(message.key);
+    }
+    if (message.batchSize !== 0) {
+      obj.batchSize = Math.round(message.batchSize);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<SnapshottedSourceRequest>): SnapshottedSourceRequest {
+    return SnapshottedSourceRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<SnapshottedSourceRequest>): SnapshottedSourceRequest {
+    const message = createBaseSnapshottedSourceRequest();
+    message.criteria = object.criteria?.map((e) => Criterion.fromPartial(e)) || [];
+    message.key = object.key ?? new Uint8Array(0);
+    message.batchSize = object.batchSize ?? 0;
+    return message;
+  },
+};
+
+function createBaseSnapshottedSourceResponse(): SnapshottedSourceResponse {
+  return { snapshot: undefined, batch: undefined };
+}
+
+export const SnapshottedSourceResponse: MessageFns<SnapshottedSourceResponse> = {
+  encode(message: SnapshottedSourceResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.snapshot !== undefined) {
+      Snapshot.encode(message.snapshot, writer.uint32(10).fork()).join();
+    }
+    if (message.batch !== undefined) {
+      SequencedEventBatch.encode(message.batch, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SnapshottedSourceResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSnapshottedSourceResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.snapshot = Snapshot.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.batch = SequencedEventBatch.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SnapshottedSourceResponse {
+    return {
+      snapshot: isSet(object.snapshot) ? Snapshot.fromJSON(object.snapshot) : undefined,
+      batch: isSet(object.batch) ? SequencedEventBatch.fromJSON(object.batch) : undefined,
+    };
+  },
+
+  toJSON(message: SnapshottedSourceResponse): unknown {
+    const obj: any = {};
+    if (message.snapshot !== undefined) {
+      obj.snapshot = Snapshot.toJSON(message.snapshot);
+    }
+    if (message.batch !== undefined) {
+      obj.batch = SequencedEventBatch.toJSON(message.batch);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<SnapshottedSourceResponse>): SnapshottedSourceResponse {
+    return SnapshottedSourceResponse.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<SnapshottedSourceResponse>): SnapshottedSourceResponse {
+    const message = createBaseSnapshottedSourceResponse();
+    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
+      ? Snapshot.fromPartial(object.snapshot)
+      : undefined;
+    message.batch = (object.batch !== undefined && object.batch !== null)
+      ? SequencedEventBatch.fromPartial(object.batch)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseGetSnapshotRequest(): GetSnapshotRequest {
+  return { key: new Uint8Array(0) };
+}
+
+export const GetSnapshotRequest: MessageFns<GetSnapshotRequest> = {
+  encode(message: GetSnapshotRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key.length !== 0) {
+      writer.uint32(10).bytes(message.key);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetSnapshotRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetSnapshotRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetSnapshotRequest {
+    return { key: isSet(object.key) ? bytesFromBase64(object.key) : new Uint8Array(0) };
+  },
+
+  toJSON(message: GetSnapshotRequest): unknown {
+    const obj: any = {};
+    if (message.key.length !== 0) {
+      obj.key = base64FromBytes(message.key);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetSnapshotRequest>): GetSnapshotRequest {
+    return GetSnapshotRequest.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GetSnapshotRequest>): GetSnapshotRequest {
+    const message = createBaseGetSnapshotRequest();
+    message.key = object.key ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseGetSnapshotResponse(): GetSnapshotResponse {
+  return { snapshot: undefined };
+}
+
+export const GetSnapshotResponse: MessageFns<GetSnapshotResponse> = {
+  encode(message: GetSnapshotResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.snapshot !== undefined) {
+      Snapshot.encode(message.snapshot, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetSnapshotResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetSnapshotResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.snapshot = Snapshot.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetSnapshotResponse {
+    return { snapshot: isSet(object.snapshot) ? Snapshot.fromJSON(object.snapshot) : undefined };
+  },
+
+  toJSON(message: GetSnapshotResponse): unknown {
+    const obj: any = {};
+    if (message.snapshot !== undefined) {
+      obj.snapshot = Snapshot.toJSON(message.snapshot);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetSnapshotResponse>): GetSnapshotResponse {
+    return GetSnapshotResponse.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GetSnapshotResponse>): GetSnapshotResponse {
+    const message = createBaseGetSnapshotResponse();
+    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
+      ? Snapshot.fromPartial(object.snapshot)
+      : undefined;
+    return message;
+  },
+};
+
 function createBaseGetSequenceAtRequest(): GetSequenceAtRequest {
   return { timestamp: 0n };
 }
@@ -2248,10 +2846,52 @@ export const EventStoreDefinition = {
       responseStream: false,
       options: {},
     },
+    /**
+     * Appends a snapshot record to the log (ADR-0005). Replicated like any
+     * append; the server stores opaque bytes under a client-composed key and
+     * never interprets them. A newer snapshot for the same key supersedes
+     * older ones purely by being later in the log.
+     */
+    appendSnapshot: {
+      name: "AppendSnapshot",
+      requestType: AppendSnapshotRequest as typeof AppendSnapshotRequest,
+      requestStream: false,
+      responseType: AppendSnapshotResponse as typeof AppendSnapshotResponse,
+      responseStream: false,
+      options: {},
+    },
+    /**
+     * The fused read: the latest snapshot under the key plus all events
+     * matching the criteria from the snapshot's fold marker onward, one
+     * stream, one consistent view. Without a snapshot it behaves exactly
+     * like Source from the beginning. Ends with the same consistency marker
+     * Source ends with — conditional appends work identically on both paths.
+     */
+    snapshottedSource: {
+      name: "SnapshottedSource",
+      requestType: SnapshottedSourceRequest as typeof SnapshottedSourceRequest,
+      requestStream: false,
+      responseType: SnapshottedSourceResponse as typeof SnapshottedSourceResponse,
+      responseStream: true,
+      options: {},
+    },
+    /**
+     * The latest snapshot alone, no events. For adapters whose interfaces
+     * load snapshots separately (e.g. the Axon connector); SnapshottedSource
+     * is the intended path for event-sourced rehydration.
+     */
+    getSnapshot: {
+      name: "GetSnapshot",
+      requestType: GetSnapshotRequest as typeof GetSnapshotRequest,
+      requestStream: false,
+      responseType: GetSnapshotResponse as typeof GetSnapshotResponse,
+      responseStream: false,
+      options: {},
+    },
   },
 } as const;
 
-export interface EventStoreServiceImplementation<CallContextExt = {}> {
+export type EventStoreServiceImplementation<CallContextExt = {}> = {
   /**
    * Appends new events to the store. One request carries the whole
    * transaction: the repeated events field is the batch, all-or-nothing.
@@ -2296,9 +2936,39 @@ export interface EventStoreServiceImplementation<CallContextExt = {}> {
     request: GetSequenceAtRequest,
     context: CallContext & CallContextExt,
   ): Promise<DeepPartial<GetSequenceAtResponse>>;
+  /**
+   * Appends a snapshot record to the log (ADR-0005). Replicated like any
+   * append; the server stores opaque bytes under a client-composed key and
+   * never interprets them. A newer snapshot for the same key supersedes
+   * older ones purely by being later in the log.
+   */
+  appendSnapshot(
+    request: AppendSnapshotRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<AppendSnapshotResponse>>;
+  /**
+   * The fused read: the latest snapshot under the key plus all events
+   * matching the criteria from the snapshot's fold marker onward, one
+   * stream, one consistent view. Without a snapshot it behaves exactly
+   * like Source from the beginning. Ends with the same consistency marker
+   * Source ends with — conditional appends work identically on both paths.
+   */
+  snapshottedSource(
+    request: SnapshottedSourceRequest,
+    context: CallContext & CallContextExt,
+  ): ServerStreamingMethodResult<DeepPartial<SnapshottedSourceResponse>>;
+  /**
+   * The latest snapshot alone, no events. For adapters whose interfaces
+   * load snapshots separately (e.g. the Axon connector); SnapshottedSource
+   * is the intended path for event-sourced rehydration.
+   */
+  getSnapshot(
+    request: GetSnapshotRequest,
+    context: CallContext & CallContextExt,
+  ): Promise<DeepPartial<GetSnapshotResponse>>;
 }
 
-export interface EventStoreClient<CallOptionsExt = {}> {
+export type EventStoreClient<CallOptionsExt = {}> = {
   /**
    * Appends new events to the store. One request carries the whole
    * transaction: the repeated events field is the batch, all-or-nothing.
@@ -2340,6 +3010,36 @@ export interface EventStoreClient<CallOptionsExt = {}> {
     request: DeepPartial<GetSequenceAtRequest>,
     options?: CallOptions & CallOptionsExt,
   ): Promise<GetSequenceAtResponse>;
+  /**
+   * Appends a snapshot record to the log (ADR-0005). Replicated like any
+   * append; the server stores opaque bytes under a client-composed key and
+   * never interprets them. A newer snapshot for the same key supersedes
+   * older ones purely by being later in the log.
+   */
+  appendSnapshot(
+    request: DeepPartial<AppendSnapshotRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<AppendSnapshotResponse>;
+  /**
+   * The fused read: the latest snapshot under the key plus all events
+   * matching the criteria from the snapshot's fold marker onward, one
+   * stream, one consistent view. Without a snapshot it behaves exactly
+   * like Source from the beginning. Ends with the same consistency marker
+   * Source ends with — conditional appends work identically on both paths.
+   */
+  snapshottedSource(
+    request: DeepPartial<SnapshottedSourceRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): AsyncIterable<SnapshottedSourceResponse>;
+  /**
+   * The latest snapshot alone, no events. For adapters whose interfaces
+   * load snapshots separately (e.g. the Axon connector); SnapshottedSource
+   * is the intended path for event-sourced rehydration.
+   */
+  getSnapshot(
+    request: DeepPartial<GetSnapshotRequest>,
+    options?: CallOptions & CallOptionsExt,
+  ): Promise<GetSnapshotResponse>;
 }
 
 function bytesFromBase64(b64: string): Uint8Array {
@@ -2385,7 +3085,7 @@ function isSet(value: any): boolean {
 
 export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

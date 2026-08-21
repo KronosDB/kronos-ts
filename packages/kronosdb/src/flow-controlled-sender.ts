@@ -1,7 +1,7 @@
 /**
  * Flow-controlled sender for subscription query updates.
  */
-export interface FlowControlledSender<T> {
+export type FlowControlledSender<T> = {
   offer(value: T): boolean
   addPermits(count: number): void
   complete(): void

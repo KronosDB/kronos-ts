@@ -60,7 +60,7 @@ export function processingKeyToJSON(object: ProcessingKey): string {
 }
 
 /** A serialized object with type information. */
-export interface SerializedObject {
+export type SerializedObject = {
   /** The type identifier of the serialized object. */
   type: string;
   /** The revision of the serialized form. */
@@ -70,7 +70,7 @@ export interface SerializedObject {
 }
 
 /** A metadata value, supporting multiple types. */
-export interface MetadataValue {
+export type MetadataValue = {
   textValue?: string | undefined;
   numberValue?: bigint | undefined;
   booleanValue?: boolean | undefined;
@@ -79,13 +79,13 @@ export interface MetadataValue {
 }
 
 /** An instruction for routing or processing a message. */
-export interface ProcessingInstruction {
+export type ProcessingInstruction = {
   key: ProcessingKey;
   value: MetadataValue | undefined;
 }
 
 /** Details of an error. */
-export interface ErrorMessage {
+export type ErrorMessage = {
   message: string;
   location: string;
   details: string[];
@@ -93,13 +93,13 @@ export interface ErrorMessage {
 }
 
 /** Flow control: grant permits for the server to send more messages. */
-export interface FlowControl {
+export type FlowControl = {
   clientId: string;
   permits: bigint;
 }
 
 /** Acknowledgement of an instruction. */
-export interface InstructionAck {
+export type InstructionAck = {
   instructionId: string;
   success: boolean;
   error: ErrorMessage | undefined;
@@ -760,7 +760,7 @@ function isSet(value: any): boolean {
   return value !== null && value !== undefined;
 }
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

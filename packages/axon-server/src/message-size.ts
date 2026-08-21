@@ -12,7 +12,7 @@ const DEFAULT_MAX_MESSAGE_SIZE = 4 * 1024 * 1024
 /** Warning threshold as a fraction of max size. */
 const WARNING_THRESHOLD = 0.75
 
-export interface MessageSizeConfig {
+export type MessageSizeConfig = {
   /** Maximum message size in bytes. Default: 4MB */
   maxMessageSize?: number
   /** Warning threshold as a fraction (0-1). Default: 0.75 */

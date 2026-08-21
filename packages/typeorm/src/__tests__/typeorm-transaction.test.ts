@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { type CommandHandlerDefinition, unitOfWork } from "@kronos-ts/core"
+import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
 import {
   activeTypeormTransaction,
   type TypeormContext,
@@ -13,7 +13,7 @@ import {
 // Mock TypeORM data source — records what the callback-scoped transaction did.
 // ---------------------------------------------------------------------------
 
-interface MockDataSource extends TypeormManager {
+type MockDataSource = TypeormManager & {
   readonly committed: boolean
   readonly rolledBack: boolean
   readonly opened: number
@@ -61,7 +61,7 @@ describe("typeormUnitOfWork", () => {
   it("opens a transaction before the action runs", async () => {
     // given
     const dataSource = createMockDataSource()
-    const runUoW = typeormUnitOfWork(dataSource, unitOfWork)
+    const runUoW = typeormUnitOfWork(unitOfWork, dataSource)
 
     // when
     let seen: unknown
@@ -77,7 +77,7 @@ describe("typeormUnitOfWork", () => {
   it("commits the transaction when the unit of work completes", async () => {
     // given
     const dataSource = createMockDataSource()
-    const runUoW = typeormUnitOfWork(dataSource, unitOfWork)
+    const runUoW = typeormUnitOfWork(unitOfWork, dataSource)
 
     // when
     await runUoW().execute(async () => {})
@@ -90,7 +90,7 @@ describe("typeormUnitOfWork", () => {
   it("rolls the transaction back when the unit of work fails", async () => {
     // given
     const dataSource = createMockDataSource()
-    const runUoW = typeormUnitOfWork(dataSource, unitOfWork)
+    const runUoW = typeormUnitOfWork(unitOfWork, dataSource)
 
     // when
     await expect(
@@ -107,7 +107,7 @@ describe("typeormUnitOfWork", () => {
   it("opens exactly one transaction per unit of work", async () => {
     // given
     const dataSource = createMockDataSource()
-    const runUoW = typeormUnitOfWork(dataSource, unitOfWork)
+    const runUoW = typeormUnitOfWork(unitOfWork, dataSource)
 
     // when
     await runUoW().execute(async (uow) => {
@@ -160,7 +160,7 @@ describe("typeormHandler", () => {
     )
 
     // when
-    const runUoW = typeormUnitOfWork(manager, unitOfWork)
+    const runUoW = typeormUnitOfWork(unitOfWork, manager)
     await runUoW().execute(async (uow) => {
       await handler({ payload: { id: "a" } } as never, { unitOfWork: uow } as never)
     })
@@ -192,7 +192,7 @@ describe("typeormHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const manager = createMockDataSource()
-    const entry: CommandHandlerDefinition<any, any, TypeormContext> = {
+    const entry: CommandHandler<any, any, TypeormContext> = {
       kind: "command-handler",
       descriptor: {} as never,
       handler: async (_message, ctx: TypeormContext) => {

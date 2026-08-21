@@ -19,7 +19,7 @@
  *
  * ```ts
  * const axon = await axonServerConnection({ ... })
- * const app  = kronos({ states, commandHandlers, queryHandlers, eventHandlers })
+ * const app  = kronos({ commandHandlers, queryHandlers, eventHandlers })
  * await axon.start()                                  // data path only
  *
  * // opt in to remote administration
@@ -53,7 +53,7 @@ import type { ProcessorStatus, SegmentStatus } from "./event-processor-info.js"
  * may not implement (a subscribing processor has no segments), and the
  * instruction handler simply skips what is absent.
  */
-export interface ManagedEventProcessor {
+export type ManagedEventProcessor = {
   readonly name: string
   readonly running?: boolean
   readonly replaying?: boolean
@@ -79,7 +79,7 @@ export interface ManagedEventProcessor {
  * A running control plane. The platform stream is live; instructions are being
  * routed and status is being reported until `close()`.
  */
-export interface AxonServerControlPlane {
+export type AxonServerControlPlane = {
   /**
    * The processors this control plane addresses, keyed by name — the snapshot
    * taken at construction. Exposed for introspection and tests.

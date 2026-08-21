@@ -1,0 +1,9 @@
+{
+  "name": "interface-to-type",
+  "private": true,
+  "description": "AST codemod: rewrites `interface` declarations as `type` aliases. Run over ts-proto output by each package's generate-proto script — the generator re-emits interfaces; this keeps the repo's no-interface vocabulary reproducible.",
+  "type": "module",
+  "dependencies": {
+    "typescript": "5.9.2"
+  }
+}

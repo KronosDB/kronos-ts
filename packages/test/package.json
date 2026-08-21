@@ -47,7 +47,9 @@
     }
   },
   "dependencies": {
-    "@kronos-ts/core": "workspace:*",
+    "@kronos-ts/core": "workspace:*"
+  },
+  "devDependencies": {
     "zod": "^4.3.6"
   }
 }

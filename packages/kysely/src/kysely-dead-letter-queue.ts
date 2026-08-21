@@ -1,14 +1,14 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { KyselyDb } from "./kysely-transaction.js"
+import type { KyselyDb, KyselyFamily } from "./kysely-transaction.js"
 import { activeKyselyTransaction } from "./kysely-transaction.js"
 
 /**
- * Dead letter table interface for Kysely. Users must define this table in
- * their Kysely database interface:
+ * Dead letter table shape for Kysely. Users must define this table in
+ * their Kysely database type:
  *
  * ```typescript
- * interface Database {
+ * type Database = {
  *   kronos_dead_letters: {
  *     dead_letter_id: string
  *     processing_group: string
@@ -40,7 +40,7 @@ import { activeKyselyTransaction } from "./kysely-transaction.js"
  */
 
 /** Tuning only — everything required is a positional argument. */
-export interface KyselyDeadLetterQueueOptions {
+export type KyselyDeadLetterQueueOptions = {
   /** Maximum number of sequences. Default: 1024 (Axon parity). */
   maxSequences?: number
   /** Maximum letters per sequence. Default: 1024 (Axon parity). */
@@ -62,7 +62,7 @@ function newId(group: string): string {
   return `${group}:${Date.now()}:${idCounter}`
 }
 
-interface DeadLetterRow {
+type DeadLetterRow = {
   dead_letter_id: string
   processing_group: string
   sequence_identifier: string
@@ -95,7 +95,7 @@ interface DeadLetterRow {
 export function kyselyDeadLetterQueue(
   db: KyselyDb,
   options: KyselyDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue {
+): SequencedDeadLetterQueue<UnitOfWork & KyselyFamily> {
   const table = KYSELY_DEAD_LETTER_TABLE
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024

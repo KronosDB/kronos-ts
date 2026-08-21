@@ -25,10 +25,10 @@ import type { EventMessage } from "@kronos-ts/core"
 import {
   command, event, commandHandler, eventHandler, queryHandler, jsonSerializer,
   eventProcessor, type EventProcessor,
-  type CommandHandlerDefinition, type QueryHandlerDefinition, type EventHandlerDefinition,
+  type CommandHandler, type QueryHandler, type EventHandler,
   inMemoryTokenStore, type TokenStore,
 } from "@kronos-ts/core"
-import { state, type StateModule } from "@kronos-ts/core"
+import { state } from "@kronos-ts/core"
 import {
   type EventStore,
   afterEvents,
@@ -42,16 +42,14 @@ import {
   type EventHandlerEntry,
   type HandlerSite,
   type Sited,
-  type StateEntry,
-  type StateOptions,
 } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   type UnitOfWork,
   type CommandBus,
   type QueryBus,
@@ -59,7 +57,7 @@ import {
 import {
   postgresPool,
   postgresEventStore,
-  postgresSnapshotStore,
+  postgresSnapshottingEventStore,
   postgresUnitOfWork,
   AppendConditionError,
   type PostgresResource,
@@ -67,13 +65,13 @@ import {
 
 /**
  * The two things `kronos` needs that are not handlers. The UoW runner is
- * named once and handed to `simpleCommandBus` (which captures it at
+ * named once and handed to `localCommandBus` (which captures it at
  * construction) — writing it on an adjacent line is what makes that checkable.
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
 
@@ -87,11 +85,9 @@ function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: Comman
  * structural (contravariant) check.
  */
 type SitedItem =
-  | Sited<StateModule<any, any>>
-  | readonly [Sited<StateModule<any, any>>, StateOptions]
-  | Sited<CommandHandlerDefinition<any, any>>
-  | Sited<QueryHandlerDefinition<any, any>>
-  | EventHandlerDefinition<any, any>
+  | Sited<CommandHandler<any, any>>
+  | Sited<QueryHandler<any, any>>
+  | EventHandler<any, any>
 
 /** What a host attaches uniformly here. There is no `stores` record any more —
  * this is the ARGUMENT LIST of a local helper, and every entry comes out
@@ -109,14 +105,14 @@ type Site = HandlerSite & {
 /**
  * Attach one site to a flat list of entries — the composition root's job,
  * replacing the old `module(name, stores, ...handlers)` — and sort them into
- * the four fields `kronos` now takes. Honours the `[state, options]` tuple
- * shape. Spread the result straight into `kronos({ ...sitedOn(site, ...) })`.
+ * the three fields `kronos` now takes. States are in no list: a handler closes
+ * over the one it folds. Spread the result straight into
+ * `kronos({ ...sitedOn(site, ...) })`.
  */
 function sitedOn(
   site: Site,
   ...items: ReadonlyArray<SitedItem>
 ): {
-  states: StateEntry[]
   commandHandlers: CommandHandlerEntry[]
   queryHandlers: QueryHandlerEntry[]
   eventHandlers: EventHandlerEntry[]
@@ -129,22 +125,14 @@ function sitedOn(
     processorName,
     ...handlerSite
   } = site
-  const states: StateEntry[] = []
   const commandHandlers: CommandHandlerEntry[] = []
   const queryHandlers: QueryHandlerEntry[] = []
   const eventHandlers: EventHandlerEntry[] = []
   let processor: EventProcessor | undefined
 
   for (const item of items) {
-    if (Array.isArray(item)) {
-      const [stateDef, options] = item
-      states.push([{ ...stateDef, ...handlerSite }, options] as StateEntry)
-      continue
-    }
     const kind = (item as { kind?: string }).kind
-    if (kind === "state-module") {
-      states.push({ ...(item as object), ...handlerSite } as StateEntry)
-    } else if (kind === "command-handler") {
+    if (kind === "command-handler") {
       commandHandlers.push({ ...(item as object), ...handlerSite, commandBus, queryBus } as CommandHandlerEntry)
     } else if (kind === "query-handler") {
       queryHandlers.push({ ...(item as object), ...handlerSite, queryBus } as QueryHandlerEntry)
@@ -166,7 +154,7 @@ function sitedOn(
       eventHandlers.push({ ...(item as object), commandBus, queryBus, processor } as EventHandlerEntry)
     }
   }
-  return { states, commandHandlers, queryHandlers, eventHandlers }
+  return { commandHandlers, queryHandlers, eventHandlers }
 }
 
 
@@ -174,16 +162,23 @@ function sitedOn(
  * Everything this app needs from postgres, named at one call site. There is no
  * bundle to take apart: the pool is the only thing with a lifetime, and each
  * store is a function of it. They share the pool, so they share transactions.
+ *
+ * NOTE THE ONE EXTRA LINE, and what it buys. The base `postgresEventStore` has
+ * never heard of snapshots; wrapping it adds the capability, and because this
+ * family owns its own query the wrapper serves a cached read in ONE round trip
+ * rather than two — the lookup, the start position derived from it, the event
+ * query and the head, in a single statement. ONE serializer, on ONE object,
+ * because the same function now writes the bytes it later reads.
  */
 function postgresStack(pool: PostgresResource) {
-  const eventStore = postgresEventStore(pool, {
-    serializer: jsonSerializer(),
-    tagResolver: descriptorBasedTagResolver(),
-  })
+  const eventStore = postgresSnapshottingEventStore(
+    postgresEventStore(pool, { tagResolver: descriptorBasedTagResolver() }),
+    pool,
+    { serializer: jsonSerializer() },
+  )
   return {
     eventStore,
-    snapshotStore: postgresSnapshotStore(pool, { serializer: jsonSerializer() }),
-    unitOfWork: postgresUnitOfWork(pool, unitOfWork),
+    unitOfWork: postgresUnitOfWork(unitOfWork, pool),
   }
 }
 
@@ -235,15 +230,20 @@ const EnrollmentClosed = event({
 type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[]; closed: boolean }
 
 const Course = state({
-  name: "Course",
   id: { courseId: z.string() },
-  initial: () => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
+    () => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
     [CourseCreated, (s, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity })],
     [StudentSubscribed, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })],
     [EnrollmentClosed, (s) => ({ ...s, closed: true })],
   ],
+  // WHERE entries are filed and WHEN one is written. The key is a string this
+  // file wrote — change it and every old entry is orphaned in the same instant.
+  // Where a snapshot LANDS is a SITE fact: the entries below that carry a
+  // WRAPPED `eventStore` can serve one, and the compiler refuses this state's
+  // load on an entry whose log was not wrapped.
+  snapshot: { key: "course-v1", when: afterEvents(1) },
 })
 
 const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
@@ -370,11 +370,9 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       ...sitedOn(
         {
           eventStore: stack.eventStore,
-          snapshotStore: stack.snapshotStore,
           ...buses,
           processorName: "postgres-course-projection",
         },
-        [Course, { snapshotPolicy: afterEvents(1) }],
         createCourse, subscribeStudent,
         getCourse,
         onCourseCreated, onStudentSubscribed,
@@ -511,13 +509,15 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     const client = new Client({ connectionString })
     await client.connect()
     try {
-      let match: { state_id: string; position: string } | undefined
+      // ONE key column. `state()` files entries under `"<declared key>:<id>"`,
+      // so the row for this course is the one whose key carries its id.
+      let match: { key: string; position: string } | undefined
       await waitFor(async () => {
-        const res = await client.query<{ state_id: string; position: string }>(
-          "SELECT state_id, position FROM kronos_snapshots WHERE state_name = $1",
-          ["Course"],
+        const res = await client.query<{ key: string; position: string }>(
+          "SELECT key, position FROM kronos_snapshots WHERE key LIKE $1",
+          ["course-v1:%"],
         )
-        match = res.rows.find((r) => r.state_id.includes(courseId))
+        match = res.rows.find((r) => r.key.includes(courseId))
         return match !== undefined
       })
       expect(match).toBeDefined()
@@ -562,7 +562,6 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
       ...sitedOn(
         {
           eventStore: autoStack.eventStore,
-          snapshotStore: autoStack.snapshotStore,
           ...autoBuses,
           processorName: "postgres-enrollment-automation",
         },

@@ -2,14 +2,14 @@
  * A shutdown latch that tracks in-flight operations and enables
  * graceful shutdown by draining pending work.
  */
-export interface ShutdownLatch {
+export type ShutdownLatch = {
   registerActivity(): ActivityHandle
   initiateShutdown(): Promise<void>
   readonly shuttingDown: boolean
   readonly activeCount: number
 }
 
-export interface ActivityHandle {
+export type ActivityHandle = {
   end(): void
 }
 

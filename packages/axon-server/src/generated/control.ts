@@ -68,7 +68,7 @@ export function updateTypeToJSON(object: UpdateType): string {
 }
 
 /** An instruction from Application Node to the AxonServer platform */
-export interface PlatformInboundInstruction {
+export type PlatformInboundInstruction = {
   /**
    * Information about the client being connected.
    * This information is used by AxonServer to monitor the topology of connected applications.
@@ -111,15 +111,15 @@ export interface PlatformInboundInstruction {
 }
 
 /** Message to subscribe to topology changes within the control channel's context */
-export interface SubscribeTopologyChanges {
+export type SubscribeTopologyChanges = {
 }
 
 /** Message to unsubscribe from topology changes within the control channel's context */
-export interface UnsubscribeTopologyChanges {
+export type UnsubscribeTopologyChanges = {
 }
 
 /** An instruction or information from the AxonServer Platform to the Application Node */
-export interface PlatformOutboundInstruction {
+export type PlatformOutboundInstruction = {
   /** Information provided by AxonServer which provides information about the AxonServer node the application is connected with */
   nodeNotification?:
     | NodeInfo
@@ -176,11 +176,11 @@ export interface PlatformOutboundInstruction {
 }
 
 /** Message send when AxonServer requests the client to re-establish its connection with the Platform */
-export interface RequestReconnect {
+export type RequestReconnect = {
 }
 
 /** Message containing connection information of the node to Connect with */
-export interface PlatformInfo {
+export type PlatformInfo = {
   /** The connection details of the node the client should connect with */
   primary:
     | NodeInfo
@@ -193,7 +193,7 @@ export interface PlatformInfo {
 }
 
 /** Message containing connection information for an AxonServer Node */
-export interface NodeInfo {
+export type NodeInfo = {
   /** The host name to use when connecting to this node */
   hostName: string;
   /** The port number for gRPC connections */
@@ -207,7 +207,7 @@ export interface NodeInfo {
 }
 
 /** Message containing details about the Client Application */
-export interface ClientIdentification {
+export type ClientIdentification = {
   /** A unique identifier for this client instance. Is used to distinguish different instances of the same component */
   clientId: string;
   /** The name of the component. Several instances of the same component should share this name */
@@ -218,13 +218,13 @@ export interface ClientIdentification {
   version: string;
 }
 
-export interface ClientIdentification_TagsEntry {
+export type ClientIdentification_TagsEntry = {
   key: string;
   value: string;
 }
 
 /** Message containing information about the status of an Event Processor */
-export interface EventProcessorInfo {
+export type EventProcessorInfo = {
   /** The logical name of this processor. */
   processorName: string;
   /** The mode in which this processor is reading Events, for example: 'Tracking' or 'Subscribing' */
@@ -257,7 +257,7 @@ export interface EventProcessorInfo {
 }
 
 /** Message containing information about the status of a Segment of a Streaming Event Processor */
-export interface EventProcessorInfo_SegmentStatus {
+export type EventProcessorInfo_SegmentStatus = {
   /** The ID of the Segment for which the status is reported */
   segmentId: number;
   /** Indicates whether the Segment has "Caught Up" with the Head of the Event Stream */
@@ -273,23 +273,23 @@ export interface EventProcessorInfo_SegmentStatus {
 }
 
 /** Message providing reference to an Event Processor */
-export interface EventProcessorReference {
+export type EventProcessorReference = {
   /** The name of the Event Processor */
   processorName: string;
 }
 
 /** Message providing reference to a Segment of an Event Processor */
-export interface EventProcessorSegmentReference {
+export type EventProcessorSegmentReference = {
   /** The name of the Event Processor */
   processorName: string;
   /** The identifier of the Segment */
   segmentIdentifier: number;
 }
 
-export interface Heartbeat {
+export type Heartbeat = {
 }
 
-export interface TopologyChange {
+export type TopologyChange = {
   updateType: UpdateType;
   context: string;
   /** The client ID of the component requesting the update */
@@ -306,14 +306,14 @@ export interface TopologyChange {
   query?: QuerySubscription | undefined;
 }
 
-export interface CommandSubscription {
+export type CommandSubscription = {
   /** The subscription ID to add or remove */
   name: string;
   /** The load factor for the subscription */
   loadFactor: number;
 }
 
-export interface QuerySubscription {
+export type QuerySubscription = {
   /** The subscription ID to add or remove */
   name: string;
 }
@@ -2365,7 +2365,7 @@ export const PlatformServiceDefinition = {
   },
 } as const;
 
-export interface PlatformServiceImplementation<CallContextExt = {}> {
+export type PlatformServiceImplementation<CallContextExt = {}> = {
   /** Obtains connection information for the Server that a Client should use for its connections. */
   getPlatformServer(
     request: ClientIdentification,
@@ -2378,7 +2378,7 @@ export interface PlatformServiceImplementation<CallContextExt = {}> {
   ): ServerStreamingMethodResult<DeepPartial<PlatformOutboundInstruction>>;
 }
 
-export interface PlatformServiceClient<CallOptionsExt = {}> {
+export type PlatformServiceClient<CallOptionsExt = {}> = {
   /** Obtains connection information for the Server that a Client should use for its connections. */
   getPlatformServer(
     request: DeepPartial<ClientIdentification>,
@@ -2409,7 +2409,7 @@ function isSet(value: any): boolean {
 
 export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

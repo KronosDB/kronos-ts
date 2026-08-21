@@ -3,6 +3,7 @@ import type {
   HandlerContext,
   QueryHandlerContext,
   UnitOfWork,
+  PersistenceFamily,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -10,14 +11,45 @@ import {
   openTransaction,
   type TransactionHooks,
   transactionRegistry,
-} from "@kronos-ts/core/transaction"
+} from "./transaction-glue.js"
+
+/**
+ * THE DRIZZLE FAMILY MARK — a phantom, type-only brand on every unit of work
+ * drizzleUnitOfWork(next, db) mints, and the thing this package's token store and
+ * dead-letter queue demand back.
+ *
+ * WHY IT EXISTS. This family is keyed by TRANSACTION IDENTITY: the token store,
+ * the dead-letter queue and what a handler writes through `activeDrizzleTransaction(ctx.unitOfWork)` must all
+ * write through the SAME handle, or they do not commit together. Handing this
+ * package's token store a unit of work from another family does not throw — the
+ * store looks for ITS transaction, does not find one, and falls back to its
+ * plain handle, so the token update commits OUTSIDE the batch. Every test
+ * passes; then a crash lands between the projection write and the token write
+ * and a read model is permanently wrong. The mark turns that into a build
+ * error.
+ *
+ * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * unique symbol declared in core; nothing writes the property and nothing can
+ * read it. drizzleUnitOfWork(…) returns exactly what it always
+ * returned and asserts the branded type, so the emitted JavaScript is
+ * unchanged.
+ *
+ * THE FIX STRING IS THIS PACKAGE'S TO WRITE, and that is the point of putting
+ * it here. Core can only say "these two are different families"; this package
+ * knows precisely which factory the host should have called, so a mismatch
+ * prints that sentence at the wiring site.
+ */
+export type DrizzleFamily = PersistenceFamily<
+  "drizzle",
+  "build this processor's unitOfWork with drizzleUnitOfWork(next, db) — this family's stores write through its transaction"
+>
 
 /**
  * A Drizzle database handle. Declares only what this package needs of it —
  * the ability to open a transaction — because that is what the family is keyed
  * by. Works with any Drizzle driver (postgres-js, node-postgres, …).
  */
-export interface DrizzleDb {
+export type DrizzleDb = {
   transaction<T>(fn: (tx: any) => Promise<T>): Promise<T>
 }
 
@@ -25,7 +57,7 @@ export interface DrizzleDb {
 export type DrizzleTransaction = any
 
 /** Tuning for the transaction this package opens. */
-export interface DrizzleTransactionOptions {
+export type DrizzleTransactionOptions = {
   /**
    * Runs once on every transaction, right after it opens and before the UoW
    * gets the handle. This is where a Postgres-backed deployment arms session
@@ -36,7 +68,7 @@ export interface DrizzleTransactionOptions {
    * seam for the (DB-agnostic) Drizzle path. No-op by default.
    *
    * ```ts
-   * drizzleUnitOfWork(db, unitOfWork, {
+   * drizzleUnitOfWork(unitOfWork, db, {
    *   onBeginTransaction: (tx) => tx.execute(sql.raw(
    *     "SET LOCAL idle_in_transaction_session_timeout = 30000")),
    * })
@@ -140,8 +172,8 @@ const registry = transactionRegistry<DrizzleTransaction>()
  * Same shape as the core `unitOfWork`, so it drops into any seam that takes one:
  *
  * ```ts
- * const uow = drizzleUnitOfWork(db, unitOfWork)
- * const commandBus = interceptingCommandBus(simpleCommandBus(uow), lineage)
+ * const uow = drizzleUnitOfWork(unitOfWork, db)
+ * const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
  * processors: projections.map((p) => ({ ...p, eventStore, tokenStore, unitOfWork: uow }))
  * ```
  *
@@ -149,17 +181,29 @@ const registry = transactionRegistry<DrizzleTransaction>()
  * letters, and the handler's own writes through {@link activeDrizzleTransaction} —
  * commits or rolls back together.
  *
- * `make` is the factory the unit of work is minted FROM — required, and
- * normally the core `unitOfWork`. It is not defaulted: a default argument hides
- * the composition chain, and the whole point of this shape is that a call site
- * shows what its units of work are made of. Pass another to stack concerns.
+ * THING-FIRST: `next` — the factory the unit of work is minted from — comes
+ * first, because that is the thing being decorated, and the client is the
+ * configuration. It is required and never defaulted: a default hides the
+ * composition chain, and the whole point of this shape is that a call site
+ * shows what its units of work are made of.
+ *
+ * It is also CAPABILITY-PRESERVING. The decorator returns `() => U` for
+ * whatever `U` it was handed, and it decorates the SAME handle rather than
+ * rebuilding a record from it — so a composed capability survives both the type
+ * and the runtime:
+ *
+ * ```ts
+ * const uow = drizzleUnitOfWork(() => correlating(unitOfWork(clock)), db)
+ * //    ^ () => CorrelatingUnitOfWork, and its transactions are keyed on that
+ * //      very object, which is the one `ctx.unitOfWork` hands back
+ * ```
  */
-export function drizzleUnitOfWork(
+export function drizzleUnitOfWork<U extends UnitOfWork = UnitOfWork>(
+  next: () => U,
   db: DrizzleDb,
-  make: () => UnitOfWork,
   options: DrizzleTransactionOptions = {},
-): () => UnitOfWork {
-  return adapterUnitOfWork(registry, transactionHooks(db, options), make)
+): () => U & DrizzleFamily {
+  return adapterUnitOfWork(registry, transactionHooks(db, options), next) as () => U & DrizzleFamily
 }
 
 /**
@@ -202,7 +246,7 @@ export function activeDrizzleTransaction(
 //
 //   1. STORE IMPLEMENTATIONS — `drizzleTokenStore`, `drizzleDeadLetterQueue`, …
 //      ordinary objects satisfying the framework's store interfaces.
-//   2. A UNIT-OF-WORK WRAPPER — `drizzleUnitOfWork(db, unitOfWork)`, a
+//   2. A UNIT-OF-WORK WRAPPER — `drizzleUnitOfWork(unitOfWork, db)`, a
 //      unit-of-work factory that gives every unit of work a transaction.
 //   3. A HANDLER WRAPPER — `drizzleHandler(handler, db)`, which adds a capability to
 //      the ctx a handler function receives. It wraps the FUNCTION, not the
@@ -215,7 +259,7 @@ export function activeDrizzleTransaction(
 // ---------------------------------------------------------------------------
 
 /** The `db()` capability this extension adds to a handler context. */
-export interface DrizzleCapability {
+export type DrizzleCapability = {
   /**
    * This invocation's Drizzle handle: the unit of work's transaction when one is
    * open, otherwise the base handle the wrapper was built with.
@@ -229,11 +273,11 @@ export interface DrizzleCapability {
 }
 
 /** A command handler's context, plus this extension's capability. */
-export interface DrizzleContext extends HandlerContext, DrizzleCapability {}
+export type DrizzleContext = HandlerContext & DrizzleCapability
 /** An event handler's context, plus this extension's capability. */
-export interface DrizzleEventContext extends EventHandlerContext, DrizzleCapability {}
+export type DrizzleEventContext = EventHandlerContext & DrizzleCapability
 /** A query handler's context, plus this extension's capability. */
-export interface DrizzleQueryContext extends QueryHandlerContext, DrizzleCapability {}
+export type DrizzleQueryContext = QueryHandlerContext & DrizzleCapability
 
 /**
  * Wrap a HANDLER FUNCTION — command, event or query — so its context gains

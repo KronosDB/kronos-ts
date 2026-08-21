@@ -1,5 +1,5 @@
 import { qualifiedNameToString } from "@kronos-ts/core"
-import type { CommandMessage, EventMessage, Metadata, Unstamped } from "@kronos-ts/core"
+import type { CommandMessage, EventMessage, Metadata } from "@kronos-ts/core"
 import type { Scenario } from "./scenario.js"
 import { isAny } from "./values.js"
 import type { Assertion, CommandValue, EventValue } from "./values.js"
@@ -26,12 +26,12 @@ export class ScenarioAssertionError extends Error {
 }
 
 /** What one act actually did. */
-export interface Observed {
+export type Observed = {
   readonly result: unknown
   readonly threw: boolean
   readonly thrown: unknown
   readonly events: ReadonlyArray<EventMessage>
-  readonly commands: ReadonlyArray<Unstamped<CommandMessage>>
+  readonly commands: ReadonlyArray<CommandMessage>
   readonly schedules: ReadonlyArray<ScheduleRecord>
 }
 
@@ -163,12 +163,12 @@ function describeMatcher(matcher: string | RegExp | ((error: unknown) => boolean
 
 // ── the message lists ──────────────────────────────────────────────────────
 
-interface ExpectedMessage {
+type ExpectedMessage = {
   readonly value: EventValue<any> | CommandValue<any, any>
   readonly name: string
 }
 
-interface ActualMessage {
+type ActualMessage = {
   readonly name: string
   readonly payload: unknown
   readonly metadata: Metadata | undefined
@@ -243,7 +243,7 @@ function indent(lines: ReadonlyArray<string>, spaces: number): string {
 }
 
 /** One aligned slot: an expectation, an actual message, or both. */
-interface Alignment {
+type Alignment = {
   readonly expectedIndex?: number
   readonly actualIndex?: number
 }
@@ -364,8 +364,14 @@ export function compare(expected: unknown, actual: unknown, path: string): strin
 
   if (isAny(expected)) {
     if (expected.schema === undefined) return []
-    const parsed = expected.schema.safeParse(actual)
-    if (parsed.success) return []
+    // Any Standard Schema. `compare` is synchronous — a diff is data, computed
+    // and rendered in one breath — so a schema whose validation is asynchronous
+    // is reported as the mistake it is rather than silently passing.
+    const validated = expected.schema["~standard"].validate(actual)
+    if (validated instanceof Promise) {
+      return [`${here}: the schema \`any()\` was given validates asynchronously, which a diff cannot await`]
+    }
+    if (!validated.issues) return []
     return [`${here}: ${preview(actual)} does not satisfy the schema \`any()\` was given`]
   }
 

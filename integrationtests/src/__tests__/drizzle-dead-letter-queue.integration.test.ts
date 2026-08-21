@@ -145,7 +145,7 @@ describe("Drizzle SequencedDeadLetterQueue (PostgreSQL)", () => {
 
   it("commits the enqueue in the active UnitOfWork transaction — and rolls it back on failure", async () => {
     const dlq = makeQueue()
-    const runUoW = drizzleUnitOfWork(db, unitOfWork)
+    const runUoW = drizzleUnitOfWork(unitOfWork, db)
 
     // Commit case: enqueue inside a UoW that completes -> persisted.
     await runUoW().execute(async (uow) => {

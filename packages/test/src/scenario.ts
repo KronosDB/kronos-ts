@@ -28,7 +28,7 @@ export type Step =
  * point: the same scenario runs against an in-memory scope and against real
  * infrastructure, and it is the same test both times.
  */
-export interface Scenario {
+export type Scenario = {
   readonly steps: ReadonlyArray<Step>
   readonly then: ReadonlyArray<Assertion>
   /** "given CourseCreated, when SubscribeStudent, then StudentSubscribed" */
@@ -36,7 +36,7 @@ export interface Scenario {
 }
 
 /** Before the act: time may pass, then exactly one thing happens. */
-export interface ScenarioStart {
+export type ScenarioStart = {
   /** Let `duration` of the fixture's time pass. Repeatable. */
   wait(duration: Duration): ScenarioStart
   /** The act — exactly one command, query or event. */
@@ -44,7 +44,7 @@ export interface ScenarioStart {
 }
 
 /** After the act: time may pass, then the claims close the scenario. */
-export interface ScenarioActed {
+export type ScenarioActed = {
   /** Let `duration` pass — deadlines fire here. Repeatable. */
   wait(duration: Duration): ScenarioActed
   /** What the act should have done. Terminal. */

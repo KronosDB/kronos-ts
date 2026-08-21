@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { type CommandHandlerDefinition, unitOfWork } from "@kronos-ts/core"
+import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
 import {
   activeDrizzleTransaction,
   type DrizzleContext,
@@ -13,7 +13,7 @@ import {
 // Mock Drizzle database — records what the callback-scoped transaction did.
 // ---------------------------------------------------------------------------
 
-interface MockDb extends DrizzleDb {
+type MockDb = DrizzleDb & {
   readonly committed: boolean
   readonly rolledBack: boolean
   readonly opened: number
@@ -61,7 +61,7 @@ describe("drizzleUnitOfWork", () => {
   it("opens a transaction before the action runs", async () => {
     // given
     const db = createMockDb()
-    const runUoW = drizzleUnitOfWork(db, unitOfWork)
+    const runUoW = drizzleUnitOfWork(unitOfWork, db)
 
     // when
     let seen: unknown
@@ -77,7 +77,7 @@ describe("drizzleUnitOfWork", () => {
   it("commits the transaction when the unit of work completes", async () => {
     // given
     const db = createMockDb()
-    const runUoW = drizzleUnitOfWork(db, unitOfWork)
+    const runUoW = drizzleUnitOfWork(unitOfWork, db)
 
     // when
     await runUoW().execute(async () => {})
@@ -90,7 +90,7 @@ describe("drizzleUnitOfWork", () => {
   it("rolls the transaction back when the unit of work fails", async () => {
     // given
     const db = createMockDb()
-    const runUoW = drizzleUnitOfWork(db, unitOfWork)
+    const runUoW = drizzleUnitOfWork(unitOfWork, db)
 
     // when
     await expect(
@@ -107,7 +107,7 @@ describe("drizzleUnitOfWork", () => {
   it("opens exactly one transaction per unit of work", async () => {
     // given
     const db = createMockDb()
-    const runUoW = drizzleUnitOfWork(db, unitOfWork)
+    const runUoW = drizzleUnitOfWork(unitOfWork, db)
 
     // when
     await runUoW().execute(async (uow) => {
@@ -161,7 +161,7 @@ describe("drizzleHandler", () => {
     )
 
     // when
-    const runUoW = drizzleUnitOfWork(db, unitOfWork)
+    const runUoW = drizzleUnitOfWork(unitOfWork, db)
     await runUoW().execute(async (uow) => {
       await handler({ payload: { id: "a" } } as never, { unitOfWork: uow } as never)
     })
@@ -193,7 +193,7 @@ describe("drizzleHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const db = createMockDb()
-    const entry: CommandHandlerDefinition<any, any, DrizzleContext> = {
+    const entry: CommandHandler<any, any, DrizzleContext> = {
       kind: "command-handler",
       descriptor: {} as never,
       handler: async (_message, ctx: DrizzleContext) => {

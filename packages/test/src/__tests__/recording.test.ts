@@ -5,13 +5,13 @@ import {
   inMemoryEventStore,
   qn,
   send,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   unitOfWork,
 } from "@kronos-ts/core"
 import type { EventDescriptor, EventMessage } from "@kronos-ts/core"
 import {
-  controllableScheduler,
+  controllableSchedulingEventStore,
   recordingCommandBus,
   recordingEventStore,
   recordingQueryBus,
@@ -84,7 +84,7 @@ describe("recordingEventStore", () => {
 
 describe("recordingCommandBus", () => {
   it("records at entry, delegates, and returns the handler's result", async () => {
-    const bus = recordingCommandBus(simpleCommandBus(() => unitOfWork(() => FROZEN)))
+    const bus = recordingCommandBus(localCommandBus(() => unitOfWork(() => FROZEN)))
     bus.subscribe("university.CloseCourse", async () => "closed")
 
     const result = await send(bus, CloseCourse, { courseId: "cs-101" })
@@ -98,7 +98,7 @@ describe("recordingCommandBus", () => {
   })
 
   it("records the commands a handler dispatches AFTER the one that caused them", async () => {
-    const bus = recordingCommandBus(simpleCommandBus(() => unitOfWork(() => FROZEN)))
+    const bus = recordingCommandBus(localCommandBus(() => unitOfWork(() => FROZEN)))
     let nested = false
     bus.subscribe("university.CloseCourse", async (message) => {
       if (nested) return undefined
@@ -113,7 +113,7 @@ describe("recordingCommandBus", () => {
   })
 
   it("keeps the delegate's subscription rules — it adds nothing but the log", () => {
-    const bus = recordingCommandBus(simpleCommandBus(() => unitOfWork(() => FROZEN)))
+    const bus = recordingCommandBus(localCommandBus(() => unitOfWork(() => FROZEN)))
     bus.subscribe("university.CloseCourse", async () => undefined)
     expect(() => bus.subscribe("university.CloseCourse", async () => undefined)).toThrow(
       "A different handler is already registered",
@@ -123,7 +123,7 @@ describe("recordingCommandBus", () => {
 
 describe("recordingQueryBus", () => {
   it("records what is asked, and answers it", async () => {
-    const bus = recordingQueryBus(simpleQueryBus(() => unitOfWork(() => FROZEN)))
+    const bus = recordingQueryBus(localQueryBus(() => unitOfWork(() => FROZEN)))
     bus.subscribe("university.GetCourseView", async () => ({ courseId: "cs-101" }))
 
     const answer = await bus.query({
@@ -139,10 +139,10 @@ describe("recordingQueryBus", () => {
   })
 })
 
-describe("controllableScheduler", () => {
+describe("controllableSchedulingEventStore", () => {
   it("fires nothing until the clock is moved and `due` is asked", async () => {
     let now = FROZEN
-    const scheduler = controllableScheduler(() => now)
+    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => now)
 
     const token = await unitOfWork(() => now).execute((uow) =>
       scheduler.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(now + 1_000), uow),
@@ -167,7 +167,7 @@ describe("controllableScheduler", () => {
 
   it("fires in fire-time order, not in the order they were arranged", async () => {
     let now = FROZEN
-    const scheduler = controllableScheduler(() => now)
+    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => now)
 
     await unitOfWork(() => now).execute(async (uow) => {
       await scheduler.schedule(
@@ -191,7 +191,7 @@ describe("controllableScheduler", () => {
 
   it("a cancelled schedule never fires, and says it was cancelled", async () => {
     let now = FROZEN
-    const scheduler = controllableScheduler(() => now)
+    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => now)
 
     await unitOfWork(() => now).execute(async (uow) => {
       const token = await scheduler.schedule(
@@ -199,7 +199,7 @@ describe("controllableScheduler", () => {
         new Date(now + 1_000),
         uow,
       )
-      expect(await scheduler.cancel(token, uow)).toEqual({ kind: "cancelled" })
+      expect(await scheduler.cancelSchedule(token, uow)).toEqual({ kind: "cancelled" })
     })
 
     now = FROZEN + 5_000
@@ -209,7 +209,7 @@ describe("controllableScheduler", () => {
 
   it("a schedule a rolled-back handler asked for was never asked for", async () => {
     let now = FROZEN
-    const scheduler = controllableScheduler(() => now)
+    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => now)
 
     await unitOfWork(() => now)
       .execute(async (uow) => {
@@ -228,14 +228,14 @@ describe("controllableScheduler", () => {
   })
 
   it("refuses to be called outside a handler", async () => {
-    const scheduler = controllableScheduler(() => FROZEN)
+    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => FROZEN)
     await expect(
       scheduler.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN)),
     ).rejects.toThrow("requires a UnitOfWork")
   })
 
   it("reports a token it has never seen as not-found", async () => {
-    const scheduler = controllableScheduler(() => FROZEN)
-    expect(await scheduler.cancel({ id: "nope" })).toEqual({ kind: "not-found" })
+    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => FROZEN)
+    expect(await scheduler.cancelSchedule({ id: "nope" })).toEqual({ kind: "not-found" })
   })
 })

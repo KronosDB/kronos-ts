@@ -14,5 +14,17 @@
   // published `files` list already drop it) and still be judged by this gate.
   // Without it a `@ts-expect-error` claim would be decoration: nothing compiles
   // the tests.
-  "files": ["packages/drizzle/src/__tests__/drizzle-handler-inference.types.ts"]
+  "files": [
+    "packages/drizzle/src/__tests__/drizzle-handler-inference.types.ts",
+    "packages/core/src/correlation/__tests__/correlation-demand.types.ts",
+    "packages/core/src/event-sourcing/__tests__/snapshot-demand.types.ts",
+    "packages/core/src/event-scheduling/__tests__/schedule-demand.types.ts",
+    "packages/core/src/event-processing/__tests__/processor-demands.types.ts",
+    "integrationtests/src/__tests__/capability-preservation.types.ts",
+    "integrationtests/src/__tests__/persistence-family.types.ts",
+    "packages/rabbitmq/src/__tests__/transport-capability-preservation.types.ts",
+    "packages/core/src/messaging/__tests__/standard-schema.types.ts",
+    "packages/core/src/event-sourcing/__tests__/state-initial.types.ts",
+    "packages/core/src/validation/__tests__/validation-composition.types.ts"
+  ]
 }

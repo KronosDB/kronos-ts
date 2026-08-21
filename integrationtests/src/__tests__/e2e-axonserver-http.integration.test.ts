@@ -28,14 +28,14 @@ import {
   queryHandler,
   eventProcessor,
   type EventProcessor,
-  type CommandHandlerDefinition,
-  type QueryHandlerDefinition,
-  type EventHandlerDefinition,
+  type CommandHandler,
+  type QueryHandler,
+  type EventHandler,
   inMemoryTokenStore,
   type TokenStore,
 } from "@kronos-ts/core"
-import { state, type StateModule } from "@kronos-ts/core"
-import { type EventStore, type SnapshotStore, afterEvents } from "@kronos-ts/core"
+import { state } from "@kronos-ts/core"
+import { type EventStore, type SnapshotCapableEventStore, afterEvents, snapshotIdentifier } from "@kronos-ts/core"
 import {
   kronos,
   type App,
@@ -44,16 +44,14 @@ import {
   type EventHandlerEntry,
   type HandlerSite,
   type Sited,
-  type StateEntry,
-  type StateOptions,
 } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   type UnitOfWork,
   type CommandBus,
   type QueryBus,
@@ -61,7 +59,7 @@ import {
 
 /**
  * The two things `kronos` needs that are not handlers. The UoW runner is
- * named once and handed to `simpleCommandBus` (which captures it at
+ * named once and handed to `localCommandBus` (which captures it at
  * construction) — writing it on an adjacent line is what makes that checkable.
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): {
@@ -69,8 +67,8 @@ function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): {
   queryBus: QueryBus
 } {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
 
@@ -84,11 +82,9 @@ function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): {
  * structural (contravariant) check.
  */
 type SitedItem =
-  | Sited<StateModule<any, any>>
-  | readonly [Sited<StateModule<any, any>>, StateOptions]
-  | Sited<CommandHandlerDefinition<any, any>>
-  | Sited<QueryHandlerDefinition<any, any>>
-  | EventHandlerDefinition<any, any>
+  | Sited<CommandHandler<any, any>>
+  | Sited<QueryHandler<any, any>>
+  | EventHandler<any, any>
 
 /** What a host attaches uniformly here. There is no `stores` record any more —
  * this is the ARGUMENT LIST of a local helper, and every entry comes out
@@ -106,14 +102,14 @@ type Site = HandlerSite & {
 /**
  * Attach one site to a flat list of entries — the composition root's job,
  * replacing the old `module(name, stores, ...handlers)` — and sort them into
- * the four fields `kronos` now takes. Honours the `[state, options]` tuple
- * shape. Spread the result straight into `kronos({ ...sitedOn(site, ...) })`.
+ * the three fields `kronos` now takes. States are in no list: a handler closes
+ * over the one it folds. Spread the result straight into
+ * `kronos({ ...sitedOn(site, ...) })`.
  */
 function sitedOn(
   site: Site,
   ...items: ReadonlyArray<SitedItem>
 ): {
-  states: StateEntry[]
   commandHandlers: CommandHandlerEntry[]
   queryHandlers: QueryHandlerEntry[]
   eventHandlers: EventHandlerEntry[]
@@ -126,22 +122,14 @@ function sitedOn(
     processorName,
     ...handlerSite
   } = site
-  const states: StateEntry[] = []
   const commandHandlers: CommandHandlerEntry[] = []
   const queryHandlers: QueryHandlerEntry[] = []
   const eventHandlers: EventHandlerEntry[] = []
   let processor: EventProcessor | undefined
 
   for (const item of items) {
-    if (Array.isArray(item)) {
-      const [stateDef, options] = item
-      states.push([{ ...stateDef, ...handlerSite }, options] as StateEntry)
-      continue
-    }
     const kind = (item as { kind?: string }).kind
-    if (kind === "state-module") {
-      states.push({ ...(item as object), ...handlerSite } as StateEntry)
-    } else if (kind === "command-handler") {
+    if (kind === "command-handler") {
       commandHandlers.push({
         ...(item as object),
         ...handlerSite,
@@ -173,7 +161,7 @@ function sitedOn(
       } as EventHandlerEntry)
     }
   }
-  return { states, commandHandlers, queryHandlers, eventHandlers }
+  return { commandHandlers, queryHandlers, eventHandlers }
 }
 
 import {
@@ -181,7 +169,7 @@ import {
   axonServerCommandBus,
   axonServerQueryBus,
   axonServerEventStore,
-  axonServerSnapshotStore,
+  axonServerSnapshottingEventStore,
   axonServerControlPlane,
   type AxonServerConnectionHandle,
 } from "@kronos-ts/axon-server"
@@ -240,12 +228,11 @@ type CourseState = {
 }
 
 const Course = state({
-  name: "Course",
   id: { courseId: z.string() },
-  initial: (_id) =>
-    ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
+    () =>
+      ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
     [
       CourseCreated,
       (s, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity }),
@@ -253,6 +240,12 @@ const Course = state({
     [StudentSubscribed, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })],
     [EnrollmentClosed, (s) => ({ ...s, closed: true })],
   ],
+  // WHERE entries are filed and WHEN one is written. The key is a string this
+  // file wrote — change it and every old entry is orphaned in the same instant.
+  // Where a snapshot LANDS is a SITE fact: the entries below that carry a
+  // WRAPPED `eventStore` can serve one, and the compiler refuses this state's
+  // load on an entry whose log was not wrapped.
+  snapshot: { key: "course-v1", when: afterEvents(1) },
 })
 
 const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
@@ -370,8 +363,8 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 //   const axon = await axonServerConnection({ ..., serializer })
 //   const eventStore = axonServerEventStore(axon, "default")
 //   const commandBus = interceptingCommandBus(
-//     axonServerCommandBus(axon, simpleCommandBus(unitOfWork)), lineage)
-//   kronos({ states, commandHandlers, queryHandlers, eventHandlers })
+//     axonServerCommandBus(localCommandBus(unitOfWork), axon), correlation)
+//   kronos({ commandHandlers, queryHandlers, eventHandlers })
 //   await axon.start()                                       // data-path readiness
 //   await axonServerControlPlane(axon, app.processors.values())  // opt-in remote admin
 // The connection is the shared RESOURCE — one gRPC channel, the platform stream
@@ -394,8 +387,7 @@ describe("E2E: Axon Server full stack", () => {
   let axonHost: string
   let axonGrpcPort: number
   let buses: { commandBus: CommandBus; queryBus: QueryBus }
-  let axonEventStore: EventStore
-  let axonSnapshotStore: SnapshotStore
+  let axonEventStore: SnapshotCapableEventStore
 
   beforeAll(async () => {
     courseViews.clear()
@@ -430,15 +422,22 @@ describe("E2E: Axon Server full stack", () => {
       serializer: jsonSerializer(),
     })
 
-    axonEventStore = axonServerEventStore(axon, "default")
-    axonSnapshotStore = axonServerSnapshotStore(axon, "default")
+    // ONE object, capability and all. Axon Server serves the snapshot WRITE
+    // over `DcbSnapshotStore` but does not serve the fused source RPC at any
+    // shipping version, so the wrapper fuses the read client-side — two calls,
+    // inside one function, which is where a server-side fusion will land.
+    axonEventStore = axonServerSnapshottingEventStore(
+      axonServerEventStore(axon, "default"),
+      axon,
+      "default",
+    )
 
-    // Interception OUTSIDE the transport. `local` already carries `lineage` of
+    // Interception OUTSIDE the transport. `local` already carries `correlation` of
     // its own, so a server-routed command meets it twice — which is a no-op
     // past the first application, since both fields are `??` seeds.
     buses = {
-      commandBus: interceptingCommandBus(axonServerCommandBus(axon, local.commandBus), lineage),
-      queryBus: interceptingQueryBus(axonServerQueryBus(axon, local.queryBus), lineage),
+      commandBus: interceptingCommandBus(axonServerCommandBus(local.commandBus, axon), correlation),
+      queryBus: interceptingQueryBus(axonServerQueryBus(local.queryBus, axon), correlation),
     }
 
     app = kronos({
@@ -448,11 +447,9 @@ describe("E2E: Axon Server full stack", () => {
       ...sitedOn(
         {
           eventStore: axonEventStore,
-          snapshotStore: axonSnapshotStore,
           ...buses,
           processorName: "course-projection",
         },
-        [Course, { snapshotPolicy: afterEvents(1) }],
         createCourse,
         subscribeStudent,
         getCourse,
@@ -550,24 +547,31 @@ describe("E2E: Axon Server full stack", () => {
   }, 60_000)
 
   it("the declared snapshot policy writes to Axon's snapshot store", async () => {
-    // The Course repository was declared as `[Course, { snapshotPolicy:
-    // afterEvents(1) }]` — no hand-handler through app.stateManagers. The
-    // store it writes to is the one the site named, which is Axon Server's.
+    // `Course` carries `snapshot: { key: "course-v1", when: afterEvents(1) }`
+    // on the state value itself — nothing was registered, and there is no
+    // repository to reach into. The store it writes to is the one the SITE
+    // named, which is Axon Server's.
     //
     // afterEvents(1) fires on a load that observes MORE THAN ONE event: the
     // duplicate-create above sourced e2e-101's two events, so it triggered
     // there. Snapshot writes are fire-and-forget, hence the poll.
-    const snapshotStore = axonSnapshotStore
-    await waitFor(
-      async () => (await snapshotStore.load("Course", { courseId: "e2e-101" })) !== undefined,
-    )
+    // There is no `load` to call: reading a cached fold IS a read, so the
+    // entry comes back LEADING one.
+    const key = `course-v1:${snapshotIdentifier({ courseId: "e2e-101" })}`
+    const cached = async () =>
+      (await axonEventStore.source({
+        query: Course.query({ courseId: "e2e-101" }),
+        snapshot: { key },
+      })).snapshot
 
-    const snapshot = await snapshotStore.load("Course", { courseId: "e2e-101" })
+    await waitFor(async () => (await cached()) !== undefined)
+
+    const snapshot = await cached()
     expect(snapshot).toBeDefined()
     expect(snapshot!.position).toBeGreaterThan(0n)
     // The snapshot is the folded state, not the raw events.
-    expect((snapshot!.payload as CourseState).name).toBe("Full Stack Course")
-    expect((snapshot!.payload as CourseState).enrolled).toEqual(["stu-1"])
+    expect((snapshot!.state as CourseState).name).toBe("Full Stack Course")
+    expect((snapshot!.state as CourseState).enrolled).toEqual(["stu-1"])
   }, 60_000)
 
   it("enrollment with capacity enforcement via event-sourced state", async () => {
@@ -680,17 +684,20 @@ describe("E2E: Axon Server full stack", () => {
     })
     const autoBuses = {
       commandBus: interceptingCommandBus(
-        axonServerCommandBus(autoAxon, autoLocal.commandBus),
-        lineage,
+        axonServerCommandBus(autoLocal.commandBus, autoAxon),
+        correlation,
       ),
-      queryBus: interceptingQueryBus(axonServerQueryBus(autoAxon, autoLocal.queryBus), lineage),
+      queryBus: interceptingQueryBus(axonServerQueryBus(autoLocal.queryBus, autoAxon), correlation),
     }
-    const autoEventStore: EventStore = axonServerEventStore(autoAxon, "default")
+    const autoEventStore: EventStore = axonServerSnapshottingEventStore(
+      axonServerEventStore(autoAxon, "default"),
+      autoAxon,
+      "default",
+    )
     const autoApp = kronos({
       ...sitedOn(
         {
           eventStore: autoEventStore,
-          snapshotStore: axonServerSnapshotStore(autoAxon, "default"),
           ...autoBuses,
           processorName: "axonserver-enrollment-automation",
         },

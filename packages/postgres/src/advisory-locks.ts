@@ -68,7 +68,7 @@ export function globalIntentKey(): bigint {
   return hashLockKey(KEYSPACE_GLOBAL_INTENT)
 }
 
-export interface LockTarget {
+export type LockTarget = {
   readonly type: string
   readonly tag: string
 }

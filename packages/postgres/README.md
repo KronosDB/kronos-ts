@@ -1,8 +1,9 @@
 # @kronos-ts/postgres
 
-The full Kronos persistence family on Postgres — event store, snapshot store,
-token store, dead-letter queue, unit of work, handler wrapper and scheduler —
-over raw SQL. No ORM required.
+The full Kronos persistence family on Postgres — event store (with the
+snapshotting and scheduling capability tiers that wrap it), token store,
+dead-letter queue, unit of work and handler wrapper — over raw SQL. No ORM
+required.
 
 ## Install
 
@@ -22,11 +23,11 @@ Requires Postgres 14+ (for `xid8` and `pg_snapshot_xmin`).
 One pool has a lifetime. Everything else is a plain function of it:
 
 ```typescript
-import { unitOfWork, simpleCommandBus, jsonSerializer, descriptorBasedTagResolver } from "@kronos-ts/core"
+import { unitOfWork, localCommandBus, jsonSerializer, descriptorBasedTagResolver } from "@kronos-ts/core"
 import {
   postgresPool,
   postgresEventStore,
-  postgresSnapshotStore,
+  postgresSnapshottingEventStore,
   postgresTokenStore,
   postgresDeadLetterQueue,
   postgresUnitOfWork,
@@ -35,16 +36,19 @@ import {
 const pg = postgresPool("postgresql://user:pass@host/db")
 await pg.start()          // connects + bootstraps the schema
 
-const eventStore    = postgresEventStore(pg, {
-  serializer: jsonSerializer(),
-  tagResolver: descriptorBasedTagResolver(),
-})
-const snapshotStore = postgresSnapshotStore(pg, { serializer: jsonSerializer() })
-const tokenStore    = postgresTokenStore(pg)
-const deadLetters   = postgresDeadLetterQueue(pg)
-const uow           = postgresUnitOfWork(pg, unitOfWork)
+const eventStore  = postgresEventStore(pg, { tagResolver: descriptorBasedTagResolver() })
+const tokenStore  = postgresTokenStore(pg)
+const deadLetters = postgresDeadLetterQueue(pg)
+const uow         = postgresUnitOfWork(unitOfWork, pg)
 
-const commandBus = simpleCommandBus(uow)
+// …and IF this deployment caches folds, one more line AROUND the log. The base
+// store has never heard of snapshots; wrapping it adds the capability, and the
+// wrapper serves a cached read in ONE round trip because it owns the query.
+const cachingStore = postgresSnapshottingEventStore(eventStore, pg, {
+  serializer: jsonSerializer(),
+})
+
+const commandBus = localCommandBus(uow)
 // …
 await pg.close()
 ```

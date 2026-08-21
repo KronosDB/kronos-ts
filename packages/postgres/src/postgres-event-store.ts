@@ -55,8 +55,6 @@ import {
   FIRST_TOKEN,
 } from "@kronos-ts/core"
 import { qualifiedNameToString, qualifiedNameFromString } from "@kronos-ts/core"
-import type { Serializer } from "@kronos-ts/core"
-export type { Serializer } from "@kronos-ts/core"
 import type { PostgresAdapter, PostgresAdapterTransaction } from "./adapter.js"
 import { IsolationLevel } from "./adapter.js"
 import { acquireWriteLocks, type LockTarget } from "./advisory-locks.js"
@@ -64,20 +62,26 @@ import { buildCriteriaWhere, encodeTag } from "./criteria-sql.js"
 import { AppendConditionError, isDcbViolation, KRONOS_DCB_VIOLATION_SQLSTATE } from "./errors.js"
 import type { PostgresResource } from "./postgres-pool.js"
 import { sharedPostgresTransaction } from "./postgres-transaction.js"
+import { decodeEvent, type EventRow, EVENT_COLUMNS } from "./event-row.js"
 
 // Minimal TagResolver structural shape — the real slot is declared in the
 // core; we accept anything compatible. Serializer uses the canonical type.
 export type TagResolver = (event: EventMessage) => ReadonlyArray<{ key: string; value: string }>
 
-export interface PostgresEventStoreConfig {
-  readonly serializer: Serializer
+export type PostgresEventStoreConfig = {
   readonly tagResolver: TagResolver
 }
 
 /**
- * The DCB event store. `pg` carries both the client and the table names, so the
- * only thing left to say is how payloads are written and how tags are read off
- * an event.
+ * The DCB event store — and NOTHING BUT. `pg` carries both the client and the
+ * table names, so the only thing left to say is how tags are read off an event.
+ *
+ * IT HAS NEVER HEARD OF SNAPSHOTS. There is no `serializer` in its config any
+ * more and no snapshot branch in its `source`: the base contract is complete
+ * for event sourcing, and a host that wants a cache over the fold WRAPS this —
+ * `postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg,
+ * { serializer })` — which is the one place the snapshots table is mentioned
+ * and the one place a serializer is needed.
  */
 export function postgresEventStore(
   pg: PostgresResource,
@@ -195,36 +199,34 @@ export function postgresEventStore(
     return { position: lastPosition, xid: lastXid }
   }
 
-  return {
-    async source(condition: SourcingCondition): Promise<SourcingResult> {
-      const start = condition.start ?? 0n
-      const built = buildCriteriaWhere(compileQuery(condition.query), 2) // $1 = start
-      const sql = `
-        SELECT sequence_position, event_id, type, tags, payload, metadata, version, timestamp
+  /** The plain read: the query, plus the head the marker falls back to. */
+  async function sourcePlain(condition: SourcingCondition): Promise<SourcingResult> {
+    const start = condition.start ?? 0n
+    const built = buildCriteriaWhere(compileQuery(condition.query), 2) // $1 = start
+    const sql = `
+        SELECT ${EVENT_COLUMNS}
         FROM ${tables.events}
         WHERE sequence_position >= $1 AND (${built.where})
         ORDER BY sequence_position ASC
       `
-      const rows = await adapter.query<{
-        sequence_position: string
-        event_id: string
-        type: string
-        tags: string[]
-        payload: unknown
-        metadata: unknown
-        version: string
-        timestamp: string | number
-      }>(sql, [start, ...built.params])
+    const rows = await adapter.query<EventRow>(sql, [start, ...built.params])
 
-      const events: EventMessage[] = rows.map((r) => decodeEvent(r))
-      const headRow = await adapter.queryOne<{ head: string | null }>(
-        `SELECT MAX(sequence_position)::text AS head FROM ${tables.events}`,
-      )
-      const head = headRow?.head ? BigInt(headRow.head) : -1n
-      const lastPos = rows.length > 0 ? BigInt(rows[rows.length - 1]!.sequence_position) : -1n
-      const marker = rows.length > 0 ? markerAt(lastPos) : markerAt(head)
-      return { events, marker }
-    },
+    const events: EventMessage[] = rows.map((r) => decodeEvent(r))
+    const headRow = await adapter.queryOne<{ head: string | null }>(
+      `SELECT MAX(sequence_position)::text AS head FROM ${tables.events}`,
+    )
+    const head = headRow?.head ? BigInt(headRow.head) : -1n
+    const lastPos = rows.length > 0 ? BigInt(rows[rows.length - 1]!.sequence_position) : -1n
+    const marker = rows.length > 0 ? markerAt(lastPos) : markerAt(head)
+    return { events, marker }
+  }
+
+  return {
+    // A CONDITION CARRYING A SNAPSHOT KEY IS IGNORED HERE, and that is correct
+    // rather than incomplete: an unwrapped store replays in full, which is a
+    // slower load and never a wrong one. Serving the key is what the wrapper is
+    // for, and the compiler makes sure a state that needs one gets one.
+    source: sourcePlain,
 
     async appendEvents(
       events: ReadonlyArray<EventMessage>,
@@ -626,47 +628,4 @@ export function postgresEventStore(
       })
     },
   }
-}
-
-function decodeEvent(row: {
-  type: string
-  tags: string[]
-  payload: unknown
-  metadata: unknown
-  sequence_position: string
-  event_id: string
-  version: string
-  timestamp: string | number
-}): EventMessage {
-  const qn = qualifiedNameFromString(row.type)
-  const tags = row.tags.map((t) => {
-    const sep = t.indexOf("")
-    return sep >= 0
-      ? { key: t.slice(0, sep), value: t.slice(sep + 1) }
-      : { key: t, value: "" }
-  })
-  return {
-    kind: "event",
-    identifier: row.event_id,
-    name: qn,
-    version: row.version,
-    tags,
-    payload: decodeJsonb(row.payload),
-    metadata: decodeJsonb(row.metadata) as EventMessage["metadata"],
-    timestamp: Number(row.timestamp),
-  }
-}
-
-// Adapter-agnostic JSONB decoding: pgAdapter/postgresAdapter return parsed
-// objects, but bunSqlAdapter (Bun.SQL) returns JSONB as a raw string. Normalise
-// here so callers always see a JS object.
-function decodeJsonb(v: unknown): unknown {
-  if (typeof v === "string") {
-    try {
-      return JSON.parse(v)
-    } catch {
-      return v
-    }
-  }
-  return v
 }

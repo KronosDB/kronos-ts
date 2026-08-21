@@ -114,7 +114,7 @@ describe("Knex SequencedDeadLetterQueue (PostgreSQL)", () => {
 
   it("commits the enqueue in the active UnitOfWork transaction — and rolls it back on failure", async () => {
     const dlq = makeQueue()
-    const runUoW = knexUnitOfWork(knex as any, unitOfWork)
+    const runUoW = knexUnitOfWork(unitOfWork, knex as any)
 
     await runUoW().execute(async (uow) => {
       await dlq.enqueue(GROUP, makeDeadLetter("A", "committed"), uow)

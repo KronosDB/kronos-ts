@@ -6,12 +6,12 @@ import {
   serializeToken as serializeTokenData,
   deserializeToken as deserializeTokenData,
 } from "@kronos-ts/core"
-import type { DrizzleDb } from "./drizzle-transaction.js"
+import type { DrizzleDb, DrizzleFamily } from "./drizzle-transaction.js"
 import { activeDrizzleTransaction } from "./drizzle-transaction.js"
 import { kronosTokenEntries } from "./drizzle-schema.js"
 
 /** Tuning only — everything required is a positional argument. */
-export interface DrizzleTokenStoreOptions {
+export type DrizzleTokenStoreOptions = {
   /** Claim timeout in ms. Default: 10000. */
   claimTimeoutMs?: number
 }
@@ -51,7 +51,7 @@ function nowIso(): string {
 export function drizzleTokenStore(
   db: DrizzleDb,
   options: DrizzleTokenStoreOptions = {},
-): TokenStore {
+): TokenStore<UnitOfWork & DrizzleFamily> {
   const table: any = kronosTokenEntries
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
 

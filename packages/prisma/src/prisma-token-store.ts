@@ -5,11 +5,11 @@ import {
   serializeToken as serializeTokenData,
   deserializeToken as deserializeTokenData,
 } from "@kronos-ts/core"
-import type { PrismaClientLike } from "./prisma-transaction.js"
+import type { PrismaClientLike, PrismaFamily } from "./prisma-transaction.js"
 import { activePrismaTransaction } from "./prisma-transaction.js"
 
 /** Tuning only — everything required is a positional argument. */
-export interface PrismaTokenStoreOptions {
+export type PrismaTokenStoreOptions = {
   /** Claim timeout in ms. Default: 10000. */
   claimTimeoutMs?: number
 }
@@ -33,7 +33,7 @@ export interface PrismaTokenStoreOptions {
  * ```
  */
 
-interface TokenRow {
+type TokenRow = {
   processorName: string
   segment: number
   mask: number
@@ -78,7 +78,7 @@ function isClaimExpired(row: TokenRow, claimTimeoutMs: number): boolean {
 export function prismaTokenStore(
   prisma: PrismaClientLike,
   options: PrismaTokenStoreOptions = {},
-): TokenStore {
+): TokenStore<UnitOfWork & PrismaFamily> {
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
 
   /**

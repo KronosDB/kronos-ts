@@ -23,9 +23,10 @@ import {
 import type { QueryRow } from "./adapter.js"
 import type { PostgresResource } from "./postgres-pool.js"
 import { activePostgresTransaction } from "./postgres-transaction.js"
+import type { PostgresFamily } from "./postgres-transaction.js"
 
 /** Tuning only — everything required is the positional pool. */
-export interface PostgresTokenStoreOptions {
+export type PostgresTokenStoreOptions = {
   /**
    * How long a claim survives without being extended, ms. Default 10000 —
    * the same figure the other families use, so a mixed fleet does not
@@ -35,11 +36,11 @@ export interface PostgresTokenStoreOptions {
 }
 
 /** The two operations both a pool and a transaction answer. */
-interface SqlHandle {
+type SqlHandle = {
   query<R extends QueryRow = QueryRow>(sql: string, params?: unknown[]): Promise<R[]>
 }
 
-interface TokenRow extends QueryRow {
+type TokenRow = QueryRow & {
   token_type: string | null
   token: string | null
   timestamp: string | null
@@ -53,7 +54,7 @@ function nowIso(): string {
 export function postgresTokenStore(
   pg: PostgresResource,
   options: PostgresTokenStoreOptions = {},
-): TokenStore {
+): TokenStore<UnitOfWork & PostgresFamily> {
   const table = pg.tables.tokens
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
 

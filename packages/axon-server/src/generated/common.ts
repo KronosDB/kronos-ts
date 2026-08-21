@@ -131,7 +131,7 @@ export function taskStatusToJSON(object: TaskStatus): string {
 }
 
 /** Describes a serialized object */
-export interface SerializedObject {
+export type SerializedObject = {
   /** The type identifier of the serialized object. */
   type: string;
   /** The revision of the serialized form of the given type. */
@@ -141,7 +141,7 @@ export interface SerializedObject {
 }
 
 /** The value of a MetaData entry. */
-export interface MetaDataValue {
+export type MetaDataValue = {
   /** The text value of the Meta Data entry. */
   textValue?:
     | string
@@ -163,7 +163,7 @@ export interface MetaDataValue {
 }
 
 /** An instruction for routing components when routing or processing a message. */
-export interface ProcessingInstruction {
+export type ProcessingInstruction = {
   /** The type of processing message. */
   key: ProcessingKey;
   /** The value associated with the processing key. */
@@ -171,7 +171,7 @@ export interface ProcessingInstruction {
 }
 
 /** Message containing details of an error */
-export interface ErrorMessage {
+export type ErrorMessage = {
   /** A human readable message explaining the error */
   message: string;
   /** A description of the location (client component, server) where the error occurred */
@@ -183,7 +183,7 @@ export interface ErrorMessage {
 }
 
 /** Message used for Flow Control instruction, providing the counterpart with additional permits for sending messages */
-export interface FlowControl {
+export type FlowControl = {
   /** The ClientID of the component providing additional permits */
   clientId: string;
   /** The number of permits to provide */
@@ -191,7 +191,7 @@ export interface FlowControl {
 }
 
 /** Message describing instruction acknowledgement */
-export interface InstructionAck {
+export type InstructionAck = {
   /** The identifier of the instruction */
   instructionId: string;
   /** Indicator whether the instruction was acknowledged successfully */
@@ -201,7 +201,7 @@ export interface InstructionAck {
 }
 
 /** Message describing the result of the execution of an instruction */
-export interface InstructionResult {
+export type InstructionResult = {
   /** The identifier of the instruction */
   instructionId: string;
   /** Indicator whether the instruction was processed successfully */
@@ -210,11 +210,11 @@ export interface InstructionResult {
   error: ErrorMessage | undefined;
 }
 
-export interface Component {
+export type Component = {
   component: string;
 }
 
-export interface Principal {
+export type Principal = {
   user: string;
 }
 
@@ -1087,7 +1087,7 @@ function isSet(value: any): boolean {
   return value !== null && value !== undefined;
 }
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

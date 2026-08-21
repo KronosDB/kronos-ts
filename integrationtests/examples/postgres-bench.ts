@@ -101,7 +101,7 @@ async function truncate(pool: PostgresResource): Promise<void> {
 // Scenario 1 — single-writer throughput + degradation curve
 // ---------------------------------------------------------------------------
 
-interface S1Result {
+type S1Result = {
   windows: Array<{ from: number; to: number; opsPerSec: number; p50: number; p95: number; p99: number }>
   totalMs: number
   opsPerSec: number
@@ -162,7 +162,7 @@ function total(ms: number): string {
 // Scenario 2 — disjoint concurrent writers
 // ---------------------------------------------------------------------------
 
-interface S2Run {
+type S2Run = {
   workers: number
   totalMs: number
   totalOps: number
@@ -211,7 +211,7 @@ function printS2(runs: S2Run[]): void {
 // Scenario 3 — same-tag contention
 // ---------------------------------------------------------------------------
 
-interface S3Run {
+type S3Run = {
   workers: number
   commits: number
   retries: number
@@ -270,7 +270,7 @@ function printS3(runs: S3Run[]): void {
 // Scenario 4 — adapter shootout
 // ---------------------------------------------------------------------------
 
-interface AdapterRun {
+type AdapterRun = {
   name: string
   result: S1Result
 }

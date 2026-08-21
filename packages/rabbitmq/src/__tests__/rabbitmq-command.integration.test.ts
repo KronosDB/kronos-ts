@@ -1,18 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { emptyMetadata, qn, send, type UnitOfWork } from "@kronos-ts/core"
+import { correlating, correlatingHandler, emptyMetadata, qn, send, unitOfWork } from "@kronos-ts/core"
 import { kronos } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus,
-  type CommandHandlerDefinition,
+  localCommandBus,
+  localQueryBus,
+  type CommandHandler,
 } from "@kronos-ts/core"
 import { command, commandHandler, event } from "@kronos-ts/core"
-import { state, type StateModule } from "@kronos-ts/core"
+import { state } from "@kronos-ts/core"
 import {
   inMemoryEventStore,
   type AppendCondition,
@@ -22,18 +22,35 @@ import { rabbitMqConnection } from "../connection.js"
 import { rabbitMqCommandBus } from "../command-bus.js"
 import { rabbitMqQueryBus } from "../query-bus.js"
 import { startRabbitMqContainer, type RunningRabbitMq } from "./testcontainers-setup.js"
+import type { Message, Metadata } from "@kronos-ts/core"
+
+// The id-pair cargo, written out as any host writes it: the chain is inherited
+// or seeded; the cause is the parent, unconditionally.
+const correlationFrom = (parent: Message): Metadata => ({
+  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
+  causationId: String(parent.identifier),
+})
 
 /**
  * The three things `kronos` needs that are not modules. The UoW runner is named
- * once and handed to BOTH `simpleCommandBus` (which captures it at construction)
+ * once and handed to BOTH `localCommandBus` (which captures it at construction)
  * and `kronos` — writing them on adjacent lines is what makes that checkable.
  */
-function inMemoryBuses(uow: () => UnitOfWork = unitOfWork) {
+function inMemoryBuses(uow = () => correlating(unitOfWork())) {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
+
+/**
+ * What each node composes to make its handlers carry — the same two lines a
+ * deployed service writes, and the reason correlation survives a real broker.
+ */
+const carrying = <H extends { handler: any }>(h: H): H => ({
+  ...h,
+  handler: correlatingHandler(h.handler, correlationFrom),
+})
 
 
 const StartWithSend = command({
@@ -59,19 +76,15 @@ const BFinished = event({
 })
 
 const StateA = state({
-  name: "RabbitStateA",
   id: { aId: z.string() },
-  initial: () => ({}),
   tags: (id) => ({ aId: id.aId }),
-  evolve: [[AObserved, (s) => s]],
+  evolve: [() => ({}), [AObserved, (s) => s]],
 })
 
 const StateB = state({
-  name: "RabbitStateB",
   id: { bId: z.string() },
-  initial: () => ({}),
   tags: (id) => ({ bId: id.bId }),
-  evolve: [[BFinished, (s) => s]],
+  evolve: [() => ({}), [BFinished, (s) => s]],
 })
 
 function probeEventStore() {
@@ -112,8 +125,7 @@ describe("RabbitMQ command transport integration", () => {
     serviceName: string
     prefix: string
     eventStore: EventStore
-    states: StateModule<any, any>[]
-    commandHandlers: CommandHandlerDefinition<any, any>[]
+    commandHandlers: CommandHandler<any, any>[]
   }) {
     const buses = inMemoryBuses()
     const rabbit = await rabbitMqConnection(broker.url, {
@@ -122,12 +134,11 @@ describe("RabbitMQ command transport integration", () => {
       topology: { prefix: params.prefix },
     })
     const commandBus = interceptingCommandBus(
-      rabbitMqCommandBus(rabbit, buses.commandBus), lineage)
+      rabbitMqCommandBus(buses.commandBus, rabbit), correlation)
     const queryBus = interceptingQueryBus(
-      rabbitMqQueryBus(rabbit, buses.queryBus), lineage)
+      rabbitMqQueryBus(buses.queryBus, rabbit), correlation)
     const app = kronos({
-      states: params.states.map((s) => ({ ...s, eventStore: params.eventStore })),
-      commandHandlers: params.commandHandlers.map((h) => ({ ...h, eventStore: params.eventStore, commandBus, queryBus })),
+      commandHandlers: params.commandHandlers.map((h) => ({ ...carrying(h), eventStore: params.eventStore, commandBus, queryBus })),
     })
     await rabbit.start()
     return {
@@ -148,7 +159,6 @@ describe("RabbitMQ command transport integration", () => {
       serviceName: "worker",
       prefix,
       eventStore: probe.eventStore,
-      states: [StateA, StateB],
       commandHandlers: [
         commandHandler(Finish, async ({ payload: cmd }, ctx) => {
           await ctx.load(StateB, { bId: cmd.bId })
@@ -161,7 +171,6 @@ describe("RabbitMQ command transport integration", () => {
       serviceName: "starter",
       prefix,
       eventStore: probe.eventStore,
-      states: [StateA, StateB],
       commandHandlers: [
         commandHandler(StartWithSend, async ({ payload: cmd }, ctx) => {
           await ctx.load(StateA, { aId: cmd.aId })
@@ -186,7 +195,7 @@ describe("RabbitMQ command transport integration", () => {
   }, 30_000)
 
   /**
-   * Correlation lineage over a REAL broker, not a loopback transport.
+   * correlation over a REAL broker, not a loopback transport.
    *
    * This is what the composition order buys: `interceptingCommandBus` wraps the
    * DISTRIBUTED bus, so the stamp lands above the local-vs-remote fork and a
@@ -195,7 +204,7 @@ describe("RabbitMQ command transport integration", () => {
    * shape — loses both the moment the command is routed to the broker.
    */
   it("carries correlationId/causationId across the broker into the remote handler", async () => {
-    const prefix = `kronos.it.${Date.now()}.lineage`
+    const prefix = `kronos.it.${Date.now()}.correlation`
 
     let finishMetadata: Record<string, unknown> | undefined
     let finishIdentifier: string | undefined
@@ -205,7 +214,6 @@ describe("RabbitMQ command transport integration", () => {
       serviceName: "worker",
       prefix,
       eventStore: inMemoryEventStore(),
-      states: [],
       commandHandlers: [
         commandHandler(Finish, async ({ metadata, identifier }) => {
           finishMetadata = metadata as Record<string, unknown>
@@ -218,7 +226,6 @@ describe("RabbitMQ command transport integration", () => {
       serviceName: "starter",
       prefix,
       eventStore: inMemoryEventStore(),
-      states: [],
       commandHandlers: [
         commandHandler(StartWithSend, async (message, ctx) => {
           outerIdentifier = message.identifier
@@ -236,11 +243,10 @@ describe("RabbitMQ command transport integration", () => {
       )
 
       expect(finishMetadata?.correlationId).toBe("corr-over-the-wire")
-      // `lineage` keeps correlationId across every hop AND preserves the
-      // causationId `ctx.send` stamped — so across a real broker, Finish's
-      // cause is StartWithSend, not Finish itself (see
-      // correlation-lineage.test.ts for the in-process version of this same
-      // finding).
+      // `correlation` keeps correlationId across every hop AND preserves the
+      // causationId the wrapper overlaid — so across a real broker, Finish's
+      // cause is StartWithSend, not Finish itself (see correlation.test.ts for
+      // the in-process version of this same finding).
       expect(finishMetadata?.causationId).toBe(outerIdentifier)
       expect(finishIdentifier).not.toBe(outerIdentifier)
     } finally {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test"
 import { unitOfWork } from "@kronos-ts/core"
-import type { CommandHandlerDefinition } from "@kronos-ts/core"
+import type { CommandHandler } from "@kronos-ts/core"
 import type { PostgresAdapter, PostgresAdapterTransaction, ListenSubscription } from "../adapter.js"
 import type { IsolationLevel } from "../adapter.js"
 import { postgresPool } from "../postgres-pool.js"
@@ -87,7 +87,7 @@ describe("postgresHandler", () => {
     // The whole premise of the family: a handler's own writes and the token
     // store's writes are the same transaction because they read one registry.
     const pool = postgresPool(fakeAdapter(), { bootstrap: false })
-    const make = postgresUnitOfWork(pool, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, pool)
 
     let seen: unknown
     let opened: unknown
@@ -118,7 +118,7 @@ describe("postgresHandler", () => {
       },
     }
     const pool = postgresPool(counting, { bootstrap: false })
-    const make = postgresUnitOfWork(pool, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, pool)
     const handler = postgresHandler(
       commandHandlerFn(async (_m, ctx) => {
         ctx.sql()
@@ -159,7 +159,7 @@ describe("postgresHandler", () => {
 
   it("leaves the ENTRY to the host — the spread carries every other field", async () => {
     const pool = postgresPool(fakeAdapter(), { bootstrap: false })
-    const entry: CommandHandlerDefinition<any, any, PostgresContext> = {
+    const entry: CommandHandler<any, any, PostgresContext> = {
       kind: "command-handler",
       descriptor: {} as never,
       handler: async (_m, ctx: PostgresContext) => {

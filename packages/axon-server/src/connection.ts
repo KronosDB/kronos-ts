@@ -7,7 +7,8 @@ import {
 } from "nice-grpc"
 import { ChannelCredentials as GrpcChannelCredentials } from "@grpc/grpc-js"
 import { readFileSync } from "node:fs"
-import { withRetry, healthCheck, type ResilienceConfig, type Serializer } from "@kronos-ts/core"
+import type { Serializer } from "@kronos-ts/core"
+import { withRetry, healthCheck, type ResilienceConfig } from "./resilience.js"
 import { PlatformServiceDefinition } from "./generated/control.js"
 import { CommandServiceDefinition } from "./generated/command.js"
 import { QueryServiceDefinition } from "./generated/query.js"
@@ -22,7 +23,7 @@ import {
 /**
  * Configuration for connecting to Axon Server.
  */
-export interface AxonServerConnectionConfig {
+export type AxonServerConnectionConfig = {
   /**
    * Host of the Axon Server. Defaults to "localhost".
    * For single-server setups.
@@ -107,7 +108,7 @@ export type ConnectionState =
  * An active connection to Axon Server, providing typed gRPC clients
  * for all services. Supports reconnection on failure.
  */
-export interface AxonServerConnection {
+export type AxonServerConnection = {
   /** The underlying gRPC channel. */
   readonly channel: Channel
   /** Platform service — connection management, topology. */
@@ -321,10 +322,10 @@ export function connectToAxonServer(config: AxonServerConnectionConfig): AxonSer
  * of a bus. Every event, snapshot, command payload and query result this
  * process exchanges with Axon Server goes through the same codec, so it is
  * named once, here — which is also what leaves
- * `axonServerEventStore(conn, context)` and `axonServerCommandBus(conn, local)`
+ * `axonServerEventStore(conn, context)` and `axonServerCommandBus(local, conn)`
  * their honest two-argument shapes.
  */
-export interface AxonServerConnectionOptions extends AxonServerConnectionConfig {
+export type AxonServerConnectionOptions = AxonServerConnectionConfig & {
   /** Payload codec for every message this client exchanges with Axon Server. */
   serializer: Serializer
   /** Retry / health-check policy for the initial connect and stream re-establishment. */
@@ -350,13 +351,13 @@ export interface AxonServerConnectionOptions extends AxonServerConnectionConfig 
  * the codec. Narrower than the handle on purpose — a test can drive a store
  * with a fake `connection` and nothing else.
  */
-export interface AxonServerStoreSource {
+export type AxonServerStoreSource = {
   readonly connection: AxonServerConnection
   readonly serializer: Serializer
 }
 
 /** What a BUS borrows: a store's two, plus the drain latch and the retry policy. */
-export interface AxonServerBusSource extends AxonServerStoreSource {
+export type AxonServerBusSource = AxonServerStoreSource & {
   /**
    * The connection-wide drain latch. In-flight dispatches register on it and
    * `close()` waits for them, so a bus never has the transport pulled out from
@@ -367,7 +368,7 @@ export interface AxonServerBusSource extends AxonServerStoreSource {
 }
 
 /** What the CONTROL PLANE borrows: the platform stream, and only that. */
-export interface AxonServerPlatformSource {
+export type AxonServerPlatformSource = {
   readonly platform: PlatformConnection
 }
 
@@ -376,12 +377,12 @@ export interface AxonServerPlatformSource {
  * stream riding on it, and the lifecycle pair.
  *
  * The stores and buses are NOT on it — `axonServerEventStore(conn, context)`,
- * `axonServerCommandBus(conn, local)` and friends are plain functions over
+ * `axonServerCommandBus(local, conn)` and friends are plain functions over
  * this, and a caller who wants only commands builds only that one. Multiple
  * contexts share this ONE channel: the per-call `AxonIQ-Context` header is what
  * separates them.
  */
-export interface AxonServerConnectionHandle extends AxonServerBusSource, AxonServerPlatformSource {
+export type AxonServerConnectionHandle = AxonServerBusSource & AxonServerPlatformSource & {
   /** Config after defaults — the resolved host, context, client id. */
   readonly config: AxonServerConnection["config"]
   /**
@@ -410,13 +411,14 @@ export interface AxonServerConnectionHandle extends AxonServerBusSource, AxonSer
  *   serializer: jsonSerializer(),
  * })
  * const eventStore    = axonServerEventStore(axon, "default")
- * const snapshotStore = axonServerSnapshotStore(axon, "default")
+ * const eventStore = axonServerSnapshottingEventStore(
+ *   axonServerEventStore(axon, "default"), axon, "default")
  * const commandBus = interceptingCommandBus(
- *   axonServerCommandBus(axon, simpleCommandBus(unitOfWork)), lineage)
+ *   axonServerCommandBus(localCommandBus(unitOfWork), axon), correlation)
  * const queryBus = interceptingQueryBus(
- *   axonServerQueryBus(axon, simpleQueryBus(unitOfWork)), lineage)
+ *   axonServerQueryBus(localQueryBus(unitOfWork), axon), correlation)
  *
- * const app = kronos({ states, commandHandlers, queryHandlers })
+ * const app = kronos({ commandHandlers, queryHandlers })
  * await axon.start()                  // readiness barrier: the server can route to us
  * // opt in to remote administration
  * const control = await axonServerControlPlane(axon, app.processors.values())

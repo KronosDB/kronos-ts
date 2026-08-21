@@ -18,7 +18,7 @@
   ```ts
   // before
   import { qn } from "@kronos-ts/common";
-  import { commandHandler, simpleCommandBus } from "@kronos-ts/messaging";
+  import { commandHandler, localCommandBus } from "@kronos-ts/messaging";
   import { inMemoryEventStore } from "@kronos-ts/eventsourcing";
   import { state } from "@kronos-ts/modelling";
   import { kronos } from "@kronos-ts/app";
@@ -27,7 +27,7 @@
   import {
     qn,
     commandHandler,
-    simpleCommandBus,
+    localCommandBus,
     inMemoryEventStore,
     state,
     kronos,

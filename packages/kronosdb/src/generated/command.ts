@@ -19,7 +19,7 @@ import {
 export const protobufPackage = "kronosdb.command";
 
 /** Messages sent FROM the command handler TO the server. */
-export interface CommandHandlerOutbound {
+export type CommandHandlerOutbound = {
   /** Register as a handler for a command type. */
   subscribe?:
     | CommandSubscription
@@ -45,7 +45,7 @@ export interface CommandHandlerOutbound {
 }
 
 /** Messages sent FROM the server TO the command handler. */
-export interface CommandHandlerInbound {
+export type CommandHandlerInbound = {
   /** Acknowledgement of a handler instruction. */
   ack?:
     | InstructionAck
@@ -59,7 +59,7 @@ export interface CommandHandlerInbound {
 }
 
 /** A command to be routed to a handler. */
-export interface Command {
+export type Command = {
   /** Unique identifier for this command message. */
   messageIdentifier: string;
   /** The command name, used for routing to the correct handler. */
@@ -80,13 +80,13 @@ export interface Command {
   componentName: string;
 }
 
-export interface Command_MetadataEntry {
+export type Command_MetadataEntry = {
   key: string;
   value: MetadataValue | undefined;
 }
 
 /** Result of command handler execution. */
-export interface CommandResponse {
+export type CommandResponse = {
   /** Unique identifier for this response. */
   messageIdentifier: string;
   /** Error code, if the command failed. */
@@ -107,13 +107,13 @@ export interface CommandResponse {
   requestIdentifier: string;
 }
 
-export interface CommandResponse_MetadataEntry {
+export type CommandResponse_MetadataEntry = {
   key: string;
   value: MetadataValue | undefined;
 }
 
 /** A handler's registration for a command type. */
-export interface CommandSubscription {
+export type CommandSubscription = {
   /** Unique identifier for this subscription message. */
   messageId: string;
   /** The command name this handler can process. */
@@ -1170,7 +1170,7 @@ export const CommandServiceDefinition = {
   },
 } as const;
 
-export interface CommandServiceImplementation<CallContextExt = {}> {
+export type CommandServiceImplementation<CallContextExt = {}> = {
   /**
    * Opens a bidirectional stream for a command handler.
    * The client registers which command types it handles and receives
@@ -1184,7 +1184,7 @@ export interface CommandServiceImplementation<CallContextExt = {}> {
   dispatch(request: Command, context: CallContext & CallContextExt): Promise<DeepPartial<CommandResponse>>;
 }
 
-export interface CommandServiceClient<CallOptionsExt = {}> {
+export type CommandServiceClient<CallOptionsExt = {}> = {
   /**
    * Opens a bidirectional stream for a command handler.
    * The client registers which command types it handles and receives
@@ -1216,7 +1216,7 @@ function isSet(value: any): boolean {
 
 export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

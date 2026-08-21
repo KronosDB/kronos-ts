@@ -1,6 +1,6 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { PrismaClientLike } from "./prisma-transaction.js"
+import type { PrismaClientLike, PrismaFamily } from "./prisma-transaction.js"
 import { activePrismaTransaction } from "./prisma-transaction.js"
 
 /**
@@ -40,7 +40,7 @@ import { activePrismaTransaction } from "./prisma-transaction.js"
  * ```
  */
 /** Tuning only — everything required is a positional argument. */
-export interface PrismaDeadLetterQueueOptions {
+export type PrismaDeadLetterQueueOptions = {
   /** Maximum number of sequences. Default: 1024 (Axon parity). */
   maxSequences?: number
   /** Maximum letters per sequence. Default: 1024 (Axon parity). */
@@ -59,7 +59,7 @@ function newId(group: string): string {
   return `${group}:${Date.now()}:${idCounter}`
 }
 
-interface DeadLetterRow {
+type DeadLetterRow = {
   deadLetterId: string
   processingGroup: string
   sequenceIdentifier: string
@@ -98,7 +98,7 @@ interface DeadLetterRow {
 export function prismaDeadLetterQueue(
   prisma: PrismaClientLike,
   options: PrismaDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue {
+): SequencedDeadLetterQueue<UnitOfWork & PrismaFamily> {
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024
   const claimDurationMs = options.claimDurationMs ?? 30000

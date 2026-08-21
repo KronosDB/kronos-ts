@@ -1,6 +1,6 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { TypeormManager } from "./typeorm-transaction.js"
+import type { TypeormManager, TypeormFamily } from "./typeorm-transaction.js"
 import { activeTypeormTransaction } from "./typeorm-transaction.js"
 
 /**
@@ -51,7 +51,7 @@ import { activeTypeormTransaction } from "./typeorm-transaction.js"
  * - `processing_started` (nullable)  — epoch-ms lease timestamp as a string.
  */
 /** Tuning only — everything required is a positional argument. */
-export interface TypeormDeadLetterQueueOptions {
+export type TypeormDeadLetterQueueOptions = {
   /** Maximum number of sequences. Default: 1024 (Axon parity). */
   maxSequences?: number
   /** Maximum letters per sequence. Default: 1024 (Axon parity). */
@@ -98,7 +98,7 @@ function newId(group: string): string {
 export function typeormDeadLetterQueue(
   manager: TypeormManager,
   options: TypeormDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue {
+): SequencedDeadLetterQueue<UnitOfWork & TypeormFamily> {
   const table = TYPEORM_DEAD_LETTER_TABLE
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024

@@ -19,7 +19,7 @@ import {
 export const protobufPackage = "kronosdb.query";
 
 /** Messages sent FROM the query handler TO the server. */
-export interface QueryHandlerOutbound {
+export type QueryHandlerOutbound = {
   /** Register as a handler for a query type. */
   subscribe?:
     | QuerySubscription
@@ -53,7 +53,7 @@ export interface QueryHandlerOutbound {
 }
 
 /** Messages sent FROM the server TO the query handler. */
-export interface QueryHandlerInbound {
+export type QueryHandlerInbound = {
   /** Acknowledgement of a handler instruction. */
   ack?:
     | InstructionAck
@@ -79,24 +79,24 @@ export interface QueryHandlerInbound {
 }
 
 /** Reference to a query by its request ID. */
-export interface QueryReference {
+export type QueryReference = {
   requestId: string;
 }
 
 /** Indicates all results for a query have been sent. */
-export interface QueryComplete {
+export type QueryComplete = {
   messageId: string;
   requestId: string;
 }
 
 /** Request more results for a query. */
-export interface QueryFlowControl {
+export type QueryFlowControl = {
   queryReference: QueryReference | undefined;
   permits: bigint;
 }
 
 /** An incoming query to be handled. */
-export interface QueryRequest {
+export type QueryRequest = {
   messageIdentifier: string;
   /** The query name, used for routing. */
   query: string;
@@ -108,13 +108,13 @@ export interface QueryRequest {
   componentName: string;
 }
 
-export interface QueryRequest_MetadataEntry {
+export type QueryRequest_MetadataEntry = {
   key: string;
   value: MetadataValue | undefined;
 }
 
 /** A query result. */
-export interface QueryResponse {
+export type QueryResponse = {
   messageIdentifier: string;
   errorCode: string;
   errorMessage: ErrorMessage | undefined;
@@ -125,13 +125,13 @@ export interface QueryResponse {
   requestIdentifier: string;
 }
 
-export interface QueryResponse_MetadataEntry {
+export type QueryResponse_MetadataEntry = {
   key: string;
   value: MetadataValue | undefined;
 }
 
 /** A handler's registration for a query type. */
-export interface QuerySubscription {
+export type QuerySubscription = {
   messageId: string;
   /** The query name this handler can process. */
   query: string;
@@ -142,14 +142,14 @@ export interface QuerySubscription {
 }
 
 /** Opens a subscription query. */
-export interface SubscriptionQuery {
+export type SubscriptionQuery = {
   subscriptionIdentifier: string;
   numberOfPermits: bigint;
   queryRequest: QueryRequest | undefined;
 }
 
 /** An update for a subscription query. */
-export interface QueryUpdate {
+export type QueryUpdate = {
   messageIdentifier: string;
   payload: SerializedObject | undefined;
   metadata: { [key: string]: MetadataValue };
@@ -159,19 +159,19 @@ export interface QueryUpdate {
   errorMessage: ErrorMessage | undefined;
 }
 
-export interface QueryUpdate_MetadataEntry {
+export type QueryUpdate_MetadataEntry = {
   key: string;
   value: MetadataValue | undefined;
 }
 
 /** Subscription query completed normally. */
-export interface QueryUpdateComplete {
+export type QueryUpdateComplete = {
   clientId: string;
   componentName: string;
 }
 
 /** Subscription query completed with an error. */
-export interface QueryUpdateCompleteExceptionally {
+export type QueryUpdateCompleteExceptionally = {
   clientId: string;
   componentName: string;
   errorCode: string;
@@ -179,14 +179,14 @@ export interface QueryUpdateCompleteExceptionally {
 }
 
 /** Interactions for a subscription query. */
-export interface SubscriptionQueryRequest {
+export type SubscriptionQueryRequest = {
   subscribe?: SubscriptionQuery | undefined;
   unsubscribe?: SubscriptionQuery | undefined;
   flowControl?: SubscriptionQuery | undefined;
 }
 
 /** Responses for a subscription query. */
-export interface SubscriptionQueryResponse {
+export type SubscriptionQueryResponse = {
   messageIdentifier: string;
   subscriptionIdentifier: string;
   initialResult?: QueryResponse | undefined;
@@ -2490,7 +2490,7 @@ export const QueryServiceDefinition = {
   },
 } as const;
 
-export interface QueryServiceImplementation<CallContextExt = {}> {
+export type QueryServiceImplementation<CallContextExt = {}> = {
   /**
    * Opens a bidirectional stream for a query handler.
    * The client registers which query types it handles and receives
@@ -2518,7 +2518,7 @@ export interface QueryServiceImplementation<CallContextExt = {}> {
   ): ServerStreamingMethodResult<DeepPartial<SubscriptionQueryResponse>>;
 }
 
-export interface QueryServiceClient<CallOptionsExt = {}> {
+export type QueryServiceClient<CallOptionsExt = {}> = {
   /**
    * Opens a bidirectional stream for a query handler.
    * The client registers which query types it handles and receives
@@ -2561,7 +2561,7 @@ function isSet(value: any): boolean {
 
 export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

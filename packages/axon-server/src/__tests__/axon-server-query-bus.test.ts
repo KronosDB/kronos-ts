@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { type Serializer, type SerializedObject } from "@kronos-ts/core"
-import { payloadEquals, simpleQueryBus, unitOfWork } from "@kronos-ts/core"
+import { payloadEquals, localQueryBus, unitOfWork } from "@kronos-ts/core"
 import { axonServerQueryBus } from "../axon-server.js"
 import { shutdownLatch } from "../shutdown-latch.js"
 import type { AxonServerBusSource, AxonServerConnection } from "../connection.js"
@@ -139,7 +139,7 @@ describe("axonServerQueryBus — subscription queries", () => {
     // The local segment is a REAL bus now, so an inbound query the server routes
     // here runs under this bus's unit-of-work policy — not a UoW the transport
     // conjured for itself.
-    const bus = axonServerQueryBus(source, simpleQueryBus(unitOfWork))
+    const bus = axonServerQueryBus(localQueryBus(unitOfWork), source)
 
     bus.subscribe("kronos.test.WatchValue", async () => {
       if (opts?.handlerError) throw opts.handlerError

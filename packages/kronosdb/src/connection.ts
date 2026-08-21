@@ -8,14 +8,13 @@ import {
   CommandServiceDefinition,
   QueryServiceDefinition,
   EventStoreDefinition,
-  SnapshotStoreDefinition,
   SchedulerServiceDefinition,
 } from "./service-definitions.js"
 
 /**
  * Configuration for connecting to KronosDB.
  */
-export interface KronosDbConnectionConfig {
+export type KronosDbConnectionConfig = {
   /** Host of the KronosDB server. Defaults to "localhost". */
   host?: string
   /** gRPC port of the KronosDB server. Defaults to 50051. */
@@ -61,7 +60,7 @@ export type ConnectionState = "disconnected" | "connecting" | "connected" | "rec
  * An active connection to KronosDB, providing typed gRPC clients
  * for all services. Supports reconnection on failure.
  */
-export interface KronosDbConnection {
+export type KronosDbConnection = {
   readonly channel: Channel
   /** Platform service client. */
   readonly platform: Client<typeof PlatformServiceDefinition>
@@ -71,8 +70,6 @@ export interface KronosDbConnection {
   readonly queries: Client<typeof QueryServiceDefinition>
   /** Event store client. */
   readonly eventStore: Client<typeof EventStoreDefinition>
-  /** Snapshot store client. */
-  readonly snapshotStore: Client<typeof SnapshotStoreDefinition>
   /** Scheduler client — server-side scheduled appends. */
   readonly scheduler: Client<typeof SchedulerServiceDefinition>
   /** The resolved configuration. `servers` and `ssl` stay optional — they have no defaults. */
@@ -164,7 +161,6 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
       commands: createClient(serviceDefinitions.commands, channel),
       queries: createClient(serviceDefinitions.queries, channel),
       eventStore: createClient(serviceDefinitions.eventStore, channel),
-      snapshotStore: createClient(serviceDefinitions.snapshotStore, channel),
       scheduler: createClient(serviceDefinitions.scheduler, channel),
     }
   }
@@ -177,7 +173,6 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
     get commands() { return clients.commands },
     get queries() { return clients.queries },
     get eventStore() { return clients.eventStore },
-    get snapshotStore() { return clients.snapshotStore },
     get scheduler() { return clients.scheduler },
     config: resolvedConfig,
 
@@ -260,7 +255,6 @@ export function contextView(connection: KronosDbConnection, context: string): Kr
     get commands() { return connection.commands },
     get queries() { return connection.queries },
     get eventStore() { return connection.eventStore },
-    get snapshotStore() { return connection.snapshotStore },
     get scheduler() { return connection.scheduler },
     config: { ...connection.config, context },
     get state() { return connection.state },

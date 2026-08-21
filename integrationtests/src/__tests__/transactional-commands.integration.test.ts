@@ -38,12 +38,12 @@ import { state } from "@kronos-ts/core"
 import { type EventStore, descriptorBasedTagResolver } from "@kronos-ts/core"
 import { kronos, type App } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   type UnitOfWork,
   type CommandBus,
   type QueryBus,
@@ -59,13 +59,13 @@ import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 
 /**
  * The two things `kronos` needs that are not handlers. The UoW runner is
- * named once and handed to `simpleCommandBus` (which captures it at
+ * named once and handed to `localCommandBus` (which captures it at
  * construction) — writing it on an adjacent line is what makes that checkable.
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
 
@@ -110,11 +110,10 @@ const WidgetUpdated = event({
 
 type WidgetState = { name: string; revisions: number }
 const Widget = state({
-  name: "Widget",
   id: { widgetId: z.string() },
-  initial: () => ({ name: "", revisions: 0 }) as WidgetState,
   tags: (id) => ({ widgetId: id.widgetId }),
   evolve: [
+    () => ({ name: "", revisions: 0 }) as WidgetState,
     [WidgetUpdated, (s, { payload: e }) => ({ name: e.name, revisions: s.revisions + 1 })],
   ],
 })
@@ -181,9 +180,8 @@ describe("transactional commands — user CRUD atomic with appended events", () 
     // The whole point of this file: the command bus is built around postgres's
     // lazy transactional UoW factory, so a handler's appends and its own CRUD
     // ride the same transaction.
-    buses = inMemoryBuses(postgresUnitOfWork(pool, unitOfWork))
+    buses = inMemoryBuses(postgresUnitOfWork(unitOfWork, pool))
     app = kronos({
-      states: [{ ...Widget, eventStore }],
       commandHandlers: [{ ...editWidget, eventStore, ...buses }],
     })
   }, 60_000)

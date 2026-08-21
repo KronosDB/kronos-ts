@@ -31,8 +31,8 @@ In-memory everything. This compiles and runs as written.
 import { z } from "zod"
 import {
   commandHandler, eventHandler, eventProcessor, inMemoryEventStore, inMemoryTokenStore,
-  interceptingCommandBus, interceptingQueryBus, kronos, lineage, query, queryHandler,
-  send, simpleCommandBus, simpleQueryBus, state, unitOfWork, withNamespace,
+  interceptingCommandBus, interceptingQueryBus, kronos, correlation, query, queryHandler,
+  send, localCommandBus, localQueryBus, state, unitOfWork, withNamespace,
 } from "@kronos-ts/core"
 
 const ns = withNamespace("bank")
@@ -45,9 +45,8 @@ const GetBalance = ns.query("GetBalance", { payload: z.object({ accountId: z.str
 
 const Account = state({
   id: { accountId: z.string() },
-  initial: () => ({ balance: 0 }),
   tags: (id) => ({ accountId: id.accountId }),
-  evolve: [[Deposited, (s, { payload }) => ({ balance: s.balance + payload.amount })]],
+  evolve: [() => ({ balance: 0 }), [Deposited, (s, { payload }) => ({ balance: s.balance + payload.amount })]],
 })
 
 const deposit = commandHandler(Deposit, async ({ payload }, ctx) => {
@@ -63,12 +62,11 @@ const projectDeposit = eventHandler(Deposited, ({ payload }) => {
 const getBalance = queryHandler(GetBalance, ({ payload }) => balances.get(payload.accountId) ?? 0)
 
 const eventStore = inMemoryEventStore()
-const commandBus = interceptingCommandBus(simpleCommandBus(unitOfWork), lineage)
-const queryBus = interceptingQueryBus(simpleQueryBus(unitOfWork), lineage)
+const commandBus = interceptingCommandBus(localCommandBus(unitOfWork), correlation)
+const queryBus = interceptingQueryBus(localQueryBus(unitOfWork), correlation)
 const processor = eventProcessor({ name: "balances", eventStore, tokenStore: inMemoryTokenStore(), unitOfWork })
 
 const app = kronos({
-  states: [{ ...Account, eventStore }],
   commandHandlers: [{ ...deposit, eventStore, commandBus, queryBus }],
   queryHandlers: [{ ...getBalance, queryBus }],
   eventHandlers: [{ ...projectDeposit, commandBus, queryBus, processor }],
@@ -80,20 +78,23 @@ await app.stop()
 ```
 
 Note what is absent. Nothing is registered. `Account` is a value; `deposit` is a
-value; `processor` is a value. The spreads at the bottom are the entire wiring
-story — swap `inMemoryEventStore()` for `postgresEventStore(pool, …)` and not one
-line above the composition root changes.
+value; `processor` is a value — and `Account` appears in no list at all, because
+`ctx.load` is handed the state at the call site and the log off the entry.
+`kronos` registers behaviour; data needs no invitation. The spreads at the bottom
+are the entire wiring story — swap `inMemoryEventStore()` for
+`postgresEventStore(pool, …)` and not one line above the composition root
+changes.
 
 ## Packages
 
 | Package | What it is |
 | --- | --- |
-| `@kronos-ts/core` | The shapes and the primitive: messages, descriptors, buses, stores, states, the unit of work, the event processor, and `kronos`. In-memory implementations of every store seam. |
+| `@kronos-ts/core` | The shapes and the primitive: messages, descriptors, buses, stores, state folds, the unit of work, the event processor, and `kronos`. In-memory implementations of every store seam. |
 | `@kronos-ts/test` | `given(...).when(...).then(...)` — a test as a value, run at a fixture. |
 | `@kronos-ts/rabbitmq` | Command and query transport over AMQP. A dumb pipe: routing happens client-side. |
-| `@kronos-ts/kronosdb` | Event store, snapshot store, command/query transport and control plane over KronosDB. Server-side routing. |
+| `@kronos-ts/kronosdb` | Event store plus its snapshotting and scheduling tiers, command/query transport and control plane over KronosDB. Server-side routing. |
 | `@kronos-ts/axon-server` | The same family, over Axon Server. |
-| `@kronos-ts/postgres` | The full persistence family with no ORM: event store, snapshot store, unit of work, token store, dead-letter queue, scheduler, handler wrapper, plus the DDL. |
+| `@kronos-ts/postgres` | The full persistence family with no ORM: event store plus its snapshotting and scheduling tiers, unit of work, token store, dead-letter queue, handler wrapper, plus the DDL. |
 | `@kronos-ts/drizzle` | Token store, dead-letter queue, unit of work, transaction accessors and handler wrapper for Drizzle. |
 | `@kronos-ts/knex` | The same family, for Knex. |
 | `@kronos-ts/kysely` | The same family, for Kysely. |
@@ -104,9 +105,9 @@ line above the composition root changes.
 ## Documentation
 
 - [How it works](docs/how-it-works.md) — the concepts, each with the code that
-  implements it: messages and tags, the unit of work, buses and lineage, the
+  implements it: messages and tags, the unit of work, buses and correlation, the
   three handler contexts, states and the derived DCB query, event processors and
-  lanes, and what `kronos` does with four lists.
+  lanes, and what `kronos` does with three lists.
 - [Building an application](docs/building-an-application.md) — the full
   walkthrough: slices as plain values, a composition root, edges, and the folder
   convention. Marks clearly which parts are library and which are house style.
@@ -124,8 +125,10 @@ line above the composition root changes.
 
 ## Requirements
 
-TypeScript with `"module": "NodeNext"`. Zod v4 is a peer concern — descriptors
-take Zod schemas for payloads. Packages ship both TypeScript sources and built
+TypeScript with `"module": "NodeNext"`. Descriptors take any
+[Standard Schema](https://standardschema.dev) for payloads — zod v4, valibot,
+arktype, or your own — and no schema library is a dependency of any Kronos
+package. The examples use zod. Packages ship both TypeScript sources and built
 `dist/`; the workspace itself is built and tested with Bun.
 
 ## License

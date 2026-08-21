@@ -18,7 +18,7 @@
   ```ts
   // before
   import { qn } from "@kronos-ts/common";
-  import { commandHandler, simpleCommandBus } from "@kronos-ts/messaging";
+  import { commandHandler, localCommandBus } from "@kronos-ts/messaging";
   import { inMemoryEventStore } from "@kronos-ts/eventsourcing";
   import { state } from "@kronos-ts/modelling";
   import { kronos } from "@kronos-ts/app";
@@ -27,7 +27,7 @@
   import {
     qn,
     commandHandler,
-    simpleCommandBus,
+    localCommandBus,
     inMemoryEventStore,
     state,
     kronos,
@@ -537,7 +537,7 @@ PREPARE_COMMIT → COMMIT → AFTER_COMMIT`, same numeric values, same
   armed by the data path, independent of the control plane.
 
   All 59 `create*`-prefixed factories are renamed to what they return
-  (`inMemoryEventStore`, `simpleCommandBus`, `postgresEventStore`, …).
+  (`inMemoryEventStore`, `localCommandBus`, `postgresEventStore`, …).
   Drizzle stores no longer take the ORM operator bundle — only
   `{ db, table }`.
 

@@ -1,0 +1,340 @@
+/**
+ * postgresSchedulingEventStore — the SCHEDULING CAPABILITY TIER for the
+ * postgres family: the `kronos_scheduled_events` table, plus a polling worker
+ * that fires due schedules into the log this wraps.
+ *
+ * ADDITIVE, like every capability adder: `E` in, `E & ScheduleCapability` out,
+ * so a store that already caches folds still caches them after this.
+ *
+ * ```ts
+ * const eventStore = postgresSchedulingEventStore(
+ *   postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+ *   pg,
+ *   { unitOfWork: uow, tagResolver },
+ * )
+ * ```
+ *
+ * THE LOG IT WRAPS IS THE LOG IT FIRES INTO. That used to be a config field —
+ * `eventStore` — sitting beside an `eventScheduler` field on every entry, and
+ * a host could point the two at different objects without anything complaining.
+ * There is nothing to point any more.
+ *
+ * # Schedule path (caller-driven, inside a UoW)
+ *
+ *   schedule(event, at)
+ *     → requires INVOCATION phase
+ *     → captures tags via the configured TagResolver at schedule-time
+ *     → INSERT row (schedule_id = event.identifier, status='pending')
+ *     → joins the unit of work's transaction via sharedPostgresTransaction();
+ *       if the UoW rolls back, the schedule is never persisted
+ *     → returns { id: schedule_id } as the cancellation token
+ *
+ * # Cancel path
+ *
+ *   cancel(token)
+ *     → SELECT … FOR UPDATE to lock the row + read prior status
+ *     → branch:
+ *         status='pending'   → UPDATE status='cancelled'  → { kind: 'cancelled' }
+ *         status='appended'  → no UPDATE                  → { kind: 'already-appended' }
+ *         status='cancelled' → no UPDATE                  → { kind: 'not-found' }
+ *         no row             → no UPDATE                  → { kind: 'not-found' }
+ *     → cancel inside a UoW joins the active tx; outside, opens its own
+ *       adapter.transaction so the SELECT-FOR-UPDATE + UPDATE land atomically
+ *
+ * # Worker path (background)
+ *
+ *   start() spins a setInterval that, per tick, runs inside a fresh UoW:
+ *     1. force the lazy pg tx open via sharedPostgresTransaction()
+ *     2. SELECT … WHERE status='pending' AND fire_at <= now()
+ *        ORDER BY fire_at LIMIT $batchSize FOR UPDATE SKIP LOCKED
+ *        — the SKIP LOCKED keeps multiple worker instances safe
+ *     3. for each row: reconstruct EventMessage, call eventStore.append
+ *        (which joins the same UoW tx), UPDATE status='appended'
+ *     4. UoW COMMIT → all appends + status flips land atomically
+ *
+ *   If the worker process dies mid-tick before COMMIT, the rows stay
+ *   'pending' and get re-picked on the next tick — at-least-once delivery.
+ *   The schedule_id is reused as event.identifier so the events table's
+ *   UNIQUE constraint dedupes any spurious double-append (e.g., on the
+ *   rare race where a previous COMMIT succeeded but the status UPDATE
+ *   failed afterwards — though here they share a tx, so this is mainly
+ *   a defensive note).
+ *
+ * # Multi-node safety
+ *
+ *   FOR UPDATE SKIP LOCKED is the locking primitive. Two worker processes
+ *   polling the same table will hand non-overlapping batches of rows to
+ *   their respective ticks; neither blocks the other. No leader election
+ *   or distributed lock is needed.
+ */
+
+import { qualifiedNameToString, qualifiedNameFromString } from "@kronos-ts/core"
+import type { EventMessage } from "@kronos-ts/core"
+import type {
+  ScheduleCapability,
+  ScheduleToken,
+  CancelResult,
+  UnitOfWork,
+} from "@kronos-ts/core"
+import { NoActiveUnitOfWork, requireInvocation } from "@kronos-ts/core"
+import type { EventStore } from "@kronos-ts/core"
+import { IsolationLevel } from "./adapter.js"
+import type { PostgresAdapterTransaction } from "./adapter.js"
+import { encodeTag } from "./criteria-sql.js"
+import type { PostgresResource } from "./postgres-pool.js"
+import type { TagResolver } from "./postgres-event-store.js"
+import { sharedPostgresTransaction } from "./postgres-transaction.js"
+
+export type PostgresSchedulingConfig = {
+  /**
+   * Where the worker's per-tick unit of work comes from — must be
+   * `postgresUnitOfWork(unitOfWork, pg)` (or equivalent) so the worker's unit of
+   * work sees the postgres tx.
+   */
+  readonly unitOfWork: () => UnitOfWork
+  readonly tagResolver: TagResolver
+  /**
+   * Worker poll interval. Defaults to 1000ms — a compromise between
+   * fire-latency and DB chatter. Production users wanting tighter
+   * latency should lower this, ideally combined with LISTEN/NOTIFY
+   * wake-up (not yet wired here).
+   */
+  readonly pollIntervalMs?: number
+  /** Max rows the worker processes per tick. Defaults to 50. */
+  readonly batchSize?: number
+}
+
+/**
+ * WHAT THE POSTGRES TIER ADDS BEYOND THE CAPABILITY: the worker's lifecycle.
+ *
+ * Not part of {@link ScheduleCapability}, because "poll a table" is a property
+ * of a tier that HAS a table to poll — the in-memory tier holds timers instead,
+ * and KronosDB holds nothing at all because the server does the waiting. The
+ * names are prefixed so a composed store can carry them beside whatever else it
+ * has without a collision.
+ */
+export type PostgresSchedulingControl = {
+  /** Begin background polling. Idempotent. */
+  startScheduling(): Promise<void>
+  /** Stop polling. Resolves once the in-flight tick (if any) has settled. */
+  stopScheduling(): Promise<void>
+}
+
+type ScheduleRow = {
+  schedule_id: string
+  type: string
+  tags: string[]
+  payload: unknown
+  metadata: unknown
+  version: string
+  timestamp: string | number
+  [key: string]: unknown
+}
+
+export function postgresSchedulingEventStore<E extends EventStore>(
+  next: E,
+  pg: PostgresResource,
+  config: PostgresSchedulingConfig,
+): E & ScheduleCapability & PostgresSchedulingControl {
+  const { unitOfWork, tagResolver } = config
+  const tables = pg.tables
+  const pollIntervalMs = config.pollIntervalMs ?? 1000
+  const batchSize = config.batchSize ?? 50
+
+  async function insertSchedule(
+    tx: PostgresAdapterTransaction,
+    event: EventMessage,
+    at: Date,
+  ): Promise<string> {
+    const scheduleId = event.identifier
+    const encodedTags = tagResolver(event).map((t) => encodeTag(t.key, t.value))
+    await tx.query(
+      `INSERT INTO ${tables.scheduled}
+         (schedule_id, fire_at, status, type, tags, payload, metadata, version, timestamp)
+       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)`,
+      [
+        scheduleId,
+        at.toISOString(),
+        qualifiedNameToString(event.name),
+        encodedTags,
+        JSON.stringify(event.payload ?? {}),
+        JSON.stringify(event.metadata ?? {}),
+        event.version,
+        event.timestamp,
+      ],
+    )
+    return scheduleId
+  }
+
+  async function cancelOnTx(
+    tx: PostgresAdapterTransaction,
+    scheduleId: string,
+  ): Promise<CancelResult> {
+    const rows = await tx.query<{ status: string }>(
+      `SELECT status FROM ${tables.scheduled} WHERE schedule_id = $1 FOR UPDATE`,
+      [scheduleId],
+    )
+    const row = rows[0]
+    if (!row) return { kind: "not-found" }
+    if (row.status === "appended") return { kind: "already-appended" }
+    if (row.status === "cancelled") return { kind: "not-found" }
+
+    await tx.query(
+      `UPDATE ${tables.scheduled} SET status = 'cancelled' WHERE schedule_id = $1`,
+      [scheduleId],
+    )
+    return { kind: "cancelled" }
+  }
+
+  function decodeJsonbValue(v: unknown): unknown {
+    if (typeof v === "string") {
+      try {
+        return JSON.parse(v)
+      } catch {
+        return v
+      }
+    }
+    return v ?? {}
+  }
+
+  function decodeTags(encoded: string[]): EventMessage["tags"] {
+    return encoded.map((t) => {
+      // U+001F unit separator — matches encodeTag in criteria-sql.ts
+      const sep = t.indexOf("")
+      return sep >= 0
+        ? { key: t.slice(0, sep), value: t.slice(sep + 1) }
+        : { key: t, value: "" }
+    })
+  }
+
+  function reconstructEvent(row: ScheduleRow): EventMessage {
+    return {
+      kind: "event",
+      identifier: row.schedule_id,
+      name: qualifiedNameFromString(row.type),
+      payload: decodeJsonbValue(row.payload),
+      metadata: decodeJsonbValue(row.metadata) as EventMessage["metadata"],
+      timestamp: Number(row.timestamp),
+      version: row.version,
+      tags: decodeTags(row.tags),
+    }
+  }
+
+  // Worker state
+  let running = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let activeTick: Promise<void> | undefined
+
+  async function tick(): Promise<void> {
+    try {
+      await unitOfWork().execute(async (uow) => {
+        const tx = await sharedPostgresTransaction(uow)
+        if (!tx) {
+          // No lazy tx opener installed on the UoW — the scheduler was
+          // configured with a unit of work factory that doesn't carry the
+          // postgres tx. Without a shared tx the worker can't atomically
+          // append-and-mark, so refuse to fire rather than risk
+          // partial-state. This is a misconfiguration; surface loudly.
+          throw new Error(
+            "postgresSchedulingEventStore worker requires `unitOfWork: postgresUnitOfWork(unitOfWork, pg)`",
+          )
+        }
+
+        const rows = await tx.query<ScheduleRow>(
+          `SELECT schedule_id, type, tags, payload, metadata, version, timestamp
+           FROM ${tables.scheduled}
+           WHERE status = 'pending' AND fire_at <= now()
+           ORDER BY fire_at
+           LIMIT $1
+           FOR UPDATE SKIP LOCKED`,
+          [batchSize],
+        )
+        if (rows.length === 0) return
+
+        for (const row of rows) {
+          const event = reconstructEvent(row)
+          // The wrapped log's append joins our shared UoW tx because we hand it
+          // the same unit of work. event_id = schedule_id, so re-fires after a
+          // crash dedupe via the events table's UNIQUE(event_id) constraint.
+          await next.append([event], undefined, uow)
+          await tx.query(
+            `UPDATE ${tables.scheduled} SET status = 'appended' WHERE schedule_id = $1`,
+            [row.schedule_id],
+          )
+        }
+      })
+    } catch (err) {
+      // A failed tick leaves rows 'pending' (the UoW rolls back the whole
+      // batch). The next tick re-tries. Log so operators see persistent
+      // failures rather than a silent hang.
+      console.warn("postgresSchedulingEventStore: worker tick failed:", err)
+    }
+  }
+
+  function scheduleNextTick(): void {
+    if (!running) return
+    timer = setTimeout(() => {
+      activeTick = tick().finally(() => {
+        activeTick = undefined
+        scheduleNextTick()
+      })
+    }, pollIntervalMs)
+  }
+
+  return {
+    ...next,
+
+    async schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
+      if (uow === undefined) {
+        throw new NoActiveUnitOfWork(
+          "postgresSchedulingEventStore.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",
+        )
+      }
+      requireInvocation(uow)
+      const shared = await sharedPostgresTransaction(uow)
+      if (shared === undefined) {
+        // schedule() must be transactional with the caller's UoW so a
+        // rolled-back command does not leak schedules. Refuse rather
+        // than open a side-channel tx the caller can't roll back.
+        throw new Error(
+          "postgresSchedulingEventStore.schedule requires a UoW with a postgres transaction (configure `unitOfWork: postgresUnitOfWork(unitOfWork, pg)`)",
+        )
+      }
+      const id = await insertSchedule(shared, event, at)
+      return { id }
+    },
+
+    async cancelSchedule(token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult> {
+      const shared = await sharedPostgresTransaction(uow)
+      if (shared !== undefined) {
+        return cancelOnTx(shared, token.id)
+      }
+      return pg.transaction(IsolationLevel.READ_COMMITTED, (tx) => cancelOnTx(tx, token.id))
+    },
+
+    async startScheduling(): Promise<void> {
+      if (running) return
+      running = true
+      scheduleNextTick()
+    },
+
+    async stopScheduling(): Promise<void> {
+      running = false
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      if (activeTick !== undefined) {
+        try {
+          await activeTick
+        } catch {
+          // The tick logs its own failures; stopScheduling() returns
+          // successfully either way so callers can shut down deterministically.
+        }
+      }
+    },
+    // The spread of a generic is opaque to the checker, so the shape it
+    // produces is asserted rather than inferred. The probe is what makes the
+    // assertion honest.
+  } as E & ScheduleCapability & PostgresSchedulingControl
+}

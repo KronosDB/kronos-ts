@@ -6,7 +6,7 @@ import {
   state,
   withNamespace,
 } from "@kronos-ts/core"
-import type { EventStore, SnapshotStore } from "@kronos-ts/core"
+import type { EventStore } from "@kronos-ts/core"
 import { z } from "zod"
 import type { FixtureLists, PartialProcessor } from "../fixture.js"
 
@@ -73,7 +73,7 @@ export class CourseFull extends Error {
   }
 }
 
-interface CourseState {
+type CourseState = {
   created: boolean
   name: string
   capacity: number
@@ -82,17 +82,16 @@ interface CourseState {
 }
 
 export const Course = state({
-  name: "Course",
   id: { courseId: z.string() },
-  initial: (): CourseState => ({
-    created: false,
-    name: "",
-    capacity: 0,
-    enrolled: [],
-    closed: false,
-  }),
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
+    (): CourseState => ({
+      created: false,
+      name: "",
+      capacity: 0,
+      enrolled: [],
+      closed: false,
+      }),
     [
       CourseCreated,
       (s, { payload }) => ({ ...s, created: true, name: payload.name, capacity: payload.capacity }),
@@ -151,7 +150,7 @@ const closeOnDeadline = eventHandler(EnrolmentClosing, async ({ payload: e }, ct
 
 // ── the read model ─────────────────────────────────────────────────────────
 
-interface CourseView {
+type CourseView = {
   courseId: string
   name: string
   enrolled: number
@@ -210,13 +209,11 @@ const projection: PartialProcessor = (eventStore, tokenStore, unitOfWork) =>
  * way — which is the point of taking the resources as parameters instead of
  * reaching for them.
  */
-export function university(eventStore: EventStore, snapshotStore: SnapshotStore): FixtureLists {
+export function university(eventStore: EventStore): FixtureLists {
   return {
-    states: [{ ...Course, eventStore, snapshotStore }],
     commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
       ...h,
       eventStore,
-      snapshotStore,
     })),
     queryHandlers: [getCourseView],
     eventHandlers: [
@@ -231,21 +228,19 @@ export function university(eventStore: EventStore, snapshotStore: SnapshotStore)
 }
 
 /** Decisions only — no automations, so `then` is exactly what the command decided. */
-export function decisions(eventStore: EventStore, snapshotStore: SnapshotStore): FixtureLists {
+export function decisions(eventStore: EventStore): FixtureLists {
   return {
-    states: [{ ...Course, eventStore, snapshotStore }],
     commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
       ...h,
       eventStore,
-      snapshotStore,
     })),
   }
 }
 
 /** Decisions plus the seat automation, with no scheduler and no read model. */
-export function withAutomation(eventStore: EventStore, snapshotStore: SnapshotStore): FixtureLists {
+export function withAutomation(eventStore: EventStore): FixtureLists {
   return {
-    ...decisions(eventStore, snapshotStore),
+    ...decisions(eventStore),
     eventHandlers: [{ ...closeWhenFull, processor: projection }],
   }
 }
@@ -271,11 +266,9 @@ export const ReminderDue = ns.event("ReminderDue", {
 })
 
 const Reminder = state({
-  name: "Reminder",
   id: { orderId: z.string() },
-  initial: () => ({ token: "" }),
   tags: (id) => ({ orderId: id.orderId }),
-  evolve: [[ReminderArmed, (s, { payload }) => ({ ...s, token: payload.token })]],
+  evolve: [() => ({ token: "" }), [ReminderArmed, (s, { payload }) => ({ ...s, token: payload.token })]],
 })
 
 const armReminder = commandHandler(ArmReminder, async ({ payload: cmd }, ctx) => {
@@ -286,9 +279,8 @@ const armReminder = commandHandler(ArmReminder, async ({ payload: cmd }, ctx) =>
 })
 
 /** Reminders on their own — one command, one state, one schedule. */
-export function reminders(eventStore: EventStore, snapshotStore: SnapshotStore): FixtureLists {
+export function reminders(eventStore: EventStore): FixtureLists {
   return {
-    states: [{ ...Reminder, eventStore, snapshotStore }],
-    commandHandlers: [{ ...armReminder, eventStore, snapshotStore }],
+    commandHandlers: [{ ...armReminder, eventStore }],
   }
 }

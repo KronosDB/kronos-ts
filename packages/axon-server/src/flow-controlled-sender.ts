@@ -7,7 +7,7 @@
  *
  * Aligned with Java's `FlowControlledResponseSender`.
  */
-export interface FlowControlledSender<T> {
+export type FlowControlledSender<T> = {
   /** Send an update. Buffers if no permits available. */
   offer(value: T): boolean
   /** Grant additional permits to the sender. */

@@ -19,7 +19,7 @@ import {
   type BenchmarkOptions,
 } from "./config.js"
 
-export interface BackendMetadata {
+export type BackendMetadata = {
   readonly backend: BackendName
   readonly image: string
   readonly imageDigests: readonly string[]
@@ -29,14 +29,14 @@ export interface BackendMetadata {
   readonly durability: Record<string, string>
 }
 
-export interface BackendHarness {
+export type BackendHarness = {
   readonly name: BackendName
   readonly store: EventStore
   readonly metadata: BackendMetadata
   close(): Promise<void>
 }
 
-export interface HostMetadata {
+export type HostMetadata = {
   readonly platform: string
   readonly release: string
   readonly architecture: string
@@ -163,7 +163,6 @@ async function startPostgres(options: BenchmarkOptions): Promise<BackendHarness>
     }
 
     const store = postgresEventStore(postgresPool(adapter), {
-      serializer: jsonSerializer(),
       tagResolver: descriptorBasedTagResolver(),
     })
     const metadata: BackendMetadata = {

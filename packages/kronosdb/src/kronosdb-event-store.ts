@@ -7,6 +7,7 @@ import {
 import type {
   EventCriteria,
   EventMessage,
+  EventQuery,
   MessageStream,
   SequencedEvent,
   StreamingCondition,
@@ -82,11 +83,28 @@ function criteriaToCriterions(criteria: EventCriteria): any[] {
   }
 }
 
+/**
+ * The criteria a READ sends, with KronosDB's one structural rule applied.
+ *
+ * @internal Shared with `kronosDbSnapshottingEventStore`, whose fused read must
+ * select EXACTLY what the plain `Source` above selects — the fused RPC is the
+ * same query with a cached prefix, so a second copy of this rule that drifted
+ * would make the two paths disagree about which events a state is folded from.
+ */
+export function sourceCriteria(query: EventQuery): any[] {
+  const criterions = criteriaToCriterions(compileQuery(query))
+
+  // KronosDB requires at least one criterion for tag-index matching.
+  // An empty criterion (no names, no tags) matches all events.
+  return criterions.length === 0 ? [{ names: [], tags: [] }] : criterions
+}
+
 // ---------------------------------------------------------------------------
 // Event conversion — framework EventMessage ↔ proto Event/TaggedEvent
 // ---------------------------------------------------------------------------
 
-function createEventConverters(serializer: Serializer) {
+/** @internal Shared with `kronosDbSnapshottingEventStore`. */
+export function createEventConverters(serializer: Serializer) {
   return {
     eventToProto(event: EventMessage): any {
       const name = qualifiedNameToString(event.name)
@@ -170,13 +188,7 @@ export function kronosDbEventStore(
 
   return {
     async source(condition: SourcingCondition): Promise<SourcingResult> {
-      const criterions = criteriaToCriterions(compileQuery(condition.query))
-
-      // KronosDB requires at least one criterion for tag-index matching.
-      // An empty criterion (no names, no tags) matches all events.
-      const effectiveCriterions = criterions.length === 0
-        ? [{ names: [], tags: [] }]
-        : criterions
+      const effectiveCriterions = sourceCriteria(condition.query)
 
       const request = {
         fromSequence: condition.start ?? 0n,

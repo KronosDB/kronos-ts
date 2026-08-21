@@ -3,12 +3,12 @@ import { z } from "zod"
 import { emptyMetadata, qn, send, type UnitOfWork } from "@kronos-ts/core"
 import { kronos } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
 } from "@kronos-ts/core"
 import { command, event, commandHandler, type CommandBus } from "@kronos-ts/core"
 import { state } from "@kronos-ts/core"
@@ -22,13 +22,13 @@ import { resolveRabbitMqConfig } from "../rabbitmq.js"
 
 /**
  * The three things `kronos` needs that are not modules. The UoW runner is named
- * once and handed to BOTH `simpleCommandBus` (which captures it at construction)
+ * once and handed to BOTH `localCommandBus` (which captures it at construction)
  * and `kronos` — writing them on adjacent lines is what makes that checkable.
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork) {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
 
@@ -56,32 +56,32 @@ const BFinished = event({
 })
 
 const StateA = state({
-  name: "StateA",
   id: { aId: z.string() },
-  initial: () => ({}),
   tags: (id) => ({ aId: id.aId }),
-  evolve: [[ASeen, (s) => s]],
+  evolve: [() => ({}), [ASeen, (s) => s]],
 })
 
 const StateB = state({
-  name: "StateB",
   id: { bId: z.string() },
-  initial: () => ({}),
   tags: (id) => ({ bId: id.bId }),
-  evolve: [[BFinished, (s) => s]],
+  evolve: [() => ({}), [BFinished, (s) => s]],
 })
 
-class LoopbackTransport implements RabbitMqCommandTransport {
-  private handlers = new Map<string, (envelope: RabbitMqCommandEnvelope) => Promise<any>>()
+type LoopbackTransport = RabbitMqCommandTransport
 
-  async dispatch(envelope: RabbitMqCommandEnvelope): Promise<any> {
-    const handler = this.handlers.get(`${envelope.message.name.namespace}.${envelope.message.name.name}`)
-    if (!handler) throw new Error("No loopback handler")
-    return handler(envelope)
-  }
+function loopbackTransport(): LoopbackTransport {
+  const handlers = new Map<string, (envelope: RabbitMqCommandEnvelope) => Promise<any>>()
 
-  subscribe(commandName: string, handler: (envelope: RabbitMqCommandEnvelope) => Promise<any>): void {
-    this.handlers.set(commandName, handler)
+  return {
+    async dispatch(envelope: RabbitMqCommandEnvelope): Promise<any> {
+      const handler = handlers.get(`${envelope.message.name.namespace}.${envelope.message.name.name}`)
+      if (!handler) throw new Error("No loopback handler")
+      return handler(envelope)
+    },
+
+    subscribe(commandName: string, handler: (envelope: RabbitMqCommandEnvelope) => Promise<any>): void {
+      handlers.set(commandName, handler)
+    },
   }
 }
 
@@ -107,6 +107,7 @@ function probeEventStore() {
 function loopbackCommandBus(transport: LoopbackTransport, localSegment: CommandBus): CommandBus {
   return interceptingCommandBus(
     rabbitMqCommandBus(
+      localSegment,
       {
         config: resolveRabbitMqConfig({
           identity: { serviceName: "ctx-test", instanceId: "inst-1" },
@@ -114,17 +115,16 @@ function loopbackCommandBus(transport: LoopbackTransport, localSegment: CommandB
         }),
         commandTransport: transport,
       },
-      localSegment,
       { preferLocal: false },
     ),
-    lineage,
+    correlation,
   )
 }
 
 describe("RabbitMQ remote command handling e2e", () => {
   it("a remote command handler appends against only its own loaded state", async () => {
     const probe = probeEventStore()
-    const transport = new LoopbackTransport()
+    const transport = loopbackTransport()
 
     const start = commandHandler(Start, async ({ payload: cmd }, ctx) => {
       await ctx.load(StateA, { aId: cmd.aId })
@@ -140,10 +140,6 @@ describe("RabbitMQ remote command handling e2e", () => {
     const commandBus = loopbackCommandBus(transport, buses.commandBus)
     const eventStore = probe.eventStore
     const app = kronos({
-      states: [
-        { ...StateA, eventStore },
-        { ...StateB, eventStore },
-      ],
       commandHandlers: [
         { ...start, eventStore, commandBus, queryBus: buses.queryBus },
         { ...finish, eventStore, commandBus, queryBus: buses.queryBus },

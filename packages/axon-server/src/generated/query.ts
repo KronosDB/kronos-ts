@@ -19,7 +19,7 @@ import {
 export const protobufPackage = "io.axoniq.axonserver.grpc.query";
 
 /** Message containing Query related instructions for Axon Server */
-export interface QueryProviderOutbound {
+export type QueryProviderOutbound = {
   /** Registers a Query Handler with AxonServer */
   subscribe?:
     | QuerySubscription
@@ -53,7 +53,7 @@ export interface QueryProviderOutbound {
 }
 
 /** Queries or Query related instructions from AxonServer for the connected application */
-export interface QueryProviderInbound {
+export type QueryProviderInbound = {
   /** Acknowledgement of previously sent instruction via outbound stream */
   ack?:
     | InstructionAck
@@ -78,13 +78,13 @@ export interface QueryProviderInbound {
   instructionId: string;
 }
 
-export interface QueryReference {
+export type QueryReference = {
   /** The identifier of the query request. */
   requestId: string;
 }
 
 /** Message indicating that query has been completed. */
-export interface QueryComplete {
+export type QueryComplete = {
   /** A unique identifier for this message */
   messageId: string;
   /** The identifier of the incoming query to complete */
@@ -92,7 +92,7 @@ export interface QueryComplete {
 }
 
 /** Message indicating that consumer is requesting more messages from producer. */
-export interface QueryFlowControl {
+export type QueryFlowControl = {
   /** The identifier of the incoming query to complete */
   queryReference:
     | QueryReference
@@ -102,7 +102,7 @@ export interface QueryFlowControl {
 }
 
 /** Message representing an incoming Query */
-export interface QueryRequest {
+export type QueryRequest = {
   /** The message ID of the incoming Query */
   messageIdentifier: string;
   /** The name of the Query to execute */
@@ -131,13 +131,13 @@ export interface QueryRequest {
   componentName: string;
 }
 
-export interface QueryRequest_MetaDataEntry {
+export type QueryRequest_MetaDataEntry = {
   key: string;
   value: MetaDataValue | undefined;
 }
 
 /** Message that represents the Response to a Query */
-export interface QueryResponse {
+export type QueryResponse = {
   /** The unique identifier of the Response Message */
   messageIdentifier: string;
   /** An Error Code identifying the type of error, if any */
@@ -158,13 +158,13 @@ export interface QueryResponse {
   requestIdentifier: string;
 }
 
-export interface QueryResponse_MetaDataEntry {
+export type QueryResponse_MetaDataEntry = {
   key: string;
   value: MetaDataValue | undefined;
 }
 
 /** Message that represents a Subscription Query */
-export interface SubscriptionQuery {
+export type SubscriptionQuery = {
   /** A unique identifier for this subscription */
   subscriptionIdentifier: string;
   /** The number of messages the Server may send before needing to await additional permits */
@@ -182,7 +182,7 @@ export interface SubscriptionQuery {
 }
 
 /** A message containing an Update of a Query Subscription Response */
-export interface QueryUpdate {
+export type QueryUpdate = {
   /** The unique identifier of this Update */
   messageIdentifier: string;
   /** The object representing the Update */
@@ -201,13 +201,13 @@ export interface QueryUpdate {
   errorMessage: ErrorMessage | undefined;
 }
 
-export interface QueryUpdate_MetaDataEntry {
+export type QueryUpdate_MetaDataEntry = {
   key: string;
   value: MetaDataValue | undefined;
 }
 
 /** Message indicating that all relevant Updates have been sent for a Subscription Query, and that no further Updates are available */
-export interface QueryUpdateComplete {
+export type QueryUpdateComplete = {
   /** The identifier of the Client instance providing the Update */
   clientId: string;
   /** The Component Name of the Client providing the Update */
@@ -215,7 +215,7 @@ export interface QueryUpdateComplete {
 }
 
 /** Message indicating that an Error occurred and that no Updates will be sent for a Subscription Query */
-export interface QueryUpdateCompleteExceptionally {
+export type QueryUpdateCompleteExceptionally = {
   /** The identifier of the Client instance providing the Update */
   clientId: string;
   /** The Component Name of the Client providing the Update */
@@ -227,7 +227,7 @@ export interface QueryUpdateCompleteExceptionally {
 }
 
 /** Message describing possible interactions for a Subscription Query */
-export interface SubscriptionQueryRequest {
+export type SubscriptionQueryRequest = {
   /** Start a Subscription Query with the given details. */
   subscribe?:
     | SubscriptionQuery
@@ -255,7 +255,7 @@ export interface SubscriptionQueryRequest {
 }
 
 /** Represents a Response Message for a Subscription Query */
-export interface SubscriptionQueryResponse {
+export type SubscriptionQueryResponse = {
   /** The unique identifier for this message */
   messageIdentifier: string;
   /** The identifier of the subscription query this is a response for */
@@ -277,7 +277,7 @@ export interface SubscriptionQueryResponse {
 }
 
 /** Message containing details of a Registration of a Query Handler in a component */
-export interface QuerySubscription {
+export type QuerySubscription = {
   /** The unique identifier of this Message */
   messageId: string;
   /** The name of the Query the Handler is subscribed to */
@@ -2662,7 +2662,7 @@ export const QueryServiceDefinition = {
   },
 } as const;
 
-export interface QueryServiceImplementation<CallContextExt = {}> {
+export type QueryServiceImplementation<CallContextExt = {}> = {
   /** Opens a Query- and Instruction stream to AxonServer. */
   openStream(
     request: AsyncIterable<QueryProviderOutbound>,
@@ -2680,7 +2680,7 @@ export interface QueryServiceImplementation<CallContextExt = {}> {
   ): ServerStreamingMethodResult<DeepPartial<SubscriptionQueryResponse>>;
 }
 
-export interface QueryServiceClient<CallOptionsExt = {}> {
+export type QueryServiceClient<CallOptionsExt = {}> = {
   /** Opens a Query- and Instruction stream to AxonServer. */
   openStream(
     request: AsyncIterable<DeepPartial<QueryProviderOutbound>>,
@@ -2713,7 +2713,7 @@ function isSet(value: any): boolean {
 
 export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

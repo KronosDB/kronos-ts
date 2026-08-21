@@ -2,21 +2,22 @@
  * postgresPool — the RESOURCE the rest of this package is built on.
  *
  * There is no `postgres()` bundle any more. A bundle decided, on the host's
- * behalf, that you wanted an event store AND a snapshot store AND a scheduler
- * AND a unit-of-work factory, and returned them in a record you then had to
- * take apart. The pool is the one thing that genuinely has a LIFETIME — a
- * connection pool, opened and drained — and every store is an ordinary function
- * of it:
+ * behalf, that you wanted an event store AND a scheduler AND a unit-of-work
+ * factory, and returned them in a record you then had to take apart. The pool
+ * is the one thing that genuinely has a LIFETIME — a connection pool, opened
+ * and drained — and every store is an ordinary function of it:
  *
  * ```ts
  * const pg = postgresPool(connectionString)
  * await pg.start()
  *
- * const eventStore    = postgresEventStore(pg, { serializer, tagResolver })
- * const snapshotStore = postgresSnapshotStore(pg, { serializer })
- * const tokenStore    = postgresTokenStore(pg)
- * const uow           = postgresUnitOfWork(pg, unitOfWork)
+ * const eventStore = postgresEventStore(pg, { tagResolver })
+ * const tokenStore = postgresTokenStore(pg)
+ * const uow        = postgresUnitOfWork(unitOfWork, pg)
  * // …only the ones this deployment actually needs.
+ *
+ * // …and, IF this deployment caches folds, one more line around the log:
+ * const cachingStore = postgresSnapshottingEventStore(eventStore, pg, { serializer })
  *
  * await pg.close()
  * ```
@@ -29,8 +30,7 @@
  * store, which is why they are configured once here instead of six times.
  */
 
-import type { ResilienceConfig } from "@kronos-ts/core"
-import { withRetry } from "@kronos-ts/core"
+import { withRetry, type ResilienceConfig } from "./resilience.js"
 import type {
   ListenSubscription,
   PostgresAdapter,
@@ -45,7 +45,7 @@ import { bootstrapSchema, DEFAULT_TABLE_NAMES, type TableNames } from "./schema.
  * A live Postgres pool: everything a {@link PostgresAdapter} does, plus the
  * lifetime and the table names.
  */
-export interface PostgresResource extends PostgresAdapter {
+export type PostgresResource = PostgresAdapter & {
   /**
    * The tables every store built on this pool reads and writes. Defaults to
    * {@link DEFAULT_TABLE_NAMES}; override on the pool, never per store.
@@ -60,7 +60,7 @@ export interface PostgresResource extends PostgresAdapter {
   close(): Promise<void>
 }
 
-export interface PostgresPoolOptions extends SessionTimeoutOptions {
+export type PostgresPoolOptions = SessionTimeoutOptions & {
   /**
    * Create the schema during {@link PostgresResource.start}. Defaults to true.
    * Set false when you run your own migrations — the DDL builders in

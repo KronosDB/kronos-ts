@@ -1,13 +1,24 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import type {
   CommandBus,
-  CommandHandlerDefinition,
+  CommandHandler,
   CommandMessage,
+  Message,
   Metadata,
   SequencedEventMessage,
+  StandardSchemaV1,
   QueryMessage,
 } from "@kronos-ts/core"
-import { emptyMetadata, qn } from "@kronos-ts/core"
+import {
+  command,
+  correlating,
+  correlatingHandler,
+  emptyMetadata,
+  event,
+  qn,
+  unitOfWork,
+  validatingHandler,
+} from "@kronos-ts/core"
 import { otlpCommandBus } from "../otlp-bus.js"
 import { SpanKind, otlpExporter } from "../otlp-exporter.js"
 import { otlpHandler } from "../otlp-handler.js"
@@ -241,7 +252,7 @@ describe("otlpHandler — mechanics", () => {
     fetchStub = stubFetch()
     const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
 
-    const entry: CommandHandlerDefinition = {
+    const entry: CommandHandler = {
       kind: "command-handler",
       descriptor: {} as never,
       handler: async () => {},
@@ -272,5 +283,107 @@ describe("otlpHandler — mechanics", () => {
     // A function OF THE MESSAGE — never a per-entry string closed over at
     // wiring time, which is what made the wrapper entry-shaped before.
     expect(fetchStub.spans()[0].name).toBe("handle(ChargeCard)")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// THE CHAIN. Three function-level wrappers, three packages, one handler.
+//
+// They compose because they are all `(next, …config) => (message, ctx) =>
+// result`, and because none of them reads the entry: `otlpHandler` takes what it
+// needs off the MESSAGE, `correlatingHandler` off the message and the task, and
+// `validatingHandler` off the descriptor it was handed at the entry site.
+// ---------------------------------------------------------------------------
+
+/** A hand-written Standard Schema — the chain works with no schema library present. */
+const accountPayload: StandardSchemaV1<{ accountId: string }, { accountId: string; tier: string }> = {
+  "~standard": {
+    version: 1,
+    vendor: "hand",
+    validate: (value: unknown) =>
+      typeof (value as { accountId?: unknown }).accountId === "string"
+        ? // A PARSE, not a check: `tier` is defaulted on the way through, so the
+          // handler and the log see what the schema produced.
+          { value: { ...(value as { accountId: string }), tier: "standard" } }
+        : { issues: [{ message: "accountId must be a string" }] },
+  },
+}
+
+const OpenAccount = command({ name: qn("billing", "OpenAccount"), payload: accountPayload })
+const AccountOpened = event({ name: qn("billing", "AccountOpened"), payload: accountPayload })
+
+const correlationFrom = (parent: Message): Metadata => ({
+  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
+  causationId: String(parent.identifier),
+})
+
+describe("otlpHandler — composes with core's other handler wrappers", () => {
+  it("validates inbound, traces, correlates, and overlays BOTH onto a birth", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
+
+    const appended: Array<[unknown, unknown, unknown]> = []
+    const ctx = {
+      unitOfWork: correlating(unitOfWork()),
+      append: (d: unknown, p: unknown, m?: Metadata) => {
+        appended.push([d, p, m])
+      },
+    }
+
+    const chained = validatingHandler(
+      correlatingHandler(
+        otlpHandler(async (message: CommandMessage<{ accountId: string; tier: string }>, c: typeof ctx) => {
+          c.append(AccountOpened, { accountId: message.payload.accountId })
+          return message.payload.tier
+        }, exporter),
+        correlationFrom,
+      ),
+      OpenAccount,
+    )
+
+    const result = await chained(
+      {
+        ...commandMessage({ correlationId: "corr-1" }),
+        name: OpenAccount.name,
+        payload: { accountId: "a-1" },
+      },
+      ctx,
+    )
+    await exporter.close()
+
+    // Validation parsed the INBOUND payload — the handler read a defaulted field.
+    expect(result).toBe("standard")
+    // …and the BIRTH carries validation's parse and correlation's cargo at once.
+    expect(appended).toEqual([
+      [
+        AccountOpened,
+        { accountId: "a-1", tier: "standard" },
+        { correlationId: "corr-1", causationId: "cmd-1" },
+      ],
+    ])
+    // …and the handling is still a span, joined to the trace it arrived in.
+    expect(fetchStub.spans()).toHaveLength(1)
+    expect(fetchStub.spans()[0].name).toBe("billing.OpenAccount")
+  })
+
+  it("refuses an invalid inbound message before the span is ever opened", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
+
+    const chained = validatingHandler(
+      otlpHandler(async () => "unreachable", exporter),
+      OpenAccount,
+    )
+
+    await expect(
+      chained(
+        { ...commandMessage(), name: OpenAccount.name, payload: { accountId: 7 } },
+        undefined,
+      ),
+    ).rejects.toThrow(/accountId must be a string/)
+    await exporter.close()
+
+    // Outermost wins: a message that is not what it claims never becomes a span.
+    expect(fetchStub.spans()).toHaveLength(0)
   })
 })

@@ -35,7 +35,7 @@ export type InstructionHandler = (instruction: PlatformInstruction) => void | Pr
  * - Heartbeat protocol to detect dead connections
  * - Receives server-initiated instructions (pause, resume, split, merge segments)
  */
-export interface PlatformConnection {
+export type PlatformConnection = {
   /**
    * DATA PATH. Open the platform stream, register this client, and arm the
    * heartbeat that calls `connection.reconnect()` when the server stops
@@ -104,7 +104,7 @@ export interface PlatformConnection {
   subscriptionsAcked(): Promise<boolean>
 }
 
-export interface PlatformServiceOptions {
+export type PlatformServiceOptions = {
   /** Heartbeat interval in ms. Default: 10000 */
   heartbeatIntervalMs?: number
   /** Heartbeat timeout in ms. If no response within this window, reconnect. Default: 7500 */
