@@ -6,7 +6,7 @@
  *   - the streaming query (Plan 05) — WHERE (transaction_id, sequence_position) > $bookmark
  *                                       AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
  *   - the sourcing query (Plan 04) — WHERE tags @> $required AND type IN (...)
- *   - the snapshot store (Plan 05) — INSERT … ON CONFLICT (state_name, state_id) DO UPDATE
+ *   - the snapshot store — INSERT … ON CONFLICT (key) DO UPDATE
  *   - the token store — INSERT … ON CONFLICT (processor_name, segment) DO UPDATE
  *   - the dead-letter queue — per-(group, sequence) FIFO reads by sequence_index
  *
@@ -16,7 +16,7 @@
  *   (Serializer returns Uint8Array; no JSONB roundtrip cost).
  */
 
-export interface TableNames {
+export type TableNames = {
   readonly events: string
   readonly snapshots: string
   readonly scheduled: string
@@ -100,13 +100,11 @@ CREATE INDEX IF NOT EXISTS ${tables.events}_txid_pos_idx
 
 export function buildSnapshotsTableDDL(tables: TableNames): string {
   return `CREATE TABLE IF NOT EXISTS ${tables.snapshots} (
-  state_name   TEXT COLLATE "C" NOT NULL,
-  state_id     TEXT NOT NULL,
+  key          TEXT COLLATE "C" PRIMARY KEY,
   position     BIGINT NOT NULL,
   payload      BYTEA NOT NULL,
   metadata     JSONB NOT NULL DEFAULT '{}',
-  recorded_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (state_name, state_id)
+  recorded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );`
 }
 
@@ -249,11 +247,11 @@ export function buildDeadLettersIndexesDDL(tables: TableNames): string {
  * compatible so Plan 12-04's adapter instance can be passed in directly.
  * Kept local to schema.ts to keep this plan independent of Plan 03.
  */
-export interface SchemaBootstrapAdapter {
+export type SchemaBootstrapAdapter = {
   query(sql: string, params?: unknown[]): Promise<unknown>
 }
 
-export interface BootstrapSchemaOptions {
+export type BootstrapSchemaOptions = {
   /** Override `kronos_events` / `kronos_snapshots`. */
   readonly tableNames?: TableNames
 }

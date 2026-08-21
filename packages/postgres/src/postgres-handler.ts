@@ -5,10 +5,11 @@
  * plugin interface, no registry, no lifecycle to hook and nothing to subclass:
  *
  *   1. A RESOURCE            — `postgresPool(connectionString)`.
- *   2. STORE IMPLEMENTATIONS — `postgresEventStore`, `postgresSnapshotStore`,
+ *   2. STORE IMPLEMENTATIONS — `postgresEventStore`,
+ *      `postgresSnapshottingEventStore`,
  *      `postgresTokenStore`, `postgresDeadLetterQueue`: ordinary objects
  *      satisfying the framework's store interfaces.
- *   3. A UNIT-OF-WORK WRAPPER — `postgresUnitOfWork(pg, unitOfWork)`, which
+ *   3. A UNIT-OF-WORK WRAPPER — `postgresUnitOfWork(unitOfWork, pg)`, which
  *      gives every unit of work a transaction.
  *   4. A HANDLER WRAPPER      — `postgresHandler(handler, pg)`, which adds a capability
  *      to the ctx a handler FUNCTION receives. The host spreads the entry.
@@ -37,7 +38,7 @@ export type Sql = PostgresAdapter
 export type Tx = PostgresAdapterTransaction
 
 /** The `sql()` capability this family adds to a handler context. */
-export interface PostgresCapability {
+export type PostgresCapability = {
   /**
    * This invocation's Postgres handle: the unit of work's transaction when one
    * is open, otherwise the pool the wrapper was built with.
@@ -58,11 +59,11 @@ export interface PostgresCapability {
 }
 
 /** A command handler's context, plus this family's capability. */
-export interface PostgresContext extends HandlerContext, PostgresCapability {}
+export type PostgresContext = HandlerContext & PostgresCapability
 /** An event handler's context, plus this family's capability. */
-export interface PostgresEventContext extends EventHandlerContext, PostgresCapability {}
+export type PostgresEventContext = EventHandlerContext & PostgresCapability
 /** A query handler's context, plus this family's capability. */
-export interface PostgresQueryContext extends QueryHandlerContext, PostgresCapability {}
+export type PostgresQueryContext = QueryHandlerContext & PostgresCapability
 
 /**
  * Wrap a HANDLER FUNCTION — command, event or query — so its context gains

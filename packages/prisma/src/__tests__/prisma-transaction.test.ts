@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { type CommandHandlerDefinition, unitOfWork } from "@kronos-ts/core"
+import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
 import {
   activePrismaTransaction,
   type PrismaClientLike,
@@ -13,7 +13,7 @@ import {
 // Mock Prisma client — records what the callback-scoped transaction did.
 // ---------------------------------------------------------------------------
 
-interface MockPrisma extends PrismaClientLike {
+type MockPrisma = PrismaClientLike & {
   readonly committed: boolean
   readonly rolledBack: boolean
   readonly opened: number
@@ -72,7 +72,7 @@ describe("prismaUnitOfWork", () => {
   it("opens a transaction before the action runs", async () => {
     // given
     const prisma = createMockPrisma()
-    const runUoW = prismaUnitOfWork(prisma, unitOfWork)
+    const runUoW = prismaUnitOfWork(unitOfWork, prisma)
 
     // when
     let seen: unknown
@@ -88,7 +88,7 @@ describe("prismaUnitOfWork", () => {
   it("commits the transaction when the unit of work completes", async () => {
     // given
     const prisma = createMockPrisma()
-    const runUoW = prismaUnitOfWork(prisma, unitOfWork)
+    const runUoW = prismaUnitOfWork(unitOfWork, prisma)
 
     // when
     await runUoW().execute(async () => {})
@@ -101,7 +101,7 @@ describe("prismaUnitOfWork", () => {
   it("rolls the transaction back when the unit of work fails", async () => {
     // given
     const prisma = createMockPrisma()
-    const runUoW = prismaUnitOfWork(prisma, unitOfWork)
+    const runUoW = prismaUnitOfWork(unitOfWork, prisma)
 
     // when
     await expect(
@@ -118,7 +118,7 @@ describe("prismaUnitOfWork", () => {
   it("hands the interactive-transaction timeout to $transaction", async () => {
     // given
     const prisma = createMockPrisma()
-    const runUoW = prismaUnitOfWork(prisma, unitOfWork, { timeoutMs: 1234 })
+    const runUoW = prismaUnitOfWork(unitOfWork, prisma, { timeoutMs: 1234 })
 
     // when
     await runUoW().execute(async () => {})
@@ -130,7 +130,7 @@ describe("prismaUnitOfWork", () => {
   it("opens exactly one transaction per unit of work", async () => {
     // given
     const prisma = createMockPrisma()
-    const runUoW = prismaUnitOfWork(prisma, unitOfWork)
+    const runUoW = prismaUnitOfWork(unitOfWork, prisma)
 
     // when
     await runUoW().execute(async (uow) => {
@@ -183,7 +183,7 @@ describe("prismaHandler", () => {
     )
 
     // when
-    const runUoW = prismaUnitOfWork(prisma, unitOfWork)
+    const runUoW = prismaUnitOfWork(unitOfWork, prisma)
     await runUoW().execute(async (uow) => {
       await handler({ payload: { id: "a" } } as never, { unitOfWork: uow } as never)
     })
@@ -215,7 +215,7 @@ describe("prismaHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const prisma = createMockPrisma()
-    const entry: CommandHandlerDefinition<any, any, PrismaContext> = {
+    const entry: CommandHandler<any, any, PrismaContext> = {
       kind: "command-handler",
       descriptor: {} as never,
       handler: async (_message, ctx: PrismaContext) => {

@@ -5,14 +5,14 @@ import {
   serializeToken as serializeTokenData,
   deserializeToken as deserializeTokenData,
 } from "@kronos-ts/core"
-import type { TypeormManager } from "./typeorm-transaction.js"
+import type { TypeormManager, TypeormFamily } from "./typeorm-transaction.js"
 import { activeTypeormTransaction } from "./typeorm-transaction.js"
 
 /** The table this adapter owns. Not a parameter — the columns are not the caller's choice. */
 export const TYPEORM_TOKEN_TABLE = "kronos_token_entries"
 
 /** Tuning only — everything required is a positional argument. */
-export interface TypeormTokenStoreOptions {
+export type TypeormTokenStoreOptions = {
   /** Claim timeout in ms. Default: 10000. */
   claimTimeoutMs?: number
 }
@@ -67,7 +67,7 @@ function nowIso(): string {
 export function typeormTokenStore(
   manager: TypeormManager,
   options: TypeormTokenStoreOptions = {},
-): TokenStore {
+): TokenStore<UnitOfWork & TypeormFamily> {
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
   const table = TYPEORM_TOKEN_TABLE
 

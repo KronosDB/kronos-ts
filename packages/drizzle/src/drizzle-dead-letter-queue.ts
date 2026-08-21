@@ -1,7 +1,7 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { and, asc, eq } from "drizzle-orm"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { DrizzleDb } from "./drizzle-transaction.js"
+import type { DrizzleDb, DrizzleFamily } from "./drizzle-transaction.js"
 import { activeDrizzleTransaction } from "./drizzle-transaction.js"
 import { kronosDeadLetters } from "./drizzle-schema.js"
 
@@ -25,7 +25,7 @@ import { kronosDeadLetters } from "./drizzle-schema.js"
  * across multiple nodes (Axon parity).
  */
 /** Tuning only — everything required is a positional argument. */
-export interface DrizzleDeadLetterQueueOptions {
+export type DrizzleDeadLetterQueueOptions = {
   /** Maximum number of sequences. Default: 1024 (Axon parity). */
   maxSequences?: number
   /** Maximum letters per sequence. Default: 1024 (Axon parity). */
@@ -68,7 +68,7 @@ function newId(group: string): string {
 export function drizzleDeadLetterQueue(
   db: DrizzleDb,
   options: DrizzleDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue {
+): SequencedDeadLetterQueue<UnitOfWork & DrizzleFamily> {
   const table: any = kronosDeadLetters
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024

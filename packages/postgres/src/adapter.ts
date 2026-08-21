@@ -39,7 +39,7 @@ export type QueryRow = Record<string, unknown>
  * nested-transaction method — Plan 04's engine does not need it and savepoints
  * would invite confusion about which level a SQLSTATE error propagates from.
  */
-export interface PostgresAdapterTransaction {
+export type PostgresAdapterTransaction = {
   query<R extends QueryRow = QueryRow>(sql: string, params?: unknown[]): Promise<R[]>
   /**
    * Escape hatch returning the live driver-specific handle backing this
@@ -58,7 +58,7 @@ export interface PostgresAdapterTransaction {
 
 /** Handle to a live LISTEN subscription. unlisten() unregisters + releases
  *  the dedicated connection (if any). */
-export interface ListenSubscription {
+export type ListenSubscription = {
   unlisten(): Promise<void>
 }
 
@@ -67,7 +67,7 @@ export interface ListenSubscription {
  * (pool sizing, idle eviction, reconnect) lives below this seam — the engine
  * code MUST NOT know about pools.
  */
-export interface PostgresAdapter {
+export type PostgresAdapter = {
   /**
    * Run a parameterised SQL statement on a pool-borrowed connection.
    * Returns rows; empty array if none. Thrown errors carry SQLSTATE on

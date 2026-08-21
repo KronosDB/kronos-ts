@@ -12,7 +12,7 @@
 
 import type { PostgresAdapterTransaction } from "./adapter.js"
 
-export interface SessionTimeoutOptions {
+export type SessionTimeoutOptions = {
   /**
    * `idle_in_transaction_session_timeout` (ms) applied via `SET LOCAL` on every
    * transaction. A transaction that begins but stalls before commit/rollback
@@ -31,7 +31,7 @@ export interface SessionTimeoutOptions {
   readonly statementTimeoutMs?: number
 }
 
-export interface ResolvedSessionTimeouts {
+export type ResolvedSessionTimeouts = {
   readonly idleInTransactionTimeoutMs: number
   readonly statementTimeoutMs: number
 }

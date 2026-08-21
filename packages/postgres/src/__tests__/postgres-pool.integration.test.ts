@@ -4,7 +4,7 @@ import { pgAdapter } from "../adapters/pg.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
 import { postgresPool } from "../postgres-pool.js"
 import { postgresEventStore } from "../postgres-event-store.js"
-import { postgresSnapshotStore } from "../postgres-snapshot-store.js"
+import { postgresSnapshottingEventStore } from "../postgres-snapshotting-event-store.js"
 import { postgresTokenStore } from "../postgres-token-store.js"
 import { postgresDeadLetterQueue } from "../postgres-dead-letter-queue.js"
 
@@ -72,18 +72,21 @@ describe("postgresPool", () => {
     await pool.start()
     try {
       const eventStore = postgresEventStore(pool, {
-        serializer: jsonSerializer(),
         tagResolver: descriptorBasedTagResolver(),
       })
-      const snapshotStore = postgresSnapshotStore(pool, { serializer: jsonSerializer() })
+      const cachingStore = postgresSnapshottingEventStore(eventStore, pool, {
+        serializer: jsonSerializer(),
+      })
       const tokenStore = postgresTokenStore(pool)
       const deadLetters = postgresDeadLetterQueue(pool)
 
       expect(typeof eventStore.append).toBe("function")
       expect(typeof eventStore.source).toBe("function")
       expect(typeof eventStore.open).toBe("function")
-      expect(typeof snapshotStore.store).toBe("function")
-      expect(typeof snapshotStore.load).toBe("function")
+      // The wrapper is ADDITIVE: everything the log had, plus the write.
+      expect(typeof cachingStore.storeSnapshot).toBe("function")
+      expect(typeof cachingStore.append).toBe("function")
+      expect(typeof cachingStore.open).toBe("function")
       expect(typeof tokenStore.claimToken).toBe("function")
       expect(typeof deadLetters.enqueue).toBe("function")
     } finally {

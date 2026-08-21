@@ -121,9 +121,13 @@ describe("buildSnapshotsTableDDL", () => {
     expect(ddl).toMatch(/payload\s+BYTEA\s+NOT NULL/)
   })
 
-  it("declares a composite primary key on (state_name, state_id) for upsert semantics", () => {
+  it("declares a single-column primary key on the cache key — one opaque string", () => {
     const ddl = buildSnapshotsTableDDL(DEFAULT_TABLE_NAMES)
-    expect(ddl).toMatch(/PRIMARY KEY \(state_name, state_id\)/)
+    expect(ddl).toContain("key          TEXT")
+    expect(ddl).toContain("PRIMARY KEY")
+    // The key is whatever the caller wrote; nothing here composes or parses it.
+    expect(ddl).not.toContain("state_name")
+    expect(ddl).not.toContain("state_id")
   })
 })
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { type CommandHandlerDefinition, unitOfWork } from "@kronos-ts/core"
+import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
 import {
   activeKnexTransaction,
   type KnexClient,
@@ -13,7 +13,7 @@ import {
 // Mock Knex instance — records what the callback-scoped transaction did.
 // ---------------------------------------------------------------------------
 
-interface MockKnex extends KnexClient {
+type MockKnex = KnexClient & {
   readonly committed: boolean
   readonly rolledBack: boolean
   readonly opened: number
@@ -61,7 +61,7 @@ describe("knexUnitOfWork", () => {
   it("opens a transaction before the action runs", async () => {
     // given
     const knex = createMockKnex()
-    const runUoW = knexUnitOfWork(knex, unitOfWork)
+    const runUoW = knexUnitOfWork(unitOfWork, knex)
 
     // when
     let seen: unknown
@@ -77,7 +77,7 @@ describe("knexUnitOfWork", () => {
   it("commits the transaction when the unit of work completes", async () => {
     // given
     const knex = createMockKnex()
-    const runUoW = knexUnitOfWork(knex, unitOfWork)
+    const runUoW = knexUnitOfWork(unitOfWork, knex)
 
     // when
     await runUoW().execute(async () => {})
@@ -90,7 +90,7 @@ describe("knexUnitOfWork", () => {
   it("rolls the transaction back when the unit of work fails", async () => {
     // given
     const knex = createMockKnex()
-    const runUoW = knexUnitOfWork(knex, unitOfWork)
+    const runUoW = knexUnitOfWork(unitOfWork, knex)
 
     // when
     await expect(
@@ -107,7 +107,7 @@ describe("knexUnitOfWork", () => {
   it("opens exactly one transaction per unit of work", async () => {
     // given
     const knex = createMockKnex()
-    const runUoW = knexUnitOfWork(knex, unitOfWork)
+    const runUoW = knexUnitOfWork(unitOfWork, knex)
 
     // when
     await runUoW().execute(async (uow) => {
@@ -160,7 +160,7 @@ describe("knexHandler", () => {
     )
 
     // when
-    const runUoW = knexUnitOfWork(knex, unitOfWork)
+    const runUoW = knexUnitOfWork(unitOfWork, knex)
     await runUoW().execute(async (uow) => {
       await handler({ payload: { id: "a" } } as never, { unitOfWork: uow } as never)
     })
@@ -192,7 +192,7 @@ describe("knexHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const knex = createMockKnex()
-    const entry: CommandHandlerDefinition<any, any, KnexContext> = {
+    const entry: CommandHandler<any, any, KnexContext> = {
       kind: "command-handler",
       descriptor: {} as never,
       handler: async (_message, ctx: KnexContext) => {

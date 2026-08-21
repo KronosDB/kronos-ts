@@ -32,7 +32,7 @@ import {
   resolveSessionTimeouts,
 } from "../session-timeouts.js"
 
-export interface PostgresAdapterConfig extends SessionTimeoutOptions {
+export type PostgresAdapterConfig = SessionTimeoutOptions & {
   readonly connectionString: string
   /** Additional postgres.js options. `transform.column.from` is forced off regardless. */
   readonly clientOptions?: Parameters<typeof postgresClient>[1]

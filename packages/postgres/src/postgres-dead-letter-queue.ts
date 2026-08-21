@@ -28,9 +28,10 @@ import { DeadLetterQueueOverflowError } from "@kronos-ts/core"
 import type { QueryRow } from "./adapter.js"
 import type { PostgresResource } from "./postgres-pool.js"
 import { activePostgresTransaction } from "./postgres-transaction.js"
+import type { PostgresFamily } from "./postgres-transaction.js"
 
 /** Tuning only — everything required is a positional argument. */
-export interface PostgresDeadLetterQueueOptions {
+export type PostgresDeadLetterQueueOptions = {
   /** Maximum number of sequences. Default: 1024 (Axon parity). */
   readonly maxSequences?: number
   /** Maximum letters per sequence. Default: 1024 (Axon parity). */
@@ -50,11 +51,11 @@ function newId(group: string): string {
 }
 
 /** The one operation both a pool and a transaction answer. */
-interface SqlHandle {
+type SqlHandle = {
   query<R extends QueryRow = QueryRow>(sql: string, params?: unknown[]): Promise<R[]>
 }
 
-interface LetterRow extends QueryRow {
+type LetterRow = QueryRow & {
   dead_letter_id: string
   sequence_identifier: string
   sequence_index: number | string
@@ -74,7 +75,7 @@ const COLUMNS =
 export function postgresDeadLetterQueue(
   pg: PostgresResource,
   options: PostgresDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue {
+): SequencedDeadLetterQueue<UnitOfWork & PostgresFamily> {
   const table = pg.tables.deadLetters
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024

@@ -61,7 +61,7 @@ function createRecordingAdapter() {
 describe("postgresUnitOfWork", () => {
   it("opens a pg tx on first request and returns a queryable handle, committing at COMMIT", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const make = postgresUnitOfWork(adapter, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, adapter)
 
     await make().execute(async (uow) => {
       const tx = await postgresTransaction(uow)
@@ -75,7 +75,7 @@ describe("postgresUnitOfWork", () => {
 
   it("a failing action makes the adapter ROLLBACK without committing", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const make = postgresUnitOfWork(adapter, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, adapter)
 
     await expect(
       make().execute(async (uow) => {
@@ -90,7 +90,7 @@ describe("postgresUnitOfWork", () => {
 
   it("honors a non-default isolation level", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const make = postgresUnitOfWork(adapter, unitOfWork, IsolationLevel.SERIALIZABLE)
+    const make = postgresUnitOfWork(unitOfWork, adapter, IsolationLevel.SERIALIZABLE)
 
     await make().execute(async (uow) => {
       await postgresTransaction(uow)
@@ -104,7 +104,7 @@ describe("postgresUnitOfWork", () => {
     // adapter.transaction() call, so multiple queries inside one unit of work
     // must all log against that single handle — covered by the sequence below.
     const { adapter, log } = createRecordingAdapter()
-    const make = postgresUnitOfWork(adapter, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, adapter)
 
     await make().execute(async (uow) => {
       const tx = await postgresTransaction(uow)
@@ -122,7 +122,7 @@ describe("postgresUnitOfWork", () => {
 
   it("two sequential units of work open two distinct txes", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const make = postgresUnitOfWork(adapter, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, adapter)
 
     await make().execute(async (uow) => {
       await postgresTransaction(uow)
@@ -155,7 +155,7 @@ describe("postgresUnitOfWork", () => {
       async connect() {},
       async disconnect() {},
     }
-    const make = postgresUnitOfWork(adapter, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, adapter)
     const uow = make()
 
     await expect(
@@ -169,7 +169,7 @@ describe("postgresUnitOfWork", () => {
     // postgres's honest default, and the reason it opts out of the eager glue:
     // a pure-read unit of work must not pay a begin/commit round trip.
     const { adapter, log } = createRecordingAdapter()
-    const make = postgresUnitOfWork(adapter, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, adapter)
 
     await make().execute(async () => "read-only")
 
@@ -180,7 +180,7 @@ describe("postgresUnitOfWork", () => {
 describe("activePostgresTransaction", () => {
   it("observes the open transaction and NEVER opens one", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const make = postgresUnitOfWork(adapter, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, adapter)
 
     await make().execute(async (uow) => {
       // Nothing has written yet — the observer must not provoke a BEGIN.
@@ -208,7 +208,7 @@ describe("postgresTransaction", () => {
 
   it("commits in the COMMIT phase, not when the action returns", async () => {
     const { adapter, log } = createRecordingAdapter()
-    const make = postgresUnitOfWork(adapter, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, adapter)
     const uow = make()
     uow.on(Phase.PREPARE_COMMIT, async () => {
       log.push("prepare-commit")

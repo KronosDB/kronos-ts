@@ -17,7 +17,7 @@
 
 import type { EventCriteria } from "@kronos-ts/core"
 
-export interface CriteriaSQL {
+export type CriteriaSQL = {
   /** SQL WHERE fragment (no leading "WHERE"). Always truthy — empty
    *  criteria collapse to `"true"`. */
   readonly where: string
@@ -27,7 +27,7 @@ export interface CriteriaSQL {
   readonly nextParamIndex: number
 }
 
-const TAG_DELIMITER = "" // ASCII Unit Separator (U+001F) — prevents key/value boundary collisions in encoded tag strings
+export const TAG_DELIMITER = "" // ASCII Unit Separator (U+001F) — prevents key/value boundary collisions in encoded tag strings
 
 export function encodeTag(key: string, value: string): string {
   return `${key}${TAG_DELIMITER}${value}`

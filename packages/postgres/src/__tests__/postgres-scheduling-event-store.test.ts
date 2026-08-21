@@ -1,5 +1,5 @@
 /**
- * Unit tests for postgresEventScheduler.
+ * Unit tests for postgresSchedulingEventStore — the postgres SCHEDULING TIER.
  *
  * Uses a fake adapter whose `transaction(fn)` snapshots its in-memory
  * "kronos_scheduled_events" table before calling fn and reverts on
@@ -23,12 +23,12 @@ import type {
 import { IsolationLevel } from "../adapter.js"
 import { postgresUnitOfWork, postgresTransaction } from "../postgres-transaction.js"
 import { postgresPool } from "../postgres-pool.js"
-import { postgresEventScheduler } from "../postgres-event-scheduler.js"
+import { postgresSchedulingEventStore } from "../postgres-scheduling-event-store.js"
 import type { TagResolver } from "../postgres-event-store.js"
 
 // ── Fake adapter ────────────────────────────────────────────────────────
 
-interface FakeRow {
+type FakeRow = {
   schedule_id: string
   fire_at: Date
   status: "pending" | "appended" | "cancelled"
@@ -195,9 +195,10 @@ function wire(opts: { adapter: PostgresAdapter; store: import("@kronos-ts/core")
   // `bootstrap: false` — the fake adapter answers no DDL, and the pool is here
   // only to carry the table names the scheduler reads.
   const pool = postgresPool(opts.adapter, { bootstrap: false })
-  const uowFactory = postgresUnitOfWork(pool, unitOfWork)
-  const scheduler = postgresEventScheduler(pool, {
-    eventStore: opts.store,
+  const uowFactory = postgresUnitOfWork(unitOfWork, pool)
+  // THE LOG IT WRAPS IS THE LOG IT FIRES INTO — one argument, not a config
+  // field pointed at a second object.
+  const scheduler = postgresSchedulingEventStore(opts.store, pool, {
     unitOfWork: uowFactory,
     tagResolver: passthroughTagResolver,
     pollIntervalMs: 5,
@@ -208,7 +209,7 @@ function wire(opts: { adapter: PostgresAdapter; store: import("@kronos-ts/core")
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-describe("postgresEventScheduler", () => {
+describe("postgresSchedulingEventStore", () => {
   describe("schedule()", () => {
     it("inserts a pending row when called inside a UoW and the UoW commits", async () => {
       const fake = createFakeAdapter()
@@ -264,7 +265,7 @@ describe("postgresEventScheduler", () => {
         return scheduler.schedule(event, new Date(Date.now() + 60_000), uow)
       })
 
-      const result = await scheduler.cancel(token)
+      const result = await scheduler.cancelSchedule(token)
       expect(result).toEqual({ kind: "cancelled" })
       expect(fake.rows().get(token.id)?.status).toBe("cancelled")
     })
@@ -281,7 +282,7 @@ describe("postgresEventScheduler", () => {
       // Manually flip to 'appended' to simulate worker firing it.
       fake.rows().get(token.id)!.status = "appended"
 
-      const result = await scheduler.cancel(token)
+      const result = await scheduler.cancelSchedule(token)
       expect(result).toEqual({ kind: "already-appended" })
       expect(fake.rows().get(token.id)?.status).toBe("appended")
     })
@@ -291,7 +292,7 @@ describe("postgresEventScheduler", () => {
       const { store } = createFakeEventStore()
       const { scheduler } = wire({ adapter: fake.adapter, store })
 
-      const result = await scheduler.cancel({ id: crypto.randomUUID() })
+      const result = await scheduler.cancelSchedule({ id: crypto.randomUUID() })
       expect(result).toEqual({ kind: "not-found" })
     })
 
@@ -306,8 +307,8 @@ describe("postgresEventScheduler", () => {
         return scheduler.schedule(makeEvent(), new Date(Date.now() + 60_000), uow)
       })
 
-      expect(await scheduler.cancel(token)).toEqual({ kind: "cancelled" })
-      expect(await scheduler.cancel(token)).toEqual({ kind: "not-found" })
+      expect(await scheduler.cancelSchedule(token)).toEqual({ kind: "cancelled" })
+      expect(await scheduler.cancelSchedule(token)).toEqual({ kind: "not-found" })
     })
   })
 
@@ -322,10 +323,10 @@ describe("postgresEventScheduler", () => {
         await scheduler.schedule(event, new Date(Date.now() - 1000), uow)
       })
 
-      await scheduler.start()
+      await scheduler.startScheduling()
       // Wait for at least one tick (pollIntervalMs=5)
       await new Promise((r) => setTimeout(r, 30))
-      await scheduler.stop()
+      await scheduler.stopScheduling()
 
       expect(appended.map((e) => e.identifier)).toContain(event.identifier)
       expect(fake.rows().get(event.identifier)?.status).toBe("appended")
@@ -340,9 +341,9 @@ describe("postgresEventScheduler", () => {
         await scheduler.schedule(makeEvent(), new Date(Date.now() + 60_000), uow)
       })
 
-      await scheduler.start()
+      await scheduler.startScheduling()
       await new Promise((r) => setTimeout(r, 30))
-      await scheduler.stop()
+      await scheduler.stopScheduling()
 
       expect(appended).toHaveLength(0)
     })
@@ -355,11 +356,11 @@ describe("postgresEventScheduler", () => {
       const token = await uowFactory().execute(async (uow) => {
         return scheduler.schedule(makeEvent(), new Date(Date.now() - 1000), uow)
       })
-      await scheduler.cancel(token)
+      await scheduler.cancelSchedule(token)
 
-      await scheduler.start()
+      await scheduler.startScheduling()
       await new Promise((r) => setTimeout(r, 30))
-      await scheduler.stop()
+      await scheduler.stopScheduling()
 
       expect(appended).toHaveLength(0)
       expect(fake.rows().get(token.id)?.status).toBe("cancelled")
@@ -370,8 +371,8 @@ describe("postgresEventScheduler", () => {
       const { store } = createFakeEventStore()
       const { scheduler } = wire({ adapter: fake.adapter, store })
 
-      await scheduler.start()
-      await scheduler.stop()
+      await scheduler.startScheduling()
+      await scheduler.stopScheduling()
       // If a timer leaked we'd hit "fake adapter: unrecognised SQL" on a
       // late tick; the bun:test runner would surface it. Reaching here
       // cleanly is the assertion.

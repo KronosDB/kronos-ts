@@ -3,6 +3,7 @@ import type {
   HandlerContext,
   QueryHandlerContext,
   UnitOfWork,
+  PersistenceFamily,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -10,7 +11,38 @@ import {
   openTransaction,
   type TransactionHooks,
   transactionRegistry,
-} from "@kronos-ts/core/transaction"
+} from "./transaction-glue.js"
+
+/**
+ * THE TYPEORM FAMILY MARK — a phantom, type-only brand on every unit of work
+ * typeormUnitOfWork(next, dataSource) mints, and the thing this package's token store and
+ * dead-letter queue demand back.
+ *
+ * WHY IT EXISTS. This family is keyed by TRANSACTION IDENTITY: the token store,
+ * the dead-letter queue and what a handler writes through `activeTypeormTransaction(ctx.unitOfWork)` must all
+ * write through the SAME handle, or they do not commit together. Handing this
+ * package's token store a unit of work from another family does not throw — the
+ * store looks for ITS transaction, does not find one, and falls back to its
+ * plain handle, so the token update commits OUTSIDE the batch. Every test
+ * passes; then a crash lands between the projection write and the token write
+ * and a read model is permanently wrong. The mark turns that into a build
+ * error.
+ *
+ * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * unique symbol declared in core; nothing writes the property and nothing can
+ * read it. typeormUnitOfWork(…) returns exactly what it always
+ * returned and asserts the branded type, so the emitted JavaScript is
+ * unchanged.
+ *
+ * THE FIX STRING IS THIS PACKAGE'S TO WRITE, and that is the point of putting
+ * it here. Core can only say "these two are different families"; this package
+ * knows precisely which factory the host should have called, so a mismatch
+ * prints that sentence at the wiring site.
+ */
+export type TypeormFamily = PersistenceFamily<
+  "typeorm",
+  "build this processor's unitOfWork with typeormUnitOfWork(next, dataSource) — this family's stores write through its transaction"
+>
 
 /**
  * A TypeORM handle — a `DataSource` or an `EntityManager`. Declares only what
@@ -18,7 +50,7 @@ import {
  * is what the family is keyed by. The query API is reached through the handle
  * at runtime.
  */
-export interface TypeormManager {
+export type TypeormManager = {
   transaction<T>(fn: (entityManager: any) => Promise<T>): Promise<T>
 }
 
@@ -105,8 +137,8 @@ const registry = transactionRegistry<TypeormTransaction>()
  * Same shape as the core `unitOfWork`, so it drops into any seam that takes one:
  *
  * ```ts
- * const uow = typeormUnitOfWork(dataSource, unitOfWork)
- * const commandBus = interceptingCommandBus(simpleCommandBus(uow), lineage)
+ * const uow = typeormUnitOfWork(unitOfWork, dataSource)
+ * const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
  * processors: projections.map((p) => ({ ...p, eventStore, tokenStore, unitOfWork: uow }))
  * ```
  *
@@ -114,16 +146,28 @@ const registry = transactionRegistry<TypeormTransaction>()
  * letters, and the handler's own writes through {@link activeTypeormTransaction} —
  * commits or rolls back together.
  *
- * `make` is the factory the unit of work is minted FROM — required, and
- * normally the core `unitOfWork`. It is not defaulted: a default argument hides
- * the composition chain, and the whole point of this shape is that a call site
- * shows what its units of work are made of. Pass another to stack concerns.
+ * THING-FIRST: `next` — the factory the unit of work is minted from — comes
+ * first, because that is the thing being decorated, and the client is the
+ * configuration. It is required and never defaulted: a default hides the
+ * composition chain, and the whole point of this shape is that a call site
+ * shows what its units of work are made of.
+ *
+ * It is also CAPABILITY-PRESERVING. The decorator returns `() => U` for
+ * whatever `U` it was handed, and it decorates the SAME handle rather than
+ * rebuilding a record from it — so a composed capability survives both the type
+ * and the runtime:
+ *
+ * ```ts
+ * const uow = typeormUnitOfWork(() => correlating(unitOfWork(clock)), manager)
+ * //    ^ () => CorrelatingUnitOfWork, and its transactions are keyed on that
+ * //      very object, which is the one `ctx.unitOfWork` hands back
+ * ```
  */
-export function typeormUnitOfWork(
+export function typeormUnitOfWork<U extends UnitOfWork = UnitOfWork>(
+  next: () => U,
   manager: TypeormManager,
-  make: () => UnitOfWork,
-): () => UnitOfWork {
-  return adapterUnitOfWork(registry, transactionHooks(manager), make)
+): () => U & TypeormFamily {
+  return adapterUnitOfWork(registry, transactionHooks(manager), next) as () => U & TypeormFamily
 }
 
 /**
@@ -166,7 +210,7 @@ export function activeTypeormTransaction(
 //
 //   1. STORE IMPLEMENTATIONS — `typeormTokenStore`, `typeormDeadLetterQueue`, …
 //      ordinary objects satisfying the framework's store interfaces.
-//   2. A UNIT-OF-WORK WRAPPER — `typeormUnitOfWork(manager, unitOfWork)`, a
+//   2. A UNIT-OF-WORK WRAPPER — `typeormUnitOfWork(unitOfWork, manager)`, a
 //      unit-of-work factory that gives every unit of work a transaction.
 //   3. A HANDLER WRAPPER — `typeormHandler(handler, manager)`, which adds a capability to
 //      the ctx a handler FUNCTION receives. The host spreads the entry.
@@ -178,7 +222,7 @@ export function activeTypeormTransaction(
 // ---------------------------------------------------------------------------
 
 /** The `manager()` capability this extension adds to a handler context. */
-export interface TypeormCapability {
+export type TypeormCapability = {
   /**
    * This invocation's TypeORM handle: the unit of work's transaction when one is
    * open, otherwise the base handle the wrapper was built with.
@@ -192,11 +236,11 @@ export interface TypeormCapability {
 }
 
 /** A command handler's context, plus this extension's capability. */
-export interface TypeormContext extends HandlerContext, TypeormCapability {}
+export type TypeormContext = HandlerContext & TypeormCapability
 /** An event handler's context, plus this extension's capability. */
-export interface TypeormEventContext extends EventHandlerContext, TypeormCapability {}
+export type TypeormEventContext = EventHandlerContext & TypeormCapability
 /** A query handler's context, plus this extension's capability. */
-export interface TypeormQueryContext extends QueryHandlerContext, TypeormCapability {}
+export type TypeormQueryContext = QueryHandlerContext & TypeormCapability
 
 /**
  * Wrap a HANDLER FUNCTION — command, event or query — so its context gains

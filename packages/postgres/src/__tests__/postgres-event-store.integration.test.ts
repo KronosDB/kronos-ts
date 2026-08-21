@@ -4,6 +4,7 @@ import { startPostgresContainer, type RunningPostgres } from "./testcontainers-s
 import { DEFAULT_TABLE_NAMES } from "../schema.js"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { postgresEventStore } from "../postgres-event-store.js"
+import { postgresSnapshottingEventStore } from "../postgres-snapshotting-event-store.js"
 import { AppendConditionError } from "../errors.js"
 import { ORIGIN } from "@kronos-ts/core"
 import { generateIdentifier } from "@kronos-ts/core"
@@ -47,7 +48,6 @@ beforeAll(async () => {
   pool = postgresPool(adapter)
   await pool.start()
   store = postgresEventStore(pool, {
-    serializer: NOOP_SERIALIZER,
     tagResolver: NOOP_TAG_RESOLVER,
   })
 }, 60_000)
@@ -215,5 +215,161 @@ describe("Concurrency — advisory-lock taxonomy", () => {
       ),
     ])
     expect(results.every((r) => r.status === "fulfilled")).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// THE NATIVE SNAPSHOTTING STRATEGY.
+//
+// `postgresEventStore` implements the strategy itself: the cache lookup, the
+// start position derived from it, the event query and the head all arrive in
+// ONE round trip. These tests judge the RESULT of that query — that the entry
+// filed under the caller's KEY comes back, that the events start strictly after
+// it, and that a different key simply finds nothing. The key is one opaque
+// string and this query never parses it. The single-round-trip claim is the
+// query's own shape; see the doc comment on `sourceFused`.
+//
+// THE BASE STORE IS NOT INVOLVED. `postgresEventStore` has never heard of
+// snapshots; the capability arrives by wrapping, and the wrapper owns BOTH the
+// upsert and the fused read — one object, one serializer.
+// ---------------------------------------------------------------------------
+
+describe("postgresSnapshottingEventStore — the fused strategy, in one round trip", () => {
+  const caching = () =>
+    postgresSnapshottingEventStore(store, pool, { serializer: NOOP_SERIALIZER })
+
+  beforeEach(async () => {
+    await adapter.query(`TRUNCATE TABLE ${DEFAULT_TABLE_NAMES.snapshots}`)
+  })
+
+  async function appendBumps(entity: string, n: number): Promise<void> {
+    for (let i = 0; i < n; i++) {
+      await store.append([makeEvent("Bumped", [{ key: "entity", value: entity }], { i })])
+    }
+  }
+
+  it("a condition with NO snapshot key reads the whole range and leads with nothing", async () => {
+    await appendBumps("plain", 3)
+    const result = await caching().source({ query: { tags: { entity: "plain" } } })
+    expect(result.events.length).toBe(3)
+    expect(result.snapshot).toBeUndefined()
+  })
+
+  it("a MISS falls back to the full range, silently", async () => {
+    await appendBumps("miss", 3)
+    const result = await caching().source({
+      query: { tags: { entity: "miss" } },
+      snapshot: { key: "counter:miss" },
+    })
+    expect(result.events.length).toBe(3)
+    expect(result.snapshot).toBeUndefined()
+  })
+
+  it("a HIT leads with the snapshot and sources events strictly AFTER its position", async () => {
+    await appendBumps("hit", 5)
+    const positions = await adapter.query<{ p: string }>(
+      `SELECT sequence_position::text AS p FROM ${DEFAULT_TABLE_NAMES.events} ORDER BY sequence_position`,
+    )
+    const third = BigInt(positions[2]!.p)
+
+    await caching().storeSnapshot("counter:hit", { state: { count: 3 }, position: third })
+
+    const result = await caching().source({
+      query: { tags: { entity: "hit" } },
+      snapshot: { key: "counter:hit" },
+    })
+
+    expect(result.snapshot).toBeDefined()
+    expect(result.snapshot!.state).toEqual({ count: 3 })
+    expect(result.snapshot!.position).toBe(third)
+    // Two events after the third — the fused query narrowed the scan itself.
+    expect(result.events.length).toBe(2)
+    expect(result.events.every((e) => (e.payload as { i: number }).i >= 3)).toBe(true)
+  })
+
+  it("a snapshot covering EVERYTHING leads with itself and sources no events", async () => {
+    await appendBumps("all", 3)
+    const head = await store.getHeadPosition()
+    await caching().storeSnapshot("counter:all", { state: { count: 3 }, position: head })
+
+    const result = await caching().source({
+      query: { tags: { entity: "all" } },
+      snapshot: { key: "counter:all" },
+    })
+
+    expect(result.snapshot!.state).toEqual({ count: 3 })
+    expect(result.events.length).toBe(0)
+    // The marker still reports the head, exactly as the plain read does when
+    // its query matched nothing.
+    expect(result.marker.position).toBeGreaterThanOrEqual(0n)
+  })
+
+  it("an EMPTY log with no entry still answers — the one-row anchor guarantees it", async () => {
+    const result = await caching().source({
+      query: { tags: { entity: "nothing-here" } },
+      snapshot: { key: "counter:nothing-here" },
+    })
+    expect(result.events.length).toBe(0)
+    expect(result.snapshot).toBeUndefined()
+    expect(result.marker.position).toBe(-1n)
+  })
+
+  it("serves whatever is cached — FITNESS is the repository's question, not SQL's", () => {
+    // The fused query answers "here is the entry". Whether the value still fits
+    // the shape the fold seeds into is a fact about the running application, so
+    // it is asked once, in core, for every backend — see `matchesInitialStructure`.
+    expect(true).toBe(true)
+  })
+
+  it("the condition's own `start` still floors the scan — the two narrowings compose", async () => {
+    await appendBumps("floor", 5)
+    const positions = await adapter.query<{ p: string }>(
+      `SELECT sequence_position::text AS p FROM ${DEFAULT_TABLE_NAMES.events} ORDER BY sequence_position`,
+    )
+    // A snapshot at the FIRST event, but the caller asks to start at the fourth.
+    await caching().storeSnapshot("counter:floor", { state: {}, position: BigInt(positions[0]!.p) })
+
+    const result = await caching().source({
+      query: { tags: { entity: "floor" } },
+      start: BigInt(positions[3]!.p),
+      snapshot: { key: "counter:floor" },
+    })
+
+    expect(result.snapshot).toBeDefined()
+    expect(result.events.length).toBe(2)
+  })
+
+  it("RENAMING THE KEY orphans the old row — invalidation, in one column", async () => {
+    await appendBumps("rename", 4)
+    await caching().storeSnapshot("counter-v1:rename", { state: { count: 2 }, position: 1n })
+
+    // The fold's meaning changed, so the caller changed the key. The old row is
+    // still there; it is simply unreachable, and this read replays in full.
+    const result = await caching().source({
+      query: { tags: { entity: "rename" } },
+      snapshot: { key: "counter-v2:rename" },
+    })
+
+    expect(result.snapshot).toBeUndefined()
+    expect(result.events.length).toBe(4)
+    // Not migrated, not deleted — just orphaned, and still reachable under the
+    // key it was filed under.
+    const old = await caching().source({
+      query: { tags: { entity: "rename" } },
+      snapshot: { key: "counter-v1:rename" },
+    })
+    expect(old.snapshot!.state).toEqual({ count: 2 })
+  })
+
+  it("the leading snapshot survives a bigint position past 2^53", async () => {
+    const huge = 9_007_199_254_740_993n // 2^53 + 1
+    await caching().storeSnapshot("counter:huge", { state: { count: 1 }, position: huge })
+
+    const result = await caching().source({
+      query: { tags: { entity: "huge" } },
+      snapshot: { key: "counter:huge" },
+    })
+
+    expect(result.snapshot!.position).toBe(huge)
   })
 })

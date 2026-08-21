@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { type CommandHandlerDefinition, unitOfWork } from "@kronos-ts/core"
+import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
 import {
   activeKyselyTransaction,
   type KyselyContext,
@@ -13,7 +13,7 @@ import {
 // Mock Kysely database — records what the callback-scoped transaction did.
 // ---------------------------------------------------------------------------
 
-interface MockDb extends KyselyDb {
+type MockDb = KyselyDb & {
   readonly committed: boolean
   readonly rolledBack: boolean
   readonly opened: number
@@ -65,7 +65,7 @@ describe("kyselyUnitOfWork", () => {
   it("opens a transaction before the action runs", async () => {
     // given
     const db = createMockDb()
-    const runUoW = kyselyUnitOfWork(db, unitOfWork)
+    const runUoW = kyselyUnitOfWork(unitOfWork, db)
 
     // when
     let seen: unknown
@@ -81,7 +81,7 @@ describe("kyselyUnitOfWork", () => {
   it("commits the transaction when the unit of work completes", async () => {
     // given
     const db = createMockDb()
-    const runUoW = kyselyUnitOfWork(db, unitOfWork)
+    const runUoW = kyselyUnitOfWork(unitOfWork, db)
 
     // when
     await runUoW().execute(async () => {})
@@ -94,7 +94,7 @@ describe("kyselyUnitOfWork", () => {
   it("rolls the transaction back when the unit of work fails", async () => {
     // given
     const db = createMockDb()
-    const runUoW = kyselyUnitOfWork(db, unitOfWork)
+    const runUoW = kyselyUnitOfWork(unitOfWork, db)
 
     // when
     await expect(
@@ -111,7 +111,7 @@ describe("kyselyUnitOfWork", () => {
   it("opens exactly one transaction per unit of work", async () => {
     // given
     const db = createMockDb()
-    const runUoW = kyselyUnitOfWork(db, unitOfWork)
+    const runUoW = kyselyUnitOfWork(unitOfWork, db)
 
     // when
     await runUoW().execute(async (uow) => {
@@ -164,7 +164,7 @@ describe("kyselyHandler", () => {
     )
 
     // when
-    const runUoW = kyselyUnitOfWork(db, unitOfWork)
+    const runUoW = kyselyUnitOfWork(unitOfWork, db)
     await runUoW().execute(async (uow) => {
       await handler({ payload: { id: "a" } } as never, { unitOfWork: uow } as never)
     })
@@ -196,7 +196,7 @@ describe("kyselyHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const db = createMockDb()
-    const entry: CommandHandlerDefinition<any, any, KyselyContext> = {
+    const entry: CommandHandler<any, any, KyselyContext> = {
       kind: "command-handler",
       descriptor: {} as never,
       handler: async (_message, ctx: KyselyContext) => {

@@ -1,6 +1,6 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { KnexClient } from "./knex-transaction.js"
+import type { KnexClient, KnexFamily } from "./knex-transaction.js"
 import { activeKnexTransaction } from "./knex-transaction.js"
 
 /**
@@ -35,7 +35,7 @@ import { activeKnexTransaction } from "./knex-transaction.js"
  */
 
 /** Tuning only — everything required is a positional argument. */
-export interface KnexDeadLetterQueueOptions {
+export type KnexDeadLetterQueueOptions = {
   /** Maximum number of sequences. Default: 1024 (Axon parity). */
   maxSequences?: number
   /** Maximum letters per sequence. Default: 1024 (Axon parity). */
@@ -81,7 +81,7 @@ function newId(group: string): string {
 export function knexDeadLetterQueue(
   knex: KnexClient,
   options: KnexDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue {
+): SequencedDeadLetterQueue<UnitOfWork & KnexFamily> {
   const table = KNEX_DEAD_LETTER_TABLE
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024

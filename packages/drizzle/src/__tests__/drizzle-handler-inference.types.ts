@@ -11,7 +11,7 @@
  *
  * The runtime side of the same story is in `drizzle-transaction.test.ts`.
  */
-import type { CommandHandlerDefinition, CommandMessage, HandlerContext } from "@kronos-ts/core"
+import type { CommandHandler, CommandMessage, HandlerContext } from "@kronos-ts/core"
 import { type DrizzleContext, type DrizzleDb, drizzleHandler } from "../drizzle-transaction.js"
 
 declare const db: DrizzleDb
@@ -29,7 +29,7 @@ const supplied = drizzleHandler(asksForDb, db)
 export const base: (message: CommandMessage, ctx: HandlerContext) => Promise<void> = supplied
 
 /** …which is exactly what lets the host drop it into an entry unchanged. */
-export const entry: CommandHandlerDefinition = {
+export const entry: CommandHandler = {
   kind: "command-handler",
   descriptor: {} as never,
   handler: supplied,

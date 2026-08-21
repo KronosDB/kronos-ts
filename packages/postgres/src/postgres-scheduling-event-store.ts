@@ -1,7 +1,23 @@
 /**
- * postgresEventScheduler — durable {@link EventScheduler} backed by
- * the kronos_scheduled_events table, plus a polling worker that fires
- * due schedules into the event store.
+ * postgresSchedulingEventStore — the SCHEDULING CAPABILITY TIER for the
+ * postgres family: the `kronos_scheduled_events` table, plus a polling worker
+ * that fires due schedules into the log this wraps.
+ *
+ * ADDITIVE, like every capability adder: `E` in, `E & ScheduleCapability` out,
+ * so a store that already caches folds still caches them after this.
+ *
+ * ```ts
+ * const eventStore = postgresSchedulingEventStore(
+ *   postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+ *   pg,
+ *   { unitOfWork: uow, tagResolver },
+ * )
+ * ```
+ *
+ * THE LOG IT WRAPS IS THE LOG IT FIRES INTO. That used to be a config field —
+ * `eventStore` — sitting beside an `eventScheduler` field on every entry, and
+ * a host could point the two at different objects without anything complaining.
+ * There is nothing to point any more.
  *
  * # Schedule path (caller-driven, inside a UoW)
  *
@@ -55,7 +71,7 @@
 import { qualifiedNameToString, qualifiedNameFromString } from "@kronos-ts/core"
 import type { EventMessage } from "@kronos-ts/core"
 import type {
-  EventScheduler,
+  ScheduleCapability,
   ScheduleToken,
   CancelResult,
   UnitOfWork,
@@ -69,11 +85,10 @@ import type { PostgresResource } from "./postgres-pool.js"
 import type { TagResolver } from "./postgres-event-store.js"
 import { sharedPostgresTransaction } from "./postgres-transaction.js"
 
-export interface PostgresEventSchedulerConfig {
-  readonly eventStore: EventStore
+export type PostgresSchedulingConfig = {
   /**
    * Where the worker's per-tick unit of work comes from — must be
-   * `postgresUnitOfWork(pg, unitOfWork)` (or equivalent) so the worker's unit of
+   * `postgresUnitOfWork(unitOfWork, pg)` (or equivalent) so the worker's unit of
    * work sees the postgres tx.
    */
   readonly unitOfWork: () => UnitOfWork
@@ -89,14 +104,23 @@ export interface PostgresEventSchedulerConfig {
   readonly batchSize?: number
 }
 
-export interface PostgresEventScheduler extends EventScheduler {
+/**
+ * WHAT THE POSTGRES TIER ADDS BEYOND THE CAPABILITY: the worker's lifecycle.
+ *
+ * Not part of {@link ScheduleCapability}, because "poll a table" is a property
+ * of a tier that HAS a table to poll — the in-memory tier holds timers instead,
+ * and KronosDB holds nothing at all because the server does the waiting. The
+ * names are prefixed so a composed store can carry them beside whatever else it
+ * has without a collision.
+ */
+export type PostgresSchedulingControl = {
   /** Begin background polling. Idempotent. */
-  start(): Promise<void>
+  startScheduling(): Promise<void>
   /** Stop polling. Resolves once the in-flight tick (if any) has settled. */
-  stop(): Promise<void>
+  stopScheduling(): Promise<void>
 }
 
-interface ScheduleRow {
+type ScheduleRow = {
   schedule_id: string
   type: string
   tags: string[]
@@ -107,11 +131,12 @@ interface ScheduleRow {
   [key: string]: unknown
 }
 
-export function postgresEventScheduler(
+export function postgresSchedulingEventStore<E extends EventStore>(
+  next: E,
   pg: PostgresResource,
-  config: PostgresEventSchedulerConfig,
-): PostgresEventScheduler {
-  const { eventStore, unitOfWork, tagResolver } = config
+  config: PostgresSchedulingConfig,
+): E & ScheduleCapability & PostgresSchedulingControl {
+  const { unitOfWork, tagResolver } = config
   const tables = pg.tables
   const pollIntervalMs = config.pollIntervalMs ?? 1000
   const batchSize = config.batchSize ?? 50
@@ -211,7 +236,7 @@ export function postgresEventScheduler(
           // append-and-mark, so refuse to fire rather than risk
           // partial-state. This is a misconfiguration; surface loudly.
           throw new Error(
-            "postgresEventScheduler worker requires `unitOfWork: postgresUnitOfWork(pg, unitOfWork)`",
+            "postgresSchedulingEventStore worker requires `unitOfWork: postgresUnitOfWork(unitOfWork, pg)`",
           )
         }
 
@@ -228,10 +253,10 @@ export function postgresEventScheduler(
 
         for (const row of rows) {
           const event = reconstructEvent(row)
-          // eventStore.append joins our shared UoW tx because we hand it the
-          // same unit of work. event_id = schedule_id, so re-fires after a
+          // The wrapped log's append joins our shared UoW tx because we hand it
+          // the same unit of work. event_id = schedule_id, so re-fires after a
           // crash dedupe via the events table's UNIQUE(event_id) constraint.
-          await eventStore.append([event], undefined, uow)
+          await next.append([event], undefined, uow)
           await tx.query(
             `UPDATE ${tables.scheduled} SET status = 'appended' WHERE schedule_id = $1`,
             [row.schedule_id],
@@ -242,7 +267,7 @@ export function postgresEventScheduler(
       // A failed tick leaves rows 'pending' (the UoW rolls back the whole
       // batch). The next tick re-tries. Log so operators see persistent
       // failures rather than a silent hang.
-      console.warn("postgresEventScheduler: worker tick failed:", err)
+      console.warn("postgresSchedulingEventStore: worker tick failed:", err)
     }
   }
 
@@ -257,10 +282,12 @@ export function postgresEventScheduler(
   }
 
   return {
+    ...next,
+
     async schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
       if (uow === undefined) {
         throw new NoActiveUnitOfWork(
-          "postgresEventScheduler.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",
+          "postgresSchedulingEventStore.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",
         )
       }
       requireInvocation(uow)
@@ -270,14 +297,14 @@ export function postgresEventScheduler(
         // rolled-back command does not leak schedules. Refuse rather
         // than open a side-channel tx the caller can't roll back.
         throw new Error(
-          "postgresEventScheduler.schedule requires a UoW with a postgres transaction (configure `unitOfWork: postgresUnitOfWork(pg, unitOfWork)`)",
+          "postgresSchedulingEventStore.schedule requires a UoW with a postgres transaction (configure `unitOfWork: postgresUnitOfWork(unitOfWork, pg)`)",
         )
       }
       const id = await insertSchedule(shared, event, at)
       return { id }
     },
 
-    async cancel(token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult> {
+    async cancelSchedule(token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult> {
       const shared = await sharedPostgresTransaction(uow)
       if (shared !== undefined) {
         return cancelOnTx(shared, token.id)
@@ -285,13 +312,13 @@ export function postgresEventScheduler(
       return pg.transaction(IsolationLevel.READ_COMMITTED, (tx) => cancelOnTx(tx, token.id))
     },
 
-    async start(): Promise<void> {
+    async startScheduling(): Promise<void> {
       if (running) return
       running = true
       scheduleNextTick()
     },
 
-    async stop(): Promise<void> {
+    async stopScheduling(): Promise<void> {
       running = false
       if (timer !== undefined) {
         clearTimeout(timer)
@@ -301,10 +328,13 @@ export function postgresEventScheduler(
         try {
           await activeTick
         } catch {
-          // The tick logs its own failures; stop() returns successfully
-          // either way so callers can shut down deterministically.
+          // The tick logs its own failures; stopScheduling() returns
+          // successfully either way so callers can shut down deterministically.
         }
       }
     },
-  }
+    // The spread of a generic is opaque to the checker, so the shape it
+    // produces is asserted rather than inferred. The probe is what makes the
+    // assertion honest.
+  } as E & ScheduleCapability & PostgresSchedulingControl
 }

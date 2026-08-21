@@ -117,7 +117,7 @@ describe("postgresTokenStore", () => {
     // THE point of this family. The token store writes through the same client
     // handle the handler writes through, so a crash cannot advance a
     // processor's token while losing the work it accounts for.
-    const make = postgresUnitOfWork(pool, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, pool)
 
     await expect(
       make().execute(async (uow) => {
@@ -135,7 +135,7 @@ describe("postgresTokenStore", () => {
   })
 
   it("commits with the unit of work when it succeeds", async () => {
-    const make = postgresUnitOfWork(pool, unitOfWork)
+    const make = postgresUnitOfWork(unitOfWork, pool)
     await make().execute(async (uow) => {
       await postgresTransaction(uow)
       await store.store("proc", 0, globalSequenceToken(6n), uow)
