@@ -8,8 +8,8 @@ import {
   eventProcessor,
   inMemoryTokenStore,
   kronos,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   unitOfWork,
 } from "@kronos-ts/core"
 import type { EventStore } from "@kronos-ts/core"
@@ -42,7 +42,7 @@ const BenchEvent = event({
   tags: { aggregateId: (payload) => payload.aggregateId },
 })
 
-export interface ScenarioRun {
+export type ScenarioRun = {
   readonly samples: readonly ScenarioSample[]
   readonly correctnessChecks: number
 }
@@ -511,8 +511,8 @@ async function catchupPass(
     eventHandlers: [
       {
         ...handler,
-        commandBus: simpleCommandBus(unitOfWork),
-        queryBus: simpleQueryBus(unitOfWork),
+        commandBus: localCommandBus(unitOfWork),
+        queryBus: localQueryBus(unitOfWork),
         processor: eventProcessor({
           name,
           eventStore: store,
@@ -585,7 +585,7 @@ async function runCatchup(
   return { samples, correctnessChecks: checks }
 }
 
-interface PendingDelivery {
+type PendingDelivery = {
   readonly startedAt: number
   readonly resolve: (latencyMs: number) => void
 }
@@ -609,8 +609,8 @@ async function runLive(harness: BackendHarness, options: BenchmarkOptions): Prom
     eventHandlers: [
       {
         ...handler,
-        commandBus: simpleCommandBus(unitOfWork),
-        queryBus: simpleQueryBus(unitOfWork),
+        commandBus: localCommandBus(unitOfWork),
+        queryBus: localQueryBus(unitOfWork),
         processor: eventProcessor({
           name: liveName,
           eventStore: harness.store,

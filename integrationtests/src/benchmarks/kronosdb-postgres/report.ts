@@ -3,14 +3,14 @@ import type { BackendName, BenchmarkOptions, ScenarioName } from "./config.js"
 
 export type BetterDirection = "higher" | "lower"
 
-export interface MetricValue {
+export type MetricValue = {
   readonly name: string
   readonly value: number
   readonly unit: string
   readonly better: BetterDirection
 }
 
-export interface ScenarioSample {
+export type ScenarioSample = {
   readonly backend: BackendName
   readonly scenario: ScenarioName
   readonly parameters: Readonly<Record<string, string | number>>
@@ -19,7 +19,7 @@ export interface ScenarioSample {
   readonly diagnostics?: Readonly<Record<string, string | number | boolean>>
 }
 
-export interface Summary {
+export type Summary = {
   readonly count: number
   readonly values: readonly number[]
   readonly median: number
@@ -30,7 +30,7 @@ export interface Summary {
   readonly coefficientOfVariation: number
 }
 
-export interface Comparison {
+export type Comparison = {
   readonly scenario: ScenarioName
   readonly parameters: Readonly<Record<string, string | number>>
   readonly metric: string
@@ -42,7 +42,7 @@ export interface Comparison {
   readonly label: string
 }
 
-export interface BenchmarkDocument {
+export type BenchmarkDocument = {
   readonly schemaVersion: 1
   readonly run: {
     readonly startedAt: string

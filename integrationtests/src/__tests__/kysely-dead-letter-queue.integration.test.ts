@@ -118,7 +118,7 @@ describe("Kysely SequencedDeadLetterQueue (PostgreSQL)", () => {
 
   it("commits the enqueue in the active UnitOfWork transaction — and rolls it back on failure", async () => {
     const dlq = makeQueue()
-    const runUoW = kyselyUnitOfWork(db as any, unitOfWork)
+    const runUoW = kyselyUnitOfWork(unitOfWork, db as any)
 
     await runUoW().execute(async (uow) => {
       await dlq.enqueue(GROUP, makeDeadLetter("A", "committed"), uow)

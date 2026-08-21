@@ -31,12 +31,14 @@ import {
 } from "@kronos-ts/core"
 import { kronos } from "@kronos-ts/core"
 import {
-  lineage,
+  correlating,
+  correlatingHandler,
+  correlation,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   type UnitOfWork,
   type CommandBus,
   type QueryBus,
@@ -44,24 +46,32 @@ import {
 import {
   postgresPool,
   postgresEventStore,
-  postgresSnapshotStore,
+  postgresSnapshottingEventStore,
   postgresUnitOfWork,
 } from "@kronos-ts/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
 import { drizzle } from "drizzle-orm/bun-sql"
 import { pgTable, text, integer, timestamp } from "drizzle-orm/pg-core"
 import { eq, sql } from "drizzle-orm"
+import type { Message, Metadata } from "@kronos-ts/core"
+
+// The id-pair cargo, written out as any host writes it: the chain is inherited
+// or seeded; the cause is the parent, unconditionally.
+const correlationFrom = (parent: Message): Metadata => ({
+  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
+  causationId: String(parent.identifier),
+})
 
 /**
  * The two things `kronos` needs that are not handlers. The UoW runner is named
- * once and handed to BOTH `simpleCommandBus` (which captures it at construction)
+ * once and handed to BOTH `localCommandBus` (which captures it at construction)
  * and the event processor below — writing them on adjacent lines is what makes
  * that checkable.
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
 
@@ -102,26 +112,26 @@ const StudentEnrolled = event({
 
 type CourseState = { opened: boolean; capacity: number; enrolled: string[] }
 const Course = state({
-  name: "Course",
   id: { courseId: z.string() },
-  initial: (): CourseState => ({ opened: false, capacity: 0, enrolled: [] }),
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
+    (): CourseState => ({ opened: false, capacity: 0, enrolled: [] }),
     [CourseOpened, (s, { payload: e }) => ({ ...s, opened: true, capacity: e.capacity })],
     [StudentEnrolled, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })],
   ],
+  snapshot: { key: "course-v1", when: afterEvents(1) },
 })
 
 type StudentState = { registered: boolean; maxCourses: number; courses: string[] }
 const Student = state({
-  name: "Student",
   id: { studentId: z.string() },
-  initial: (): StudentState => ({ registered: false, maxCourses: 0, courses: [] }),
   tags: (id) => ({ studentId: id.studentId }),
   evolve: [
+    (): StudentState => ({ registered: false, maxCourses: 0, courses: [] }),
     [StudentRegistered, (s, { payload: e }) => ({ ...s, registered: true, maxCourses: e.maxCourses })],
     [StudentEnrolled, (s, { payload: e }) => ({ ...s, courses: [...s.courses, e.courseId] })],
   ],
+  snapshot: { key: "student-v1", when: afterEvents(1) },
 })
 
 // Commands -------------------------------------------------------------------
@@ -202,6 +212,16 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
   throw new Error("Timed out waiting for condition")
 }
 
+/**
+ * What a host does to make metadata propagate: one wrapper, one cargo function.
+ * `correlationFrom` is the shipped default — the correlationId/causationId pair
+ * — and a host wanting more (an actor, a tenant) passes its own function here.
+ */
+const carrying = <H extends { handler: any }>(h: H): H => ({
+  ...h,
+  handler: correlatingHandler(h.handler, correlationFrom),
+})
+
 async function main(): Promise<void> {
   console.log("== booting postgres:16-alpine ==")
   const container = await new GenericContainer("postgres:16-alpine")
@@ -238,12 +258,17 @@ async function main(): Promise<void> {
     // the bus running handlers outside any transaction.
     const pg = postgresPool(bunSqlAdapter({ connectionString }))
     await pg.start()
-    const eventStore = postgresEventStore(pg, {
-      serializer: jsonSerializer(),
-      tagResolver: descriptorBasedTagResolver(),
-    })
-    const snapshotStore = postgresSnapshotStore(pg, { serializer: jsonSerializer() })
-    const uow = postgresUnitOfWork(pg, unitOfWork)
+    // The log, wrapped so it can serve the folds `Course` and `Student`
+    // declare a policy for. ONE object, ONE serializer, and without the wrap
+    // the `ctx.load` calls below would not compile.
+    const eventStore = postgresSnapshottingEventStore(
+      postgresEventStore(pg, { tagResolver: descriptorBasedTagResolver() }),
+      pg,
+      { serializer: jsonSerializer() },
+    )
+    // The example CORRELATES: a task that carries a map, and (below) every
+    // handler wrapped so what it births inherits the message that caused it.
+    const uow = postgresUnitOfWork(() => correlating(unitOfWork()), pg)
     const buses = inMemoryBuses(uow)
     const projection = eventProcessor({
       name: "course-projection",
@@ -252,17 +277,14 @@ async function main(): Promise<void> {
       unitOfWork: uow,
     })
     const app = kronos({
-      // Per-state snapshot config, declared where the state is registered.
-      states: [
-        [{ ...Course, eventStore, snapshotStore }, { snapshotPolicy: afterEvents(1) }],
-        [{ ...Student, eventStore, snapshotStore }, { snapshotPolicy: afterEvents(1) }],
-      ],
-      commandHandlers: [
-        { ...openCourse, eventStore, ...buses },
-        { ...registerStudent, eventStore, ...buses },
-        { ...enrollStudent, eventStore, ...buses },
-      ],
-      eventHandlers: buildProjector(db).map((h) => ({ ...h, ...buses, processor: projection })),
+      // Snapshot POLICY rides on `Course` / `Student` themselves; the
+      // CAPABILITY is a site fact, and it rides on the log attached here.
+      commandHandlers: [openCourse, registerStudent, enrollStudent]
+        .map(carrying)
+        .map((h) => ({ ...h, eventStore, ...buses })),
+      eventHandlers: buildProjector(db)
+        .map(carrying)
+        .map((h) => ({ ...h, ...buses, processor: projection })),
     })
 
     try {
@@ -343,22 +365,25 @@ async function main(): Promise<void> {
       }
 
       console.log("\n== kronos_snapshots (framework-owned) ==")
+      // ONE key column, holding exactly the string the state declared plus its
+      // flattened id — `course-v1:{"courseId":"CS101"}`. Nothing parses it,
+      // which is precisely why it is readable here.
       const snapRows = await db.execute<{
-        state_name: string; state_id: string; position: string; bytes: number
+        key: string; position: string; bytes: number
       }>(sql`
-        SELECT state_name, state_id, position::text AS position,
+        SELECT key, position::text AS position,
                octet_length(payload) AS bytes
           FROM kronos_snapshots
-         ORDER BY state_name, state_id
+         ORDER BY key
       `)
       if (snapRows.length === 0) {
         console.log("  (none)")
       } else {
-        console.log("  state_name | state_id                  | pos | payload bytes")
-        console.log("  ------------+----------------------------+-----+---------------")
+        console.log("  key                                    | pos | payload bytes")
+        console.log("  ---------------------------------------+-----+---------------")
         for (const r of snapRows) {
           console.log(
-            `  ${r.state_name.padEnd(11)} | ${r.state_id.padEnd(26)} | ${r.position.padStart(3)} | ${r.bytes}`,
+            `  ${r.key.padEnd(38)} | ${r.position.padStart(3)} | ${r.bytes}`,
           )
         }
       }

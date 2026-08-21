@@ -9,8 +9,8 @@
  * - Correlation data propagation
  * - Business rule enforcement
  *
- * Wired against the functional composition root: `kronos({ states,
- * commandHandlers, queryHandlers, eventHandlers })`. There is no container, so
+ * Wired against the functional composition root: `kronos({ commandHandlers,
+ * queryHandlers, eventHandlers })`. There is no container, so
  * nothing has to be probed back out of one — the event store is an ordinary
  * value the test creates and hands to each entry's own `{ eventStore }`, then
  * asserts against directly.
@@ -21,14 +21,14 @@ import { qn } from "@kronos-ts/core"
 import {
   command, event, query, send, commandHandler, eventHandler, queryHandler,
   eventProcessor, type EventProcessor,
-  type CommandHandlerDefinition, type QueryHandlerDefinition, type EventHandlerDefinition,
+  type CommandHandler, type QueryHandler, type EventHandler,
   inMemoryTokenStore, type TokenStore,
 } from "@kronos-ts/core"
-import { state, type StateModule } from "@kronos-ts/core"
+import { state } from "@kronos-ts/core"
 import {
-  type SnapshotStore,
   inMemoryEventStore,
-  inMemorySnapshotStore,
+  inMemorySnapshottingEventStore,
+  snapshotIdentifier,
   afterEvents,
 } from "@kronos-ts/core"
 import {
@@ -39,30 +39,39 @@ import {
   type EventHandlerEntry,
   type HandlerSite,
   type Sited,
-  type StateEntry,
-  type StateOptions,
 } from "@kronos-ts/core"
 import {
-  lineage,
+  correlating,
+  correlatingHandler,
+  correlation,
+  type Message,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   type UnitOfWork,
   type CommandBus,
   type QueryBus,
 } from "@kronos-ts/core"
+import type { Message, Metadata } from "@kronos-ts/core"
+
+// The id-pair cargo, written out as any host writes it: the chain is inherited
+// or seeded; the cause is the parent, unconditionally.
+const correlationFrom = (parent: Message): Metadata => ({
+  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
+  causationId: String(parent.identifier),
+})
 
 /**
  * The two things `kronos` needs that are not handlers. The UoW runner is
- * named once and handed to `simpleCommandBus` (which captures it at
+ * named once and handed to `localCommandBus` (which captures it at
  * construction) — writing it on an adjacent line is what makes that checkable.
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
 
@@ -76,11 +85,9 @@ function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: Comman
  * structural (contravariant) check.
  */
 type SitedItem =
-  | Sited<StateModule<any, any>>
-  | readonly [Sited<StateModule<any, any>>, StateOptions]
-  | Sited<CommandHandlerDefinition<any, any>>
-  | Sited<QueryHandlerDefinition<any, any>>
-  | EventHandlerDefinition<any, any>
+  | Sited<CommandHandler<any, any>>
+  | Sited<QueryHandler<any, any>>
+  | EventHandler<any, any>
 
 /** What a host attaches uniformly here. There is no `stores` record any more —
  * this is the ARGUMENT LIST of a local helper, and every entry comes out
@@ -103,8 +110,9 @@ type Site = HandlerSite & {
 /**
  * Attach one site to a flat list of entries — the composition root's job,
  * replacing the old `module(name, stores, ...handlers)` — and sort them into
- * the four fields `kronos` now takes. Honours the `[state, options]` tuple
- * shape. Spread the result straight into `kronos({ ...sitedOn(site, ...) })`.
+ * the three fields `kronos` now takes. States are in no list: a handler closes
+ * over the one it folds. Spread the result straight into
+ * `kronos({ ...sitedOn(site, ...) })`.
  *
  * `tokenStore` and `unitOfWork` are defaulted here because this is a test rig:
  * an event handler needs both to build its shared processor, and every caller
@@ -115,7 +123,6 @@ function sitedOn(
   site: Site,
   ...items: ReadonlyArray<SitedItem>
 ): {
-  states: StateEntry[]
   commandHandlers: CommandHandlerEntry[]
   queryHandlers: QueryHandlerEntry[]
   eventHandlers: EventHandlerEntry[]
@@ -128,22 +135,14 @@ function sitedOn(
     processorName,
     ...handlerSite
   } = site
-  const states: StateEntry[] = []
   const commandHandlers: CommandHandlerEntry[] = []
   const queryHandlers: QueryHandlerEntry[] = []
   const eventHandlers: EventHandlerEntry[] = []
   let processor: EventProcessor | undefined
 
   for (const item of items) {
-    if (Array.isArray(item)) {
-      const [stateDef, options] = item
-      states.push([{ ...stateDef, ...handlerSite }, options] as StateEntry)
-      continue
-    }
     const kind = (item as { kind?: string }).kind
-    if (kind === "state-module") {
-      states.push({ ...(item as object), ...handlerSite } as StateEntry)
-    } else if (kind === "command-handler") {
+    if (kind === "command-handler") {
       commandHandlers.push({ ...(item as object), ...handlerSite, commandBus, queryBus } as CommandHandlerEntry)
     } else if (kind === "query-handler") {
       queryHandlers.push({ ...(item as object), ...handlerSite, queryBus } as QueryHandlerEntry)
@@ -165,20 +164,18 @@ function sitedOn(
       eventHandlers.push({ ...(item as object), commandBus, queryBus, processor } as EventHandlerEntry)
     }
   }
-  return { states, commandHandlers, queryHandlers, eventHandlers }
+  return { commandHandlers, queryHandlers, eventHandlers }
 }
 
 /** Combine several `sitedOn` groups (e.g. one per processor) into one. */
 function mergeSited(
   ...groups: ReadonlyArray<ReturnType<typeof sitedOn>>
 ): {
-  states: StateEntry[]
   commandHandlers: CommandHandlerEntry[]
   queryHandlers: QueryHandlerEntry[]
   eventHandlers: EventHandlerEntry[]
 } {
   return {
-    states: groups.flatMap((g) => g.states),
     commandHandlers: groups.flatMap((g) => g.commandHandlers),
     queryHandlers: groups.flatMap((g) => g.queryHandlers),
     eventHandlers: groups.flatMap((g) => g.eventHandlers),
@@ -256,11 +253,10 @@ type CourseState = {
 }
 
 const Course = state({
-  name: "Course",
   id: { courseId: z.string() },
-  initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
+    () => ({ created: false, name: "", capacity: 0, enrolled: [], closed: false }) as CourseState,
     [CourseCreated, (s, { payload: e }) => ({
       ...s, created: true, name: e.name, capacity: e.capacity,
     })],
@@ -272,6 +268,12 @@ const Course = state({
     })],
     [EnrollmentClosed, (s) => ({ ...s, closed: true })],
   ],
+  // WHERE entries are filed and WHEN one is written. The key is a string this
+  // file wrote — change it and every old entry is orphaned in the same instant.
+  // Where a snapshot LANDS is a SITE fact: an entry whose `eventStore` was
+  // WRAPPED can serve one, and the compiler refuses to place this state's load
+  // on an entry whose log was not.
+  snapshot: { key: "course-v1", when: afterEvents(3) },
 })
 
 // -- Command handlers --
@@ -398,7 +400,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
     running = kronos({
       ...sitedOn(
-        { eventStore: inMemoryEventStore(), ...buses, processorName: "course-projection" },
+        { eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()), ...buses, processorName: "course-projection" },
         Course,
         createCourse, changeCourseCapacity, subscribeStudent,
         ...queryHandlers,
@@ -429,7 +431,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
     running = kronos({
       ...sitedOn(
-        { eventStore: inMemoryEventStore(), ...buses, processorName: "course-projection" },
+        { eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()), ...buses, processorName: "course-projection" },
         Course,
         createCourse, subscribeStudent,
         ...queryHandlers,
@@ -463,16 +465,19 @@ describe("E2E: In-memory full CQRS flow", () => {
   // Per-STATE snapshot config (policy + its own store), declared as a
   // [state, options] tuple in the handler list.
   it("snapshots accelerate entity loading", async () => {
-    // given
-    const eventStore = inMemoryEventStore()
-    const snapshotStore: SnapshotStore = inMemorySnapshotStore()
+    // given — ONE line of wiring, and both halves come with it. The policy on
+    // the state makes the fold write entries; wrapping the log is what makes a
+    // later load read one. There is no second resource to remember, and the
+    // compiler would have refused this state's load without the wrap.
+    const log = inMemoryEventStore()
+    const eventStore = inMemorySnapshottingEventStore(log)
     const { projectionHandlers, queryHandlers } = createProjection()
     const buses = inMemoryBuses()
 
     running = kronos({
       ...sitedOn(
-        { eventStore, snapshotStore, ...buses, processorName: "course-projection" },
-        [Course, { snapshotPolicy: afterEvents(3), snapshotStore }],
+        { eventStore, ...buses, processorName: "course-projection" },
+        Course,
         createCourse, changeCourseCapacity,
         ...queryHandlers,
         ...projectionHandlers,
@@ -492,16 +497,32 @@ describe("E2E: In-memory full CQRS flow", () => {
     await new Promise(r => setTimeout(r, 50))
 
     // then — snapshot exists with state from when it was triggered
-    const snapshot = await snapshotStore.load("Course", { courseId: "snap-101" })
-    expect(snapshot).toBeDefined()
-    expect((snapshot!.payload as CourseState).capacity).toBeGreaterThanOrEqual(30)
+    // The key is the one the state DECLARED, plus the flattened id — a string
+    // this file can write out by hand, because nothing derived it.
+    // There is no `load` to call, because reading is not a second call: the
+    // wrapped store LEADS a matching read with what it has.
+    const key = `course-v1:${snapshotIdentifier({ courseId: "snap-101" })}`
+    const fused = await eventStore.source({
+      query: Course.query({ courseId: "snap-101" }),
+      snapshot: { key },
+    })
+    expect(fused.snapshot).toBeDefined()
+    expect((fused.snapshot!.state as CourseState).capacity).toBeGreaterThanOrEqual(30)
+
+    // …and it leads with it, so a state load from here on starts from the
+    // cached fold rather than replaying the whole course.
+    expect(fused.events.length).toBeLessThan(5)
+
+    // The state itself is still right, which is the only thing that had to stay true.
+    const view = await query(buses.queryBus, GetCourseView, { courseId: "snap-101" })
+    expect(view!.capacity).toBe(50)
   })
 
   it("multiple processors operate independently", async () => {
     // given
     const { projectionHandlers, queryHandlers, courseViews } = createProjection()
     const auditLog: string[] = []
-    const eventStore = inMemoryEventStore()
+    const eventStore = inMemorySnapshottingEventStore(inMemoryEventStore())
     const buses = inMemoryBuses()
 
     const auditOnCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => { auditLog.push(`created:${e.courseId}`) })
@@ -536,27 +557,43 @@ describe("E2E: In-memory full CQRS flow", () => {
     expect(auditLog).toContain("enrolled:stu-1")
   })
 
-  it("correlation data propagates through message chain", async () => {
-    // given
-    // Verify that events inherit the command's metadata (basic propagation
-    // mechanism). Cross-message correlation is tested via the Axon Server
-    // distributed tests.
-    const eventStore = inMemoryEventStore()
-    const buses = inMemoryBuses()
+  it("a host's own cargo function carries its per-request metadata down the chain", async () => {
+    // given — the composition a host writes when it wants things to propagate.
+    // NOTHING propagates for free: `ctx.append` gives an event exactly the
+    // metadata it was handed, and this cargo function is the entire policy,
+    // written down at the composition root where a reader can find it.
+    const eventStore = inMemorySnapshottingEventStore(inMemoryEventStore())
+    const uow = () => correlating(unitOfWork())
+    const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
+    const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
+
+    /** The shipped id pair, plus the two per-request facts this host cares about. */
+    const carried = (m: Message) => ({
+      ...correlationFrom(m),
+      tenantId: String(m.metadata.tenantId ?? ""),
+      userId: String(m.metadata.userId ?? ""),
+    })
 
     running = kronos({
-      ...sitedOn({ eventStore, ...buses }, Course, createCourse),
+      commandHandlers: [
+        {
+          ...createCourse,
+          handler: correlatingHandler(createCourse.handler, carried),
+          eventStore,
+          commandBus,
+          queryBus,
+        },
+      ],
     })
 
     // when — dispatch a command with custom metadata
-    const metadata = { tenantId: "t-1", userId: "u-42" }
-    await send(buses.commandBus, CreateCourse, {
+    await send(commandBus, CreateCourse, {
       courseId: "corr-1",
       name: "Correlation Test",
       capacity: 10,
-    }, metadata)
+    }, { tenantId: "t-1", userId: "u-42" })
 
-    // then — events inherit the command's metadata
+    // then — the appended event carries what the cargo function said to carry
     const { events } = await eventStore.source({
       query: { tags: { courseId: "corr-1" } },
     })
@@ -564,6 +601,10 @@ describe("E2E: In-memory full CQRS flow", () => {
     expect(events.length).toBe(1)
     expect(events[0]!.metadata.tenantId).toBe("t-1")
     expect(events[0]!.metadata.userId).toBe("u-42")
+    // …and the default cargo rode along in the same jump, because composing
+    // more cargo is composing a FUNCTION, not configuring a second mechanism.
+    expect(events[0]!.metadata.correlationId).toBeDefined()
+    expect(events[0]!.metadata.causationId).toBeDefined()
   })
 
   it("query returns all courses", async () => {
@@ -573,7 +614,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
     running = kronos({
       ...sitedOn(
-        { eventStore: inMemoryEventStore(), ...buses, processorName: "course-projection" },
+        { eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()), ...buses, processorName: "course-projection" },
         Course,
         createCourse,
         ...queryHandlers,
@@ -596,7 +637,7 @@ describe("E2E: In-memory full CQRS flow", () => {
 
   it("stateful automation — an event handler sends a command in its own UoW", async () => {
     // given — a "close enrolment when full" automation on its own processor
-    const eventStore = inMemoryEventStore()
+    const eventStore = inMemorySnapshottingEventStore(inMemoryEventStore())
     const buses = inMemoryBuses()
 
     running = kronos({

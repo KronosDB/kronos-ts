@@ -12,7 +12,7 @@ export const BENCH_EVENT_NAME = qn("benchmark", "StateChanged")
 export const KRONOSDB_IMAGE = "ghcr.io/kronosdb/kronosdb:0.6.0"
 export const POSTGRES_IMAGE = "postgres:16-alpine"
 
-export interface BenchmarkProfile {
+export type BenchmarkProfile = {
   readonly samples: number
   readonly warmups: number
   readonly append: ReadonlyArray<{ batchSize: number; commits: number }>
@@ -86,7 +86,7 @@ export const PROFILES: Record<ProfileName, BenchmarkProfile> = {
   },
 }
 
-export interface BenchmarkOptions {
+export type BenchmarkOptions = {
   readonly profileName: ProfileName
   readonly profile: BenchmarkProfile
   readonly seed: string
@@ -104,7 +104,7 @@ export interface BenchmarkOptions {
   readonly kronosdbImage: string
 }
 
-export interface BenchPayload {
+export type BenchPayload = {
   readonly aggregateId: string
   readonly ordinal: number
   readonly delta: number
