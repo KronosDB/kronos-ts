@@ -1,5 +1,698 @@
 # @kronos-ts/kronosdb
 
+## 0.7.0
+
+### Minor Changes
+
+- 1aef927: Bring your own schema library. Descriptors now take any [Standard Schema](https://standardschema.dev), so zod, valibot, arktype and anything else that carries a `~standard` property all work — and `@kronos-ts/core` depends on none of them.
+
+  ```ts
+  // before — the constraint named one library, and core shipped it
+  export type CommandDescriptor<P extends z.ZodType, R extends z.ZodType | undefined> = …
+  export type EventDescriptor<P extends z.ZodType> = { tags?: (p: z.infer<P>) => Tag[] }
+
+  // after — the constraint names the CONTRACT
+  export type CommandDescriptor<P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined> = …
+  export type EventDescriptor<P extends StandardSchemaV1> = { tags?: (p: InferOutput<P>) => Tag[] }
+  ```
+
+  Nothing a zod consumer writes changes. `command({ payload: z.object({ courseId: z.string() }) })` still gives a handler `message.payload: { courseId: string }`, exactly; a wrong payload is still a compile error at the call site; `state({ id: { courseId: z.string() } })` still infers `{ courseId: string }`. That claim is a compile-time test — `packages/core/src/messaging/__tests__/standard-schema.types.ts`, registered in the root `tsconfig.json` `files` array beside the correlation and drizzle probes — which pins the exact inferred types AND accepts a twelve-line hand-written schema object with no library anywhere.
+
+  `zod` moves from `dependencies` to `devDependencies` in `@kronos-ts/core` and `@kronos-ts/test`. The contract itself is VENDORED, types-only, in `messaging/standard-schema.ts` — ninety lines transcribed from the published `@standard-schema/spec`, because a types-only dependency is still a dependency that has to resolve at install time for a package whose runtime never touches it.
+
+  **BREAKING — `zodValidatingSerializer` is gone.** It briefly became `validatingSerializer` during this release cycle, and then serializer-side validation was deleted outright: a serializer encodes, and validation moved to where the descriptor is — see the validation changeset in this same release. `any(schema?)` in `@kronos-ts/test` took the same treatment — a diff is computed and rendered in one breath, so an async schema is reported as the mistake it is.
+
+  ***
+
+  **BREAKING — `Unstamped<M>` and `stamped()` are gone.** `timestamp` is now optional on `Message`, and unset means one thing: this message has not been through a task yet.
+
+  ```ts
+  // before
+  type Unstamped<M extends Message> = Omit<M, "timestamp"> & { timestamp?: number }
+  stamped(message: Unstamped<M>, clock: Clock): M
+  dispatch(m: Unstamped<CommandMessage>): Promise<unknown>
+
+  // after
+  type Message<P> = { …; readonly timestamp?: number }        // unset = not through a task yet
+  type EventMessage<P> = Message<P> & { …; readonly timestamp: number }   // a fact HAS an instant
+  dispatch(m: CommandMessage): Promise<unknown>
+  ```
+
+  Nothing about WHEN the instant is settled changed. The bus still fills it from `uow.now()` when it mints the unit of work, a transport still fills it from system time at the wire, `ctx.append` still stamps at birth — the stamping is an unexported internal now, and the vocabulary for it is simply not on the surface. `EventMessage` (and therefore `SequencedEventMessage`, and everything a processor hands a handler or a store returns from a read) narrows `timestamp` back to REQUIRED, because a fact you can read has an instant, always.
+
+  A pleasant consequence: `interceptingCommandBus` and `interceptingQueryBus` have no casts left. `Intercept<M> = (m: M) => M` now takes and returns exactly the type the bus takes, because there is no longer a second type for the same message one moment earlier.
+
+  **BREAKING — the `Clock` type is gone.** Every site writes the arrow.
+
+  ```ts
+  // before
+  export type Clock = () => number
+  unitOfWork(clock?: Clock) · testFixture(scope, { clock?: Clock })
+
+  // after
+  unitOfWork(clock?: () => number) · testFixture(scope, { clock?: () => number })
+  ```
+
+  Same rule that leaves a unit-of-work factory spelled `() => UnitOfWork` and never named: naming a one-arrow type buys an import and hides the one thing the reader needed to see. What the clock MEANS — an instant, epoch milliseconds, the same unit `message.timestamp` carries — now lives on `unitOfWork`'s parameter, which is where it enters.
+
+  ***
+
+  **Upcasting is a mechanism, and it moved to the log boundary.** It is the third one, deliberately the same shape as the other two: `Intercept` is `(message) => message` where a bus hands a message on, `Upcast` is `(event) => event` where the LOG hands an event back.
+
+  ```ts
+  // before — a predicate/action method pair, a chain object, and raw JSON at the wire
+  type EventUpcaster = {
+    canUpcast(type, revision): boolean;
+    upcast(rep): rep | rep[];
+  };
+  upcasterChain(v1ToV2, v2ToV3);
+  upcastingSerializer(jsonSerializer(), chain);
+
+  // after — a total function in the DOMAIN form, composed in function space
+  type Upcast = (event: EventMessage) => EventMessage; // identity when unconcerned
+  upcastingEventStore(store, (e) => v2ToV3(v1ToV2(e)));
+
+  const v1ToV2: Upcast = (e) =>
+    is(e, CourseCreatedV1) // the OUTDATED version, as its own descriptor
+      ? {
+          ...e,
+          version: CourseCreated.version,
+          payload: { ...e.payload, capacity: 30 },
+        }
+      : e;
+  ```
+
+  `EventUpcaster`, `upcasterChain`, `IntermediateEventRepresentation`, `singleEventUpcaster` and `upcastingSerializer` are all **removed**, and so is the shipped `upcastTo` constructor that briefly replaced them. `canUpcast` was a class in disguise — a predicate method and an action method that had to agree — and totality replaces it: "not mine" is "return it unchanged", so nothing has to be asked. `upcasterChain`'s runtime dispatch over a list is plain composition. And writing the match by hand IS the lesson: `is()` makes it a typed switch, the old shape gets its own descriptor so the compiler knows what `payload` looked like back then, and the target version is read off the CURRENT descriptor, where it already lives, so a version is never written twice and can never disagree with itself.
+
+  The store is the right boundary for four reasons that are one reason from different sides. The serializer never sees the domain form, so an upcaster written there is written against raw JSON and cannot say `event.tags`. An in-memory store has no serializer at all, so serializer-based upcasting silently skipped every test that used one. One placement covers a processor's deliveries (`open()`) and a `ctx.load` fold (`source()`) uniformly. And a validating serializer under an upcaster would judge the 2019 payload against the 2026 schema and reject it before anything could fix it.
+
+  Read paths only — `source()`, `open()`, `subscribe()`. Every write member passes straight through, so what was appended is what is stored, forever; upcasting is a reinterpretation on the way out. Commands and queries need nothing new, because a message crossing versions at a BUS is what `Intercept` already is; only events have a second boundary, because only events are kept.
+
+  ***
+
+  **BREAKING — resilience has left core.** `withRetry`, `healthCheck`, `ResilienceConfig` and `RetryEvent` are no longer exported from `@kronos-ts/core`. Each of the three packages that used them — `@kronos-ts/axon-server`, `@kronos-ts/kronosdb`, `@kronos-ts/postgres` — now owns a package-private `src/resilience.ts`, exported from no barrel.
+
+  Same reasoning as the transaction glue, one folder up: it is `setTimeout` and a loop over a function, it touches no message and no unit of work, core's own `src/` never called it, and by this surface's own first rule a helper is not core. Nothing changes for a host — `kronosDbConnection({ resilience: { maxAttempts: 3 } })` and `postgresPool(url, { resilience })` are the same options with the same defaults. It breaks for anyone who imported the helpers directly, and the fix is to own the hundred lines. `postgres` carries only what it uses: no health probe, because a pool bootstraps and then either works or throws.
+
+  ***
+
+  **`message/` is `messaging/`, and its five declaration files are one.**
+
+  ```
+  // before                          // after
+  src/message/qualified-name.ts  ┐
+  src/message/metadata.ts        │
+  src/message/message.ts         ├─  src/messaging/messages.ts
+  src/message/descriptor.ts      │
+  src/message/namespace.ts       ┘
+  src/message/clock.ts               (deleted — the arrow IS the contract)
+  src/message/converter.ts           src/messaging/serialization/converter.ts
+  src/message/serializer.ts          src/messaging/serialization/serializer.ts
+  src/message/upcaster.ts            src/upcasting/upcasting-event-store.ts
+  src/message/tag.ts                 src/messaging/tag.ts            (unchanged)
+  src/message/identifier.ts          src/messaging/identifier.ts     (unchanged)
+  src/message/serialized-error.ts    src/messaging/serialized-error.ts (unchanged)
+  src/resilience.ts                  (deleted — three private copies)
+  ```
+
+  A qualified name, a metadata map, a message and the descriptor that declares one are not four topics that happen to live near each other; they are the single answer to "what is a message, before any kind picks it up", and splitting them made five imports of one idea. What genuinely stood alone stayed alone. The barrel exports the same names from the same package, so this is invisible unless you were deep-importing into `@kronos-ts/core/src/message/...`, which was never a supported address.
+
+  `messaging/serialization/` is a folder rather than two loose files because a binary serializer is coming and it lands beside these, not on top of them.
+
+  ***
+
+  **`state()` reads in dependency order.** The options are `id · tags · evolve · snapshot? · lifecycle?` now, and every example and test literal is reordered to match. The order is an argument: tags are a function of the id, and `evolve` carries its own seed at position zero.
+
+  ```ts
+  // before                                       // after
+  state({                                         state({
+    id: { courseId: z.string() },                   id: { courseId: z.string() },
+    initial: () => ({ capacity: 0 }),               tags: (id) => ({ courseId: id.courseId }),
+    tags: (id) => ({ courseId: id.courseId }),      evolve: [() => ({ capacity: 0 }), … ],
+    evolve: [ … ],                                })
+  })
+  ```
+
+- 1aef927: **Snapshotting is not a mechanism and not a seam. It is a CAPABILITY TIER on the event store, and the compiler makes you wire it.**
+
+  It used to be the fifth mechanism, with a `SnapshotStore` seam beside the log, a `snapshotStore` field on every entry, and a generic decorator whose only job was marrying incapable stores to that separate seam. All of it is gone. There are **four** mechanisms — `interception/`, `correlation/`, `upcasting/`, `validation/` — and snapshotting is not among them, because a mechanism is a wrap-in that lives in core and serves every backend identically, and this cannot be: fusing a cache lookup into a read is a property of the **store you are reading from**, and the store families live in their own packages.
+
+  ***
+
+  **THE BASE CONTRACT MENTIONS SNAPSHOTS NOWHERE, AND IT IS COMPLETE WITHOUT THEM.**
+
+  A log you can source, append, stream and subscribe to is everything the DCB model needs, and most well-designed projects never need one line more. If snapshotting exists at all, it exists **on the event store**, added by wrapping one.
+
+  ```ts
+  // before — two objects, two fields, and a host who could wire half of it
+  const eventStore = postgresEventStore(pg, { serializer, tagResolver });
+  const snapshotStore = postgresSnapshotStore(pg, { serializer });
+  kronos({
+    commandHandlers: h.map((x) => ({ ...x, eventStore, snapshotStore })),
+  });
+
+  // after — ONE object, one field, one serializer
+  const eventStore = postgresSnapshottingEventStore(
+    postgresEventStore(pg, { tagResolver }),
+    pg,
+    { serializer }
+  );
+  kronos({ commandHandlers: h.map((x) => ({ ...x, eventStore })) });
+  ```
+
+  ```ts
+  // the capability, and the ONE member it adds
+  type SnapshotCapability = {
+    storeSnapshot(
+      key: string,
+      snapshot: Snapshot,
+      uow?: UnitOfWork
+    ): Promise<void>;
+  };
+  type SnapshotCapableEventStore = EventStore & SnapshotCapability;
+  ```
+
+  There is no `loadSnapshot`, because **reading is not a second call**: a capable store honours `condition.snapshot` inside `source()` and leads its `SourcingResult` with the cached fold. The read was already in `EventStore`'s shape; only the write needed a name.
+
+  ***
+
+  **THE HEADLINE: A COMPILE-TIME DEMAND.**
+
+  A snapshot policy used to be a wish. Declare one, forget the store, and you got a silent full replay plus a cache nobody read — a performance mystery, months later, with nothing in the diff to point at. Now the state's **type** says it caches, and `ctx.load` refuses it against a log that cannot serve one.
+
+  ```ts
+  const Course = state({ /* … */, snapshot: { key: "course-v1", when: afterEvents(100) } })
+
+  // ✗ — does not compile
+  commandHandler(OpenCourse, async (m, ctx: HandlerContext) => {
+    await ctx.load(Course, { courseId })
+  })
+
+  // ✓ — say what you need, and the ENTRY must supply it
+  commandHandler(OpenCourse, async (m, ctx: HandlerContext<UnitOfWork, SnapshotCapableEventStore>) => {
+    await ctx.load(Course, { courseId })
+  })
+  ```
+
+  The real diagnostic, verbatim:
+
+  ```
+  error TS2345: Argument of type 'State<InferIdFromSchema<{ courseId: ZodString; }>, CourseState, true>'
+  is not assignable to parameter of type 'State<{ courseId: string; }, CourseState, any> &
+  { readonly snapshot?: { readonly ERROR: "this state declares a snapshot policy, but this
+  handler's eventStore cannot serve one"; readonly FIX: "wrap this entry's eventStore in the
+  snapshotting wrapper for its persistence family — <family>SnapshottingEventStore(store, …)"; ...'.
+    Types of property 'snapshot' are incompatible.
+      Type 'SnapshotConfig | undefined' is not assignable to type '{ readonly ERROR: …;
+      readonly FIX: …; } | undefined'.
+        Type 'SnapshotConfig' is missing the following properties from type
+        '{ readonly ERROR: …; readonly FIX: …; }': ERROR, FIX
+  ```
+
+  The demand travels the way correlation's does: annotate the context, and the entry that places the handler must carry a log which satisfies it — so the mistake stops at the composition root.
+
+  **Three types changed to carry it, and every default is such that plain code writes nothing.**
+
+  ```ts
+  // before
+  type State<Id = unknown, S = unknown> = { …, snapshot?: SnapshotConfig }
+  type HandlerContext<U extends UnitOfWork = UnitOfWork> = EventHandlerContext<U> & { append }
+
+  // after — `Snap` is what `snapshot` is TYPED BY, and state() infers it off your config
+  type State<Id = unknown, S = unknown, Snap extends boolean = false> = {
+    …
+    readonly snapshot?: Snap extends true ? SnapshotConfig : undefined
+  }
+  type HandlerContext<U extends UnitOfWork = UnitOfWork, E extends EventStore = EventStore> =
+    EventHandlerContext<U, E> & { append }
+  ```
+
+  `E` is the **entry's** event store, threaded from the composition root through the subscribe glue and the context builders. Buses never carry a store; entries do. `EventHandlerContext` and `QueryHandlerContext` take it too, as does `HandlerSite`, `Sited`, all three entry types and `kronos` itself.
+
+  **ONE ALIAS IS THE DEMAND, and both read surfaces derive from it.**
+
+  ```ts
+  // event-sourcing/load.ts — THE anchor. Add a face; never add a predicate.
+  type IfSnapshotCapable<E extends EventStore, Capable, Bare> =
+    E extends SnapshotCapableEventStore ? Capable : Bare
+
+  type SnapshotReads<E>  = IfSnapshotCapable<E, { source: FusedSourceFunction }, unknown>
+  type SnapshotDemand<E> = IfSnapshotCapable<E, unknown, { snapshot?: <branded refusal> }>
+
+  type LoadFunction<E extends EventStore = EventStore> =
+    <Id, S>(state: State<Id, S, any> & SnapshotDemand<E>, id: Id) => Promise<S>
+  ```
+
+  Contexts are **assembled by intersection** — the base shape `& SnapshotReads<E>` — so against a bare log the fused `ctx.source(query, { snapshot })` overload is structurally **absent**, not present-and-erroring. Asking for it reads `Expected 1 arguments, but got 2`, which is the truth: on that log, `source` takes one.
+
+  **Nothing runs.** The whole demand is erased. The JavaScript a demanded `ctx.load` emits is identical to what an undemanded one emitted, and the only runtime trace of the entire feature is **one defensive `throw` in `repository.ts`**, for JavaScript callers who had no compiler to be held by.
+
+  ***
+
+  **FOUR WRAPPERS, ONE PER FAMILY. The generic decorator and all four snapshot stores are gone.**
+
+  ```ts
+  inMemorySnapshottingEventStore<E extends EventStore>(next: E): E & SnapshotCapability
+  postgresSnapshottingEventStore<E extends EventStore>(next: E, pg, { serializer }): E & SnapshotCapability
+  kronosDbSnapshottingEventStore<E extends EventStore>(next: E, kdb, context?): E & SnapshotCapability
+  axonServerSnapshottingEventStore<E extends EventStore>(next: E, conn, context): E & SnapshotCapability
+  ```
+
+  **Postgres fuses in ONE round trip** because it holds the connection: the wrapper absorbed `postgresSnapshotStore`'s upsert **and** the CTE that used to live natively in `postgresEventStore`, so the base store is now snapshot-free — `PostgresEventStoreConfig` loses `serializer` entirely, and the wrapper has the only one. **The two-serializer footgun is gone with it:** one function now writes the bytes it later reads.
+
+  **KronosDB fuses in ONE round trip too, natively** — see below. **The other two fuse client-side** — `getLast`/`Map` lookup, then a source after its position, inside the one function. Two calls where postgres needs one, which is a difference in what a wrapper can **reach**, not in what the capability **means**. Axon Server's `SnapshottedDcbEventStore.Source` is `UNIMPLEMENTED` on `2025.2.5` **and** `2026.0.4` (`DcbSnapshotStore/GetLast` answers on both). When it lands it changes one function body and **no host's code**, because the capability was never a promise about round trips.
+
+  ***
+
+  **KRONOSDB SERVES THE FUSED READ ITSELF NOW — and the client-side fusion is deleted.**
+
+  KronosDB 0.8 puts snapshots **on the log** (its ADR-0005): a snapshot is a system record appended through the ordinary replication path, not a row in a sidecar store. The standalone `SnapshotStore` service — `Add`/`Delete`/`List`/`GetLast` — **is gone from the server**, and two RPCs on `EventStore` replace it: `AppendSnapshot` for the write, `SnapshottedSource` for the read. So the wrapper stopped fusing and started asking.
+
+  ```ts
+  // before — two calls, assembled here
+  const snapshot = await connection.snapshotStore.getLast({ key })   // call 1
+  const start    = snapshot.position + 1n
+  const result   = await next.source({ ...plain, start })            // call 2
+  return { ...result, snapshot }
+
+  // after — one call, and the server leads the stream with the fold
+  const stream = connection.eventStore.snapshottedSource({ criteria, key, batchSize: 0 })
+  for await (const response of stream) {
+    if (response.snapshot) snapshot = fromProto(response.snapshot)   // ≤1 frame, always first
+    else { events.push(...); marker = markerAt(batch.consistencyMarker) }
+  }
+  return { events, marker, snapshot }
+  ```
+
+  There is **no fallback**. A server that does not serve the RPC fails loudly rather than quietly costing twice.
+
+  **And the client-side fusion was wrong.** A KronosDB consistency marker is **next-exclusive** — it is already the sequence a replay resumes AT — so `snapshot.position + 1` stepped over any event that landed between the fold and the snapshot write. The server resumes at `position` exactly, for exactly that reason. The bug did not survive the move, and an integration test now pins the boundary rather than a count:
+
+  ```ts
+  // an event lands BETWEEN the fold and the snapshot write, so it sits AT the marker
+  expect(fused.events.length).toBe(1); // native path: returned
+  expect(offByOne.events.length).toBe(0); // `position + 1`: dropped
+  ```
+
+  `storeSnapshot` stays **fire-and-forget**, by contract: the record is appended after the transaction it summarizes commits, and is not enlisted in it. `snapshot.position` crosses the wire **unmodified** in both directions — no arithmetic on either side.
+
+  The server also exposes `GetSnapshot` (the latest entry alone, for adapters that load snapshots separately). It is **deliberately not wired**: reading a cached fold is not a second call, and `SnapshottedSource` is the path this capability means.
+
+  **BREAKING for `@kronos-ts/kronosdb` — `SnapshotStoreDefinition` is removed**, along with `proto/snapshot.proto`, its generated module, and the `snapshotStore` client on `KronosDbConnection`. They addressed a service the server no longer runs, so keeping them would only let a host wire a client that cannot connect. `kronosDbServiceDefinitions` loses its `snapshotStore` entry. Nothing that goes through `kronosDbSnapshottingEventStore` is affected — the capability is unchanged; only the transport under it moved.
+
+  ***
+
+  **BREAKING — wrappers are capability-preserving now, and some were not.**
+
+  A wrapper whose input and output are the same seam but typed `(Base) => Base` **launders**: the runtime object still delegates everything the inner one had, but the signature threw the capability away — so a genuinely capable configuration gets rejected by a demand for a capability it actually has. That is worse than no demand at all, because it is unfixable from the call site. The rule, now a SURFACE doctrine line:
+
+  > Same-seam wrappers are generic identity; capability adders are additive intersections.
+
+  ```ts
+  // before                                          // after
+  upcastingEventStore(next: EventStore, u): EventStore   → <E extends EventStore>(next: E, u): E
+  otlpCommandBus(next: CommandBus, x): CommandBus        → <B extends CommandBus<any>>(next: B, x): B
+  otlpQueryBus(next: QueryBus, x): QueryBus              → <B extends QueryBus<any>>(next: B, x): B
+  interceptingCommandBus<U>(next: CommandBus<U>, i)      → <B extends CommandBus<any>>(next: B, i): B
+  interceptingQueryBus<U>(next: QueryBus<U>, i)          → <B extends QueryBus<any>>(next: B, i): B
+  recordingEventStore(store: EventStore)                 → <E extends EventStore>(store: E): E & EventRecording
+  recordingCommandBus<U>(bus: CommandBus<U>)             → <B extends CommandBus<any>>(bus: B): B & CommandRecording
+  recordingQueryBus<U>(bus: QueryBus<U>)                 → <B extends QueryBus<any>>(bus: B): B & QueryRecording
+  ```
+
+  `otlpCommandBus`/`otlpQueryBus` were the live bug: typed bare, they erased `U` **and** rebuilt a narrower record, so tracing a correlating chain produced a bus no correlating handler would typecheck behind — the runtime worked and the build did not. Both now spread the wrapped bus and preserve its type. `RecordingEventStore`/`RecordingCommandBus`/`RecordingQueryBus` still exist and mean what they meant; the added members are also exported on their own (`EventRecording`, `CommandRecording`, `QueryRecording`) so the wrappers can be additive. `rabbitMqCommandBus`, `axonServerCommandBus` and `kronosDbCommandBus` were already `U`-preserving and are unchanged.
+
+  Type probes pin all of it: all four family wrappers satisfy the capability, both stacking orders (upcasting-inside-snapshotting and snapshotting-inside-upcasting) keep both, the recorder-outermost fixture composition stays capable, and the correlating → local → rabbitMq/otlp → intercepting chains keep `CommandBus<CorrelatingUnitOfWork>`.
+
+  ***
+
+  **BREAKING — the `snapshotStore` entry field is removed.**
+
+  `HandlerSite`, `CommandInvocationDeps`, `HandlerContextDeps`, `ProcessorHandlerEntry`, `subscribeQueryHandlers`'s deps and every doc site lose it. One store object per entry, capabilities and all. `eventSourcedRepository(state, eventStore)` and `repositoryFor(state, eventStore)` lose their trailing parameter, and the per-site repository cache drops from three levels to two — there is one object to key on now, which is what it was always really keyed on.
+
+  **BREAKING for `@kronos-ts/test` — the fixture scope takes ONE store.**
+
+  ```ts
+  // before
+  type FixtureScope = (
+    eventStore: EventStore,
+    snapshotStore: SnapshotStore
+  ) => FixtureLists;
+  testFixture((eventStore, snapshotStore) =>
+    courses(eventStore, snapshotStore)
+  );
+
+  // after
+  type FixtureScope = (eventStore: FixtureEventStore) => FixtureLists;
+  testFixture((eventStore) => courses(eventStore));
+  ```
+
+  `FixtureEventStore` is the one object the fixture owns: in-memory, recording, and snapshot-capable. The fixture composes what a host composes — `recordingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()))`, recorder outermost so `appended` is still what left the fixture — and because both wrappers are additive, the capability survives the layer above the store that has it. `PartialProcessor`'s first parameter is that same store.
+
+  Migration for a scope: delete the second parameter, and delete `snapshotStore` from the entries it spread. If your states declare snapshot policies, that is all — the fixture's log already serves them, and the compiler will tell you if it does not.
+
+  ***
+
+  **Everything the mechanism MEANT is unchanged.**
+
+  Latest-only; never migrated; never load-bearing. The key is a string you wrote, and changing it is the whole invalidation story. `state({ snapshot: { key, when } })` is still sugar over the raw pair — which is now two members of one object:
+
+  ```ts
+  const key = `course:${courseId}`;
+  const { snapshot, events, position } = await ctx.source(query, {
+    snapshot: key,
+  });
+  const state = events.reduce(fold, (snapshot?.state as S) ?? initial);
+  if (events.length > 100)
+    await eventStore.storeSnapshot(key, { state, position });
+  ```
+
+  Fusing still does not narrow the append condition. The leading snapshot is still its own field on `SourcingResult` and still not an event. The read still belongs to the store and the write still belongs to the fold, fire-and-forget with its failure swallowed. Structural fitness is still the safety net under the key, judged once in core against `initial(id)` for every backend. `Snapshot`, `SnapshotPolicy`, `SnapshotConfig`, `afterEvents`, `whenSourcingTimeExceeds`, `noSnapshotPolicy`, `snapshotIdentifier` and `matchesInitialStructure` all keep their shapes; they moved from `snapshotting/` into `event-sourcing/`, beside the fold that asks for them.
+
+  `withoutSnapshotKey(condition)` is newly exported from core — the four wrappers all need it and none of them owns it.
+
+- 1aef927: **Three wiring mistakes stop being runtime discoveries. Scheduling joins snapshotting as a capability tier on the log, persistence families refuse to be mixed, and a dead-letter queue without a lane no longer compiles.**
+
+  One rule ties them together, and it is now written into SURFACE's rules block: **anything wireable that would die at runtime for a reason the compiler could have stated is a bug in our types, not in the user's config.** Three laws serve it — capabilities live in types (adders return intersections), demands are floors (consumers constrain, never name implementations), and pipes preserve (same-seam wrappers are generic identity, adders are additive; a collapsing wrapper launders capabilities and breaks demands).
+
+  ***
+
+  ## 1. Scheduling is a capability tier on the event store
+
+  An event that has not happened yet is still an event, and where it lands when its time comes is **the log**.
+
+  The old `EventScheduler` seam proved it three times over. Every implementation had to be told which log to fire into, and each said it differently: the in-memory one took an `eventSink`, the postgres one an `eventStore` in its config, and the KronosDB one existed only because the server appends the event itself. Three spellings of _"and this is the log"_ is the shape of a capability that belongs **on** the log — so there is no seam beside the store any more, no `eventScheduler` field a host can wire half of, and no `throw new Error("No event scheduler configured")` waiting for the first deadline anybody arms in production.
+
+  ```ts
+  // before — two objects, and nothing checked they agreed
+  const scheduler = postgresEventScheduler(pg, { eventStore, unitOfWork: uow, tagResolver })
+  kronos({ commandHandlers: handlers.map((h) => ({ ...h, eventStore, eventScheduler: scheduler, … })) })
+
+  // after — one object, and the capability rides in its TYPE
+  const eventStore = postgresSchedulingEventStore(
+    postgresEventStore(pg, { tagResolver }), pg, { unitOfWork: uow, tagResolver },
+  )
+  kronos({ commandHandlers: handlers.map((h) => ({ ...h, eventStore, … })) })
+  ```
+
+  ```ts
+  type ScheduleCapability = {
+    schedule(
+      event: EventMessage,
+      at: Date,
+      uow?: UnitOfWork
+    ): Promise<ScheduleToken>;
+    cancelSchedule(
+      token: ScheduleToken,
+      uow?: UnitOfWork
+    ): Promise<CancelResult>;
+  };
+  type ScheduleCapableEventStore = EventStore & ScheduleCapability;
+  ```
+
+  Three wrappers, one per family that has one, each **additive** — `E` in, `E & ScheduleCapability` out:
+
+  ```ts
+  inMemorySchedulingEventStore(next, { clock? }?)                        // Map + setTimeout
+  postgresSchedulingEventStore(next, pg, { unitOfWork, tagResolver, … }) // table + polling worker
+  kronosDbSchedulingEventStore(next, kdb, { serializer })                // server-side; no timer here
+  ```
+
+  Each also adds what only it can promise, under its own prefixed name so a composed store carries them without collision: `stopScheduling()` in memory, `startScheduling()`/`stopScheduling()` on postgres, `listSchedules()` on KronosDB. None of them is in the capability, because a capability is what _every_ member of the tier can honestly answer.
+
+  **Axon Server gets no wrapper, and the absence is deliberate.** Its generated protobuf carries a `DcbEventScheduler` service, but the package never built a client for it — no channel, no service definition, nothing in `connection.ts`. There was no scheduler to absorb, and writing one here would be new functionality wearing a refactor's clothes.
+
+  **KronosDB is the odd family out, and the tier makes that visible instead of hiding it.** Its schedules already ride the KronosDB log server-side, so the wrapper holds no table, no timer and no poller — and it does _not_ join the caller's transaction, because the server owns the schedule the instant it is told. A handling that arms one and then throws has armed it. That was already true of the standalone scheduler; it is now written on the same object as the log, where a reader comparing the three families can see it.
+
+  ### The ctx verbs are conditionally present
+
+  The exact mirror of the snapshotting demand, anchored at one alias:
+
+  ```ts
+  IfScheduleCapable<E, Capable, Bare>; // THE anchor, in event-scheduling/schedule.ts
+  ScheduleVerbs<E> = IfScheduleCapable<
+    E,
+    { schedule; scheduleAfter; cancelSchedule },
+    unknown
+  >;
+  ```
+
+  Contexts intersect it, so against a bare log the verbs are **structurally absent** rather than present-and-throwing:
+
+  ```ts
+  // ✗
+  eventHandler(OrderPlaced, async (m, ctx: EventHandlerContext) => {
+    await ctx.scheduleAfter(PaymentTimedOut, { orderId }, 900_000);
+  });
+
+  // ✓ — say what you need, and the ENTRY must supply it
+  eventHandler(
+    OrderPlaced,
+    async (
+      m,
+      ctx: EventHandlerContext<UnitOfWork, ScheduleCapableEventStore>
+    ) => {
+      await ctx.scheduleAfter(PaymentTimedOut, { orderId }, 900_000);
+    }
+  );
+  ```
+
+  The real diagnostic, verbatim:
+
+  ```
+  error TS2339: Property 'schedule' does not exist on type 'HandlerContext'.
+  ```
+
+  and at the entry, which is what carries the demand out of the slice:
+
+  ```
+  error TS2322: Type '{ kind: "command-handler"; … }' is not assignable to type 'CommandHandlerEntry'.
+    Types of property 'handler' are incompatible.
+      Types of parameters 'context' and 'context' are incompatible.
+        Type 'HandlerContext<UnitOfWork, EventStore>' is not assignable to type
+        'HandlerContext<UnitOfWork, ScheduleCapableEventStore>'.
+          Type 'HandlerContext<UnitOfWork, EventStore>' is missing the following properties
+          from type 'ScheduleFunctions': schedule, scheduleAfter, cancelSchedule
+  ```
+
+  Snapshotting needed _two_ faces because a `state()` can declare that it caches, so there was something to refuse as well as something to offer. Nothing declares that it schedules, so this side of the mirror is one conditional. **Nothing runs**: the demand is erased, and the only trace is one defensive assert whose message names the capability and the wrapper _pattern_ — `<family>SchedulingEventStore(store, …)` — never a specific family, because core does not know which one you chose.
+
+  ### Cancelling answers news, not exceptions
+
+  ```ts
+  type CancelResult =
+    | { kind: "cancelled" }
+    | { kind: "already-appended" }
+    | { kind: "not-found" };
+  ```
+
+  Every family answers in the same three words, so the compensating branch is written once. KronosDB's `ScheduleAlreadyResolvedError` and `ScheduleNotFoundError` are gone: they were two of these outcomes spelled as throws, from a time when that scheduler had its own vocabulary.
+
+  ### BREAKING
+
+  - **`eventScheduler` is removed from every entry** — `HandlerSite`, `CommandHandlerEntry`, `QueryHandlerEntry`, `EventHandlerEntry`, `HandlerContextDeps`, `CommandInvocationDeps`, `ProcessorHandlerEntry`, `RunEventProcessorOptions`. Wrap the entry's `eventStore` instead.
+  - **The `EventScheduler` seam is dissolved.** `ScheduleCapability` is the shape now, with `cancel` renamed `cancelSchedule` (a bare `cancel` on an event store says nothing about what is being cancelled). `ScheduleToken` and `CancelResult` are unchanged and still public — a token is a value you hold.
+  - **The standalone scheduler exports are absorbed:** `inMemoryEventScheduler` → `inMemorySchedulingEventStore(next, …)`; `postgresEventScheduler` → `postgresSchedulingEventStore(next, pg, …)` (its `eventStore` config field is gone — the wrapped store _is_ the log); `createKronosDbScheduler` → `kronosDbSchedulingEventStore(next, kdb, { serializer })`. `PostgresEventScheduler`/`PostgresEventSchedulerConfig` → `PostgresSchedulingControl`/`PostgresSchedulingConfig`; `KronosDbScheduler`/`ScheduleOptions` → `KronosDbSchedulingControl`/`KronosDbSchedulingOptions`.
+  - **KronosDB's caller-supplied idempotency token is gone from the shared contract.** Neither other family can honour one, and a capability is what every member can promise. `connection.scheduler.scheduleAppend` is still there for a host that wants it.
+  - **`ContextScheduleFunction` and `ContextScheduleAfterFunction` are removed** from `command-handling/context.ts` — they duplicated the types in `event-scheduling/schedule.ts`, and the verb types now live with the tier that contributes them.
+  - **`@kronos-ts/test`: `controllableScheduler(clock)` → `controllableSchedulingEventStore(next, clock)`**, returning `E & ScheduleCapability & { schedules; due(); resetSchedules() }`. `reset()` became `resetSchedules()` because this tier composes _under_ `recordingEventStore`, which already owns that name — two different resets on one object under one name was a collision waiting to be found at midnight. `ControllableScheduler` → `ScheduleRecording`.
+
+  The fixture composes what a host composes, both tiers included:
+
+  ```ts
+  // before
+  recordingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore())); // + a separate controllableScheduler
+
+  // after
+  recordingEventStore(
+    controllableSchedulingEventStore(
+      inMemorySnapshottingEventStore(inMemoryEventStore()),
+      clock
+    )
+  );
+  ```
+
+  A scope's single `eventStore` parameter is now the log, the fold cache _and_ the schedule book. `wait()` still jumps the clock, asks what is due and appends the fired events **in through the outermost store**, so a fired deadline is recorded exactly as a handler's append is; `scheduled()` and `cancelled()` assertions are unchanged. The fixture's "foreign resources" check collapsed from two to one: bringing a foreign scheduler _is_ bringing a foreign store.
+
+  ***
+
+  ## 2. Persistence families refuse to be mixed
+
+  `Never mix families within one processor` was a sentence in a document — which means it was a sentence nobody could read at 2am while wiring a processor out of two packages that both export a `tokenStore`.
+
+  **The failure it prevents is not a throw. It is silence.** A drizzle token store handed a postgres unit of work does not fail: it asks for _its_ transaction, is told there is none, and falls back to its plain handle. The token update commits **outside** the batch's transaction. Every test passes. Then a crash lands between the projection write and the token write, and a read model is permanently wrong in a way nobody can reconstruct.
+
+  Core owns the slot and knows no occupants; each package writes one line:
+
+  ```ts
+  // core
+  type PersistenceFamily<Name extends string, Fix extends string>   // phantom on an ambient unique symbol
+
+  // @kronos-ts/drizzle — the only place the family is named
+  type DrizzleFamily = PersistenceFamily<
+    "drizzle", "build this processor's unitOfWork with drizzleUnitOfWork(next, db)"
+  >
+  ```
+
+  ```ts
+  // before
+  drizzleUnitOfWork<U>(next: () => U, db): () => U
+  drizzleTokenStore(db): TokenStore
+  drizzleDeadLetterQueue(db): SequencedDeadLetterQueue
+
+  // after
+  drizzleUnitOfWork<U>(next: () => U, db): () => U & DrizzleFamily
+  drizzleTokenStore(db): TokenStore<UnitOfWork & DrizzleFamily>
+  drizzleDeadLetterQueue(db): SequencedDeadLetterQueue<UnitOfWork & DrizzleFamily>
+  ```
+
+  **The processor is where the compiler meets the factory and the stores.** `U` is inferred from `unitOfWork` — its one covariant mention — and the stores are checked against that answer:
+
+  ```ts
+  eventProcessor({
+    name,
+    eventStore,
+    tokenStore: drizzleTokenStore(db),
+    unitOfWork: drizzleUow,
+  }); // ✓
+  eventProcessor({
+    name,
+    eventStore,
+    tokenStore: inMemoryTokenStore(),
+    unitOfWork: drizzleUow,
+  }); // ✓ bare demands nothing
+  eventProcessor({
+    name,
+    eventStore,
+    tokenStore: drizzleTokenStore(db),
+    unitOfWork: postgresUow,
+  }); // ✗
+  ```
+
+  The real diagnostic, verbatim — note that the sentence is **drizzle's own**:
+
+  ```
+  error TS2322: Type '() => UnitOfWork & PostgresFamily' is not assignable to type
+  '() => UnitOfWork & DrizzleFamily'.
+    Type 'UnitOfWork & PostgresFamily' is not assignable to type 'UnitOfWork & DrizzleFamily'.
+      Type 'UnitOfWork & PostgresFamily' is not assignable to type 'DrizzleFamily'.
+        The types of '[persistenceFamily].FIX' are incompatible between these types.
+          Type '"build this processor's unitOfWork with postgresUnitOfWork(next, pg) — this
+          family's stores write through its transaction"' is not assignable to type '"build
+          this processor's unitOfWork with drizzleUnitOfWork(next, db) — this family's stores
+          write through its transaction"'.
+  ```
+
+  and against a bare task:
+
+  ```
+  error TS2322: Type '(clock?: (() => number) | undefined) => UnitOfWork' is not assignable to
+  type '() => UnitOfWork & DrizzleFamily'.
+    Type 'UnitOfWork' is not assignable to type 'UnitOfWork & DrizzleFamily'.
+      Property '[persistenceFamily]' is missing in type 'UnitOfWork' but required in type 'DrizzleFamily'.
+  ```
+
+  That is a general rule for diagnostics, now stated in SURFACE: **an error may only be as specific as the code that owns it is certain about.** Core-owned refusals name the capability and the wrapper _pattern_; a package's own refusals name its own functions. (The landed `SnapshotDemand` FIX string was hardcoding a postgres example inside core; it now reads `wrap this entry's eventStore in the snapshotting wrapper for its persistence family — <family>SnapshottingEventStore(store, …)`, as does the matching runtime throw in `repository.ts`.)
+
+  **Erased, and never constructed.** The brand is a phantom on a unique symbol core declares _ambiently_ — no JavaScript declares it, none reads it, and each decorator returns exactly what it always returned and asserts the branded type. Emitted output is byte for byte unchanged, and the brand and a composed capability coexist:
+
+  ```ts
+  const uow = drizzleUnitOfWork(() => correlating(unitOfWork(clock)), db);
+  //    ^ () => CorrelatingUnitOfWork & DrizzleFamily — reads both ways round
+  ```
+
+  ### BREAKING
+
+  - **`TokenStore` and `SequencedDeadLetterQueue` are generic in `U`** (defaulting to `UnitOfWork`), and their members are **function-typed fields rather than method shorthand**. That is load-bearing, not stylistic: TypeScript checks method parameters _bivariantly_, so a store demanding a branded task would have been silently assignable to a bare slot and the whole demand would have been decoration. It is also what the surface rules already asked for — a shape is a type alias of function-signature fields.
+  - **All six persistence packages brand their uow decorator's product** and demand the brand in their token store and dead-letter queue. **Source-compatible for same-family users**: a host already following the rule changes nothing, because the brand only refuses arrangements that were already broken. Bare stores (`inMemoryTokenStore`, `inMemoryDeadLetterQueue`) demand nothing and fit any family — contravariance says so without a special case.
+
+  ***
+
+  ## 3. A dead-letter queue without a lane does not compile
+
+  Parking is a **lane** operation — the queue holds a failed event and everything behind it in the same lane — so "which lane" stops being optional the moment there is a queue. That was a `throw` at construction: honest, and late, because a composition root runs at boot.
+
+  ```
+  error TS2345: Argument of type '{ name: string; eventStore: EventStore; tokenStore: …;
+  unitOfWork: …; deadLetterQueue: SequencedDeadLetterQueue<UnitOfWork>; }' is not assignable …
+    Property 'sequence' is missing in type '{ … }' but required in type '{ readonly sequence: {
+    readonly ERROR: "this processor has a deadLetterQueue but no sequence, and parking is a lane
+    operation"; readonly FIX: "add `sequence: sequentialPerTag(\"<tagKey>\")`, or drop the queue
+    and let failures propagate and retry"; }; }'.
+  ```
+
+  The keys **are** the message — which is why the refusal is spelled inline rather than behind a named type: give TypeScript a name and it prints the name. The wording is general, because core is certain about the rule and about nothing else (`sequentialPerTag` is core's own export, so naming it is not core guessing at anybody's stack). The construction-time throw survives as one defensive assert for JavaScript callers, exactly as `repository.ts` keeps its one line.
+
+  `eventProcessor` grew a second inferred type parameter to make both demands coexist — the family check reads the task off `EventProcessorSite<U>`, the lane check reads the queue off the literal, and neither steals the other's inference. `EventProcessorSite<U>`, `EventProcessorLane<U>`, `EventProcessorConfig<U>` and `SequenceDemand<C>` are exported.
+
+  ***
+
+  ## The probes
+
+  Three load-bearing type-probe files join the root `tsconfig.json` `files` array, so every claim above is judged by `tsc --noEmit` and a `@ts-expect-error` that stops erroring turns the gate red:
+
+  - `packages/core/src/event-scheduling/__tests__/schedule-demand.types.ts` — the verb quadrants, entry contagion, and **both tiers three deep** in every stacking order with `upcastingEventStore`, including the identity wrapper in the middle.
+  - `packages/core/src/event-processing/__tests__/processor-demands.types.ts` — all four quadrants of (queue?) × (lane?).
+  - `integrationtests/src/__tests__/persistence-family.types.ts` — same-family, cross-family, bare-store and bare-task, the correlating composition, and the variance claim the whole mechanism rests on.
+
+  `integrationtests/src/__tests__/capability-preservation.types.ts` gains the second tier: with one capability the anti-laundering rule was easy to satisfy by accident, and with two it is not — a wrapper that collapsed to _its own_ capability would keep the one it adds and silently drop the other.
+
+- 1aef927: **BREAKING — transport buses take the local bus FIRST, connection after.** `rabbitMqCommandBus(rabbit, local)` was the last decorator family violating the standing rule: the decorated thing comes first, config after. A transport wraps YOUR bus — same species as `interceptingCommandBus(bus, intercept)` and `otlpCommandBus(bus, exporter)`, which already lead with the bus.
+
+  ```ts
+  // before
+  rabbitMqCommandBus(rabbit, local, { preferLocal });
+  kronosDbCommandBus(kdb, local);
+  axonServerCommandBus(conn, local);
+
+  // after — the wrapped bus leads, everywhere
+  rabbitMqCommandBus(local, rabbit, { preferLocal });
+  kronosDbCommandBus(local, kdb);
+  axonServerCommandBus(local, conn);
+  ```
+
+  The parameter is named `next` in every bus wrapper — transports, intercepting, otlp alike — the same word every handler wrapper uses for the thing it wraps. One pattern, whatever the species: take `next`, return the same shape, config trails.
+
+  Stores are unchanged (`kronosDbEventStore(kdb, context)`) — a store is built FROM a connection, not wrapped around a bus, so the resource leads there.
+
+  Also in core: interception moved into its own folder, `core/src/interception/` — it is a mechanism of the setup in its own right, built the same way as everything else (functions wrapping over the configuration, providing new capabilities, typechecked at the composition site), and now it sits beside `correlation/` as a peer. Barrel exports are unchanged.
+
+- 1aef927: Types are function signatures. The `interface` keyword is extinct across every package: 581 declarations are now `type` aliases, `extends` is an intersection, and an interface that was nothing but a call signature is a bare arrow (`ContextSendFunction`, `ContextQueryFunction`, `EmitUpdateFunction`). Nothing changed shape — a record of functions is still a record, because that is what shared state looks like — so this is source-compatible for anyone who was not declaration-merging our types, which nothing in the emitted `.d.ts` ever invited.
+
+  The handler definitions lose the word "Definition". It was the name for a shape that had to be registered somewhere, and nothing is registered any more:
+
+  - `CommandHandlerDefinition` → `CommandHandler`
+  - `QueryHandlerDefinition` → `QueryHandler`
+  - `EventHandlerDefinition` → `EventHandler`
+  - `StateModule` → `State`
+
+  Type and value namespaces are separate, so `type CommandHandler` and the `commandHandler` function coexist. The entry types (`CommandHandlerEntry`, `QueryHandlerEntry`, `EventHandlerEntry`) keep their names: an entry is a different thing from the handler it points at.
+
+  The last behaviour classes are closures. `unitOfWork()` no longer instantiates a `ManagedUnitOfWork` — the phase buckets, the status and the correlation map are closed over, `phase`/`closed` are accessors because only the lifecycle advances them, and the execute-once guard still throws synchronously. In `@kronos-ts/rabbitmq` the three AMQP components are constructed with a call instead of `new`:
+
+  - `new AmqpRabbitMqCommandTransport(config, channels)` → `amqpRabbitMqCommandTransport(config, channels)`
+  - `new AmqpRabbitMqQueryTransport(config, channels)` → `amqpRabbitMqQueryTransport(config, channels)`
+  - `new AmqpDistributedSubscriberRegistry(config, channels)` → `amqpDistributedSubscriberRegistry(config, channels)`
+
+  The two transport names survive as the TYPES those functions return. Classes are Errors only now, everywhere — `instanceof` is the one thing a type alias cannot do, and error discrimination is the only place we need it.
+
+  No types were removed. Every candidate we went looking for is still load-bearing: `AnyTagCriteria` is the `{ kind: "any-tag" }` shape four stores switch on, `EventBus`/`SubscribableEventSource`/`EventStorageEngine` are the halves `EventStore` is declared as, and `TagCriteria`/`TypeRestrictedCriteria`/`EitherCriteria` have live readers (`SchemaRegistry` and `IntermediateEventRepresentation` were still live at this point; both were deleted by later changes in this same release — see the upcasting and validation changesets).
+
+### Patch Changes
+
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+- Updated dependencies [1aef927]
+  - @kronos-ts/core@0.3.0
+
 ## 0.6.0
 
 ### Minor Changes
