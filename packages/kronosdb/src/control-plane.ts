@@ -38,7 +38,7 @@ import type { ProcessorStatus } from "./event-processor-info.js"
  * `name` is optional so an instruction is skipped rather than crashing when a
  * processor kind does not implement it.
  */
-export interface ManagedEventProcessor {
+export type ManagedEventProcessor = {
   readonly name: string
   start?(): Promise<void> | void
   stop?(): void
@@ -68,7 +68,7 @@ export type ManagedProcessorSource =
   | ReadonlyMap<string, unknown>
 
 /** A running control plane. See {@link kronosDbControlPlane}. */
-export interface KronosDbControlPlane {
+export type KronosDbControlPlane = {
   /** The platform stream this control plane drives. */
   readonly platform: PlatformConnection
   /** Stop the platform stream (heartbeats, status reporting, instruction intake). */

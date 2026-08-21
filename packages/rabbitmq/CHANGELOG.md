@@ -95,7 +95,7 @@
   ```ts
   // before
   import { qn } from "@kronos-ts/common";
-  import { commandHandler, simpleCommandBus } from "@kronos-ts/messaging";
+  import { commandHandler, localCommandBus } from "@kronos-ts/messaging";
   import { inMemoryEventStore } from "@kronos-ts/eventsourcing";
   import { state } from "@kronos-ts/modelling";
   import { kronos } from "@kronos-ts/app";
@@ -104,7 +104,7 @@
   import {
     qn,
     commandHandler,
-    simpleCommandBus,
+    localCommandBus,
     inMemoryEventStore,
     state,
     kronos,
@@ -336,8 +336,8 @@ processors })` is the entire options surface.** `module()`, `AppModule`, `Module
 
   // after — four named lists, persistence rides on the items that need it
   kronos({
-    commandBus: correlatingCommandBus(simpleCommandBus(uow)),
-    queryBus: correlatingQueryBus(simpleQueryBus(uow)),
+    commandBus: correlatingCommandBus(localCommandBus(uow)),
+    queryBus: correlatingQueryBus(localQueryBus(uow)),
     states: [{ ...Bill, eventStore }],
     commandHandlers: [{ ...openBill, eventStore }],
     queryHandlers: [{ ...getBill, eventStore }],
@@ -410,8 +410,8 @@ processors })` is the entire options surface.** `module()`, `AppModule`, `Module
   name. `[state, options]` tuples live in `states` and are otherwise unchanged
   apart from the state carrying its own stores.
 
-  **The buses own the unit of work.** `simpleQueryBus(unitOfWork)` now captures a
-  factory exactly as `simpleCommandBus(unitOfWork)` always has, so
+  **The buses own the unit of work.** `localQueryBus(unitOfWork)` now captures a
+  factory exactly as `localCommandBus(unitOfWork)` always has, so
   `queryGateway(bus)` needs nothing but the bus and `kronos` needs no factory at
   all. Processors name their own `unitOfWork` — there is no app-level one to
   inherit. It is a property on the processor ENTRY, alongside its stores, because
@@ -482,8 +482,8 @@ processors })` is the entire options surface.** `module()`, `AppModule`, `Module
 
   // after — the buses are yours to build and wrap
   kronos({
-    commandBus: correlatingCommandBus(simpleCommandBus(unitOfWork)),
-    queryBus: correlatingQueryBus(simpleQueryBus(unitOfWork)),
+    commandBus: correlatingCommandBus(localCommandBus(unitOfWork)),
+    queryBus: correlatingQueryBus(localQueryBus(unitOfWork)),
     modules: [module("billing", { eventStore }, ...slices)],
   });
   ```
@@ -494,7 +494,7 @@ processors })` is the entire options surface.** `module()`, `AppModule`, `Module
   the host, per item, at composition.) Per-state `[state, options]` tuples are
   unchanged.
 
-  The UoW-capture trap doc moved onto `simpleCommandBus`, where the capture
+  The UoW-capture trap doc moved onto `localCommandBus`, where the capture
   actually happens: the runner you hand the bus and the one you hand `kronos` have
   to be the same value, and writing them on adjacent lines is what makes that
   checkable.
@@ -623,8 +623,8 @@ timeoutMs? }?)` and `rabbitMqQueryBus(rabbit, local, { preferLocal?, timeoutMs?
   kronosDbCommandBus(connection, unitOfWork, latch, serializer, flowControl, loadFactor)
 
   // after — `local` carries the unit-of-work policy, and only `local`
-  kronosDbCommandBus(kdb, simpleCommandBus(unitOfWork))
-  kronosDbCommandBus(kdb, postgresUnitOfWork(pg, unitOfWork) |> simpleCommandBus)
+  kronosDbCommandBus(kdb, localCommandBus(unitOfWork))
+  kronosDbCommandBus(kdb, postgresUnitOfWork(pg, unitOfWork) |> localCommandBus)
   ```
 
   That is what makes a `postgresUnitOfWork` apply to server-routed work exactly as
@@ -842,7 +842,7 @@ PREPARE_COMMIT → COMMIT → AFTER_COMMIT`, same numeric values, same
   armed by the data path, independent of the control plane.
 
   All 59 `create*`-prefixed factories are renamed to what they return
-  (`inMemoryEventStore`, `simpleCommandBus`, `postgresEventStore`, …).
+  (`inMemoryEventStore`, `localCommandBus`, `postgresEventStore`, …).
   Drizzle stores no longer take the ORM operator bundle — only
   `{ db, table }`.
 

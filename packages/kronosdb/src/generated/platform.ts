@@ -12,7 +12,7 @@ import { ErrorMessage, InstructionAck } from "./common.js";
 export const protobufPackage = "kronosdb.platform";
 
 /** Client identification, sent on initial connect. */
-export interface ClientIdentification {
+export type ClientIdentification = {
   /** Unique instance identifier (UUID). Distinguishes instances of the same component. */
   clientId: string;
   /** Application/component name (e.g. "OrderService"). Shared across instances. */
@@ -23,13 +23,13 @@ export interface ClientIdentification {
   tags: { [key: string]: string };
 }
 
-export interface ClientIdentification_TagsEntry {
+export type ClientIdentification_TagsEntry = {
   key: string;
   value: string;
 }
 
 /** Server information returned after client identification. */
-export interface PlatformInfo {
+export type PlatformInfo = {
   /** The node name of this server. */
   nodeName: string;
   /** Server version. */
@@ -39,7 +39,7 @@ export interface PlatformInfo {
 }
 
 /** Messages sent FROM the client TO the server on the lifecycle stream. */
-export interface PlatformInbound {
+export type PlatformInbound = {
   /** Re-identify on stream open (required as first message). */
   register?:
     | ClientIdentification
@@ -64,7 +64,7 @@ export interface PlatformInbound {
 }
 
 /** Messages sent FROM the server TO the client on the lifecycle stream. */
-export interface PlatformOutbound {
+export type PlatformOutbound = {
   /** Server node info, sent after registration. */
   nodeNotification?:
     | PlatformInfo
@@ -110,7 +110,7 @@ export interface PlatformOutbound {
 }
 
 /** Notification sent to connected platform clients when the handler topology changes. */
-export interface TopologyNotification {
+export type TopologyNotification = {
   /** Type of change: "handler_registered" or "handler_deregistered". */
   changeType: string;
   /** The message type (command or query name) affected. */
@@ -124,11 +124,11 @@ export interface TopologyNotification {
 }
 
 /** Heartbeat message for liveness detection. */
-export interface Heartbeat {
+export type Heartbeat = {
 }
 
 /** Ask the client to disconnect and reconnect. */
-export interface RequestReconnect {
+export type RequestReconnect = {
 }
 
 /**
@@ -136,7 +136,7 @@ export interface RequestReconnect {
  *
  * Matches the Axon Server protocol shape so the connector can map fields directly.
  */
-export interface EventProcessorInfo {
+export type EventProcessorInfo = {
   /** The logical name of this processor (e.g. "OrderProjection"). */
   processorName: string;
   /** The mode: "Tracking", "Subscribing", "Pooled", etc. */
@@ -161,7 +161,7 @@ export interface EventProcessorInfo {
 }
 
 /** Status of a single segment within a streaming event processor. */
-export interface EventProcessorInfo_SegmentStatus {
+export type EventProcessorInfo_SegmentStatus = {
   /** The segment identifier. */
   segmentId: number;
   /** Whether this segment has caught up with the head of the event stream. */
@@ -177,18 +177,18 @@ export interface EventProcessorInfo_SegmentStatus {
 }
 
 /** Reference to an event processor by name. Used for instructions. */
-export interface EventProcessorReference {
+export type EventProcessorReference = {
   processorName: string;
 }
 
 /** Reference to a specific segment of an event processor. Used for instructions. */
-export interface EventProcessorSegmentReference {
+export type EventProcessorSegmentReference = {
   processorName: string;
   segmentIdentifier: number;
 }
 
 /** Result of executing a server instruction. */
-export interface InstructionResult {
+export type InstructionResult = {
   instructionId: string;
   success: boolean;
   error: ErrorMessage | undefined;
@@ -1846,7 +1846,7 @@ export const PlatformServiceDefinition = {
   },
 } as const;
 
-export interface PlatformServiceImplementation<CallContextExt = {}> {
+export type PlatformServiceImplementation<CallContextExt = {}> = {
   /**
    * Initial connection: client identifies itself and receives server info.
    * The server registers the client in the connection registry.
@@ -1866,7 +1866,7 @@ export interface PlatformServiceImplementation<CallContextExt = {}> {
   ): ServerStreamingMethodResult<DeepPartial<PlatformOutbound>>;
 }
 
-export interface PlatformServiceClient<CallOptionsExt = {}> {
+export type PlatformServiceClient<CallOptionsExt = {}> = {
   /**
    * Initial connection: client identifies itself and receives server info.
    * The server registers the client in the connection registry.
@@ -1904,7 +1904,7 @@ function isSet(value: any): boolean {
 
 export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

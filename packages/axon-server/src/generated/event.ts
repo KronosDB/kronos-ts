@@ -63,11 +63,11 @@ export function transformationStateToJSON(object: TransformationState): string {
 }
 
 /** Request to compact event store. */
-export interface CompactionRequest {
+export type CompactionRequest = {
 }
 
 /** The transformation data. */
-export interface Transformation {
+export type Transformation = {
   /** The identifier of the transformation. */
   transformationId:
     | TransformationId
@@ -89,13 +89,13 @@ export interface Transformation {
 }
 
 /** Request to start a transformation */
-export interface StartTransformationRequest {
+export type StartTransformationRequest = {
   /** A description of the purpose of this transformation, for reference only */
   description: string;
 }
 
 /** Request to apply a transformation */
-export interface ApplyTransformationRequest {
+export type ApplyTransformationRequest = {
   /** The identification of the transformation */
   transformationId:
     | TransformationId
@@ -105,7 +105,7 @@ export interface ApplyTransformationRequest {
 }
 
 /** Message containing one event to transform within a transformation */
-export interface TransformRequest {
+export type TransformRequest = {
   /** The identification of the transformation */
   transformationId:
     | TransformationId
@@ -121,7 +121,7 @@ export interface TransformRequest {
 }
 
 /** Replaces the content of an event with the new content */
-export interface TransformedEvent {
+export type TransformedEvent = {
   /** The global index of the event to replace */
   token: bigint;
   /** The new content of the event */
@@ -129,25 +129,25 @@ export interface TransformedEvent {
 }
 
 /** Deletes the content of an event */
-export interface DeletedEvent {
+export type DeletedEvent = {
   /** The global index of the event to clear */
   token: bigint;
 }
 
 /** Uniquely identifies a transformation */
-export interface TransformationId {
+export type TransformationId = {
   /** The value of the identifier. */
   id: string;
 }
 
 /** Acknowledgement that event with given token has been transformed successfully */
-export interface TransformRequestAck {
+export type TransformRequestAck = {
   /** The sequence of the transformation request */
   sequence: bigint;
 }
 
 /** Request message to schedule an event */
-export interface ScheduleEventRequest {
+export type ScheduleEventRequest = {
   /** timestamp when to publish the event */
   instant: bigint;
   /** the event to publish */
@@ -155,7 +155,7 @@ export interface ScheduleEventRequest {
 }
 
 /** Request message to reschedule an event */
-export interface RescheduleEventRequest {
+export type RescheduleEventRequest = {
   /** optional token of scheduled event to cancel */
   token: string;
   /** timestamp when to publish the event */
@@ -165,39 +165,39 @@ export interface RescheduleEventRequest {
 }
 
 /** Request message to cancel an event */
-export interface CancelScheduledEventRequest {
+export type CancelScheduledEventRequest = {
   /** token of scheduled event to cancel */
   token: string;
 }
 
 /** Token to manage a scheduled event */
-export interface ScheduleToken {
+export type ScheduleToken = {
   /** Field defining the token identifier */
   token: string;
 }
 
 /** Request message to receive the first Token (Tail Token) of the Event Stream */
-export interface GetFirstTokenRequest {
+export type GetFirstTokenRequest = {
 }
 
 /** Request message to receive the last Token (Head Token) of the Event Stream */
-export interface GetLastTokenRequest {
+export type GetLastTokenRequest = {
 }
 
 /** Request message to receive the Token that starts streaming events from the given timestamp */
-export interface GetTokenAtRequest {
+export type GetTokenAtRequest = {
   /** Timestamp expressed as milliseconds since epoch */
   instant: bigint;
 }
 
 /** Message containing the information necessary to track the position of events in the Event Stream */
-export interface TrackingToken {
+export type TrackingToken = {
   /** The value of the Token */
   token: bigint;
 }
 
 /** Message wrapping an Event and a Tracking Token */
-export interface EventWithToken {
+export type EventWithToken = {
   /** The Token representing the position of this Event in the Stream */
   token: bigint;
   /** The actual Event Message */
@@ -205,7 +205,7 @@ export interface EventWithToken {
 }
 
 /** Message providing the parameters for executing a Query against AxonServer. */
-export interface QueryEventsRequest {
+export type QueryEventsRequest = {
   /** The query to execute against the Event Stream */
   query: string;
   /** The number of results AxonServer may send before new permits need to be provided */
@@ -227,7 +227,7 @@ export interface QueryEventsRequest {
 }
 
 /** A message describing a response to a Query request */
-export interface QueryEventsResponse {
+export type QueryEventsResponse = {
   /** Provided when the response contains the names of the columns the response contains. This message typically arrives first. */
   columns?:
     | ColumnsResponse
@@ -241,13 +241,13 @@ export interface QueryEventsResponse {
 }
 
 /** Message containing the names of the columns returned in a Query */
-export interface ColumnsResponse {
+export type ColumnsResponse = {
   /** The names of the columns provided in the query */
   column: string[];
 }
 
 /** Message providing Query Result data */
-export interface RowResponse {
+export type RowResponse = {
   /** The values which, when combined, uniquely update this row. Any previously received values with the same identifiers should be replaced with this value */
   idValues: QueryValue[];
   /** The sorting values to use when sorting this response compared to the others. */
@@ -256,13 +256,13 @@ export interface RowResponse {
   values: { [key: string]: QueryValue };
 }
 
-export interface RowResponse_ValuesEntry {
+export type RowResponse_ValuesEntry = {
   key: string;
   value: QueryValue | undefined;
 }
 
 /** Describes the combination of an Aggregate Identifier and first expected Sequence number when opening an Aggregate-specific Event Stream */
-export interface ReadHighestSequenceNrRequest {
+export type ReadHighestSequenceNrRequest = {
   /** The Identifier of the Aggregate for which to load events */
   aggregateId: string;
   /** The Sequence Number of the first event expected */
@@ -270,13 +270,13 @@ export interface ReadHighestSequenceNrRequest {
 }
 
 /** The highest Sequence Number found for the provided request */
-export interface ReadHighestSequenceNrResponse {
+export type ReadHighestSequenceNrResponse = {
   /** The sequence number of the latest event */
   toSequenceNr: bigint;
 }
 
 /** A confirmation to a request from the client */
-export interface Confirmation {
+export type Confirmation = {
   /** True when successful, otherwise false */
   success: boolean;
 }
@@ -285,7 +285,7 @@ export interface Confirmation {
  * A confirmation to a request from the client, including an optional consistency marker to track the position of this confirmation in the Event Stream.
  * The consistency_marker is only set for AppendEvent requests towards a DCB context.
  */
-export interface ConfirmationWithConsistencyMarker {
+export type ConfirmationWithConsistencyMarker = {
   /** True when successful, otherwise false */
   success: boolean;
   /** The consistency marker token */
@@ -293,13 +293,13 @@ export interface ConfirmationWithConsistencyMarker {
 }
 
 /** A marker to track the position of a Confirmation in the Event Stream, used for consistency tracking in DCB contexts */
-export interface ConsistencyMarker {
+export type ConsistencyMarker = {
   /** The token representing the position of this marker in the Stream */
   token: bigint;
 }
 
 /** Request describing the desire to read events for a specific Aggregate */
-export interface GetAggregateEventsRequest {
+export type GetAggregateEventsRequest = {
   /** The identifier of the aggregate to read events for */
   aggregateId: string;
   /** The sequence number of the first event to receive */
@@ -313,7 +313,7 @@ export interface GetAggregateEventsRequest {
 }
 
 /** Request message to retrieve Snapshot Events for a specific Aggregate instance */
-export interface GetAggregateSnapshotsRequest {
+export type GetAggregateSnapshotsRequest = {
   /** The identifier to fetch the snapshots for */
   aggregateId: string;
   /** The minimal sequence number of the snapshots to retrieve */
@@ -325,7 +325,7 @@ export interface GetAggregateSnapshotsRequest {
 }
 
 /** Request message to open an Event Stream from the Event Store. */
-export interface GetEventsRequest {
+export type GetEventsRequest = {
   /** The token to start streaming from */
   trackingToken: bigint;
   /** The number of messages the server may send before it needs to wait for more permits */
@@ -353,7 +353,7 @@ export interface GetEventsRequest {
 }
 
 /** Message containing the information of an Event */
-export interface Event {
+export type Event = {
   /** The unique identifier of this event */
   messageIdentifier: string;
   /** The identifier of the Aggregate instance that published this event, if any */
@@ -374,13 +374,13 @@ export interface Event {
   snapshot: boolean;
 }
 
-export interface Event_MetaDataEntry {
+export type Event_MetaDataEntry = {
   key: string;
   value: MetaDataValue | undefined;
 }
 
 /** Value used in Query Responses to represent a value in its original type */
-export interface QueryValue {
+export type QueryValue = {
   /** The text value */
   textValue?:
     | string
@@ -398,7 +398,7 @@ export interface QueryValue {
 }
 
 /** Description of a Payload Type */
-export interface PayloadDescription {
+export type PayloadDescription = {
   /** The type identifier of the Payload */
   type: string;
   /** The revision of the Payload Type */
@@ -3745,7 +3745,7 @@ export const EventStoreDefinition = {
   },
 } as const;
 
-export interface EventStoreServiceImplementation<CallContextExt = {}> {
+export type EventStoreServiceImplementation<CallContextExt = {}> = {
   /** Accepts a stream of Events returning a Confirmation when completed. */
   appendEvent(
     request: AsyncIterable<Event>,
@@ -3799,7 +3799,7 @@ export interface EventStoreServiceImplementation<CallContextExt = {}> {
   getTokenAt(request: GetTokenAtRequest, context: CallContext & CallContextExt): Promise<DeepPartial<TrackingToken>>;
 }
 
-export interface EventStoreClient<CallOptionsExt = {}> {
+export type EventStoreClient<CallOptionsExt = {}> = {
   /** Accepts a stream of Events returning a Confirmation when completed. */
   appendEvent(
     request: AsyncIterable<DeepPartial<Event>>,
@@ -3889,7 +3889,7 @@ export const EventSchedulerDefinition = {
   },
 } as const;
 
-export interface EventSchedulerServiceImplementation<CallContextExt = {}> {
+export type EventSchedulerServiceImplementation<CallContextExt = {}> = {
   /** Schedule the given event for publication at the given time}. The returned ScheduleToken can be used to cancel the planned publication. */
   scheduleEvent(
     request: ScheduleEventRequest,
@@ -3907,7 +3907,7 @@ export interface EventSchedulerServiceImplementation<CallContextExt = {}> {
   ): Promise<DeepPartial<InstructionAck>>;
 }
 
-export interface EventSchedulerClient<CallOptionsExt = {}> {
+export type EventSchedulerClient<CallOptionsExt = {}> = {
   /** Schedule the given event for publication at the given time}. The returned ScheduleToken can be used to cancel the planned publication. */
   scheduleEvent(
     request: DeepPartial<ScheduleEventRequest>,
@@ -3988,7 +3988,7 @@ export const EventTransformationServiceDefinition = {
   },
 } as const;
 
-export interface EventTransformationServiceImplementation<CallContextExt = {}> {
+export type EventTransformationServiceImplementation<CallContextExt = {}> = {
   /** Returns the list of all transformations. */
   transformations(
     request: Empty,
@@ -4021,7 +4021,7 @@ export interface EventTransformationServiceImplementation<CallContextExt = {}> {
   ): ServerStreamingMethodResult<DeepPartial<Empty>>;
 }
 
-export interface EventTransformationServiceClient<CallOptionsExt = {}> {
+export type EventTransformationServiceClient<CallOptionsExt = {}> = {
   /** Returns the list of all transformations. */
   transformations(request: DeepPartial<Empty>, options?: CallOptions & CallOptionsExt): AsyncIterable<Transformation>;
   /** Starts a new transformation. */
@@ -4066,7 +4066,7 @@ function isSet(value: any): boolean {
 
 export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

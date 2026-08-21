@@ -7,177 +7,83 @@ import type {
 import type { AmqpChannelSource } from "./connection.js"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
 
-interface PendingRequest {
+type PendingRequest = {
   resolve(reply: RabbitMqQueryReplyEnvelope): void
   reject(error: Error): void
   timer: ReturnType<typeof setTimeout>
 }
 
 /**
- * AMQP request/reply transport for distributed queries.
- *
- * Mirrors {@link AmqpRabbitMqCommandTransport}: a per-process exclusive reply
- * queue, durable per-query handler queues bound to the shared queries exchange,
- * and correlation-id matched replies. Takes its own channel off the shared
- * {@link AmqpChannelSource}.
+ * The transport plus the lifecycle its owner drives — the query mirror of
+ * {@link AmqpRabbitMqCommandTransport}.
  */
-export class AmqpRabbitMqQueryTransport implements RabbitMqQueryTransport {
-  private channel: Channel | undefined
-  private replyQueue: string | undefined
-  private readonly handlers = new Map<string, (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>>()
-  private readonly boundHandlers = new Set<string>()
-  private readonly pending = new Map<string, PendingRequest>()
-  private readonly pendingBinds = new Set<Promise<void>>()
-  private connectPromise: Promise<void> | undefined
-  private closed = false
-
-  constructor(
-    private readonly config: RabbitMqResolvedConfig,
-    private readonly connection: AmqpChannelSource,
-  ) {}
-
-  async connect(): Promise<void> {
-    if (this.connectPromise) return this.connectPromise
-    this.connectPromise = this.doConnect()
-    return this.connectPromise
-  }
-
-  private async doConnect(): Promise<void> {
-    this.channel = await this.connection.channel()
-
-    await this.channel.assertExchange(this.config.topology.queriesExchange, "topic", { durable: true })
-    if (this.config.retry.deadLetter) {
-      await this.channel.assertExchange(this.config.retry.deadLetterExchange, "topic", { durable: true })
-    }
-
-    const reply = await this.channel.assertQueue(this.config.topology.queryReplyQueue(), {
-      durable: false,
-      exclusive: true,
-      autoDelete: true,
-    })
-    this.replyQueue = reply.queue
-    await this.channel.consume(reply.queue, (msg) => this.handleReply(msg), { noAck: true })
-
-    this.boundHandlers.clear()
-    for (const [queryName, handler] of this.handlers) {
-      await this.bindQueryHandler(queryName, handler)
-    }
-  }
-
+export type AmqpRabbitMqQueryTransport = RabbitMqQueryTransport & {
+  connect(): Promise<void>
   /**
    * Resolve once the connection is up and every handler subscribed so far is
-   * bound to its queue and consuming — see
-   * {@link AmqpRabbitMqCommandTransport.ready}.
+   * bound to its queue and consuming.
    */
-  async ready(): Promise<void> {
-    await this.connect()
-    while (this.pendingBinds.size > 0) {
-      await Promise.all([...this.pendingBinds])
-    }
-  }
-
+  ready(): Promise<void>
   /**
    * Close this transport's channel and fail any in-flight requests. The shared
    * connection is owned by its creator (see {@link amqpChannelSource}) and is
    * not closed here.
    */
-  async close(): Promise<void> {
-    this.closed = true
-    for (const [requestId, pending] of this.pending) {
-      clearTimeout(pending.timer)
-      pending.reject(new Error(`RabbitMQ query transport closed before reply for ${requestId}`))
-    }
-    this.pending.clear()
-    await this.channel?.close().catch(() => {})
+  close(): Promise<void>
+}
+
+/**
+ * AMQP request/reply transport for distributed queries.
+ *
+ * Mirrors {@link amqpRabbitMqCommandTransport}: a per-process exclusive reply
+ * queue, durable per-query handler queues bound to the shared queries exchange,
+ * and correlation-id matched replies. Takes its own channel off the shared
+ * {@link AmqpChannelSource}.
+ */
+export function amqpRabbitMqQueryTransport(
+  config: RabbitMqResolvedConfig,
+  connection: AmqpChannelSource,
+): AmqpRabbitMqQueryTransport {
+  let channel: Channel | undefined
+  let replyQueue: string | undefined
+  const handlers = new Map<string, (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>>()
+  const boundHandlers = new Set<string>()
+  const pending = new Map<string, PendingRequest>()
+  const pendingBinds = new Set<Promise<void>>()
+  let connectPromise: Promise<void> | undefined
+  let closed = false
+
+  const requireChannel = (): Channel => {
+    if (!channel) throw new Error("RabbitMQ query transport is not connected")
+    return channel
   }
 
-  async dispatch(envelope: RabbitMqQueryEnvelope): Promise<RabbitMqQueryReplyEnvelope> {
-    await this.connect()
-    if (this.closed) throw new Error("RabbitMQ query transport is closed")
-    const channel = this.requireChannel()
-    const replyQueue = this.replyQueue
-    if (!replyQueue) throw new Error("RabbitMQ reply queue is not initialized")
-
-    const body = Buffer.from(JSON.stringify(envelope))
-    const routingKey = this.config.topology.queryRoutingKey(envelope.message.name)
-
-    return new Promise<RabbitMqQueryReplyEnvelope>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(envelope.requestId)
-        reject(new Error(`Query ${routingKey} timed out after ${envelope.timeoutMs}ms`))
-      }, envelope.timeoutMs)
-      this.pending.set(envelope.requestId, { resolve, reject, timer })
-
-      channel.publish(
-        this.config.topology.queriesExchange,
-        routingKey,
-        body,
-        {
-          contentType: "application/json",
-          correlationId: envelope.requestId,
-          replyTo: replyQueue,
-          persistent: true,
-        },
-      )
-    })
-  }
-
-  subscribe(
-    queryName: string,
-    handler: (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>,
-  ): void {
-    this.handlers.set(queryName, handler)
-    if (this.channel) {
-      this.trackBind(this.bindQueryHandler(queryName, handler))
+  const handleReply = (msg: ConsumeMessage | null): void => {
+    if (!msg) return
+    const requestId = msg.properties.correlationId
+    if (!requestId) return
+    const request = pending.get(requestId)
+    if (!request) return
+    pending.delete(requestId)
+    clearTimeout(request.timer)
+    try {
+      request.resolve(JSON.parse(msg.content.toString("utf8")) as RabbitMqQueryReplyEnvelope)
+    } catch (error) {
+      request.reject(error instanceof Error ? error : new Error(String(error)))
     }
   }
 
-  /** Keep a background bind awaitable by {@link ready} without leaving it unhandled. */
-  private trackBind(bind: Promise<void>): void {
-    this.pendingBinds.add(bind)
-    const forget = () => {
-      this.pendingBinds.delete(bind)
-    }
-    bind.then(forget, forget)
-  }
-
-  private async bindQueryHandler(
-    queryName: string,
-    handler: (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>,
-  ): Promise<void> {
-    if (this.boundHandlers.has(queryName)) return
-    const channel = this.requireChannel()
-    const queue = this.config.topology.queryQueue(queryName)
-    const routingKey = this.config.topology.queryRoutingKey(queryName)
-
-    await channel.assertQueue(queue, {
-      durable: true,
-      exclusive: false,
-      autoDelete: false,
-      arguments: this.config.retry.deadLetter
-        ? {
-            "x-dead-letter-exchange": this.config.retry.deadLetterExchange,
-            "x-dead-letter-routing-key": routingKey,
-          }
-        : undefined,
-    })
-    await channel.bindQueue(queue, this.config.topology.queriesExchange, routingKey)
-    await channel.prefetch(1)
-    await channel.consume(queue, (msg) => this.handleQuery(msg, handler), { noAck: false })
-    this.boundHandlers.add(queryName)
-  }
-
-  private async handleQuery(
+  const handleQuery = async (
     msg: ConsumeMessage | null,
     handler: (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>,
-  ): Promise<void> {
+  ): Promise<void> => {
     if (!msg) return
-    const channel = this.requireChannel()
+    const ch = requireChannel()
     try {
       const envelope = JSON.parse(msg.content.toString("utf8")) as RabbitMqQueryEnvelope
       const reply = await handler(envelope)
       if (msg.properties.replyTo) {
-        channel.sendToQueue(
+        ch.sendToQueue(
           msg.properties.replyTo,
           Buffer.from(JSON.stringify(reply)),
           {
@@ -186,7 +92,7 @@ export class AmqpRabbitMqQueryTransport implements RabbitMqQueryTransport {
           },
         )
       }
-      channel.ack(msg)
+      ch.ack(msg)
     } catch (error) {
       const requestId = msg.properties.correlationId
       if (msg.properties.replyTo && requestId) {
@@ -195,7 +101,7 @@ export class AmqpRabbitMqQueryTransport implements RabbitMqQueryTransport {
           ok: false,
           error: serializeError(error),
         }
-        channel.sendToQueue(
+        ch.sendToQueue(
           msg.properties.replyTo,
           Buffer.from(JSON.stringify(reply)),
           {
@@ -204,28 +110,133 @@ export class AmqpRabbitMqQueryTransport implements RabbitMqQueryTransport {
           },
         )
       }
-      channel.nack(msg, false, false)
+      ch.nack(msg, false, false)
     }
   }
 
-  private handleReply(msg: ConsumeMessage | null): void {
-    if (!msg) return
-    const requestId = msg.properties.correlationId
-    if (!requestId) return
-    const pending = this.pending.get(requestId)
-    if (!pending) return
-    this.pending.delete(requestId)
-    clearTimeout(pending.timer)
-    try {
-      pending.resolve(JSON.parse(msg.content.toString("utf8")) as RabbitMqQueryReplyEnvelope)
-    } catch (error) {
-      pending.reject(error instanceof Error ? error : new Error(String(error)))
+  const bindQueryHandler = async (
+    queryName: string,
+    handler: (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>,
+  ): Promise<void> => {
+    if (boundHandlers.has(queryName)) return
+    const ch = requireChannel()
+    const queue = config.topology.queryQueue(queryName)
+    const routingKey = config.topology.queryRoutingKey(queryName)
+
+    await ch.assertQueue(queue, {
+      durable: true,
+      exclusive: false,
+      autoDelete: false,
+      arguments: config.retry.deadLetter
+        ? {
+            "x-dead-letter-exchange": config.retry.deadLetterExchange,
+            "x-dead-letter-routing-key": routingKey,
+          }
+        : undefined,
+    })
+    await ch.bindQueue(queue, config.topology.queriesExchange, routingKey)
+    await ch.prefetch(1)
+    await ch.consume(queue, (msg) => handleQuery(msg, handler), { noAck: false })
+    boundHandlers.add(queryName)
+  }
+
+  /** Keep a background bind awaitable by `ready` without leaving it unhandled. */
+  const trackBind = (bind: Promise<void>): void => {
+    pendingBinds.add(bind)
+    const forget = () => {
+      pendingBinds.delete(bind)
+    }
+    bind.then(forget, forget)
+  }
+
+  const doConnect = async (): Promise<void> => {
+    channel = await connection.channel()
+
+    await channel.assertExchange(config.topology.queriesExchange, "topic", { durable: true })
+    if (config.retry.deadLetter) {
+      await channel.assertExchange(config.retry.deadLetterExchange, "topic", { durable: true })
+    }
+
+    const reply = await channel.assertQueue(config.topology.queryReplyQueue(), {
+      durable: false,
+      exclusive: true,
+      autoDelete: true,
+    })
+    replyQueue = reply.queue
+    await channel.consume(reply.queue, (msg) => handleReply(msg), { noAck: true })
+
+    boundHandlers.clear()
+    for (const [queryName, handler] of handlers) {
+      await bindQueryHandler(queryName, handler)
     }
   }
 
-  private requireChannel(): Channel {
-    if (!this.channel) throw new Error("RabbitMQ query transport is not connected")
-    return this.channel
+  const connect = async (): Promise<void> => {
+    if (connectPromise) return connectPromise
+    connectPromise = doConnect()
+    return connectPromise
+  }
+
+  return {
+    connect,
+
+    async ready() {
+      await connect()
+      while (pendingBinds.size > 0) {
+        await Promise.all([...pendingBinds])
+      }
+    },
+
+    async close() {
+      closed = true
+      for (const [requestId, request] of pending) {
+        clearTimeout(request.timer)
+        request.reject(new Error(`RabbitMQ query transport closed before reply for ${requestId}`))
+      }
+      pending.clear()
+      await channel?.close().catch(() => {})
+    },
+
+    async dispatch(envelope: RabbitMqQueryEnvelope): Promise<RabbitMqQueryReplyEnvelope> {
+      await connect()
+      if (closed) throw new Error("RabbitMQ query transport is closed")
+      const ch = requireChannel()
+      const replyTo = replyQueue
+      if (!replyTo) throw new Error("RabbitMQ reply queue is not initialized")
+
+      const body = Buffer.from(JSON.stringify(envelope))
+      const routingKey = config.topology.queryRoutingKey(envelope.message.name)
+
+      return new Promise<RabbitMqQueryReplyEnvelope>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(envelope.requestId)
+          reject(new Error(`Query ${routingKey} timed out after ${envelope.timeoutMs}ms`))
+        }, envelope.timeoutMs)
+        pending.set(envelope.requestId, { resolve, reject, timer })
+
+        ch.publish(
+          config.topology.queriesExchange,
+          routingKey,
+          body,
+          {
+            contentType: "application/json",
+            correlationId: envelope.requestId,
+            replyTo,
+            persistent: true,
+          },
+        )
+      })
+    },
+
+    subscribe(
+      queryName: string,
+      handler: (envelope: RabbitMqQueryEnvelope) => Promise<RabbitMqQueryReplyEnvelope>,
+    ): void {
+      handlers.set(queryName, handler)
+      if (channel) {
+        trackBind(bindQueryHandler(queryName, handler))
+      }
+    },
   }
 }
 

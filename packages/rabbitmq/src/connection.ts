@@ -8,9 +8,9 @@ import type { RabbitMqTopologyConfig } from "./topology.js"
 import type { RabbitMqCommandTransport } from "./command-bus.js"
 import type { RabbitMqQueryTransport } from "./query-bus.js"
 import type { DistributedSubscriberRegistry } from "./distributed-subscriber-registry.js"
-import { AmqpRabbitMqCommandTransport } from "./amqp-command-transport.js"
-import { AmqpRabbitMqQueryTransport } from "./amqp-query-transport.js"
-import { AmqpDistributedSubscriberRegistry } from "./distributed-subscriber-registry.js"
+import { amqpRabbitMqCommandTransport } from "./amqp-command-transport.js"
+import { amqpRabbitMqQueryTransport } from "./amqp-query-transport.js"
+import { amqpDistributedSubscriberRegistry } from "./distributed-subscriber-registry.js"
 
 /** Establishes a raw AMQP connection. Swapped for a fake in tests. */
 export type AmqpConnect = (url: string) => Promise<ChannelModel>
@@ -19,7 +19,7 @@ export type AmqpConnect = (url: string) => Promise<ChannelModel>
  * The raw socket multiplexer: one lazily-established AMQP connection that hands
  * out channels. This is what a transport borrows — it never owns the socket.
  */
-export interface AmqpChannelSource {
+export type AmqpChannelSource = {
   /**
    * Open a fresh channel on the (lazily established) connection. Each transport
    * takes its own channel so prefetch and consumer state stay isolated.
@@ -63,7 +63,7 @@ export function amqpChannelSource(
 }
 
 /** Identity plus the topology/retry knobs that shape what gets declared on the broker. */
-export interface RabbitMqConnectionOptions {
+export type RabbitMqConnectionOptions = {
   /** Shared by every replica of the same deployment. */
   readonly serviceName: string
   /** Unique per running process — reply and gossip queue names are derived from it. */
@@ -81,11 +81,11 @@ export interface RabbitMqConnectionOptions {
  *
  * The transports are on it because they ARE the connection's channels — they
  * cannot outlive it and there is exactly one of each per connection. The BUSES
- * are not: `rabbitMqCommandBus(rabbit, local)` and
- * `rabbitMqQueryBus(rabbit, local)` are plain functions over this, and a caller
+ * are not: `rabbitMqCommandBus(local, rabbit)` and
+ * `rabbitMqQueryBus(local, rabbit)` are plain functions over this, and a caller
  * who wants only commands builds only that one.
  */
-export interface RabbitMqConnection extends AmqpChannelSource {
+export type RabbitMqConnection = AmqpChannelSource & {
   /** Config after defaults — the topology names in use, handy for diagnostics. */
   readonly config: RabbitMqResolvedConfig
   readonly commandTransport: RabbitMqCommandTransport
@@ -111,9 +111,9 @@ export interface RabbitMqConnection extends AmqpChannelSource {
  *   instanceId: process.env.POD_NAME!,
  * })
  * const commandBus = interceptingCommandBus(
- *   rabbitMqCommandBus(rabbit, simpleCommandBus(unitOfWork)), lineage)
+ *   rabbitMqCommandBus(localCommandBus(unitOfWork), rabbit), correlation)
  * const queryBus = interceptingQueryBus(
- *   rabbitMqQueryBus(rabbit, simpleQueryBus(unitOfWork)), lineage)
+ *   rabbitMqQueryBus(localQueryBus(unitOfWork), rabbit), correlation)
  *
  * const app = kronos({ commandHandlers, queryHandlers })
  * await rabbit.start()      // handlers are registered — bind and consume
@@ -139,9 +139,9 @@ export async function rabbitMqConnection(
   })
 
   const channels = amqpChannelSource(url, amqpConnect)
-  const commandTransport = new AmqpRabbitMqCommandTransport(config, channels)
-  const queryTransport = new AmqpRabbitMqQueryTransport(config, channels)
-  const subscriberRegistry = new AmqpDistributedSubscriberRegistry(config, channels)
+  const commandTransport = amqpRabbitMqCommandTransport(config, channels)
+  const queryTransport = amqpRabbitMqQueryTransport(config, channels)
+  const subscriberRegistry = amqpDistributedSubscriberRegistry(config, channels)
 
   await Promise.all([
     commandTransport.connect(),

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { type Serializer, type SerializedObject } from "@kronos-ts/core"
-import { payloadEquals, simpleQueryBus, unitOfWork } from "@kronos-ts/core"
+import { payloadEquals, localQueryBus, unitOfWork } from "@kronos-ts/core"
 import { kronosDbQueryBus } from "../kronosdb.js"
 import { shutdownLatch } from "../shutdown-latch.js"
 import type { KronosDbConnection } from "../connection.js"
@@ -53,7 +53,6 @@ function fakeConnection(captured: { outbound: any[]; outboundIter?: AsyncIterabl
     channel: {} as any,
     platform: {} as any,
     commands: {} as any,
-    snapshotStore: {} as any,
     eventStore: {} as any,
     queries: {
       openStream(outboundIter: AsyncIterable<any>) {
@@ -112,6 +111,7 @@ describe("kronosDbQueryBus — subscription queries", () => {
     latch = shutdownLatch()
 
     const bus = kronosDbQueryBus(
+      localQueryBus(unitOfWork),
       {
         connection: fakeConnection(captured, inbound.iterable),
         serializer: jsonSerializer,
@@ -119,7 +119,6 @@ describe("kronosDbQueryBus — subscription queries", () => {
           latch = l
         },
       },
-      simpleQueryBus(unitOfWork),
     )
 
     bus.subscribe("kronos.test.WatchValue", async () => {

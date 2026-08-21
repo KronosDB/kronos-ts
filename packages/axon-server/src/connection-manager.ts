@@ -22,7 +22,7 @@ import { connectToAxonServer } from "./connection.js"
  * await manager.disconnectAll()
  * ```
  */
-export interface AxonServerConnectionManager {
+export type AxonServerConnectionManager = {
   /**
    * Get or create a connection for the given context.
    * Connections are created lazily and cached.

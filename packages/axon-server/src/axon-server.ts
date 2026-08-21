@@ -3,16 +3,16 @@
  *
  * Axon Server is a SMART HUB: outbound dispatch always goes to the server, and
  * the server decides which node handles it — there is no client-side
- * prefer-local fork here, which is the whole difference from the dumb-pipe
+ * prefer-next fork here, which is the whole difference from the dumb-pipe
  * broker in `@kronos-ts/rabbitmq`.
  *
- * Both buses are plain functions over the shared connection and YOUR local bus:
+ * Both buses are plain functions over the shared connection and YOUR next bus:
  *
  * ```ts
  * const commandBus = interceptingCommandBus(
- *   axonServerCommandBus(axon, simpleCommandBus(unitOfWork)), lineage)
+ *   axonServerCommandBus(localCommandBus(unitOfWork), axon), correlation)
  * const queryBus = interceptingQueryBus(
- *   axonServerQueryBus(axon, simpleQueryBus(unitOfWork)), lineage)
+ *   axonServerQueryBus(localQueryBus(unitOfWork), axon), correlation)
  * ```
  *
  * Axon-specific protocol invariants are preserved byte-for-byte:
@@ -30,9 +30,8 @@ import {
   qualifiedNameFromString,
   generateIdentifier,
   type Serializer,
-  withRetry,
-  type ResilienceConfig,
 } from "@kronos-ts/core"
+import { withRetry, type ResilienceConfig } from "./resilience.js"
 import type {
   CommandBus,
   CommandMessage,
@@ -41,12 +40,10 @@ import type {
   SubscriptionFilter,
   SubscriptionQueryResult,
   UnitOfWork,
-  Unstamped,
   UpdateHandler,
 } from "@kronos-ts/core"
 import {
   applySubscriptionFilter,
-  stamped,
   updateHandler,
   runAfterCommitOrImmediately,
 } from "@kronos-ts/core"
@@ -69,7 +66,7 @@ const DEFAULT_LOAD_FACTOR = 100
 /**
  * Flow control configuration for a bus channel.
  */
-export interface FlowControlConfig {
+export type FlowControlConfig = {
   /** Initial permits granted to Axon Server. Default: 5000 (aligned with Java). */
   permits?: number
   /** Threshold at which to request more permits. Default: 2500 (aligned with Java). */
@@ -80,7 +77,7 @@ export interface FlowControlConfig {
  * Processing instructions attached to outbound messages.
  * Controls routing, priority, and timeout behavior on Axon Server.
  */
-export interface ProcessingInstructions {
+export type ProcessingInstructions = {
   /** Routing key for consistent hashing (e.g., aggregate ID). */
   routingKey?: string
   /** Priority (higher = processed first). Default: 0 */
@@ -91,10 +88,10 @@ export interface ProcessingInstructions {
 
 /**
  * Tuning for {@link axonServerCommandBus}. Every field has a working default;
- * the two arguments that carry meaning — the connection and your local bus —
+ * the two arguments that carry meaning — the connection and your next bus —
  * are positional, and this record is the trailing remainder.
  */
-export interface AxonServerCommandBusOptions {
+export type AxonServerCommandBusOptions = {
   /** Axon Server context for this bus's stream. Default: the connection's. */
   context?: string
   /** Flow control for the command stream. */
@@ -112,7 +109,7 @@ export interface AxonServerCommandBusOptions {
 /**
  * Tuning for {@link axonServerQueryBus}. See {@link AxonServerCommandBusOptions}.
  */
-export interface AxonServerQueryBusOptions {
+export type AxonServerQueryBusOptions = {
   /** Axon Server context for this bus's stream. Default: the connection's. */
   context?: string
   /** Flow control for the query stream. */
@@ -208,33 +205,33 @@ function createPayloadHelpers(serializer: Serializer) {
 // ---------------------------------------------------------------------------
 
 /**
- * A command bus backed by Axon Server, over YOUR local bus.
+ * A command bus backed by Axon Server, over YOUR next bus.
  *
  * - **Outbound dispatch**: ALWAYS through Axon Server, via the unary Dispatch
  *   RPC. Axon Server routes the command to the appropriate node (which may be
- *   this one). There is deliberately no client-side prefer-local fork: the hub
+ *   this one). There is deliberately no client-side prefer-next fork: the hub
  *   is the router, and short-circuiting it would silently defeat load factors,
  *   priorities and routing keys.
- * - **Inbound**: a command the server routes here is dispatched into `local` —
+ * - **Inbound**: a command the server routes here is dispatched into `next` —
  *   not into a privately-held handler map. That is what makes the unit-of-work
- *   policy you chose for `local` (say `postgresUnitOfWork(pg, unitOfWork)`)
+ *   policy you chose for `next` (say `postgresUnitOfWork(unitOfWork, pg)`)
  *   apply to server-routed work exactly as it applies to work this process
  *   originated. It is also why this function takes no `unitOfWork` argument:
- *   `local` carries that policy now.
- * - **subscribe**: registers the handler on `local` AND announces the name to
+ *   `next` carries that policy now.
+ * - **subscribe**: registers the handler on `next` AND announces the name to
  *   Axon Server, so other nodes can route to us.
  *
- * ## Correlation lineage and the interceptor layer
+ * ## correlation and the interceptor layer
  *
- * The returned bus stamps no lineage of its own. A host that wants it wraps the
+ * The returned bus stamps no correlation of its own. A host that wants it wraps the
  * OUTERMOST bus:
  *
  * ```ts
- * interceptingCommandBus(axonServerCommandBus(conn, local), lineage)
+ * interceptingCommandBus(axonServerCommandBus(next, conn), correlation)
  * ```
  *
  * so whatever a host adds runs BEFORE the message is serialized onto the wire.
- * Lineage itself is usually already on `message.metadata` by then — `ctx.send`
+ * Correlation itself is usually already on `message.metadata` by then — `ctx.send`
  * stamps the unit of work's correlation data before any bus sees the message.
  *
  * This is precisely how the Java client does it. AF4's `AxonServerCommandBus`
@@ -242,17 +239,17 @@ function createPayloadHelpers(serializer: Serializer) {
  * `doDispatch(dispatchInterceptors.intercept(commandMessage), cb)` — one call
  * site, at the top, ahead of any routing. AF5 keeps the property via decorator
  * order: `DISTRIBUTED_COMMAND_BUS_ORDER = InterceptingCommandBus.DECORATION_ORDER - 50`
- * stacks `InterceptingCommandBus → DistributedCommandBus → SimpleCommandBus`.
+ * stacks `InterceptingCommandBus → DistributedCommandBus → LocalCommandBus`.
  *
- * If `local` is itself an intercepting bus, a server-routed command sees
- * `lineage` twice. That is harmless: both of its fields are `??` seeds, so the
+ * If `next` is itself an intercepting bus, a server-routed command sees
+ * `correlation` twice. That is harmless: both of its fields are `??` seeds, so the
  * second application finds them set and changes nothing.
  */
-export function axonServerCommandBus(
+export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
+  next: CommandBus<U>,
   conn: AxonServerBusSource,
-  local: CommandBus,
   options: AxonServerCommandBusOptions = {},
-): CommandBus {
+): CommandBus<U> {
   const {
     connection,
     serializer,
@@ -268,9 +265,9 @@ export function axonServerCommandBus(
 
   /**
    * The names this node announced to Axon Server. The handlers themselves live
-   * on `local`; this set exists so an inbound command for a name we never
+   * on `next`; this set exists so an inbound command for a name we never
    * subscribed still answers NO_HANDLER_FOR_COMMAND rather than whatever
-   * `local.dispatch` happens to throw — and so a reconnect can re-announce.
+   * `next.dispatch` happens to throw — and so a reconnect can re-announce.
    */
   const subscribedNames = new Set<string>()
 
@@ -371,18 +368,18 @@ export function axonServerCommandBus(
             }
 
             // Through the LOCAL BUS, so the caller's unit-of-work policy runs.
-            // AF parity is preserved: `CommandProcessingTask` runs the local
-            // segment without re-running dispatch interceptors, and a `local`
-            // that happens to carry `lineage` re-applies a pair of `??` seeds
+            // AF parity is preserved: `CommandProcessingTask` runs the next
+            // segment without re-running dispatch interceptors, and a `next`
+            // that happens to carry `correlation` re-applies a pair of `??` seeds
             // that are already set.
-            resultPayload = await local.dispatch(commandMessage)
+            resultPayload = await next.dispatch(commandMessage)
           } catch (err) {
             errorCode = AxonServerErrorCode.COMMAND_EXECUTION_ERROR
             errorMsg = err instanceof Error ? err.message : String(err)
           }
         } else {
           errorCode = AxonServerErrorCode.NO_HANDLER_FOR_COMMAND
-          errorMsg = `No local handler for command "${commandName}"`
+          errorMsg = `No next handler for command "${commandName}"`
         }
 
         // Send response back to Axon Server
@@ -431,14 +428,13 @@ export function axonServerCommandBus(
   }
 
   return {
-    async dispatch(unstamped: Unstamped<CommandMessage>): Promise<unknown> {
+    async dispatch(unstamped: CommandMessage): Promise<unknown> {
       // A transport is not a task: it has no unit of work, so it has no clock.
-      // A message that reaches the wire still {@link Unstamped} is therefore
-      // stamped from system time here — the envelope crosses a process boundary
-      // and must be fully formed. A locally-shortcut message is handed to
-      // `local` unstamped instead, so the task that handles it supplies the
-      // instant.
-      const message = stamped(unstamped, Date.now)
+      // A message that reaches the wire with no instant yet gets one from system
+      // time here — the envelope crosses a process boundary and must be fully
+      // formed. A locally-shortcut message is handed to `next` untouched
+      // instead, so the task that handles it supplies the instant.
+      const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const activity = shutdownLatch.registerActivity()
       try {
         const commandName = qualifiedNameToString(message.name)
@@ -471,10 +467,10 @@ export function axonServerCommandBus(
 
     subscribe(
       commandName: string,
-      handler: (message: CommandMessage, uow: UnitOfWork) => Promise<unknown>,
+      handler: (message: CommandMessage, uow: U) => Promise<unknown>,
     ) {
       subscribedNames.add(commandName)
-      local.subscribe(commandName, handler)
+      next.subscribe(commandName, handler)
 
       ensureStreamStarted()
       // Subscription FIRST
@@ -490,35 +486,35 @@ export function axonServerCommandBus(
 // ---------------------------------------------------------------------------
 
 /**
- * A query bus backed by Axon Server, over YOUR local bus.
+ * A query bus backed by Axon Server, over YOUR next bus.
  *
  * Same architecture as {@link axonServerCommandBus}: outbound dispatch goes
- * through Axon Server, and a query the server routes here runs through `local`,
+ * through Axon Server, and a query the server routes here runs through `next`,
  * so your unit-of-work policy applies to server-routed reads too. `subscribe`
- * registers on `local` and announces the name to the server.
+ * registers on `next` and announces the name to the server.
  *
  * The one asymmetry with commands is `shortcutQueriesToLocalHandlers` — Java
  * has it for queries and not for commands, and so do we. When it is on and this
- * node subscribed the name, `query()` goes straight to `local` and the caller's
- * unit of work is passed through, so the local branch nests exactly as the
+ * node subscribed the name, `query()` goes straight to `next` and the caller's
+ * unit of work is passed through, so the next branch nests exactly as the
  * in-process bus does.
  *
- * Lineage, if wanted, is `interceptingQueryBus(bus, lineage)` at the host,
+ * Correlation, if wanted, is `interceptingQueryBus(bus, correlation)` at the host,
  * matching AF4's `AxonServerQueryBus`, which calls
  * `dispatchInterceptors.intercept(...)` at the top of `query`, `streamingQuery`,
  * `scatterGather` and `subscriptionQuery`. Because the wrap is outside, the
- * shortcut branch gets identical lineage to the remote branch.
+ * shortcut branch gets identical correlation to the remote branch.
  *
  * KNOWN GAP: `subscriptionQuery` / `subscribeToUpdates` build their proto
  * straight from `message.metadata`, and `interceptingQueryBus` (in
  * `@kronos-ts/core`) forwards those two calls to the delegate without
  * running the dispatch chain. Closing that needs a core change.
  */
-export function axonServerQueryBus(
+export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
+  next: QueryBus<U>,
   conn: AxonServerBusSource,
-  local: QueryBus,
   options: AxonServerQueryBusOptions = {},
-): QueryBus {
+): QueryBus<U> {
   const {
     connection,
     serializer,
@@ -533,7 +529,7 @@ export function axonServerQueryBus(
   const queryTimeoutMs = options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
 
-  /** Query names announced to Axon Server; the handlers live on `local`. */
+  /** Query names announced to Axon Server; the handlers live on `next`. */
   const subscribedNames = new Set<string>()
 
   // Local subscription store — subscription queries opened by THIS instance.
@@ -643,14 +639,14 @@ export function axonServerQueryBus(
             metadata: metadataFromProto(proto.metaData ?? {}),
             timestamp: Number(proto.timestamp),
           }
-          resultPayload = await local.query(queryMessage)
+          resultPayload = await next.query(queryMessage)
         } catch (err) {
           errorCode = AxonServerErrorCode.QUERY_EXECUTION_ERROR
           errorMsg = err instanceof Error ? err.message : String(err)
         }
       } else {
         errorCode = AxonServerErrorCode.NO_HANDLER_FOR_QUERY
-        errorMsg = `No local handler for query "${queryName}"`
+        errorMsg = `No next handler for query "${queryName}"`
       }
 
       const responseSerialized =
@@ -715,16 +711,16 @@ export function axonServerQueryBus(
               timestamp: Number(proto.timestamp),
             }
 
-            // Through the LOCAL BUS: no unit of work is handed in, so `local`
+            // Through the LOCAL BUS: no unit of work is handed in, so `next`
             // opens one under whatever policy the caller gave it.
-            resultPayload = await local.query(queryMessage)
+            resultPayload = await next.query(queryMessage)
           } catch (err) {
             errorCode = AxonServerErrorCode.QUERY_EXECUTION_ERROR
             errorMsg = err instanceof Error ? err.message : String(err)
           }
         } else {
           errorCode = AxonServerErrorCode.NO_HANDLER_FOR_QUERY
-          errorMsg = `No local handler for query "${queryName}"`
+          errorMsg = `No next handler for query "${queryName}"`
         }
 
         outbound.send({
@@ -778,28 +774,27 @@ export function axonServerQueryBus(
     }
   }
 
-  const routing: QueryBus = {
-    async query(unstamped: Unstamped<QueryMessage>, uow?: UnitOfWork): Promise<unknown> {
+  const routing: QueryBus<U> = {
+    async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
         const queryName = qualifiedNameToString(unstamped.name)
 
         // Local shortcut — handle locally if a handler is co-located. The
-        // caller's unit of work is passed straight through, so `local` makes the
+        // caller's unit of work is passed straight through, so `next` makes the
         // nest-or-open decision on the HANDLE exactly as it does for an
         // in-process read: a live unit of work handed in by `ctx.query` is
         // reused so the consulting read shares the caller's transaction.
         if (shortcutQueriesToLocalHandlers && subscribedNames.has(queryName)) {
-          return local.query(unstamped, uow)
+          return next.query(unstamped, uow)
         }
 
       // A transport is not a task: it has no unit of work, so it has no clock.
-      // A message that reaches the wire still {@link Unstamped} is therefore
-      // stamped from system time here — the envelope crosses a process boundary
-      // and must be fully formed. A locally-shortcut message is handed to
-      // `local` unstamped instead, so the task that handles it supplies the
-      // instant.
-        const message = stamped(unstamped, Date.now)
+      // A message that reaches the wire with no instant yet gets one from system
+      // time here — the envelope crosses a process boundary and must be fully
+      // formed. A locally-shortcut message is handed to `next` untouched
+      // instead, so the task that handles it supplies the instant.
+        const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
 
         const responseStream = connection.queries.query(
           {
@@ -833,10 +828,10 @@ export function axonServerQueryBus(
 
     subscribe(
       queryName: string,
-      handler: (message: QueryMessage, uow: UnitOfWork) => Promise<unknown>,
+      handler: (message: QueryMessage, uow: U) => Promise<unknown>,
     ) {
       subscribedNames.add(queryName)
-      local.subscribe(queryName, handler)
+      next.subscribe(queryName, handler)
 
       ensureStreamStarted()
       sendSubscribe(queryName)
@@ -845,10 +840,10 @@ export function axonServerQueryBus(
     },
 
     subscriptionQuery(
-      unstamped: Unstamped<QueryMessage>,
+      unstamped: QueryMessage,
       bufferSize?: number,
     ): SubscriptionQueryResult {
-      const message = stamped(unstamped, Date.now)
+      const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
@@ -973,10 +968,10 @@ export function axonServerQueryBus(
     },
 
     subscribeToUpdates(
-      unstamped: Unstamped<QueryMessage>,
+      unstamped: QueryMessage,
       bufferSize?: number,
     ): AsyncIterable<unknown> & { close(): void } {
-      const message = stamped(unstamped, Date.now)
+      const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)

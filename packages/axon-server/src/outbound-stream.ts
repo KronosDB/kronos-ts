@@ -3,7 +3,7 @@
  * bidirectional gRPC stream. Buffers messages when the stream isn't
  * consuming, and resolves promises when the stream is waiting.
  */
-export interface OutboundStream<T> {
+export type OutboundStream<T> = {
   /** Send a message into the stream. */
   send(message: T): void
   /** The async iterable to pass to the gRPC client. */

@@ -6,7 +6,7 @@ import type { Metadata } from "@kronos-ts/core"
  * Since we don't have generated types yet, we define the shape
  * inline. Once proto codegen runs, these can be replaced with imports.
  */
-export interface MetadataValue {
+export type MetadataValue = {
   textValue?: string
   numberValue?: bigint
   booleanValue?: boolean

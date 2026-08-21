@@ -12,7 +12,7 @@ import type { AxonServerStoreSource } from "./connection.js"
  * channel, the codec or the drain latch differs between them; only this header
  * does, which is why the whole difference fits in one small record.
  */
-export interface AxonServerContextView extends AxonServerStoreSource {
+export type AxonServerContextView = AxonServerStoreSource & {
   /** The Axon Server context every call through this view addresses. */
   readonly context: string
   /**

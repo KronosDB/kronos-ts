@@ -3,9 +3,9 @@ import { z } from "zod"
 import { emptyMetadata, qn } from "@kronos-ts/core"
 import { query, payloadEquals, unitOfWork } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingQueryBus,
-  simpleQueryBus,
+  localQueryBus,
   type QueryBus,
 } from "@kronos-ts/core"
 import {
@@ -64,15 +64,15 @@ function busOver(params: {
 }): QueryBus {
   return interceptingQueryBus(
     rabbitMqQueryBus(
+      params.localSegment ?? localQueryBus(unitOfWork),
       {
         config: rabbitConfig({ url: "amqp://test" }, params.identity),
         queryTransport: params.transport,
         subscriberRegistry: params.subscriberRegistry,
       },
-      params.localSegment ?? simpleQueryBus(unitOfWork),
       params.options,
     ),
-    lineage,
+    correlation,
   )
 }
 
@@ -125,7 +125,7 @@ describe("RabbitMQ query bus", () => {
       timestamp: Date.now(),
     })
 
-    // `lineage` SEEDS and never clobbers: a query that already carries a cause
+    // `correlation` SEEDS and never clobbers: a query that already carries a cause
     // keeps it across the hop, so the causal chain survives more than one leg.
     expect(dispatched[0]!.message.metadata).toEqual({
       correlationId: "corr-1",
@@ -406,11 +406,11 @@ describe("RabbitMQ query bus", () => {
 // direct-routed topology.
 // ---------------------------------------------------------------------------
 
-interface MeshRegistry extends DistributedSubscriberRegistry {
+type MeshRegistry = DistributedSubscriberRegistry & {
   readonly instanceId: string
 }
 
-interface InProcessMesh {
+type InProcessMesh = {
   join(instanceId: string): MeshRegistry
 }
 

@@ -12,7 +12,7 @@ export {
 
 export { axonServerEventStore } from "./axon-server-event-store.js"
 
-export { axonServerSnapshotStore } from "./axon-server-snapshot-store.js"
+export { axonServerSnapshottingEventStore } from "./axon-server-snapshotting-event-store.js"
 
 export {
   axonServerCommandBus,

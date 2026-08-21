@@ -20,7 +20,7 @@ export const protobufPackage = "google.protobuf";
  *
  * The JSON representation for `Empty` is empty JSON object `{}`.
  */
-export interface Empty {
+export type Empty = {
 }
 
 function createBaseEmpty(): Empty {
@@ -74,7 +74,7 @@ export type DeepPartial<T> = T extends Builtin ? T
   : T extends {} ? { [K in keyof T]?: DeepPartial<T[K]> }
   : Partial<T>;
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

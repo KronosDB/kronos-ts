@@ -2,14 +2,12 @@ import {
   applySubscriptionFilter,
   qualifiedNameToString,
   runAfterCommitOrImmediately,
-  stamped,
   updateHandler,
   type QueryBus,
   type QueryMessage,
   type SubscriptionFilter,
   type SubscriptionQueryResult,
   type UnitOfWork,
-  type Unstamped,
   type UpdateHandler,
 } from "@kronos-ts/core"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
@@ -19,14 +17,14 @@ import type {
 } from "./distributed-subscriber-registry.js"
 import type { RabbitMqBusOptions } from "./command-bus.js"
 
-export interface RabbitMqQueryEnvelope {
+export type RabbitMqQueryEnvelope = {
   readonly kind: "query"
   readonly requestId: string
   readonly message: QueryMessage
   readonly timeoutMs: number
 }
 
-export interface RabbitMqQueryReplyEnvelope {
+export type RabbitMqQueryReplyEnvelope = {
   readonly requestId: string
   readonly ok: boolean
   readonly result?: unknown
@@ -37,7 +35,7 @@ export interface RabbitMqQueryReplyEnvelope {
   }
 }
 
-export interface RabbitMqQueryTransport {
+export type RabbitMqQueryTransport = {
   dispatch(envelope: RabbitMqQueryEnvelope): Promise<RabbitMqQueryReplyEnvelope>
   subscribe(
     queryName: string,
@@ -49,20 +47,20 @@ const DEFAULT_TIMEOUT_MS = 30_000
 
 /**
  * What the bus borrows from the connection. `subscriberRegistry` is optional
- * because a connection without one leaves subscription queries local-only
+ * because a connection without one leaves subscription queries next-only
  * rather than failing.
  */
-export interface RabbitMqQueryBusSource {
+export type RabbitMqQueryBusSource = {
   readonly config: RabbitMqResolvedConfig
   readonly queryTransport: RabbitMqQueryTransport
   readonly subscriberRegistry?: DistributedSubscriberRegistry
 }
 
 /**
- * A RabbitMQ-backed query bus over YOUR local segment.
+ * A RabbitMQ-backed query bus over YOUR next segment.
  *
  * Direct request/reply queries fork exactly as {@link rabbitMqCommandBus} does:
- * a query this instance subscribed goes to `local`, anything else over the
+ * a query this instance subscribed goes to `next`, anything else over the
  * broker — durable per-query queues with competing consumers, an identity-named
  * exclusive reply queue, correlation-id matched replies.
  *
@@ -80,27 +78,27 @@ export interface RabbitMqQueryBusSource {
  * never crosses the wire. `completeSubscription` and
  * `completeSubscriptionExceptionally` follow the same path.
  *
- * Without a registry the bus degrades to local-only subscription queries rather
+ * Without a registry the bus degrades to next-only subscription queries rather
  * than failing.
  *
  * ## Where the interceptors go
  *
  * Outside, as on the command side —
- * `interceptingQueryBus(rabbitMqQueryBus(rabbit, local), lineage)`.
+ * `interceptingQueryBus(rabbitMqQueryBus(next, rabbit), correlation)`.
  *
  * KNOWN GAP, carried over unchanged: `interceptingQueryBus` forwards
  * `subscriptionQuery` / `subscribeToUpdates` to its delegate without running
  * the dispatch chain, so an outer wrapper's transforms never reach them. The
- * initial result below takes the same local-vs-remote fork as a plain `query`,
+ * initial result below takes the same next-vs-remote fork as a plain `query`,
  * but it enters at `bus.query` — INSIDE any outer wrapper. Closing that needs a
  * seam in `interceptingQueryBus`, not here; the same hole exists on every
  * backend.
  */
-export function rabbitMqQueryBus(
+export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
+  next: QueryBus<U>,
   rabbit: RabbitMqQueryBusSource,
-  local: QueryBus,
   options: RabbitMqBusOptions = {},
-): QueryBus {
+): QueryBus<U> {
   const transport = rabbit.queryTransport
   const registry = rabbit.subscriberRegistry
   const localHandlers = new Set<string>()
@@ -174,22 +172,21 @@ export function rabbitMqQueryBus(
     }
   }
 
-  const bus: QueryBus = {
-    async query(unstamped: Unstamped<QueryMessage>, uow?: UnitOfWork): Promise<unknown> {
+  const bus: QueryBus<U> = {
+    async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       const queryName = qualifiedNameToString(unstamped.name)
       if (preferLocal && localHandlers.has(queryName)) {
-        // Hand the unit of work through so a `ctx.query` that prefers a local
+        // Hand the unit of work through so a `ctx.query` that prefers a next
         // handler still nests in the caller's UoW, as the in-process bus does.
-        return local.query(unstamped, uow)
+        return next.query(unstamped, uow)
       }
 
       // A transport is not a task: it has no unit of work, so it has no clock.
-      // A message that reaches the wire still {@link Unstamped} is therefore
-      // stamped from system time here — the envelope crosses a process boundary
-      // and must be fully formed. A locally-shortcut message is handed to
-      // `local` unstamped instead, so the task that handles it supplies the
-      // instant.
-      const message = stamped(unstamped, Date.now)
+      // A message that reaches the wire with no instant yet gets one from system
+      // time here — the envelope crosses a process boundary and must be fully
+      // formed. A locally-shortcut message is handed to `next` untouched
+      // instead, so the task that handles it supplies the instant.
+      const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
 
       const reply = await transport.dispatch({
         kind: "query",
@@ -203,14 +200,14 @@ export function rabbitMqQueryBus(
 
     subscribe(queryName, handler): void {
       localHandlers.add(queryName)
-      local.subscribe(queryName, handler)
+      next.subscribe(queryName, handler)
 
       // As on the command side: a handling failure is an `ok: false` reply on
-      // an ACKed message, not a nack. Inbound work runs through `local`, so it
-      // inherits whatever unit-of-work policy the local segment was built with.
+      // an ACKed message, not a nack. Inbound work runs through `next`, so it
+      // inherits whatever unit-of-work policy the next segment was built with.
       void transport.subscribe(queryName, async (envelope) => {
         try {
-          const result = await local.query(envelope.message)
+          const result = await next.query(envelope.message)
           return { requestId: envelope.requestId, ok: true, result }
         } catch (error) {
           return { requestId: envelope.requestId, ok: false, error: serializeError(error) }
@@ -219,10 +216,10 @@ export function rabbitMqQueryBus(
     },
 
     subscriptionQuery(
-      unstamped: Unstamped<QueryMessage>,
+      unstamped: QueryMessage,
       bufferSize?: number,
     ): SubscriptionQueryResult {
-      const message = stamped(unstamped, Date.now)
+      const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const handler = registerSubscription(message, bufferSize)
       // Through `bus.query`, so the initial result takes the same routing fork
       // a plain query does.
@@ -235,10 +232,10 @@ export function rabbitMqQueryBus(
     },
 
     subscribeToUpdates(
-      unstamped: Unstamped<QueryMessage>,
+      unstamped: QueryMessage,
       bufferSize?: number,
     ): AsyncIterable<unknown> & { close(): void } {
-      const message = stamped(unstamped, Date.now)
+      const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const handler = registerSubscription(message, bufferSize)
       return {
         [Symbol.asyncIterator]: () => handler.iterable[Symbol.asyncIterator](),
@@ -262,7 +259,7 @@ export function rabbitMqQueryBus(
           return
         }
 
-        // Local-only mode: filter and offer against the local subscriber set.
+        // Local-only mode: filter and offer against the next subscriber set.
         for (const [id, handler] of localOwnedHandlers) {
           if (!handler.active) {
             localOwnedHandlers.delete(id)

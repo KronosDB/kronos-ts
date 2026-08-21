@@ -23,7 +23,7 @@ import type {
 import type { ProcessorStatusSupplier } from "../event-processor-info.js"
 import { axonServerControlPlane, type ManagedEventProcessor } from "../control-plane.js"
 
-interface FakePlatform extends PlatformConnection {
+type FakePlatform = PlatformConnection & {
   /** Every call recorded in order, for the ordering assertion. */
   readonly calls: string[]
   emit(instruction: PlatformInstruction): Promise<void>

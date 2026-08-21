@@ -1,6 +1,6 @@
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 
-export interface RunningRabbitMq {
+export type RunningRabbitMq = {
   readonly url: string
   readonly host: string
   readonly port: number

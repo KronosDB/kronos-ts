@@ -12,7 +12,7 @@
  *   3. sources events by tag query
  *   4. enforces capacity limits (multi-event entity load)
  *   5. prevents duplicate enrollment
- *   6. snapshot store roundtrip via axonServerSnapshotStore
+ *   6. snapshot roundtrip via axonServerSnapshottingEventStore
  *
  * Reconnect / failover scenarios are covered by the integrationtests-suite
  * e2e (e2e-axonserver-http.integration.test.ts) where the full HTTP stack
@@ -28,21 +28,22 @@ import { state } from "@kronos-ts/core"
 import {
   interceptingCommandBus,
   interceptingQueryBus,
-  lineage,
-  simpleCommandBus,
-  simpleQueryBus,
+  correlation,
+  localCommandBus,
+  localQueryBus,
   type CommandBus,
   type EventStore,
   type QueryBus,
   type Snapshot,
-  type SnapshotStore,
+  type SnapshotCapableEventStore,
+  snapshotIdentifier,
 } from "@kronos-ts/core"
 import { kronos, type App } from "@kronos-ts/core"
 import { axonServerCommandBus, axonServerQueryBus } from "../axon-server.js"
 import { axonServerControlPlane, type ManagedEventProcessor } from "../control-plane.js"
 import { axonServerConnection, type AxonServerConnectionHandle } from "../connection.js"
 import { axonServerEventStore } from "../axon-server-event-store.js"
-import { axonServerSnapshotStore } from "../axon-server-snapshot-store.js"
+import { axonServerSnapshottingEventStore } from "../axon-server-snapshotting-event-store.js"
 
 // ============================================================================
 // Domain — Course / Student enrollment (mirror of the integrationtests e2e)
@@ -75,11 +76,10 @@ const StudentEnrolled = event({
 type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[] }
 
 const Course = state({
-  name: "Course",
   id: { courseId: z.string() },
-  initial: (_id) => ({ created: false, name: "", capacity: 0, enrolled: [] }) as CourseState,
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
+    () => ({ created: false, name: "", capacity: 0, enrolled: [] }) as CourseState,
     [
       CourseCreated,
       (s, { payload: e }) => ({ ...s, created: true, name: e.name, capacity: e.capacity }),
@@ -130,8 +130,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
   let container: StartedTestContainer
   let app: App
   let axon: AxonServerConnectionHandle
-  let eventStore: EventStore
-  let snapshotStore: SnapshotStore
+  let eventStore: SnapshotCapableEventStore
   let commandBus: CommandBus
   let queryBus: QueryBus
   let host: string
@@ -164,19 +163,22 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       serializer: jsonSerializer(),
     })
 
-    // Contexts are a per-call header, so both stores ride the ONE channel.
-    eventStore = axonServerEventStore(axon, "default")
-    snapshotStore = axonServerSnapshotStore(axon, "default")
+    // Contexts are a per-call header, so the log and its cache ride the ONE
+    // channel — and they are ONE object, because the cache is a tier on the log.
+    eventStore = axonServerSnapshottingEventStore(
+      axonServerEventStore(axon, "default"),
+      axon,
+      "default",
+    )
     // The local segment is a REAL bus: a command Axon Server routes back to us
     // runs under the unit-of-work policy chosen HERE. Interception stays
     // outside, so it covers the message on its way to the wire.
     commandBus = interceptingCommandBus(
-      axonServerCommandBus(axon, simpleCommandBus(unitOfWork)),
-      lineage,
+      axonServerCommandBus(localCommandBus(unitOfWork), axon),
+      correlation,
     )
-    queryBus = interceptingQueryBus(axonServerQueryBus(axon, simpleQueryBus(unitOfWork)), lineage)
+    queryBus = interceptingQueryBus(axonServerQueryBus(localQueryBus(unitOfWork), axon), correlation)
     app = kronos({
-      states: [{ ...Course, eventStore, snapshotStore }],
       commandHandlers: [
         { ...handleCreateCourse, eventStore, commandBus, queryBus },
         { ...handleEnrollStudent, eventStore, commandBus, queryBus },
@@ -314,10 +316,10 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     expect(axon.platform.connected).toBe(false)
   }, 60_000)
 
-  it("snapshot store roundtrip via axonServerSnapshotStore", async () => {
+  it("snapshot roundtrip via axonServerSnapshottingEventStore", async () => {
     // Use a dedicated connection so the snapshot test does not depend on the
-    // app wiring at all — this exercises exactly the two-argument contract the
-    // suite's own `axonServerSnapshotStore(axon, "default")` uses.
+    // app wiring at all — this exercises exactly the wrapper the suite's own
+    // `axonServerSnapshottingEventStore(…)` builds.
     const direct = await axonServerConnection({
       componentName: "axon-it-snapshot",
       host,
@@ -326,22 +328,36 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       serializer: jsonSerializer(),
     })
     try {
-      const snapshotStore = axonServerSnapshotStore(direct, "default")
+      const capable = axonServerSnapshottingEventStore(
+        axonServerEventStore(direct, "default"),
+        direct,
+        "default",
+      )
+      /** What is filed under `key` — read by ASKING a read for it. */
+      const readCached = async (k: string) =>
+        (await capable.source({
+          query: { tags: { courseId: "no-such-course" } },
+          snapshot: { key: k },
+        })).snapshot
+      // ONE opaque key. `state()` would compose this same string; here the test
+      // writes it directly, which is exactly what the raw layer does.
+      const key = `course-v1:${snapshotIdentifier({ courseId: "course-snap" })}`
       const snapshot: Snapshot = {
         position: 42n,
-        payload: { name: "Snapshotted Course", capacity: 17, enrolled: ["alice", "bob"] },
-        timestamp: Date.now(),
-        metadata: {},
+        state: { name: "Snapshotted Course", capacity: 17, enrolled: ["alice", "bob"] },
       }
 
-      await snapshotStore.store("Course", { courseId: "course-snap" }, snapshot)
+      await capable.storeSnapshot(key, snapshot)
 
-      const loaded = await snapshotStore.load("Course", { courseId: "course-snap" })
+      const loaded = await readCached(key)
       expect(loaded).toBeDefined()
       expect(loaded!.position).toBe(42n)
-      expect((loaded!.payload as any).name).toBe("Snapshotted Course")
-      expect((loaded!.payload as any).capacity).toBe(17)
-      expect((loaded!.payload as any).enrolled).toEqual(["alice", "bob"])
+      expect((loaded!.state as any).name).toBe("Snapshotted Course")
+      expect((loaded!.state as any).capacity).toBe(17)
+      expect((loaded!.state as any).enrolled).toEqual(["alice", "bob"])
+
+      // A miss is `undefined`, not a throw — the mechanism relies on it.
+      expect(await readCached("course-v1:never-written")).toBeUndefined()
     } finally {
       await direct.close()
     }

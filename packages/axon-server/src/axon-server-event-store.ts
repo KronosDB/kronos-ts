@@ -161,6 +161,19 @@ function createEventConverters(serializer: Serializer) {
  * a single gRPC Stream RPC call that stays open indefinitely, aligned with
  * Java's infinite {@code ResultStream}.
  */
+/**
+ * Axon Server's way of saying "there is nothing at or after that position".
+ *
+ * Matched on the gRPC status code first — `OUT_OF_RANGE` is 11 — with the
+ * server's own message as a second, narrower gate, so an unrelated future
+ * OUT_OF_RANGE is not swallowed along with it.
+ */
+function isStartPastHead(err: unknown): boolean {
+  const code = (err as { code?: unknown }).code
+  const details = String((err as { details?: unknown }).details ?? "")
+  return code === 11 && details.includes("Start sequence cannot be larger than end sequence")
+}
+
 export function axonServerEventStore(conn: AxonServerStoreSource, context: string): EventStore {
   const { connection, serializer, metadata: createAxonMetadata } = contextView(conn, context)
   const { eventToProto, eventFromProto } = createEventConverters(serializer)
@@ -182,30 +195,49 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
   return {
     async source(condition: SourcingCondition): Promise<SourcingResult> {
       const criterions = criteriaToCriterions(compileQuery(condition.query))
+      const start = condition.start ?? 0n
 
       const request = {
-        fromSequence: condition.start ?? 0n,
+        fromSequence: start,
         criterion: criterions,
       }
 
       const events: EventMessage[] = []
       let marker: ConsistencyMarker = noMarker()
 
-      const stream = connection.eventStore.source(request, { metadata: createAxonMetadata() })
-      for await (const response of stream) {
-        if (response.event) {
-          const taggedEvent = response.event
-          const protoEvent = taggedEvent.event
-          if (protoEvent) {
-            // DCB source/stream responses carry no tags — the server indexes
-            // them write-side but does not echo them back (SequencedEvent has
-            // only sequence + event). Reconstructed events get empty tags.
-            events.push(eventFromProto(protoEvent, []))
+      try {
+        const stream = connection.eventStore.source(request, { metadata: createAxonMetadata() })
+        for await (const response of stream) {
+          if (response.event) {
+            const taggedEvent = response.event
+            const protoEvent = taggedEvent.event
+            if (protoEvent) {
+              // DCB source/stream responses carry no tags — the server indexes
+              // them write-side but does not echo them back (SequencedEvent has
+              // only sequence + event). Reconstructed events get empty tags.
+              events.push(eventFromProto(protoEvent, []))
+            }
+          }
+          if (response.consistencyMarker !== undefined) {
+            marker = markerAt(response.consistencyMarker)
           }
         }
-        if (response.consistencyMarker !== undefined) {
-          marker = markerAt(response.consistencyMarker)
-        }
+      } catch (err) {
+        // READING PAST THE HEAD IS AN EMPTY ANSWER, NOT AN ERROR — and Axon
+        // Server disagrees, so this is where the two vocabularies are
+        // reconciled. `Source` fails OUT_OF_RANGE with "Start sequence cannot
+        // be larger than end sequence" whenever `fromSequence` is beyond the
+        // global head, which is the ORDINARY STEADY STATE of a snapshotted
+        // load: an entry written at the head means the very next read resumes
+        // at head + 1 and legitimately finds nothing.
+        //
+        // The marker is `start - 1`, and it is exact rather than conservative:
+        // the caller has already accounted for everything up to there (that is
+        // what asking to start later MEANS), and nothing can exist after it or
+        // the server would not have refused. So an append conditioned on this
+        // read is checked against precisely the range that was read.
+        if (!isStartPastHead(err)) throw err
+        return { events: [], marker: start > 0n ? markerAt(start - 1n) : noMarker() }
       }
 
       return { events, marker }

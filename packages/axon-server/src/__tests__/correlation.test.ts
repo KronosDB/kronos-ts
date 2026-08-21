@@ -1,11 +1,11 @@
 /**
- * Correlation lineage on the Axon Server data path.
+ * correlation on the Axon Server data path.
  *
  * Axon Server is a smart hub: `dispatch` ALWAYS goes to the server, so there is
  * no local branch to accidentally preserve the chain. Before interception was
  * lifted outside the transport, an Axon-backed service therefore lost
  * `correlationId` / `causationId` on EVERY command — the only wrap with
- * `interceptingCommandBus(bus, lineage)` lived inside core's in-memory default
+ * `interceptingCommandBus(bus, correlation)` lived inside core's in-memory default
  * bus, which these buses replace wholesale.
  *
  * These tests assert on the PROTO REQUEST handed to the gRPC client — the only
@@ -21,12 +21,14 @@ import {
   type Serializer,
 } from "@kronos-ts/core"
 import {
+  correlating,
+  correlatingHandler,
   handlerContext,
   interceptingCommandBus,
   interceptingQueryBus,
-  lineage,
-  simpleCommandBus,
-  simpleQueryBus,
+  correlation,
+  localCommandBus,
+  localQueryBus,
   unitOfWork,
   type CommandBus,
   type CommandMessage,
@@ -37,6 +39,14 @@ import { axonServerCommandBus, axonServerQueryBus } from "../axon-server.js"
 import { metadataFromProto } from "../metadata-conversion.js"
 import { shutdownLatch } from "../shutdown-latch.js"
 import type { AxonServerBusSource, AxonServerConnection } from "../connection.js"
+import type { Message, Metadata } from "@kronos-ts/core"
+
+// The id-pair cargo, written out as any host writes it: the chain is inherited
+// or seeded; the cause is the parent, unconditionally.
+const correlationFrom = (parent: Message): Metadata => ({
+  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
+  causationId: String(parent.identifier),
+})
 
 const jsonSerializer: Serializer = {
   serialize(value, type, revision = ""): SerializedObject {
@@ -83,8 +93,8 @@ function capturingConnection() {
       host: "localhost",
       port: 8124,
       context: "default",
-      componentName: "lineage-test",
-      clientId: "lineage-client",
+      componentName: "correlation-test",
+      clientId: "correlation-client",
       token: "",
     },
     state: "connected",
@@ -108,7 +118,7 @@ function commandMessage(): CommandMessage {
   return {
     kind: "command",
     identifier: generateIdentifier(),
-    name: qn("lineage", "Finish"),
+    name: qn("correlation", "Finish"),
     payload: { id: "x" },
     metadata: emptyMetadata(),
     timestamp: Date.now(),
@@ -116,32 +126,58 @@ function commandMessage(): CommandMessage {
 }
 
 /**
- * Lineage rides on the message: `ctx.send` / `ctx.query` stamp the unit of
- * work's correlation data BEFORE the bus sees the message, so it is on
- * `metadata` for the local and the remote branch alike. These descriptors are
- * the minimum shape those capabilities read.
+ * Correlation rides on the message: `correlatingHandler` overlays the task's
+ * carried map onto what `ctx.send` / `ctx.query` give birth to, BEFORE the bus
+ * sees the message, so it is on `metadata` for the local and the remote branch
+ * alike. These descriptors are the minimum shape those capabilities read.
  */
-const Finish = { name: qn("lineage", "Finish") } as never
-const FindThing = { name: qn("lineage", "FindThing") } as never
+const Finish = { name: qn("correlation", "Finish") } as never
+const FindThing = { name: qn("correlation", "FindThing") } as never
 
-/** The app's default local buses: simple bus wrapped for lineage. */
-function localCommandBus(): CommandBus {
-  return interceptingCommandBus(simpleCommandBus(unitOfWork), lineage)
+/**
+ * The command a handler is handling — the PARENT of whatever it gives birth to.
+ * Its `correlationId` is the chain; its IDENTIFIER is the cause. Every
+ * assertion below that names "cause-1" is naming this message's identifier,
+ * which is the hop rule: a child is caused by its parent, always.
+ */
+function causingCommand(): CommandMessage {
+  return {
+    kind: "command",
+    identifier: "cause-1",
+    name: qn("correlation", "Start"),
+    payload: { id: "x" },
+    metadata: { correlationId: "corr-root" },
+    timestamp: Date.now(),
+  }
 }
 
-function localQueryBus(): QueryBus {
-  return interceptingQueryBus(simpleQueryBus(unitOfWork), lineage)
+/** One handler invocation that gives birth to a `Finish` command through `bus`. */
+async function sendFinishFrom(bus: CommandBus): Promise<void> {
+  const uow = correlating(unitOfWork())
+  await uow.execute(async () => {
+    const ctx = handlerContext({ uow, commandBus: bus })
+    const handler = correlatingHandler(async (_m, c: typeof ctx) => {
+      await c.send(Finish, { id: "x" })
+    }, correlationFrom)
+    await handler(causingCommand(), ctx)
+  })
 }
 
-describe("Axon Server command bus — correlation lineage", () => {
+/** The app's default local buses: the local bus wrapped for correlation. */
+function correlatedCommandBus(): CommandBus {
+  return interceptingCommandBus(localCommandBus(unitOfWork), correlation)
+}
+
+function correlatedQueryBus(): QueryBus {
+  return interceptingQueryBus(localQueryBus(unitOfWork), correlation)
+}
+
+describe("Axon Server command bus — correlation", () => {
   it("stamps correlationId/causationId onto the dispatched proto", async () => {
     const { source, commandRequests } = capturingConnection()
-    const bus = axonServerCommandBus(source, localCommandBus())
+    const bus = axonServerCommandBus(correlatedCommandBus(), source)
 
-    await unitOfWork().execute(async (uow) => {
-      uow.contributeCorrelationData({ correlationId: "corr-root", causationId: "cause-1" })
-      await handlerContext({ uow, commandBus: bus }).send(Finish, { id: "x" })
-    })
+    await sendFinishFrom(bus)
 
     expect(commandRequests).toHaveLength(1)
     const onTheWire: Metadata = metadataFromProto(commandRequests[0]!.metaData)
@@ -149,15 +185,15 @@ describe("Axon Server command bus — correlation lineage", () => {
     expect(onTheWire.causationId).toBe("cause-1")
   })
 
-  it("leaves a primary dispatch (no handler, no lineage) untouched", async () => {
+  it("leaves a primary dispatch (no handler, nothing carrying) untouched", async () => {
     const { source, commandRequests } = capturingConnection()
-    const bus = axonServerCommandBus(source, localCommandBus())
+    const bus = axonServerCommandBus(correlatedCommandBus(), source)
 
     await bus.dispatch(commandMessage())
 
-    // The transport bus stamps nothing of its own — that is the interceptor's
-    // job, and this bus is unwrapped. A host that wants lineage writes
-    // `interceptingCommandBus(axonServerCommandBus(conn, local), lineage)`.
+    // The transport bus stamps nothing of its own — that is the intercept's
+    // job, and this bus is unwrapped. A host that wants correlation writes
+    // `interceptingCommandBus(axonServerCommandBus(local, conn), correlation)`.
     const onTheWire: Metadata = metadataFromProto(commandRequests[0]!.metaData)
     expect(onTheWire.correlationId).toBeUndefined()
     expect(onTheWire.causationId).toBeUndefined()
@@ -165,67 +201,58 @@ describe("Axon Server command bus — correlation lineage", () => {
 
   it("seeds a wrapped PRIMARY dispatch with self-referential correlation/causation", async () => {
     const { source, commandRequests } = capturingConnection()
-    const bus = interceptingCommandBus(axonServerCommandBus(source, localCommandBus()), lineage)
+    const bus = interceptingCommandBus(axonServerCommandBus(correlatedCommandBus(), source), correlation)
 
     const message = commandMessage()
     await bus.dispatch(message)
 
-    // A message born at an edge with no cause at all: `lineage` starts the
+    // A message born at an edge with no cause at all: `correlation` starts the
     // chain at the message itself, on BOTH fields.
     const onTheWire: Metadata = metadataFromProto(commandRequests[0]!.metaData)
     expect(onTheWire.correlationId).toBe(message.identifier)
     expect(onTheWire.causationId).toBe(message.identifier)
   })
 
-  it("preserves a contributed causationId across the hop instead of clobbering it", async () => {
+  it("preserves the carried causationId across the hop instead of clobbering it", async () => {
     const { source, commandRequests } = capturingConnection()
-    const bus = interceptingCommandBus(axonServerCommandBus(source, localCommandBus()), lineage)
+    const bus = interceptingCommandBus(axonServerCommandBus(correlatedCommandBus(), source), correlation)
 
-    await unitOfWork().execute(async (uow) => {
-      uow.contributeCorrelationData({ correlationId: "corr-root", causationId: "cause-1" })
-      await handlerContext({ uow, commandBus: bus }).send(Finish, { id: "x" })
-    })
+    await sendFinishFrom(bus)
 
     const onTheWire: Metadata = metadataFromProto(commandRequests[0]!.metaData)
     expect(onTheWire.correlationId).toBe("corr-root")
-    // `lineage` SEEDS causationId and never clobbers it. This message arrived at
-    // the bus with a cause already on it — `ctx.send` stamped the handled
-    // message's lineage outward — so "cause-1" crosses the wire intact. The old
-    // unconditional `causationId: message.identifier` overwrote it here, and
-    // every message in a chain ended up claiming to have caused itself.
+    // `correlation` SEEDS causationId and never clobbers it. This message
+    // arrived at the bus with a cause already on it — the wrapper overlaid the
+    // handled message's identifier onto it — so "cause-1" crosses the wire
+    // intact. The old unconditional `causationId: message.identifier` overwrote
+    // it here, and every message in a chain ended up claiming to have caused
+    // itself.
     expect(onTheWire.causationId).toBe("cause-1")
   })
 
   it("wrapping twice equals wrapping once", async () => {
     // The evidence behind wrapping the transport bus WITHOUT unwrapping the
-    // local segment: both of `lineage`'s fields are `??` seeds, so the second
+    // local segment: both of `correlation`'s fields are `??` seeds, so the second
     // application finds them already set and changes nothing. That matters now
     // that `local` is a real bus which may itself be intercepting — a
-    // server-routed command can legitimately meet `lineage` twice.
+    // server-routed command can legitimately meet `correlation` twice.
     const once = capturingConnection()
     const twice = capturingConnection()
 
-    async function send(bus: CommandBus) {
-      await unitOfWork().execute(async (uow) => {
-        uow.contributeCorrelationData({ correlationId: "corr-root", causationId: "cause-1" })
-        await handlerContext({ uow, commandBus: bus }).send(Finish, { id: "x" })
-      })
-    }
-
-    await send(
-      interceptingCommandBus(axonServerCommandBus(once.source, localCommandBus()), lineage),
+    await sendFinishFrom(
+      interceptingCommandBus(axonServerCommandBus(correlatedCommandBus(), once.source), correlation),
     )
-    await send(
+    await sendFinishFrom(
       interceptingCommandBus(
-        interceptingCommandBus(axonServerCommandBus(twice.source, localCommandBus()), lineage),
-        lineage,
+        interceptingCommandBus(axonServerCommandBus(correlatedCommandBus(), twice.source), correlation),
+        correlation,
       ),
     )
 
     // Each invocation mints its own Finish identifier, so the two protos are
     // not literally identical — what "twice equals once" means is that BOTH
-    // obey the same rule: correlationId is the contributed root, and causationId
-    // is the contributed cause, preserved rather than re-derived.
+    // obey the same rule: correlationId is the carried root, and causationId is
+    // the carried cause, preserved rather than re-derived.
     for (const requests of [once.commandRequests, twice.commandRequests]) {
       const onTheWire: Metadata = metadataFromProto(requests[0]!.metaData)
       expect(onTheWire.correlationId).toBe("corr-root")
@@ -234,15 +261,24 @@ describe("Axon Server command bus — correlation lineage", () => {
   })
 })
 
-describe("Axon Server query bus — correlation lineage", () => {
+/** One handler invocation that gives birth to a `FindThing` query through `bus`. */
+async function askFindThingFrom(bus: QueryBus): Promise<void> {
+  const uow = correlating(unitOfWork())
+  await uow.execute(async () => {
+    const ctx = handlerContext({ uow, queryBus: bus })
+    const handler = correlatingHandler(async (_m, c: typeof ctx) => {
+      await c.query(FindThing, { id: "x" })
+    }, correlationFrom)
+    await handler(causingCommand(), ctx)
+  })
+}
+
+describe("Axon Server query bus — correlation", () => {
   it("stamps correlationId/causationId onto the dispatched query proto", async () => {
     const { source, queryRequests } = capturingConnection()
-    const bus = axonServerQueryBus(source, localQueryBus())
+    const bus = axonServerQueryBus(correlatedQueryBus(), source)
 
-    await unitOfWork().execute(async (uow) => {
-      uow.contributeCorrelationData({ correlationId: "corr-root", causationId: "cause-1" })
-      await handlerContext({ uow, queryBus: bus }).query(FindThing, { id: "x" })
-    })
+    await askFindThingFrom(bus)
 
     expect(queryRequests).toHaveLength(1)
     const onTheWire: Metadata = metadataFromProto(queryRequests[0]!.metaData)
@@ -250,27 +286,24 @@ describe("Axon Server query bus — correlation lineage", () => {
     expect(onTheWire.causationId).toBe("cause-1")
   })
 
-  it("stamps lineage on the LOCAL-SHORTCUT branch too", async () => {
+  it("stamps correlation on the LOCAL-SHORTCUT branch too", async () => {
     // shortcutQueriesToLocalHandlers routes to a co-located handler instead of
     // the server. Because interception is outside the routing decision, both
     // branches see identical metadata — the AF property this is modelled on.
     // The handler is reached THROUGH the local bus, which is where it was
     // subscribed; the shortcut only decides whether the server is consulted.
     const { source, queryRequests } = capturingConnection()
-    const bus = axonServerQueryBus(source, localQueryBus(), {
+    const bus = axonServerQueryBus(correlatedQueryBus(), source, {
       shortcutQueriesToLocalHandlers: true,
     })
 
     let seen: Metadata | undefined
-    bus.subscribe("lineage.FindThing", async (message: QueryMessage) => {
+    bus.subscribe("correlation.FindThing", async (message: QueryMessage) => {
       seen = message.metadata
       return null
     })
 
-    await unitOfWork().execute(async (uow) => {
-      uow.contributeCorrelationData({ correlationId: "corr-root", causationId: "cause-1" })
-      await handlerContext({ uow, queryBus: bus }).query(FindThing, { id: "x" })
-    })
+    await askFindThingFrom(bus)
 
     expect(queryRequests).toHaveLength(0)
     expect(seen?.correlationId).toBe("corr-root")

@@ -1,12 +1,12 @@
 /**
- * Correlation lineage on the KronosDB data path.
+ * correlation on the KronosDB data path.
  *
  * The KronosDB command bus REPLACES `@kronos-ts/core`'s default in-memory bus in
  * `components`, and that default bus was the only place
  * `correlationDataDispatchInterceptor` was ever registered. So before the fix,
  * every command an app dispatched over KronosDB left the process with no
  * `correlationId` / `causationId` — while the inbound side faithfully rebuilt a
- * UnitOfWork from `message.metadata` that no longer carried any lineage.
+ * UnitOfWork from `message.metadata` that no longer carried any correlation.
  *
  * These tests assert on the PROTO REQUEST handed to the gRPC client, i.e. the
  * bytes that actually leave the process.
@@ -21,9 +21,11 @@ import {
   type Serializer,
 } from "@kronos-ts/core"
 import {
+  correlating,
+  correlatingHandler,
   handlerContext,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
   unitOfWork,
   type CommandMessage,
   type QueryMessage,
@@ -31,6 +33,14 @@ import {
 import { kronosDbCommandBus, kronosDbQueryBus } from "../kronosdb.js"
 import { metadataFromProto } from "../metadata-conversion.js"
 import type { KronosDbConnection } from "../connection.js"
+import type { Message, Metadata } from "@kronos-ts/core"
+
+// The id-pair cargo, written out as any host writes it: the chain is inherited
+// or seeded; the cause is the parent, unconditionally.
+const correlationFrom = (parent: Message): Metadata => ({
+  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
+  causationId: String(parent.identifier),
+})
 
 const jsonSerializer: Serializer = {
   serialize(value, type, revision = ""): SerializedObject {
@@ -52,7 +62,6 @@ function capturingConnection() {
   const connection = {
     channel: {} as any,
     platform: {} as any,
-    snapshotStore: {} as any,
     eventStore: {} as any,
     commands: {
       openStream() {
@@ -78,8 +87,8 @@ function capturingConnection() {
       host: "localhost",
       port: 50051,
       context: "default",
-      componentName: "lineage-test",
-      clientId: "lineage-client",
+      componentName: "correlation-test",
+      clientId: "correlation-client",
       token: "",
       reconnectIntervalMs: 0,
       maxReconnectAttempts: 0,
@@ -110,7 +119,7 @@ function commandMessage(): CommandMessage {
   return {
     kind: "command",
     identifier: generateIdentifier(),
-    name: qn("lineage", "Finish"),
+    name: qn("correlation", "Finish"),
     payload: { id: "x" },
     metadata: emptyMetadata(),
     timestamp: Date.now(),
@@ -118,33 +127,54 @@ function commandMessage(): CommandMessage {
 }
 
 /**
- * Lineage now rides on the message: `ctx.send` / `ctx.query` stamp the unit of
- * work's correlation data BEFORE the bus sees the message, so it is on
- * `metadata` for the local and the remote branch alike. These descriptors are
- * the minimum shape those capabilities read.
+ * Correlation rides on the message: `correlatingHandler` overlays the task's
+ * carried map onto what `ctx.send` / `ctx.query` give birth to, BEFORE the bus
+ * sees the message, so it is on `metadata` for the local and the remote branch
+ * alike. These descriptors are the minimum shape those capabilities read.
  */
-const Finish = { name: qn("lineage", "Finish") } as never
-const FindThing = { name: qn("lineage", "FindThing") } as never
+const Finish = { name: qn("correlation", "Finish") } as never
+const FindThing = { name: qn("correlation", "FindThing") } as never
+
+/**
+ * The command a handler is handling — the PARENT of whatever it gives birth to.
+ * `correlationFrom` reads its `correlationId` as the chain and its identifier
+ * as the cause, which is what the assertions below name.
+ */
+function causingCommand(): CommandMessage {
+  return {
+    kind: "command",
+    identifier: "cause-1",
+    name: qn("correlation", "Start"),
+    payload: { id: "x" },
+    metadata: { correlationId: "corr-root" },
+    timestamp: Date.now(),
+  }
+}
 
 function queryMessage(): QueryMessage {
   return {
     kind: "query",
     identifier: generateIdentifier(),
-    name: qn("lineage", "FindThing"),
+    name: qn("correlation", "FindThing"),
     payload: { id: "x" },
     metadata: emptyMetadata(),
     timestamp: Date.now(),
   }
 }
 
-describe("KronosDB distributed command bus — correlation lineage", () => {
+describe("KronosDB distributed command bus — correlation", () => {
   it("stamps correlationId/causationId onto the dispatched proto", async () => {
     const { connection, commandRequests } = capturingConnection()
-    const bus = kronosDbCommandBus(handleOf(connection), simpleCommandBus(unitOfWork))
+    const bus = kronosDbCommandBus(localCommandBus(unitOfWork), handleOf(connection))
 
-    await unitOfWork().execute(async (uow) => {
-      uow.contributeCorrelationData({ correlationId: "corr-root", causationId: "cause-1" })
-      await handlerContext({ uow, commandBus: bus }).send(Finish, { id: "x" })
+    const parent = causingCommand()
+    const uow = correlating(unitOfWork())
+    await uow.execute(async () => {
+      const ctx = handlerContext({ uow, commandBus: bus })
+      const handler = correlatingHandler(async (_m, c: typeof ctx) => {
+        await c.send(Finish, { id: "x" })
+      }, correlationFrom)
+      await handler(parent, ctx)
     })
 
     expect(commandRequests).toHaveLength(1)
@@ -153,9 +183,9 @@ describe("KronosDB distributed command bus — correlation lineage", () => {
     expect(onTheWire.causationId).toBe("cause-1")
   })
 
-  it("leaves a primary dispatch (no handler, no lineage) untouched", async () => {
+  it("leaves a primary dispatch (no handler, nothing carrying) untouched", async () => {
     const { connection, commandRequests } = capturingConnection()
-    const bus = kronosDbCommandBus(handleOf(connection), simpleCommandBus(unitOfWork))
+    const bus = kronosDbCommandBus(localCommandBus(unitOfWork), handleOf(connection))
 
     await bus.dispatch(commandMessage())
 
@@ -165,14 +195,19 @@ describe("KronosDB distributed command bus — correlation lineage", () => {
   })
 })
 
-describe("KronosDB distributed query bus — correlation lineage", () => {
+describe("KronosDB distributed query bus — correlation", () => {
   it("stamps correlationId/causationId onto the dispatched query proto", async () => {
     const { connection, queryRequests } = capturingConnection()
-    const bus = kronosDbQueryBus(handleOf(connection), simpleQueryBus(unitOfWork))
+    const bus = kronosDbQueryBus(localQueryBus(unitOfWork), handleOf(connection))
 
-    await unitOfWork().execute(async (uow) => {
-      uow.contributeCorrelationData({ correlationId: "corr-root", causationId: "cause-1" })
-      await handlerContext({ uow, queryBus: bus }).query(FindThing, { id: "x" })
+    const parent = causingCommand()
+    const uow = correlating(unitOfWork())
+    await uow.execute(async () => {
+      const ctx = handlerContext({ uow, queryBus: bus })
+      const handler = correlatingHandler(async (_m, c: typeof ctx) => {
+        await c.query(FindThing, { id: "x" })
+      }, correlationFrom)
+      await handler(parent, ctx)
     })
 
     expect(queryRequests).toHaveLength(1)

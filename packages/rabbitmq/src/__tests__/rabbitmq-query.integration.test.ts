@@ -4,12 +4,12 @@ import { emptyMetadata, qn, send, subscriptionQuery, type UnitOfWork } from "@kr
 import { kronos, type CommandHandlerEntry, type QueryHandlerEntry } from "@kronos-ts/core"
 import { inMemoryEventStore } from "@kronos-ts/core"
 import {
-  lineage,
+  correlation,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
-  simpleCommandBus,
-  simpleQueryBus,
+  localCommandBus,
+  localQueryBus,
 } from "@kronos-ts/core"
 import {
   command,
@@ -25,13 +25,13 @@ import { startRabbitMqContainer, type RunningRabbitMq } from "./testcontainers-s
 
 /**
  * The three things `kronos` needs that are not modules. The UoW runner is named
- * once and handed to BOTH `simpleCommandBus` (which captures it at construction)
+ * once and handed to BOTH `localCommandBus` (which captures it at construction)
  * and `kronos` — writing them on adjacent lines is what makes that checkable.
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork) {
   return {
-    commandBus: interceptingCommandBus(simpleCommandBus(uow), lineage),
-    queryBus: interceptingQueryBus(simpleQueryBus(uow), lineage),
+    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
   }
 }
 
@@ -82,9 +82,9 @@ describe("RabbitMQ query transport integration", () => {
     })
     const eventStore = inMemoryEventStore()
     const commandBus = interceptingCommandBus(
-      rabbitMqCommandBus(rabbit, buses.commandBus), lineage)
+      rabbitMqCommandBus(buses.commandBus, rabbit), correlation)
     const queryBus = interceptingQueryBus(
-      rabbitMqQueryBus(rabbit, buses.queryBus), lineage)
+      rabbitMqQueryBus(buses.queryBus, rabbit), correlation)
     const app = kronos({
       commandHandlers: (params.commandHandlers ?? []).map((h) => ({ ...h, eventStore, commandBus, queryBus })),
       queryHandlers: (params.queryHandlers ?? []).map((h) => ({ ...h, eventStore, queryBus })),

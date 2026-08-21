@@ -30,7 +30,7 @@ export {
 } from "./query-bus.js"
 
 export {
-  AmqpDistributedSubscriberRegistry,
+  amqpDistributedSubscriberRegistry,
   type ClusterSubscriberRecord,
   type DistributedSubscriberRegistry,
   type SubscriberRecord,
@@ -39,8 +39,14 @@ export {
   type GossipEnvelope,
 } from "./distributed-subscriber-registry.js"
 
-export { AmqpRabbitMqCommandTransport } from "./amqp-command-transport.js"
-export { AmqpRabbitMqQueryTransport } from "./amqp-query-transport.js"
+export {
+  amqpRabbitMqCommandTransport,
+  type AmqpRabbitMqCommandTransport,
+} from "./amqp-command-transport.js"
+export {
+  amqpRabbitMqQueryTransport,
+  type AmqpRabbitMqQueryTransport,
+} from "./amqp-query-transport.js"
 
 export {
   rabbitMqConnection,

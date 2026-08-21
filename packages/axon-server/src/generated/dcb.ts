@@ -12,7 +12,7 @@ import { InstructionAck } from "./common.js";
 export const protobufPackage = "io.axoniq.axonserver.grpc.event.dcb";
 
 /** Request message to schedule an event */
-export interface ScheduleEventRequest {
+export type ScheduleEventRequest = {
   /** timestamp when to publish the event */
   instant: bigint;
   /** the event to publish */
@@ -20,7 +20,7 @@ export interface ScheduleEventRequest {
 }
 
 /** Request message to reschedule an event */
-export interface RescheduleEventRequest {
+export type RescheduleEventRequest = {
   /** schedule token of the event to reschedule */
   token: string;
   /** timestamp when to publish the event */
@@ -30,19 +30,19 @@ export interface RescheduleEventRequest {
 }
 
 /** Request message to cancel an event */
-export interface CancelScheduledEventRequest {
+export type CancelScheduledEventRequest = {
   /** token of scheduled event to cancel */
   token: string;
 }
 
 /** Token to manage a scheduled event */
-export interface ScheduleToken {
+export type ScheduleToken = {
   /** Field defining the token identifier */
   token: string;
 }
 
 /** The event message. */
-export interface Event {
+export type Event = {
   /** The unique identifier of the event. */
   identifier: string;
   /** The timestamp of the event. */
@@ -57,13 +57,13 @@ export interface Event {
   metadata: { [key: string]: string };
 }
 
-export interface Event_MetadataEntry {
+export type Event_MetadataEntry = {
   key: string;
   value: string;
 }
 
 /** The tag. Describes an event with more details. Usually using concepts from the Domain. */
-export interface Tag {
+export type Tag = {
   /** The key of the tag. */
   key: Uint8Array;
   /** The value of the tag. */
@@ -71,7 +71,7 @@ export interface Tag {
 }
 
 /** The event described in more details by a list of tags. */
-export interface TaggedEvent {
+export type TaggedEvent = {
   /** The event. */
   event:
     | Event
@@ -81,7 +81,7 @@ export interface TaggedEvent {
 }
 
 /** The event retrieved from the event store with its corresponding sequence. */
-export interface SequencedEvent {
+export type SequencedEvent = {
   /** The sequence of the event. */
   sequence: bigint;
   /** The event. */
@@ -89,7 +89,7 @@ export interface SequencedEvent {
 }
 
 /** The message representing the request to append events to the event store. */
-export interface AppendEventsRequest {
+export type AppendEventsRequest = {
   /** The condition used to check the validity of this request. If omitted, events will be appended unconditionally. */
   condition:
     | ConsistencyCondition
@@ -106,7 +106,7 @@ export interface AppendEventsRequest {
  * The response of a successful append events request. If there was an issue with the append events request,
  * the stream will complete with an error.
  */
-export interface AppendEventsResponse {
+export type AppendEventsResponse = {
   /**
    * The sequence of the first event stored in the event store.
    * Corresponding to the list of events (a transaction) passed in the AppendEventsRequest.
@@ -128,7 +128,7 @@ export interface AppendEventsResponse {
  * the event store. It may also be cancelled by the client. Only events matching the given criteria
  * (a provided list of criterions) will be present in the stream. The stream is capped by the HEAD of the event store.
  */
-export interface SourceEventsRequest {
+export type SourceEventsRequest = {
   /** An inclusive sequence of the first event to be included in the resulting stream. */
   fromSequence: bigint;
   /**
@@ -142,7 +142,7 @@ export interface SourceEventsRequest {
  * The response to the SourceEventsRequest. It consists either of an event (with its corresponding sequence) or a
  * consistency marker. The consistency marker should be used in a following AppendEventsRequest related to the criteria used in the SourceEventsRequest this response originates from.
  */
-export interface SourceEventsResponse {
+export type SourceEventsResponse = {
   /** The event matching the criteria with its corresponding sequence. */
   event?:
     | SequencedEvent
@@ -155,7 +155,7 @@ export interface SourceEventsResponse {
  * The condition for an AppendEventsRequest. Consists of the consistency marker and the criteria
  * (a list of criterions).
  */
-export interface ConsistencyCondition {
+export type ConsistencyCondition = {
   /**
    * The sequence used to start checking for the consistency of an append. If there are events with a sequence greater
    * or equal than the consistency marker and those are matching the given criteria, the condition is not met and the transaction
@@ -167,7 +167,7 @@ export interface ConsistencyCondition {
 }
 
 /** The integral part of the criteria. */
-export interface Criterion {
+export type Criterion = {
   /** The criterion based on event tags and event names. */
   tagsAndNames: TagsAndNamesCriterion | undefined;
 }
@@ -176,7 +176,7 @@ export interface Criterion {
  * The criterion based on event tags and event names. The event meets this criterion if ALL tags from this criterion
  * are present in the tags of the event AND if the event name is present in one of the names of the this criterion.
  */
-export interface TagsAndNamesCriterion {
+export type TagsAndNamesCriterion = {
   /** A list of event names. The event meets this criterion if its name is in one of the names in this list. */
   name: string[];
   /**
@@ -190,7 +190,7 @@ export interface TagsAndNamesCriterion {
  * The request to provide an infinite stream of events from the event store. The client may cancel the stream at any
  * time.
  */
-export interface StreamEventsRequest {
+export type StreamEventsRequest = {
   /** The inclusive sequence to start streaming from. */
   fromSequence: bigint;
   /**
@@ -201,17 +201,17 @@ export interface StreamEventsRequest {
 }
 
 /** The response to the StreamEventsRequest. */
-export interface StreamEventsResponse {
+export type StreamEventsResponse = {
   /** The event with its corresponding sequence. */
   event: SequencedEvent | undefined;
 }
 
 /** The request to retrieve the current HEAD of the event store. */
-export interface GetHeadRequest {
+export type GetHeadRequest = {
 }
 
 /** The current HEAD of the event store. */
-export interface GetHeadResponse {
+export type GetHeadResponse = {
   /**
    * The sequence of the current head. Points to the position of the first event to be appended. The HEAD of an empty
    * event store is 0.
@@ -220,11 +220,11 @@ export interface GetHeadResponse {
 }
 
 /** The request to retrieve the current TAIL of the event store. */
-export interface GetTailRequest {
+export type GetTailRequest = {
 }
 
 /** The current TAIL of the event store. */
-export interface GetTailResponse {
+export type GetTailResponse = {
   /**
    * The sequence of the first event in the event store. 0 for an empty event store. 0 for a non-truncated event store.
    * Non-zero for a truncated event store.
@@ -238,19 +238,19 @@ export interface GetTailResponse {
  * returned. If the provided timestamp is greater that the sequence of the last event in the event store,
  * the HEAD is returned.
  */
-export interface GetSequenceAtRequest {
+export type GetSequenceAtRequest = {
   /** The timestamp. */
   timestamp: bigint;
 }
 
 /** The sequence of the event approximately close to the provided timestamp. */
-export interface GetSequenceAtResponse {
+export type GetSequenceAtResponse = {
   /** The sequence of the event. */
   sequence: bigint;
 }
 
 /** The request to add tags to the event. */
-export interface AddTagsRequest {
+export type AddTagsRequest = {
   /** The sequence of the event whose tags list will be expanded with the tags from the request. */
   sequence: bigint;
   /**
@@ -261,11 +261,11 @@ export interface AddTagsRequest {
 }
 
 /** The response indicating a successful addition of tags to the event. */
-export interface AddTagsResponse {
+export type AddTagsResponse = {
 }
 
 /** The request to remove tags from the event. */
-export interface RemoveTagsRequest {
+export type RemoveTagsRequest = {
   /** The sequence of the event whose tags should be removed. */
   sequence: bigint;
   /** Tags to be removed. If the event is not tagged with listed tags, they are skipped. */
@@ -273,23 +273,23 @@ export interface RemoveTagsRequest {
 }
 
 /** The response indicating a successful removal of tags for the event. */
-export interface RemoveTagsResponse {
+export type RemoveTagsResponse = {
 }
 
 /** The request to retrieve tags of the event. */
-export interface GetTagsRequest {
+export type GetTagsRequest = {
   /** The sequence of the event whose tags should be retrieved. */
   sequence: bigint;
 }
 
 /** The response containing tags of an event. */
-export interface GetTagsResponse {
+export type GetTagsResponse = {
   /** The tags associated to the event. */
   tag: Tag[];
 }
 
 /** The snapshot. */
-export interface Snapshot {
+export type Snapshot = {
   /** The name of the snapshot. */
   name: string;
   /** The version of the snapshot. */
@@ -302,13 +302,13 @@ export interface Snapshot {
   metadata: { [key: string]: string };
 }
 
-export interface Snapshot_MetadataEntry {
+export type Snapshot_MetadataEntry = {
   key: string;
   value: string;
 }
 
 /** The request to add the snapshot to the snapshot store. */
-export interface AddSnapshotRequest {
+export type AddSnapshotRequest = {
   /** The key this snapshot is added to. */
   key: Uint8Array;
   /**
@@ -323,14 +323,14 @@ export interface AddSnapshotRequest {
 }
 
 /** The response indicating the successful addition of the snapshot. */
-export interface AddSnapshotResponse {
+export type AddSnapshotResponse = {
 }
 
 /**
  * The request to delete the snapshot from the snapshot store.
  * Deletes from a sequence of `0` to the specified `to_sequence`
  */
-export interface DeleteSnapshotsRequest {
+export type DeleteSnapshotsRequest = {
   /** The key the snapshot is identified by. */
   key: Uint8Array;
   /** The exclusive upper bound sequence of the snapshot to end the deletion. */
@@ -338,11 +338,11 @@ export interface DeleteSnapshotsRequest {
 }
 
 /** The response indicating the successful deletion of the snapshot. */
-export interface DeleteSnapshotsResponse {
+export type DeleteSnapshotsResponse = {
 }
 
 /** The request to retrieve all snapshots from the snapshot store based on the key and sequence bounds. */
-export interface ListSnapshotsRequest {
+export type ListSnapshotsRequest = {
   /** The key of the snapshot. */
   key: Uint8Array;
   /** The inclusive bottom bound sequence used to filter out snapshots. */
@@ -352,7 +352,7 @@ export interface ListSnapshotsRequest {
 }
 
 /** The response to the ListSnapshotRequest. */
-export interface ListSnapshotsResponse {
+export type ListSnapshotsResponse = {
   /** The key of the snapshot. */
   key: Uint8Array;
   /** The sequence of the snapshot. */
@@ -362,13 +362,13 @@ export interface ListSnapshotsResponse {
 }
 
 /** The request to retrieve the snapshot with the highest sequence from the snapshot store. */
-export interface GetLastSnapshotRequest {
+export type GetLastSnapshotRequest = {
   /** The key of the snapshot. */
   key: Uint8Array;
 }
 
 /** The response to GetLatestSnapshotRequest. */
-export interface GetLastSnapshotResponse {
+export type GetLastSnapshotResponse = {
   /** The key of the snapshot. */
   key: Uint8Array;
   /** The sequence of the snapshot. */
@@ -3530,7 +3530,7 @@ export const DcbEventStoreDefinition = {
   },
 } as const;
 
-export interface DcbEventStoreServiceImplementation<CallContextExt = {}> {
+export type DcbEventStoreServiceImplementation<CallContextExt = {}> = {
   /** Appends new events to the store. */
   append(
     request: AsyncIterable<AppendEventsRequest>,
@@ -3573,7 +3573,7 @@ export interface DcbEventStoreServiceImplementation<CallContextExt = {}> {
   getTags(request: GetTagsRequest, context: CallContext & CallContextExt): Promise<DeepPartial<GetTagsResponse>>;
 }
 
-export interface DcbEventStoreClient<CallOptionsExt = {}> {
+export type DcbEventStoreClient<CallOptionsExt = {}> = {
   /** Appends new events to the store. */
   append(
     request: AsyncIterable<DeepPartial<AppendEventsRequest>>,
@@ -3661,7 +3661,7 @@ export const DcbSnapshotStoreDefinition = {
   },
 } as const;
 
-export interface DcbSnapshotStoreServiceImplementation<CallContextExt = {}> {
+export type DcbSnapshotStoreServiceImplementation<CallContextExt = {}> = {
   /** Adds a snapshot to the snapshot store. */
   add(request: AddSnapshotRequest, context: CallContext & CallContextExt): Promise<DeepPartial<AddSnapshotResponse>>;
   /** Deletes a snapshot from the snapshot store. */
@@ -3681,7 +3681,7 @@ export interface DcbSnapshotStoreServiceImplementation<CallContextExt = {}> {
   ): Promise<DeepPartial<GetLastSnapshotResponse>>;
 }
 
-export interface DcbSnapshotStoreClient<CallOptionsExt = {}> {
+export type DcbSnapshotStoreClient<CallOptionsExt = {}> = {
   /** Adds a snapshot to the snapshot store. */
   add(request: DeepPartial<AddSnapshotRequest>, options?: CallOptions & CallOptionsExt): Promise<AddSnapshotResponse>;
   /** Deletes a snapshot from the snapshot store. */
@@ -3737,7 +3737,7 @@ export const DcbEventSchedulerDefinition = {
   },
 } as const;
 
-export interface DcbEventSchedulerServiceImplementation<CallContextExt = {}> {
+export type DcbEventSchedulerServiceImplementation<CallContextExt = {}> = {
   /** Schedule the given event for publication at the given time}. The returned ScheduleToken can be used to reschedule or cancel the planned publication. */
   scheduleEvent(
     request: ScheduleEventRequest,
@@ -3755,7 +3755,7 @@ export interface DcbEventSchedulerServiceImplementation<CallContextExt = {}> {
   ): Promise<DeepPartial<InstructionAck>>;
 }
 
-export interface DcbEventSchedulerClient<CallOptionsExt = {}> {
+export type DcbEventSchedulerClient<CallOptionsExt = {}> = {
   /** Schedule the given event for publication at the given time}. The returned ScheduleToken can be used to reschedule or cancel the planned publication. */
   scheduleEvent(
     request: DeepPartial<ScheduleEventRequest>,
@@ -3816,7 +3816,7 @@ function isSet(value: any): boolean {
 
 export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;

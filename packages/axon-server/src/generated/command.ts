@@ -19,7 +19,7 @@ import {
 export const protobufPackage = "io.axoniq.axonserver.grpc.command";
 
 /** An instruction from the components that provides the Command Handler towards AxonServer. */
-export interface CommandProviderOutbound {
+export type CommandProviderOutbound = {
   /** Instruction to subscribe this component as handler of a specific type of command */
   subscribe?:
     | CommandSubscription
@@ -45,7 +45,7 @@ export interface CommandProviderOutbound {
 }
 
 /** An instruction or confirmation from AxonServer towards the component that provides the Command Handler */
-export interface CommandProviderInbound {
+export type CommandProviderInbound = {
   /** Acknowledgement of previously sent instruction via outbound stream */
   ack?:
     | InstructionAck
@@ -59,7 +59,7 @@ export interface CommandProviderInbound {
 }
 
 /** A message representing a Command that needs to be routed to a component capable of handling it */
-export interface Command {
+export type Command = {
   /** The unique identifier of the Command Message */
   messageIdentifier: string;
   /** The name of the command, used for routing it to a destination capable of handling it */
@@ -80,13 +80,13 @@ export interface Command {
   componentName: string;
 }
 
-export interface Command_MetaDataEntry {
+export type Command_MetaDataEntry = {
   key: string;
   value: MetaDataValue | undefined;
 }
 
 /** Message representing the result of Command Handler execution */
-export interface CommandResponse {
+export type CommandResponse = {
   /** The unique identifier of the response message */
   messageIdentifier: string;
   /** An error code describing the error, if any */
@@ -107,13 +107,13 @@ export interface CommandResponse {
   requestIdentifier: string;
 }
 
-export interface CommandResponse_MetaDataEntry {
+export type CommandResponse_MetaDataEntry = {
   key: string;
   value: MetaDataValue | undefined;
 }
 
 /** Message describing a component's capability of handling a command type */
-export interface CommandSubscription {
+export type CommandSubscription = {
   /**
    * A unique identifier for this subscription. This identifier is returned in Acknowledgements to allow
    * pipelining of subscription messages
@@ -1183,7 +1183,7 @@ export const CommandServiceDefinition = {
   },
 } as const;
 
-export interface CommandServiceImplementation<CallContextExt = {}> {
+export type CommandServiceImplementation<CallContextExt = {}> = {
   /** Opens a stream allowing clients to register command handlers and receive commands. */
   openStream(
     request: AsyncIterable<CommandProviderOutbound>,
@@ -1193,7 +1193,7 @@ export interface CommandServiceImplementation<CallContextExt = {}> {
   dispatch(request: Command, context: CallContext & CallContextExt): Promise<DeepPartial<CommandResponse>>;
 }
 
-export interface CommandServiceClient<CallOptionsExt = {}> {
+export type CommandServiceClient<CallOptionsExt = {}> = {
   /** Opens a stream allowing clients to register command handlers and receive commands. */
   openStream(
     request: AsyncIterable<DeepPartial<CommandProviderOutbound>>,
@@ -1221,7 +1221,7 @@ function isSet(value: any): boolean {
 
 export type ServerStreamingMethodResult<Response> = { [Symbol.asyncIterator](): AsyncIterator<Response, void> };
 
-export interface MessageFns<T> {
+export type MessageFns<T> = {
   encode(message: T, writer?: BinaryWriter): BinaryWriter;
   decode(input: BinaryReader | Uint8Array, length?: number): T;
   fromJSON(object: any): T;
