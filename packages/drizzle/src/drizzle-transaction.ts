@@ -1,9 +1,9 @@
 import type {
   EventHandlerContext,
-  HandlerContext,
+  CommandHandlerContext,
   QueryHandlerContext,
   UnitOfWork,
-  PersistenceFamily,
+  UnitOfWorkBrand,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -28,7 +28,7 @@ import {
  * and a read model is permanently wrong. The mark turns that into a build
  * error.
  *
- * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * IT IS ERASED AND NEVER CONSTRUCTED. `UnitOfWorkBrand` hangs on an ambient
  * unique symbol declared in core; nothing writes the property and nothing can
  * read it. drizzleUnitOfWork(…) returns exactly what it always
  * returned and asserts the branded type, so the emitted JavaScript is
@@ -39,7 +39,7 @@ import {
  * knows precisely which factory the host should have called, so a mismatch
  * prints that sentence at the wiring site.
  */
-export type DrizzleFamily = PersistenceFamily<
+export type DrizzleUnitOfWork = UnitOfWorkBrand<
   "drizzle",
   "build this processor's unitOfWork with drizzleUnitOfWork(next, db) — this family's stores write through its transaction"
 >
@@ -202,8 +202,8 @@ export function drizzleUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   db: DrizzleDb,
   options: DrizzleTransactionOptions = {},
-): () => U & DrizzleFamily {
-  return adapterUnitOfWork(registry, transactionHooks(db, options), next) as () => U & DrizzleFamily
+): () => U & DrizzleUnitOfWork {
+  return adapterUnitOfWork(registry, transactionHooks(db, options), next) as () => U & DrizzleUnitOfWork
 }
 
 /**
@@ -251,8 +251,8 @@ export function activeDrizzleTransaction(
 //   3. A HANDLER WRAPPER — `drizzleHandler(handler, db)`, which adds a capability to
 //      the ctx a handler function receives. It wraps the FUNCTION, not the
 //      entry: the host spreads the entry itself.
-//   4. A NAMED CONTEXT TYPE — `DrizzleContext`, so a slice's signature reads
-//      `ctx: DrizzleContext` rather than an anonymous intersection.
+//   4. A NAMED CONTEXT TYPE — `DrizzleCommandContext`, so a slice's signature reads
+//      `ctx: DrizzleCommandContext` rather than an anonymous intersection.
 //
 // All four share ONE piece of state — the uow-keyed registry above — which is
 // what makes the capability and the transaction the same transaction.
@@ -273,7 +273,7 @@ export type DrizzleCapability = {
 }
 
 /** A command handler's context, plus this extension's capability. */
-export type DrizzleContext = HandlerContext & DrizzleCapability
+export type DrizzleCommandContext = CommandHandlerContext & DrizzleCapability
 /** An event handler's context, plus this extension's capability. */
 export type DrizzleEventContext = EventHandlerContext & DrizzleCapability
 /** A query handler's context, plus this extension's capability. */
@@ -291,7 +291,7 @@ export type DrizzleQueryContext = QueryHandlerContext & DrizzleCapability
  * (`descriptor`, `name`, `appendCondition`) survives untouched:
  *
  * ```ts
- * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: DrizzleContext) => {
+ * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: DrizzleCommandContext) => {
  *   await ctx.db().update(widgets).set({ name: payload.name })
  * })
  *

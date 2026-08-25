@@ -22,7 +22,7 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
  * ── `U` IS WHAT THIS STORE DEMANDS OF THE TASK ─────────────────────────────
  *
  * A store that writes through a family's transaction says so by narrowing `U`
- * to that family's brand — `TokenStore<UnitOfWork & DrizzleFamily>` — and the
+ * to that family's brand — `TokenStore<UnitOfWork & DrizzleUnitOfWork>` — and the
  * processor that wires it is where the compiler compares that demand against
  * the unit-of-work factory the host actually built. Mixing families is a build
  * error naming the factory to call. See `unit-of-work/persistence-family.ts`.

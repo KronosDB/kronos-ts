@@ -5,8 +5,8 @@
  * capability the bus underneath carried has to come out the other side. The one
  * that exists today is the CORRELATION demand: a chain built from
  * `() => correlating(unitOfWork())` mints correlating units of work, and a
- * handler annotated `ctx: HandlerContext<CorrelatingUnitOfWork>` only fits
- * behind a bus that still says so.
+ * `correlatingHandler`-wrapped handler (which demands a correlating task) only
+ * fits behind a bus that still says so.
  *
  * This lives here rather than in `integrationtests` because that package does
  * not depend on `@kronos-ts/rabbitmq`, and a probe is not worth a dependency.

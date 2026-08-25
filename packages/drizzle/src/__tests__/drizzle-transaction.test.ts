@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
 import {
   activeDrizzleTransaction,
-  type DrizzleContext,
+  type DrizzleCommandContext,
   type DrizzleDb,
   drizzleHandler,
   drizzleTransaction,
@@ -142,8 +142,8 @@ describe("drizzleTransaction / activeDrizzleTransaction", () => {
 // ---------------------------------------------------------------------------
 
 /** A command handler that REQUIRES the drizzle context — what the wrapper takes. */
-function handlerReading(read: (ctx: DrizzleContext) => void) {
-  return async (_message: unknown, ctx: DrizzleContext): Promise<void> => {
+function handlerReading(read: (ctx: DrizzleCommandContext) => void) {
+  return async (_message: unknown, ctx: DrizzleCommandContext): Promise<void> => {
     read(ctx)
   }
 }
@@ -193,10 +193,10 @@ describe("drizzleHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const db = createMockDb()
-    const entry: CommandHandler<any, any, DrizzleContext> = {
+    const entry: CommandHandler<any, any, DrizzleCommandContext> = {
       kind: "command-handler",
       descriptor: {} as never,
-      handler: async (_message, ctx: DrizzleContext) => {
+      handler: async (_message, ctx: DrizzleCommandContext) => {
         ctx.db()
       },
     }

@@ -1,9 +1,9 @@
 import type {
   EventHandlerContext,
-  HandlerContext,
+  CommandHandlerContext,
   QueryHandlerContext,
   UnitOfWork,
-  PersistenceFamily,
+  UnitOfWorkBrand,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -28,7 +28,7 @@ import {
  * and a read model is permanently wrong. The mark turns that into a build
  * error.
  *
- * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * IT IS ERASED AND NEVER CONSTRUCTED. `UnitOfWorkBrand` hangs on an ambient
  * unique symbol declared in core; nothing writes the property and nothing can
  * read it. prismaUnitOfWork(…) returns exactly what it always
  * returned and asserts the branded type, so the emitted JavaScript is
@@ -39,7 +39,7 @@ import {
  * knows precisely which factory the host should have called, so a mismatch
  * prints that sentence at the wiring site.
  */
-export type PrismaFamily = PersistenceFamily<
+export type PrismaUnitOfWork = UnitOfWorkBrand<
   "prisma",
   "build this processor's unitOfWork with prismaUnitOfWork(next, prisma) — this family's stores write through its transaction"
 >
@@ -196,8 +196,8 @@ export function prismaUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   prisma: PrismaClientLike,
   options: PrismaTransactionOptions = {},
-): () => U & PrismaFamily {
-  return adapterUnitOfWork(registry, transactionHooks(prisma, options), next) as () => U & PrismaFamily
+): () => U & PrismaUnitOfWork {
+  return adapterUnitOfWork(registry, transactionHooks(prisma, options), next) as () => U & PrismaUnitOfWork
 }
 
 /**
@@ -244,8 +244,8 @@ export function activePrismaTransaction(
 //      unit-of-work factory that gives every unit of work a transaction.
 //   3. A HANDLER WRAPPER — `prismaHandler(handler, prisma)`, which adds a capability to
 //      the ctx a handler FUNCTION receives. The host spreads the entry.
-//   4. A NAMED CONTEXT TYPE — `PrismaContext`, so a slice's signature reads
-//      `ctx: PrismaContext` rather than an anonymous intersection.
+//   4. A NAMED CONTEXT TYPE — `PrismaCommandContext`, so a slice's signature reads
+//      `ctx: PrismaCommandContext` rather than an anonymous intersection.
 //
 // All four share ONE piece of state — the uow-keyed registry above — which is
 // what makes the capability and the transaction the same transaction.
@@ -266,7 +266,7 @@ export type PrismaCapability = {
 }
 
 /** A command handler's context, plus this extension's capability. */
-export type PrismaContext = HandlerContext & PrismaCapability
+export type PrismaCommandContext = CommandHandlerContext & PrismaCapability
 /** An event handler's context, plus this extension's capability. */
 export type PrismaEventContext = EventHandlerContext & PrismaCapability
 /** A query handler's context, plus this extension's capability. */
@@ -284,7 +284,7 @@ export type PrismaQueryContext = QueryHandlerContext & PrismaCapability
  * (`descriptor`, `name`, `appendCondition`) survives untouched:
  *
  * ```ts
- * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: PrismaContext) => {
+ * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: PrismaCommandContext) => {
  *   await ctx.prisma().widget.update({ where: { id: payload.id }, data: { name: payload.name } })
  * })
  *

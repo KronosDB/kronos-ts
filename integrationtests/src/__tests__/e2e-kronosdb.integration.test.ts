@@ -1,7 +1,7 @@
 /**
  * Full-stack E2E integration test for KronosDB.
  *
- * Spins up ghcr.io/kronosdb/kronosdb:0.8.0 via testcontainers — no local
+ * Spins up ghcr.io/kronosdb/kronosdb:0.9.0 via testcontainers — no local
  * server needed. The image's entrypoint runs kronosdb-server, which listens
  * for gRPC on 50051 and admin on 9240.
  *
@@ -295,7 +295,7 @@ describe("E2E: KronosDB full stack", () => {
     // Spin up KronosDB. The server logs "KronosDB starting" once it binds
     // its gRPC listener; testcontainers also waits for port 50051 to accept
     // connections before returning.
-    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:0.8.0")
+    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:0.9.0")
       .withExposedPorts(50051, 9240)
       .withWaitStrategy(Wait.forHttp("/ready", 9240).forStatusCode(200))
       .start()

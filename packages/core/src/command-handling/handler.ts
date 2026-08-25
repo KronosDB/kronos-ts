@@ -1,7 +1,7 @@
 import type { InferOutput, StandardSchemaV1 } from "../messaging/standard-schema.js"
 import { type CommandDescriptor, type CommandMessage } from "../messaging/messages.js"
 import type { EventQuery } from "../event-sourcing/dcb-query.js"
-import type { HandlerContext } from "./context.js"
+import type { CommandHandlerContext } from "./context.js"
 
 /**
  * A registered command handler — pairs a command descriptor with its handler function.
@@ -10,17 +10,17 @@ import type { HandlerContext } from "./context.js"
 export type CommandHandler<
   P extends StandardSchemaV1 = StandardSchemaV1,
   R extends StandardSchemaV1 | undefined = undefined,
-  C extends HandlerContext = HandlerContext,
+  C extends CommandHandlerContext = CommandHandlerContext,
 > = {
   readonly kind: "command-handler"
   readonly descriptor: CommandDescriptor<P, R>
   /**
    * `C` is the context this handler REQUIRES. It defaults to the framework's
-   * {@link HandlerContext}; an adapter's handler wrapper (`drizzleHandler(handler, db)`)
+   * {@link CommandHandlerContext}; an adapter's handler wrapper (`drizzleHandler(handler, db)`)
    * takes a handler FUNCTION asking for its own richer context and returns one
    * asking only for the base, having supplied the difference. The host spreads
    * the entry — `{ ...h, handler: drizzleHandler(h.handler, db) }` — which is what lets
-   * a slice write `ctx: DrizzleContext` and still compose into `kronos`.
+   * a slice write `ctx: DrizzleCommandContext` and still compose into `kronos`.
    */
   readonly handler: (
     message: CommandMessage<InferOutput<P>>,
@@ -35,7 +35,7 @@ export type CommandHandler<
 /**
  * Defines a command handler.
  *
- * The handler receives the command message and a {@link HandlerContext} — the
+ * The handler receives the command message and a {@link CommandHandlerContext} — the
  * typed front door to the active UnitOfWork (`load`, `append`, `send`,
  * `emitUpdate`, `transaction`). Prefer the context over the module-level
  * helpers: it only exists inside a handler, so misuse is a compile error
@@ -71,7 +71,7 @@ export type CommandHandler<
  * })
  * ```
  */
-export function commandHandler<P extends StandardSchemaV1, C extends HandlerContext = HandlerContext>(
+export function commandHandler<P extends StandardSchemaV1, C extends CommandHandlerContext = CommandHandlerContext>(
   descriptor: CommandDescriptor<P, undefined>,
   handler: (message: CommandMessage<InferOutput<P>>, context: C) => Promise<void> | void,
 ): CommandHandler<P, undefined, C>
@@ -79,13 +79,13 @@ export function commandHandler<P extends StandardSchemaV1, C extends HandlerCont
 export function commandHandler<
   P extends StandardSchemaV1,
   R extends StandardSchemaV1,
-  C extends HandlerContext = HandlerContext,
+  C extends CommandHandlerContext = CommandHandlerContext,
 >(
   descriptor: CommandDescriptor<P, R>,
   handler: (message: CommandMessage<InferOutput<P>>, context: C) => Promise<InferOutput<R>> | InferOutput<R>,
 ): CommandHandler<P, R, C>
 
-export function commandHandler<P extends StandardSchemaV1, C extends HandlerContext = HandlerContext>(
+export function commandHandler<P extends StandardSchemaV1, C extends CommandHandlerContext = CommandHandlerContext>(
   descriptor: CommandDescriptor<P, undefined>,
   options: {
     handler: (message: CommandMessage<InferOutput<P>>, context: C) => Promise<void> | void
@@ -99,7 +99,7 @@ export function commandHandler<P extends StandardSchemaV1, C extends HandlerCont
 export function commandHandler<
   P extends StandardSchemaV1,
   R extends StandardSchemaV1,
-  C extends HandlerContext = HandlerContext,
+  C extends CommandHandlerContext = CommandHandlerContext,
 >(
   descriptor: CommandDescriptor<P, R>,
   options: {

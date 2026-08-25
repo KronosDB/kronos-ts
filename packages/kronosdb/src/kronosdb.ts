@@ -49,14 +49,14 @@
  */
 import { generateIdentifier, qualifiedNameFromString, qualifiedNameToString, type Serializer } from "@kronos-ts/core"
 import { withRetry, healthCheck, type ResilienceConfig } from "./resilience.js"
-import type { CommandBus, CommandMessage, QueryBus, QueryMessage, SubscriptionFilter, SubscriptionQueryResult, UnitOfWork, UpdateHandler } from "@kronos-ts/core"
+import type { CommandBus, CommandMessage, QueryBus, QueryMessage, SubscriptionCapableQueryBus, SubscriptionFilter, SubscriptionQueryResult, UnitOfWork, UpdateHandler } from "@kronos-ts/core"
 import {
   applySubscriptionFilter,
   updateHandler,
   runAfterCommitOrImmediately,
 } from "@kronos-ts/core"
 import type { KronosDbConnectionConfig } from "./connection.js"
-import { connectToKronosDb, contextView, kronosMetadata, type KronosDbConnection } from "./connection.js"
+import { busMetadata, connectToKronosDb, type KronosDbConnection } from "./connection.js"
 import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
 import { metadataFromProto, metadataToProto } from "./metadata-conversion.js"
 import { outboundStream } from "./outbound-stream.js"
@@ -108,8 +108,6 @@ function defaultQueryInstructions(timeoutMs: number): any[] {
 
 /** Per-bus routing knobs. Everything shared lives on the connection. */
 export type KronosDbCommandBusOptions = {
-  /** Which KronosDB context to address. Defaults to the connection's own. */
-  context?: string
   flowControl?: FlowControlConfig
   /** Relative share of routed work this instance advertises. Default: 100. */
   loadFactor?: number
@@ -119,8 +117,6 @@ export type KronosDbCommandBusOptions = {
 
 /** @see KronosDbCommandBusOptions */
 export type KronosDbQueryBusOptions = {
-  /** Which KronosDB context to address. Defaults to the connection's own. */
-  context?: string
   flowControl?: FlowControlConfig
   /** Answer from a co-located handler instead of going out to the server. */
   shortcutQueriesToLocalHandlers?: boolean
@@ -365,19 +361,32 @@ function createPayloadHelpers(serializer: Serializer) {
  * Server-side routing is unchanged: KronosDB is a smart hub, so an outbound
  * dispatch ALWAYS goes to the server, even for a command this instance handles.
  * There is no client-side prefer-next fork here (that is RabbitMQ's model).
+ *
+ * ## The bus is a NAME, not a context
+ *
+ * `bus` is the server-scoped messaging namespace this wrapper subscribes and
+ * dispatches on — a plain string, independent of any event store context
+ * (server ADR-0006). Every messaging RPC carries it as the per-call
+ * `kronosdb-bus` header; omitted, it is the server's `default` bus. There is NO
+ * server-side fallback from bus to context: contexts address logs, buses
+ * address messaging, and a host that wants them 1:1 names the bus after the
+ * context — one visible decision at this call site. With the 0.9 fabric the
+ * name is also the CLUSTER-WIDE identity: subscribe handlers on this bus via
+ * any node, dispatch via any node, and the server forwards.
  */
 export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
   next: CommandBus<U>,
   kdb: Pick<KronosDbConnectionHandle, "connection" | "serializer" | "registerShutdownLatch">,
+  bus: string = "default",
   options: KronosDbCommandBusOptions = {},
 ): CommandBus<U> {
   const { flowControl, loadFactor: commandLoadFactor, resilience } = options
   const serializer = kdb.serializer
-  const connection = contextView(kdb.connection, options.context ?? kdb.connection.config.context)
+  const connection = kdb.connection
   const shutdownLatch = shutdownLatchValue()
   kdb.registerShutdownLatch(shutdownLatch)
 
-  const metadata = kronosMetadata(connection.config)
+  const metadata = busMetadata(bus, connection.config)
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
   const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
   const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
@@ -593,17 +602,22 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
  * to a co-located handler, and wrapping outside means correlation is stamped
  * identically on both branches.
  *
- * KNOWN GAP: `subscriptionQuery` / `subscribeToUpdates` build their proto
- * straight from `message.metadata`, and `interceptingQueryBus` (in
- * `@kronos-ts/core`) forwards those two calls to the delegate without
- * running the dispatch chain. Subscription handlers therefore still travel
- * without correlation. Closing that needs a change in the messaging package.
+ * Subscription queries run the dispatch chain: `interceptingQueryBus` wraps
+ * `subscriptionQuery` / `subscribeToUpdates` with the same intercept the
+ * primary `query` gets, so the proto this bus builds from `message.metadata`
+ * already carries whatever the host's intercept stamped (pinned by
+ * `interception/__tests__/subscription-interception.test.ts` in core).
+ *
+ * `bus` is the same server-scoped namespace string the command side takes (see
+ * {@link kronosDbCommandBus}: `kronosdb-bus` per RPC, `"default"` when omitted,
+ * no relation to event store contexts).
  */
 export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
   next: QueryBus<U>,
   kdb: Pick<KronosDbConnectionHandle, "connection" | "serializer" | "registerShutdownLatch">,
+  bus: string = "default",
   options: KronosDbQueryBusOptions = {},
-): QueryBus<U> {
+): SubscriptionCapableQueryBus<U> {
   const {
     flowControl,
     shortcutQueriesToLocalHandlers,
@@ -611,11 +625,11 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
     resilience,
   } = options
   const serializer = kdb.serializer
-  const connection = contextView(kdb.connection, options.context ?? kdb.connection.config.context)
+  const connection = kdb.connection
   const shutdownLatch = shutdownLatchValue()
   kdb.registerShutdownLatch(shutdownLatch)
 
-  const metadata = kronosMetadata(connection.config)
+  const metadata = busMetadata(bus, connection.config)
   const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
   const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
@@ -756,7 +770,14 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
     if (req.unsubscribe) {
       handlerSubscriptions.delete(req.unsubscribe.subscriptionIdentifier)
     }
-    // flowControl is silently ignored; the bus doesn't track per-sub permits today.
+    // `flowControl` needs nothing from a HANDLER, and that is the server's
+    // design rather than a gap on this side: credit is held and enforced
+    // centrally, on the subscription registry, and an update emitted past a
+    // subscriber's credit is dropped there. A handler that also decremented a
+    // local counter would be double-counting the same window and would
+    // withhold updates the server would have delivered. The subscriber leg is
+    // where the client owes work — see `subscriptionQuery` and
+    // `__tests__/subscription-flow-control.test.ts`.
   }
 
   async function processInboundQueries(inbound: AsyncIterable<any>) {
@@ -844,7 +865,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
     }
   }
 
-  const routing: QueryBus<U> = {
+  const routing: SubscriptionCapableQueryBus<U> = {
     async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {
@@ -932,10 +953,35 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
 
       const outboundSub = outboundStream<any>()
 
+      // CREDIT-BASED FLOW CONTROL, AND THE SUBSCRIBER OWES THE REFILL.
+      //
+      // `subscribe` grants an initial window of credit. The server decrements
+      // it per update and DROPS updates once it hits zero — silently, with no
+      // frame back to say so. Granting a window and never refilling is
+      // therefore a subscription that works for exactly `window` updates and
+      // then stops, with nothing anywhere to read as the cause. We top the
+      // window back up as updates are handed to the consumer, in batches of a
+      // quarter, so the wire carries one small message per quarter-window
+      // instead of one per update.
+      //
+      // THE SERVER CLAMPS THE INITIAL GRANT TO [1, 1024] and we mirror that
+      // bound rather than trusting the number we asked for: a host passing
+      // `bufferSize: 5000` is granted 1024, and refilling on a 5000-wide
+      // window would let 1250 updates go by before topping up — 226 of them
+      // past the credit the server actually holds, and dropped. The refill is
+      // sized off what the server GAVE, not what we requested. Top-ups
+      // themselves are additive and unbounded, so the window is only ever
+      // restored to this size.
+      const requested = bufferSize && bufferSize > 0 ? bufferSize : 256
+      const window = Math.min(1024, Math.max(1, requested))
+      const refillBatch = Math.max(1, Math.floor(window / 4))
+      let consumedSinceRefill = 0
+      let subscriptionClosed = false
+
       outboundSub.send({
         subscribe: {
           subscriptionIdentifier: subscriptionId,
-          numberOfPermits: BigInt(bufferSize ?? 256),
+          numberOfPermits: BigInt(window),
           queryRequest: {
             messageIdentifier: message.identifier,
             query: queryName,
@@ -974,6 +1020,19 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
             } else if (response.update) {
               const update = deserializePayload(response.update.payload?.data as Uint8Array | undefined, response.update.payload?.type, response.update.payload?.revision)
               handler.offer(update)
+              // Refill for what we took, once a quarter-window has accrued.
+              // Skipped once closed: the stream is being torn down and a
+              // credit grant racing `unsubscribe` is noise on the wire.
+              consumedSinceRefill += 1
+              if (consumedSinceRefill >= refillBatch && !subscriptionClosed) {
+                outboundSub.send({
+                  flowControl: {
+                    subscriptionIdentifier: subscriptionId,
+                    numberOfPermits: BigInt(consumedSinceRefill),
+                  },
+                })
+                consumedSinceRefill = 0
+              }
             } else if (response.complete) {
               handler.complete()
               break
@@ -1000,6 +1059,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
         initialResult,
         updates: handler.iterable,
         close: () => {
+          subscriptionClosed = true
           outboundSub.send({
             unsubscribe: {
               subscriptionIdentifier: subscriptionId,

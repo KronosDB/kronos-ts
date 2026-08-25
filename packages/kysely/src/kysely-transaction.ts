@@ -1,9 +1,9 @@
 import type {
   EventHandlerContext,
-  HandlerContext,
+  CommandHandlerContext,
   QueryHandlerContext,
   UnitOfWork,
-  PersistenceFamily,
+  UnitOfWorkBrand,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -28,7 +28,7 @@ import {
  * and a read model is permanently wrong. The mark turns that into a build
  * error.
  *
- * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * IT IS ERASED AND NEVER CONSTRUCTED. `UnitOfWorkBrand` hangs on an ambient
  * unique symbol declared in core; nothing writes the property and nothing can
  * read it. kyselyUnitOfWork(…) returns exactly what it always
  * returned and asserts the branded type, so the emitted JavaScript is
@@ -39,7 +39,7 @@ import {
  * knows precisely which factory the host should have called, so a mismatch
  * prints that sentence at the wiring site.
  */
-export type KyselyFamily = PersistenceFamily<
+export type KyselyUnitOfWork = UnitOfWorkBrand<
   "kysely",
   "build this processor's unitOfWork with kyselyUnitOfWork(next, db) — this family's stores write through its transaction"
 >
@@ -165,8 +165,8 @@ const registry = transactionRegistry<KyselyTransaction>()
 export function kyselyUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   db: KyselyDb,
-): () => U & KyselyFamily {
-  return adapterUnitOfWork(registry, transactionHooks(db), next) as () => U & KyselyFamily
+): () => U & KyselyUnitOfWork {
+  return adapterUnitOfWork(registry, transactionHooks(db), next) as () => U & KyselyUnitOfWork
 }
 
 /**
@@ -213,8 +213,8 @@ export function activeKyselyTransaction(
 //      unit-of-work factory that gives every unit of work a transaction.
 //   3. A HANDLER WRAPPER — `kyselyHandler(handler, db)`, which adds a capability to
 //      the ctx a handler FUNCTION receives. The host spreads the entry.
-//   4. A NAMED CONTEXT TYPE — `KyselyContext`, so a slice's signature reads
-//      `ctx: KyselyContext` rather than an anonymous intersection.
+//   4. A NAMED CONTEXT TYPE — `KyselyCommandContext`, so a slice's signature reads
+//      `ctx: KyselyCommandContext` rather than an anonymous intersection.
 //
 // All four share ONE piece of state — the uow-keyed registry above — which is
 // what makes the capability and the transaction the same transaction.
@@ -235,7 +235,7 @@ export type KyselyCapability = {
 }
 
 /** A command handler's context, plus this extension's capability. */
-export type KyselyContext = HandlerContext & KyselyCapability
+export type KyselyCommandContext = CommandHandlerContext & KyselyCapability
 /** An event handler's context, plus this extension's capability. */
 export type KyselyEventContext = EventHandlerContext & KyselyCapability
 /** A query handler's context, plus this extension's capability. */
@@ -253,7 +253,7 @@ export type KyselyQueryContext = QueryHandlerContext & KyselyCapability
  * (`descriptor`, `name`, `appendCondition`) survives untouched:
  *
  * ```ts
- * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: KyselyContext) => {
+ * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: KyselyCommandContext) => {
  *   await ctx.db().updateTable("widgets").set({ name: payload.name }).execute()
  * })
  *

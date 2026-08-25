@@ -8,8 +8,8 @@ import type { CommandBus } from "./bus.js"
 import type { CommandHandler } from "./handler.js"
 import type { EventQuery } from "../event-sourcing/dcb-query.js"
 import { registerEventFlush } from "../unit-of-work/event-flush.js"
-import { handlerContext, type HandlerContext } from "./context.js"
-import type { QueryBus } from "../query-handling/bus.js"
+import { commandHandlerContext, type CommandHandlerContext } from "./context.js"
+import type { QueryBus, SubscriptionCapableQueryBus } from "../query-handling/bus.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ export type CommandInvocationDeps<
  * event flush, build the context and call the handler.
  */
 export function commandInvocation<U extends UnitOfWork, E extends EventStore = EventStore>(
-  handler: CommandHandler<any, any, HandlerContext<U, E>>,
+  handler: CommandHandler<any, any, CommandHandlerContext<E, SubscriptionCapableQueryBus<U>, U>>,
   deps: CommandInvocationDeps<U, E>,
 ) {
   return async (message: CommandMessage, uow: U): Promise<unknown> => {
@@ -74,7 +74,7 @@ export function commandInvocation<U extends UnitOfWork, E extends EventStore = E
     // The context closes over the unit of work — the task — and nothing else.
     // The MESSAGE reaches the handler as its first argument, which is where a
     // wrapper reads it from too.
-    return handler.handler(message, handlerContext({ uow, ...deps }))
+    return handler.handler(message, commandHandlerContext({ uow, ...deps }))
   }
 }
 
@@ -83,7 +83,7 @@ export function commandInvocation<U extends UnitOfWork, E extends EventStore = E
  * wrapper that builds its per-invocation context.
  */
 export function subscribeCommandHandlers<U extends UnitOfWork, E extends EventStore = EventStore>(
-  handlers: ReadonlyArray<CommandHandler<any, any, HandlerContext<U, E>>>,
+  handlers: ReadonlyArray<CommandHandler<any, any, CommandHandlerContext<E, SubscriptionCapableQueryBus<U>, U>>>,
   deps: { commandBus: CommandBus<U> } & CommandInvocationDeps<U, E>,
 ): void {
   for (const handler of handlers) {

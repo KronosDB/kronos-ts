@@ -104,7 +104,7 @@ export type SnapshotDemand<E extends EventStore> = IfSnapshotCapable<
  * `ctx.source`'s face of {@link IfSnapshotCapable}: the FUSED overload when the
  * log is capable, nothing at all when it is not.
  *
- * A context is ASSEMBLED by intersection — `EventHandlerContext<U, E>` is the
+ * A context is ASSEMBLED by intersection — `EventHandlerContext<E, Q, U>` is the
  * base shape (whose `source` has only the plain one-argument signature)
  * intersected with this. Against a capable store the property becomes an
  * overload set, plain signature first; against a bare one it stays exactly the

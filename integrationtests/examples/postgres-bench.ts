@@ -30,7 +30,6 @@
  */
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { qn, tag, type Metadata } from "@kronos-ts/core"
-import { jsonSerializer } from "@kronos-ts/core"
 import type { EventMessage } from "@kronos-ts/core"
 import type { EventStore } from "@kronos-ts/core"
 import { descriptorBasedTagResolver } from "@kronos-ts/core"
@@ -86,8 +85,10 @@ function percentile(sortedMs: number[], p: number): number {
 /** The pool owns connect + bootstrap; the store is a function of it. */
 async function buildStore(pool: PostgresResource): Promise<EventStore> {
   await pool.start()
+  // The BASE store takes no serializer: it knows nothing about snapshots, and
+  // events are stored as JSONB by the engine itself. Encoding belongs to the
+  // wrapper that owns a payload — `postgresSnapshottingEventStore`.
   return postgresEventStore(pool, {
-    serializer: jsonSerializer(),
     tagResolver: descriptorBasedTagResolver(),
   })
 }
@@ -374,7 +375,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
+// TOP-LEVEL AWAIT, not `main().catch(…)` — see the note in
+// postgres-university-enrollment.ts: a floating promise lets Bun exit while
+// testcontainers is still starting docker.
+try {
+  await main()
+} catch (err) {
   console.error(err)
   process.exit(1)
-})
+}

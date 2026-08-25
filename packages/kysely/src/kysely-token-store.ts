@@ -5,7 +5,7 @@ import {
   serializeToken as serializeTokenData,
   deserializeToken as deserializeTokenData,
 } from "@kronos-ts/core"
-import type { KyselyDb, KyselyFamily } from "./kysely-transaction.js"
+import type { KyselyDb, KyselyUnitOfWork } from "./kysely-transaction.js"
 import { activeKyselyTransaction } from "./kysely-transaction.js"
 
 /** The table this adapter owns. Not a parameter — the columns are not the caller's choice. */
@@ -66,7 +66,7 @@ function nowIso(): string {
  * const tokenStore = kyselyTokenStore(db)
  * ```
  */
-export function kyselyTokenStore(db: KyselyDb, options: KyselyTokenStoreOptions = {}): TokenStore<UnitOfWork & KyselyFamily> {
+export function kyselyTokenStore(db: KyselyDb, options: KyselyTokenStoreOptions = {}): TokenStore<UnitOfWork & KyselyUnitOfWork> {
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
   const table = KYSELY_TOKEN_TABLE
 

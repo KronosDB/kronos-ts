@@ -1,5 +1,6 @@
 import { generateIdentifier, requireInvocation, NoActiveUnitOfWork } from "@kronos-ts/core"
 import type {
+  SubscriptionCapability,
   AppendCondition,
   AppendTransaction,
   CancelResult,
@@ -169,6 +170,7 @@ export type QueryRecording = {
 export function recordingQueryBus<B extends QueryBus<any>>(
   bus: B,
 ): B & QueryRecording {
+  const capable = bus as B & Partial<SubscriptionCapability>
   const log: Array<QueryMessage> = []
 
   return {
@@ -191,47 +193,30 @@ export function recordingQueryBus<B extends QueryBus<any>>(
       bus.subscribe(queryName, handler as never)
     },
 
-    subscriptionQuery(
-      message: QueryMessage,
-      bufferSize?: number,
-    ): SubscriptionQueryResult {
-      log.push(message)
-      return bus.subscriptionQuery(message, bufferSize)
-    },
+    // The subscription tier is recorded only where the wrapped bus claims it;
+    // the emit/complete half carries no query message and rides the spread.
+    ...(typeof capable.subscriptionQuery === "function"
+      ? {
+          subscriptionQuery: (message: QueryMessage, bufferSize?: number): SubscriptionQueryResult => {
+            log.push(message)
+            return capable.subscriptionQuery!(message, bufferSize)
+          },
+        }
+      : {}),
+    ...(typeof capable.subscribeToUpdates === "function"
+      ? {
+          subscribeToUpdates: (
+            message: QueryMessage,
+            bufferSize?: number,
+          ): AsyncIterable<unknown> & { close(): void } => {
+            log.push(message)
+            return capable.subscribeToUpdates!(message, bufferSize)
+          },
+        }
+      : {}),
 
-    subscribeToUpdates(
-      message: QueryMessage,
-      bufferSize?: number,
-    ): AsyncIterable<unknown> & { close(): void } {
-      log.push(message)
-      return bus.subscribeToUpdates(message, bufferSize)
-    },
 
-    emitUpdate(
-      queryName: string,
-      filter: SubscriptionFilter,
-      update: unknown,
-      uow?: UnitOfWork,
-    ): Promise<void> {
-      return bus.emitUpdate(queryName, filter, update, uow)
-    },
 
-    completeSubscription(
-      queryName: string,
-      filter?: SubscriptionFilter,
-      uow?: UnitOfWork,
-    ): Promise<void> {
-      return bus.completeSubscription(queryName, filter, uow)
-    },
-
-    completeSubscriptionExceptionally(
-      queryName: string,
-      error: Error,
-      filter?: SubscriptionFilter,
-      uow?: UnitOfWork,
-    ): Promise<void> {
-      return bus.completeSubscriptionExceptionally(queryName, error, filter, uow)
-    },
   } as B & QueryRecording
 }
 

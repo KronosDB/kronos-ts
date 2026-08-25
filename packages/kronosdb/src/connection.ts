@@ -85,12 +85,36 @@ export type KronosDbConnection = {
 }
 
 /**
- * Creates gRPC metadata for KronosDB requests.
- * Injects context and optional auth token as headers.
+ * Creates gRPC metadata for KronosDB STORE-PLANE requests (event store,
+ * snapshots, schedules). Injects the context and optional auth token.
+ *
+ * Since server 0.9 (ADR-0006) this header addresses ONLY the event store side;
+ * messaging RPCs ignore it and route on `kronosdb-bus` — see {@link busMetadata}.
  */
 export function kronosMetadata(config: { context: string; token: string }): Metadata {
   const metadata = new Metadata()
   metadata.set("kronosdb-context", config.context)
+  if (config.token) {
+    metadata.set("kronosdb-token", config.token)
+  }
+  return metadata
+}
+
+/**
+ * Creates gRPC metadata for KronosDB MESSAGING-PLANE requests (commands,
+ * queries, subscription queries). Injects the bus name and optional auth token.
+ *
+ * Buses are server-scoped resources INDEPENDENT of event store contexts
+ * (server ADR-0006): `CommandService` and `QueryService` resolve their engine
+ * from the per-RPC `kronosdb-bus` header, an absent header means the `default`
+ * bus, and there is deliberately NO fallback to `kronosdb-context` — so this
+ * helper never reads the connection's context. Which buses map to which
+ * contexts is the host's deployment decision, expressed one bus-name string
+ * per bus wrapper.
+ */
+export function busMetadata(bus: string, config: { token: string }): Metadata {
+  const metadata = new Metadata()
+  metadata.set("kronosdb-bus", bus)
   if (config.token) {
     metadata.set("kronosdb-token", config.token)
   }

@@ -23,7 +23,7 @@ import {
 import type { QueryRow } from "./adapter.js"
 import type { PostgresResource } from "./postgres-pool.js"
 import { activePostgresTransaction } from "./postgres-transaction.js"
-import type { PostgresFamily } from "./postgres-transaction.js"
+import type { PostgresUnitOfWork } from "./postgres-transaction.js"
 
 /** Tuning only — everything required is the positional pool. */
 export type PostgresTokenStoreOptions = {
@@ -54,7 +54,7 @@ function nowIso(): string {
 export function postgresTokenStore(
   pg: PostgresResource,
   options: PostgresTokenStoreOptions = {},
-): TokenStore<UnitOfWork & PostgresFamily> {
+): TokenStore<UnitOfWork & PostgresUnitOfWork> {
   const table = pg.tables.tokens
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
 

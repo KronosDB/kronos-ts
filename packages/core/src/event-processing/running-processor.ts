@@ -20,7 +20,7 @@ import {
   advanceTokenTo,
 } from "./tracking-token.js"
 import type { CommandBus } from "../command-handling/bus.js"
-import type { QueryBus } from "../query-handling/bus.js"
+import type { QueryBus, SubscriptionCapableQueryBus } from "../query-handling/bus.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
 import { eventHandlerContext, type EventHandlerContext } from "./context.js"
 
@@ -34,7 +34,7 @@ export type ProcessorHandlerEntry<
   U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
 > = {
-  readonly definition: EventHandler<any, EventHandlerContext<U, E>>
+  readonly definition: EventHandler<any, EventHandlerContext<E, SubscriptionCapableQueryBus<U>, U>>
   readonly commandBus?: CommandBus<U>
   readonly queryBus?: QueryBus<U>
   /**
@@ -206,12 +206,12 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   function contextFor(
     uow: U,
     entry: ProcessorHandlerEntry<U, E>,
-  ): EventHandlerContext<U, E> {
+  ): EventHandlerContext<E, SubscriptionCapableQueryBus<U>, U> {
     // `ctx.load` sources from the entry's own log when it has one, and
     // otherwise from the log this delivery reads — the same store, in every
     // arrangement anybody actually writes.
     const loadFrom = entry.eventStore ?? eventStore
-    return eventHandlerContext<U, E>({
+    return eventHandlerContext<U, E, SubscriptionCapableQueryBus<U>>({
       uow,
       eventStore: loadFrom as E,
       ...(entry.commandBus !== undefined ? { commandBus: entry.commandBus } : {}),

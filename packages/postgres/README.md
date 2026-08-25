@@ -76,9 +76,9 @@ Never mix families within one processor: a `drizzleTokenStore` alongside a
 ### `ctx.sql()` in a handler
 
 ```typescript
-import { postgresHandler, type PostgresContext } from "@kronos-ts/postgres"
+import { postgresHandler, type PostgresCommandContext } from "@kronos-ts/postgres"
 
-const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: PostgresContext) => {
+const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: PostgresCommandContext) => {
   await ctx.sql().query("UPDATE widgets SET name = $2 WHERE id = $1", [payload.id, payload.name])
   ctx.append(WidgetUpdated, payload)   // commits together, rolls back together
 })
@@ -95,7 +95,7 @@ kronos({
 about a handler entry appears in its type and the host keeps ownership of the
 spread. One wrapper covers command, event and query handlers alike: they differ
 only in the context they receive, and the capability is added the same way to
-each. `PostgresContext` / `PostgresEventContext` / `PostgresQueryContext` name
+each. `PostgresCommandContext` / `PostgresEventContext` / `PostgresQueryContext` name
 the three results.
 
 The erasure is DIRECTIONAL — a handler that ASKS for `sql()` goes in, one that

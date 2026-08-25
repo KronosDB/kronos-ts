@@ -3,7 +3,10 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["packages/*/src", "integrationtests/src"],
+  // `integrationtests/examples` IS INCLUDED. The examples are the surface a
+  // reader copies from, so they are held to the same compiler as the code —
+  // they had drifted through three renames while nothing compiled them.
+  "include": ["packages/*/src", "integrationtests/src", "integrationtests/examples"],
   "exclude": [
     "**/__tests__/**",
     "**/*.test.ts",
@@ -16,12 +19,14 @@
   // the tests.
   "files": [
     "packages/drizzle/src/__tests__/drizzle-handler-inference.types.ts",
+    "packages/drizzle/src/__tests__/correlating-drizzle-stacking.types.ts",
     "packages/core/src/correlation/__tests__/correlation-demand.types.ts",
     "packages/core/src/event-sourcing/__tests__/snapshot-demand.types.ts",
     "packages/core/src/event-scheduling/__tests__/schedule-demand.types.ts",
+    "packages/core/src/query-handling/__tests__/subscription-demand.types.ts",
     "packages/core/src/event-processing/__tests__/processor-demands.types.ts",
     "integrationtests/src/__tests__/capability-preservation.types.ts",
-    "integrationtests/src/__tests__/persistence-family.types.ts",
+    "integrationtests/src/__tests__/unit-of-work-brand.types.ts",
     "packages/rabbitmq/src/__tests__/transport-capability-preservation.types.ts",
     "packages/core/src/messaging/__tests__/standard-schema.types.ts",
     "packages/core/src/event-sourcing/__tests__/state-initial.types.ts",

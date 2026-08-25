@@ -20,7 +20,7 @@
 import { z } from "zod"
 import { qn, command, event } from "../../messaging/messages.js"
 import { commandHandler } from "../../command-handling/handler.js"
-import type { HandlerContext } from "../../command-handling/context.js"
+import type { CommandHandlerContext } from "../../command-handling/context.js"
 import type { EventHandlerContext } from "../../event-processing/context.js"
 import type { QueryHandlerContext } from "../../query-handling/context.js"
 import type { CommandHandlerEntry } from "../../kronos.js"
@@ -52,7 +52,7 @@ const Open = command({
 /** CAPABLE + SCHEDULES ✓ — the arrangement the demand exists to require. */
 export const capablePlusSchedules = commandHandler(
   Open,
-  async (m, ctx: HandlerContext<UnitOfWork, ScheduleCapableEventStore>) => {
+  async (m, ctx: CommandHandlerContext<ScheduleCapableEventStore>) => {
     const token = await ctx.schedule(Reminded, { ticketId: m.payload.ticketId }, new Date())
     await ctx.scheduleAfter(Reminded, { ticketId: m.payload.ticketId }, 30_000)
     await ctx.cancelSchedule(token)
@@ -60,7 +60,7 @@ export const capablePlusSchedules = commandHandler(
 )
 
 /** BARE + SILENT ✓ — a project that never arms a deadline is unaffected. */
-export const barePlusSilent = commandHandler(Open, async (_m, ctx: HandlerContext) => {
+export const barePlusSilent = commandHandler(Open, async (_m, ctx: CommandHandlerContext) => {
   await ctx.load
   await ctx.source({ tags: { ticketId: "t-1" } })
 })
@@ -68,7 +68,7 @@ export const barePlusSilent = commandHandler(Open, async (_m, ctx: HandlerContex
 /** CAPABLE + SILENT ✓ — the capability widens; it never narrows. */
 export const capablePlusSilent = commandHandler(
   Open,
-  async (_m, ctx: HandlerContext<UnitOfWork, ScheduleCapableEventStore>) => {
+  async (_m, ctx: CommandHandlerContext<ScheduleCapableEventStore>) => {
     await ctx.source({ tags: { ticketId: "t-1" } })
   },
 )
@@ -78,11 +78,11 @@ export const capablePlusSilent = commandHandler(
  *
  * STRUCTURALLY ABSENT, NOT PRESENT-AND-COMPLAINING. `ScheduleVerbs<E>` resolves
  * to `unknown` against a bare log and vanishes from the intersection, so the
- * diagnostic is "Property 'schedule' does not exist on type 'HandlerContext'"
+ * diagnostic is "Property 'schedule' does not exist on type 'CommandHandlerContext'"
  * — a fact about what this context IS, at the call site, rather than a
  * mismatch inside a signature nobody should have been offered.
  */
-export const barePlusSchedules = commandHandler(Open, async (m, ctx: HandlerContext) => {
+export const barePlusSchedules = commandHandler(Open, async (m, ctx: CommandHandlerContext) => {
   // @ts-expect-error — this entry's log cannot hold a future event; wrap it
   await ctx.schedule(Reminded, { ticketId: m.payload.ticketId }, new Date())
   // @ts-expect-error — and the other two verbs are absent for the same reason
@@ -98,7 +98,7 @@ export const eventContextRefuses = async (ctx: EventHandlerContext) => {
 }
 
 export const eventContextAccepts = async (
-  ctx: EventHandlerContext<UnitOfWork, ScheduleCapableEventStore>,
+  ctx: EventHandlerContext<ScheduleCapableEventStore>,
 ) => {
   await ctx.schedule(Reminded, { ticketId: "t-1" }, new Date())
 }
@@ -111,7 +111,7 @@ export const eventContextAccepts = async (
  * decides what it WANTS.
  */
 export const queryContextNeverSchedules = async (
-  ctx: QueryHandlerContext<UnitOfWork, ScheduleCapableEventStore>,
+  ctx: QueryHandlerContext<ScheduleCapableEventStore>,
 ) => {
   // @ts-expect-error — a query handling has no birth verbs, capable log or not
   await ctx.schedule(Reminded, { ticketId: "t-1" }, new Date())
@@ -208,7 +208,7 @@ export const sandwichedSnapshots: SnapshotCapableEventStore = upcastSandwiched
  */
 export const demandsBoth = commandHandler(
   Open,
-  async (m, ctx: HandlerContext<UnitOfWork, SnapshotCapableEventStore & ScheduleCapableEventStore>) => {
+  async (m, ctx: CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore>) => {
     await ctx.source({ tags: { ticketId: m.payload.ticketId } }, { snapshot: `ticket:${m.payload.ticketId}` })
     await ctx.schedule(Reminded, { ticketId: m.payload.ticketId }, new Date())
   },

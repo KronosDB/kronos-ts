@@ -11,7 +11,7 @@
  * there is no `TransactionManager` for a host to implement or pass in.
  */
 
-import type { PersistenceFamily, UnitOfWork } from "@kronos-ts/core"
+import type { UnitOfWorkBrand, UnitOfWork } from "@kronos-ts/core"
 import {
   activeTransaction,
   adapterUnitOfWork,
@@ -37,7 +37,7 @@ import { IsolationLevel } from "./adapter.js"
  * and a read model is permanently wrong. The mark turns that into a build
  * error.
  *
- * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * IT IS ERASED AND NEVER CONSTRUCTED. `UnitOfWorkBrand` hangs on an ambient
  * unique symbol declared in core; nothing writes the property and nothing can
  * read it. postgresUnitOfWork(…) returns exactly what it always
  * returned and asserts the branded type, so the emitted JavaScript is
@@ -48,7 +48,7 @@ import { IsolationLevel } from "./adapter.js"
  * knows precisely which factory the host should have called, so a mismatch
  * prints that sentence at the wiring site.
  */
-export type PostgresFamily = PersistenceFamily<
+export type PostgresUnitOfWork = UnitOfWorkBrand<
   "postgres",
   "build this processor's unitOfWork with postgresUnitOfWork(next, pg) — this family's stores write through its transaction"
 >
@@ -196,8 +196,8 @@ export function postgresUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   pg: PostgresAdapter,
   isolationLevel: IsolationLevel = IsolationLevel.READ_COMMITTED,
-): () => U & PostgresFamily {
-  return adapterUnitOfWork(registry, txHooks(pg, isolationLevel), next) as () => U & PostgresFamily
+): () => U & PostgresUnitOfWork {
+  return adapterUnitOfWork(registry, txHooks(pg, isolationLevel), next) as () => U & PostgresUnitOfWork
 }
 
 /**

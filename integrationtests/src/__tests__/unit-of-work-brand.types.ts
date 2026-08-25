@@ -43,12 +43,12 @@ import {
   drizzleDeadLetterQueue,
   drizzleTokenStore,
   drizzleUnitOfWork,
-  type DrizzleFamily,
+  type DrizzleUnitOfWork,
 } from "@kronos-ts/drizzle"
 import {
   postgresTokenStore,
   postgresUnitOfWork,
-  type PostgresFamily,
+  type PostgresUnitOfWork,
 } from "@kronos-ts/postgres"
 
 // The clients are irrelevant to every claim below — a family is a TYPE fact,
@@ -63,8 +63,8 @@ const lane = sequentialPerTag("courseId")
 // (a) THE DECORATOR BRANDS WHAT IT MINTS, and preserves what it was handed.
 // ---------------------------------------------------------------------------
 
-/** A bare task, decorated: `() => UnitOfWork & DrizzleFamily`. */
-export const drizzleTasks: () => UnitOfWork & DrizzleFamily = drizzleUnitOfWork(unitOfWork, db)
+/** A bare task, decorated: `() => UnitOfWork & DrizzleUnitOfWork`. */
+export const drizzleTasks: () => UnitOfWork & DrizzleUnitOfWork = drizzleUnitOfWork(unitOfWork, db)
 
 /**
  * THE BRAND AND A COMPOSED CAPABILITY COEXIST — the claim the surface makes
@@ -73,17 +73,17 @@ export const drizzleTasks: () => UnitOfWork & DrizzleFamily = drizzleUnitOfWork(
  * bootstrap idiom, and it still yields a task that CARRIES as well as one that
  * belongs to a family.
  */
-export const correlatingDrizzleTasks: () => CorrelatingUnitOfWork & DrizzleFamily =
+export const correlatingDrizzleTasks: () => CorrelatingUnitOfWork & DrizzleUnitOfWork =
   drizzleUnitOfWork(() => correlating(unitOfWork()), db)
 
 /** And it reads BOTH ways round: the correlation survives the brand… */
 export const stillCorrelating: () => CorrelatingUnitOfWork = correlatingDrizzleTasks
 /** …and the brand survives the correlation. */
-export const stillBranded: () => UnitOfWork & DrizzleFamily = correlatingDrizzleTasks
+export const stillBranded: () => UnitOfWork & DrizzleUnitOfWork = correlatingDrizzleTasks
 
 /** A bare factory is NOT branded, so none of the refusals below are vacuous. */
 // @ts-expect-error — nothing marked this task
-export const bareIsNotBranded: () => UnitOfWork & DrizzleFamily = unitOfWork
+export const bareIsNotBranded: () => UnitOfWork & DrizzleUnitOfWork = unitOfWork
 
 // ---------------------------------------------------------------------------
 // (b) THE PROCESSOR IS WHERE THE DEMAND IS MET. All four quadrants of
@@ -171,11 +171,11 @@ export const mixedQueue = eventProcessor({
 export const brandedIntoBare: TokenStore = drizzleTokenStore(db)
 
 /** A bare store DOES fit a branded slot — nothing to disagree about. */
-export const bareIntoBranded: TokenStore<UnitOfWork & DrizzleFamily> = inMemoryTokenStore()
+export const bareIntoBranded: TokenStore<UnitOfWork & DrizzleUnitOfWork> = inMemoryTokenStore()
 
 /** And two families do not fit each other. */
 // @ts-expect-error — postgres is not drizzle
-export const crossFamily: TokenStore<UnitOfWork & DrizzleFamily> = postgresTokenStore(pg)
+export const crossFamily: TokenStore<UnitOfWork & DrizzleUnitOfWork> = postgresTokenStore(pg)
 
 // ---------------------------------------------------------------------------
 // (d) A FAMILY BRAND IS NOT A CAPABILITY. It rides on the task, so a handler
@@ -189,5 +189,5 @@ export const brandAloneIsNotCorrelating = (): void => {
   void carries
 }
 
-export type FamiliesAreDistinct = PostgresFamily extends DrizzleFamily ? never : true
+export type FamiliesAreDistinct = PostgresUnitOfWork extends DrizzleUnitOfWork ? never : true
 export const familiesAreDistinct: FamiliesAreDistinct = true

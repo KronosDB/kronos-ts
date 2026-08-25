@@ -1,9 +1,9 @@
 import type {
   EventHandlerContext,
-  HandlerContext,
+  CommandHandlerContext,
   QueryHandlerContext,
   UnitOfWork,
-  PersistenceFamily,
+  UnitOfWorkBrand,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -28,7 +28,7 @@ import {
  * and a read model is permanently wrong. The mark turns that into a build
  * error.
  *
- * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * IT IS ERASED AND NEVER CONSTRUCTED. `UnitOfWorkBrand` hangs on an ambient
  * unique symbol declared in core; nothing writes the property and nothing can
  * read it. knexUnitOfWork(…) returns exactly what it always
  * returned and asserts the branded type, so the emitted JavaScript is
@@ -39,7 +39,7 @@ import {
  * knows precisely which factory the host should have called, so a mismatch
  * prints that sentence at the wiring site.
  */
-export type KnexFamily = PersistenceFamily<
+export type KnexUnitOfWork = UnitOfWorkBrand<
   "knex",
   "build this processor's unitOfWork with knexUnitOfWork(next, knex) — this family's stores write through its transaction"
 >
@@ -199,8 +199,8 @@ export function knexUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   knex: KnexClient,
   options: KnexTransactionOptions = {},
-): () => U & KnexFamily {
-  return adapterUnitOfWork(registry, transactionHooks(knex, options), next) as () => U & KnexFamily
+): () => U & KnexUnitOfWork {
+  return adapterUnitOfWork(registry, transactionHooks(knex, options), next) as () => U & KnexUnitOfWork
 }
 
 /**
@@ -245,8 +245,8 @@ export function activeKnexTransaction(uow: UnitOfWork | undefined): KnexTransact
 //      unit-of-work factory that gives every unit of work a transaction.
 //   3. A HANDLER WRAPPER — `knexHandler(handler, knex)`, which adds a capability to
 //      the ctx a handler FUNCTION receives. The host spreads the entry.
-//   4. A NAMED CONTEXT TYPE — `KnexContext`, so a slice's signature reads
-//      `ctx: KnexContext` rather than an anonymous intersection.
+//   4. A NAMED CONTEXT TYPE — `KnexCommandContext`, so a slice's signature reads
+//      `ctx: KnexCommandContext` rather than an anonymous intersection.
 //
 // All four share ONE piece of state — the uow-keyed registry above — which is
 // what makes the capability and the transaction the same transaction.
@@ -267,7 +267,7 @@ export type KnexCapability = {
 }
 
 /** A command handler's context, plus this extension's capability. */
-export type KnexContext = HandlerContext & KnexCapability
+export type KnexCommandContext = CommandHandlerContext & KnexCapability
 /** An event handler's context, plus this extension's capability. */
 export type KnexEventContext = EventHandlerContext & KnexCapability
 /** A query handler's context, plus this extension's capability. */
@@ -285,7 +285,7 @@ export type KnexQueryContext = QueryHandlerContext & KnexCapability
  * (`descriptor`, `name`, `appendCondition`) survives untouched:
  *
  * ```ts
- * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: KnexContext) => {
+ * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: KnexCommandContext) => {
  *   await ctx.knex()("widgets").update({ name: payload.name })
  * })
  *

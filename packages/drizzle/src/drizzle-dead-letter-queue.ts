@@ -1,7 +1,7 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { and, asc, eq } from "drizzle-orm"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { DrizzleDb, DrizzleFamily } from "./drizzle-transaction.js"
+import type { DrizzleDb, DrizzleUnitOfWork } from "./drizzle-transaction.js"
 import { activeDrizzleTransaction } from "./drizzle-transaction.js"
 import { kronosDeadLetters } from "./drizzle-schema.js"
 
@@ -68,7 +68,7 @@ function newId(group: string): string {
 export function drizzleDeadLetterQueue(
   db: DrizzleDb,
   options: DrizzleDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue<UnitOfWork & DrizzleFamily> {
+): SequencedDeadLetterQueue<UnitOfWork & DrizzleUnitOfWork> {
   const table: any = kronosDeadLetters
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024

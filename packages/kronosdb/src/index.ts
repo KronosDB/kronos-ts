@@ -4,6 +4,7 @@ export {
   type ConnectionState,
   connectToKronosDb,
   kronosMetadata,
+  busMetadata,
 } from "./connection.js"
 
 export {

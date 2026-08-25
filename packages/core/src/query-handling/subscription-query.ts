@@ -6,7 +6,7 @@ import {
   type QueryMessage,
 } from "../messaging/messages.js"
 import { generateIdentifier } from "../messaging/identifier.js"
-import type { QueryBus } from "./bus.js"
+import type { SubscriptionCapableQueryBus } from "./bus.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
 
 /**
@@ -190,7 +190,7 @@ export function subscriptionQuery<
   P extends StandardSchemaV1,
   R extends StandardSchemaV1 | undefined = undefined,
 >(
-  bus: QueryBus,
+  bus: SubscriptionCapableQueryBus,
   descriptor: QueryDescriptor<P, R>,
   payload: InferOutput<P>,
   metadata?: Metadata,

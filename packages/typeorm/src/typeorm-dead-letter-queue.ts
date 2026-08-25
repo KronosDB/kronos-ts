@@ -1,6 +1,6 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { TypeormManager, TypeormFamily } from "./typeorm-transaction.js"
+import type { TypeormManager, TypeormUnitOfWork } from "./typeorm-transaction.js"
 import { activeTypeormTransaction } from "./typeorm-transaction.js"
 
 /**
@@ -98,7 +98,7 @@ function newId(group: string): string {
 export function typeormDeadLetterQueue(
   manager: TypeormManager,
   options: TypeormDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue<UnitOfWork & TypeormFamily> {
+): SequencedDeadLetterQueue<UnitOfWork & TypeormUnitOfWork> {
   const table = TYPEORM_DEAD_LETTER_TABLE
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024

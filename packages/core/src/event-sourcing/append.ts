@@ -40,7 +40,7 @@ export type AppendFunction = {
  * Build the `append` capability for ONE invocation, closed over that
  * invocation's unit of work.
  *
- * Internal — exported only via the "./append" subpath for the HandlerContext.
+ * Internal — exported only via the "./append" subpath for the CommandHandlerContext.
  * Handlers reach the result as `ctx.append`.
  *
  * Throws NoActiveUnitOfWork once the unit of work has closed; throws

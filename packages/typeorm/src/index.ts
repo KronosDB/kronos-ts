@@ -4,12 +4,12 @@
 // the only way to observe one without opening it.
 export {
   typeormUnitOfWork,
-  type TypeormFamily,
+  type TypeormUnitOfWork,
   typeormTransaction,
   activeTypeormTransaction,
   typeormHandler,
   type TypeormCapability,
-  type TypeormContext,
+  type TypeormCommandContext,
   type TypeormEventContext,
   type TypeormQueryContext,
   type TypeormManager,

@@ -180,11 +180,11 @@ export {
 } from "./unit-of-work/unit-of-work.js"
 
 // THE PERSISTENCE-FAMILY SLOT. Core owns the mark and knows no occupants: each
-// adapter package writes `PersistenceFamily<"drizzle", "…">` once and brands
+// adapter package writes `UnitOfWorkBrand<"drizzle", "…">` once and brands
 // what its unit-of-work decorator mints, so wiring one family's token store
 // against another family's task is a compile error naming the factory to call.
 // Erased entirely — a phantom on an ambient unique symbol, never constructed.
-export type { PersistenceFamily } from "./unit-of-work/persistence-family.js"
+export type { UnitOfWorkBrand } from "./unit-of-work/unit-of-work-brand.js"
 
 // ── command-handling: the command kind's whole life ────────────────────────
 // The bus shape, the local segment, both births of a command (the edge verb
@@ -202,21 +202,27 @@ export {
 // widest of the three, so the capability types and the deps record all three
 // are built from live with it.
 export {
-  type HandlerContext,
+  type CommandHandlerContext,
   type HandlerContextDeps,
   type ContextAppendFunction,
   type ContextLoadFunction,
   type ContextSourceFunction,
   type ContextSendFunction,
   type ContextQueryFunction,
-  handlerContext,
+  commandHandlerContext,
 } from "./command-handling/context.js"
 
 // ── query-handling: the query kind's whole life ────────────────────────────
 // `query` is BOTH the descriptor constructor and the dispatch verb — the
 // surface names both, and a barrel exports one binding per name. Arity tells
 // them apart: one definition object declares, a bus first dispatches.
-export { type QueryBus } from "./query-handling/bus.js"
+export {
+  type QueryBus,
+  type SubscriptionCapability,
+  type SubscriptionCapableQueryBus,
+  type IfSubscriptionCapable,
+} from "./query-handling/bus.js"
+export { type EmitCapability, type SubscriptionEmit } from "./query-handling/emit-update.js"
 export { localQueryBus } from "./query-handling/local-bus.js"
 export { query, type QueryDispatchFunction } from "./query-handling/query.js"
 export {
@@ -396,7 +402,7 @@ export {
   repositoryFor,
 } from "./event-sourcing/repository.js"
 
-// Handler capabilities are reached via the HandlerContext (second handler
+// Handler capabilities are reached via the CommandHandlerContext (second handler
 // argument). The implementations live beside the state model; only their types
 // are public here.
 // THE DEMAND lives with the source types, because it is a question about what a

@@ -22,14 +22,14 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
  * `query` IS here: a read composing another module's read stays a read.
  */
 export type QueryHandlerContext<
-  U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
-> = QueryHandlerContextBase<U, E> & SnapshotReads<E>
+  U extends UnitOfWork = UnitOfWork,
+> = QueryHandlerContextBase<E, U> & SnapshotReads<E>
 
 /** The always-there part; see `EventHandlerContext` for why it is split out. */
 type QueryHandlerContextBase<
-  U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
+  U extends UnitOfWork = UnitOfWork,
 > = {
   /** Load event-sourced state within this UnitOfWork (cached per UoW). */
   readonly load: ContextLoadFunction<E>
@@ -51,12 +51,12 @@ type QueryHandlerContextBase<
 /** Build the QUERY handler context for one invocation. */
 export function queryHandlerContext<U extends UnitOfWork, E extends EventStore = EventStore>(
   deps: HandlerContextDeps<U, E>,
-): QueryHandlerContext<U, E> {
+): QueryHandlerContext<E, U> {
   const { uow } = deps
   return {
     load: loadFunction(deps) as ContextLoadFunction<E>,
     source: sourceFunction(deps),
     query: queryFunction(deps) as ContextQueryFunction,
     unitOfWork: uow,
-  } as QueryHandlerContext<U, E>
+  } as QueryHandlerContext<E, U>
 }

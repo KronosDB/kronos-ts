@@ -7,7 +7,7 @@ import { postgresPool } from "../postgres-pool.js"
 import { postgresTransaction, postgresUnitOfWork } from "../postgres-transaction.js"
 import {
   postgresHandler,
-  type PostgresContext,
+  type PostgresCommandContext,
   type PostgresEventContext,
   type PostgresQueryContext,
 } from "../postgres-handler.js"
@@ -45,8 +45,8 @@ function fakeAdapter(): PostgresAdapter {
 // functions — the wrapper takes a FUNCTION, and an entry only ever appears
 // where the host spreads one.
 function commandHandlerFn(
-  handler: (message: unknown, ctx: PostgresContext) => Promise<void>,
-): (message: unknown, ctx: PostgresContext) => Promise<void> {
+  handler: (message: unknown, ctx: PostgresCommandContext) => Promise<void>,
+): (message: unknown, ctx: PostgresCommandContext) => Promise<void> {
   return handler
 }
 function eventHandlerFn(
@@ -159,10 +159,10 @@ describe("postgresHandler", () => {
 
   it("leaves the ENTRY to the host — the spread carries every other field", async () => {
     const pool = postgresPool(fakeAdapter(), { bootstrap: false })
-    const entry: CommandHandler<any, any, PostgresContext> = {
+    const entry: CommandHandler<any, any, PostgresCommandContext> = {
       kind: "command-handler",
       descriptor: {} as never,
-      handler: async (_m, ctx: PostgresContext) => {
+      handler: async (_m, ctx: PostgresCommandContext) => {
         ctx.sql()
       },
     }

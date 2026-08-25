@@ -34,7 +34,7 @@ import {
   commandHandler,
   correlating,
   correlatingHandler,
-  handlerContext,
+  commandHandlerContext,
   correlation,
   interceptingCommandBus,
   interceptingQueryBus,
@@ -197,7 +197,7 @@ async function sendFinishFrom(
 ): Promise<void> {
   const uow = correlating(unitOfWork())
   await uow.execute(async () => {
-    const ctx = handlerContext({ uow, commandBus: bus })
+    const ctx = commandHandlerContext({ uow, commandBus: bus })
     const handler = correlatingHandler(async (_m, c: typeof ctx) => {
       attach?.(c.unitOfWork)
       await c.send(Finish, { id: "x" })

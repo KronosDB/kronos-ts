@@ -23,7 +23,7 @@ import {
 import {
   correlating,
   correlatingHandler,
-  handlerContext,
+  commandHandlerContext,
   localCommandBus,
   localQueryBus,
   unitOfWork,
@@ -170,7 +170,7 @@ describe("KronosDB distributed command bus — correlation", () => {
     const parent = causingCommand()
     const uow = correlating(unitOfWork())
     await uow.execute(async () => {
-      const ctx = handlerContext({ uow, commandBus: bus })
+      const ctx = commandHandlerContext({ uow, commandBus: bus })
       const handler = correlatingHandler(async (_m, c: typeof ctx) => {
         await c.send(Finish, { id: "x" })
       }, correlationFrom)
@@ -203,7 +203,7 @@ describe("KronosDB distributed query bus — correlation", () => {
     const parent = causingCommand()
     const uow = correlating(unitOfWork())
     await uow.execute(async () => {
-      const ctx = handlerContext({ uow, queryBus: bus })
+      const ctx = commandHandlerContext({ uow, queryBus: bus })
       const handler = correlatingHandler(async (_m, c: typeof ctx) => {
         await c.query(FindThing, { id: "x" })
       }, correlationFrom)
