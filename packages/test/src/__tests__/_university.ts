@@ -8,7 +8,7 @@ import {
 } from "@kronos-ts/core"
 import type { EventStore } from "@kronos-ts/core"
 import { z } from "zod"
-import type { FixtureLists, PartialProcessor } from "../fixture.js"
+import type { FixtureLists, FixtureResources, PartialProcessor } from "../fixture.js"
 
 // ---------------------------------------------------------------------------
 // A university, written the way a slice is written: descriptors, one state, the
@@ -209,7 +209,7 @@ const projection: PartialProcessor = (eventStore, tokenStore, unitOfWork) =>
  * way — which is the point of taking the resources as parameters instead of
  * reaching for them.
  */
-export function university(eventStore: EventStore): FixtureLists {
+export function university({ eventStore }: FixtureResources): FixtureLists {
   return {
     commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
       ...h,
@@ -228,7 +228,7 @@ export function university(eventStore: EventStore): FixtureLists {
 }
 
 /** Decisions only — no automations, so `then` is exactly what the command decided. */
-export function decisions(eventStore: EventStore): FixtureLists {
+export function decisions({ eventStore }: FixtureResources): FixtureLists {
   return {
     commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
       ...h,
@@ -238,9 +238,9 @@ export function decisions(eventStore: EventStore): FixtureLists {
 }
 
 /** Decisions plus the seat automation, with no scheduler and no read model. */
-export function withAutomation(eventStore: EventStore): FixtureLists {
+export function withAutomation(resources: FixtureResources): FixtureLists {
   return {
-    ...decisions(eventStore),
+    ...decisions(resources),
     eventHandlers: [{ ...closeWhenFull, processor: projection }],
   }
 }
@@ -279,7 +279,7 @@ const armReminder = commandHandler(ArmReminder, async ({ payload: cmd }, ctx) =>
 })
 
 /** Reminders on their own — one command, one state, one schedule. */
-export function reminders(eventStore: EventStore): FixtureLists {
+export function reminders({ eventStore }: FixtureResources): FixtureLists {
   return {
     commandHandlers: [{ ...armReminder, eventStore }],
   }

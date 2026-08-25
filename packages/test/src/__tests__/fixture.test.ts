@@ -5,6 +5,10 @@ import {
   inMemoryTokenStore,
   eventProcessor,
   unitOfWork,
+  correlating,
+  inMemorySnapshottingEventStore,
+  localCommandBus,
+  localQueryBus,
 } from "@kronos-ts/core"
 import {
   any,
@@ -339,7 +343,7 @@ describe("wait", () => {
 
   it("refuses to fake time for a scope whose resources it does not own", async () => {
     const foreign = inMemoryEventStore()
-    const fixture = testFixture(() => decisions(foreign))
+    const fixture = testFixture((resources) => decisions({ ...resources, eventStore: foreign as never }))
 
     const failure = await fixture
       .run(
@@ -685,9 +689,9 @@ describe("misuse", () => {
 describe("the scope", () => {
   it("is called with the fixture's own log — ONE store, capabilities and all", async () => {
     let seen: unknown
-    await testFixture((eventStore) => {
-      seen = eventStore
-      return decisions(eventStore)
+    await testFixture((resources) => {
+      seen = resources.eventStore
+      return decisions(resources)
     }).run(
       scenario()
         .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
@@ -703,10 +707,10 @@ describe("the scope", () => {
   })
 
   it("accepts a shorter parameter list", async () => {
-    await testFixture((eventStore) => ({
-      commandHandlers: decisions(eventStore).commandHandlers!.map((h) => ({
+    await testFixture((resources) => ({
+      commandHandlers: decisions(resources).commandHandlers!.map((h) => ({
         ...h,
-        eventStore,
+        eventStore: resources.eventStore,
       })),
     })).run(
       scenario()
@@ -729,11 +733,11 @@ describe("the scope", () => {
 
   it("takes an already-built processor, and then owns nothing", async () => {
     const foreignStore = inMemoryEventStore()
-    const fixture = testFixture((eventStore) => ({
-      ...decisions(eventStore),
+    const fixture = testFixture((resources) => ({
+      ...decisions(resources),
       eventHandlers: [
         {
-          ...withAutomation(eventStore).eventHandlers![0]!,
+          ...withAutomation(resources).eventHandlers![0]!,
           processor: eventProcessor({
             name: "foreign",
             eventStore: foreignStore,
@@ -755,5 +759,89 @@ describe("the scope", () => {
       )
       .catch((e: Error) => e)
     expect((failure as Error).message).toContain("cannot move time for this scope")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// THE FIXTURE TAKES INFRASTRUCTURE — it does not conjure it.
+//
+// A test should be able to run against the arrangement it is going to ship on.
+// The fixture wraps what it is handed for recording and owns nothing else; the
+// task it hands over is already on its clock and already correlating, so
+// neither property can be dropped on the way through.
+// ---------------------------------------------------------------------------
+
+describe("infrastructure", () => {
+  it("runs against buses and a log the host supplied", async () => {
+    let builtWith: (() => unknown) | undefined
+    const log = inMemorySnapshottingEventStore(inMemoryEventStore())
+
+    await testFixture(({ eventStore }) => decisions({ eventStore } as never), {
+      infrastructure: (task) => {
+        builtWith = task
+        return {
+          unitOfWork: task,
+          eventStore: log,
+          commandBus: localCommandBus(task),
+          queryBus: localQueryBus(task),
+        }
+      },
+    }).run(
+      scenario()
+        .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
+        .then(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 5 })),
+    )
+
+    // The events landed in the host's OWN log, not a fixture-private one.
+    const stored = await log.source({ query: { types: [CourseCreated] } })
+    expect(stored.events.map((e) => e.name.name)).toEqual(["CourseCreated"])
+    expect(builtWith).toBeDefined()
+  })
+
+  it("hands over a task that is already on the fixture clock and already carrying", async () => {
+    let minted: ReturnType<typeof correlating> | undefined
+
+    await testFixture(({ eventStore }) => decisions({ eventStore } as never), {
+      clock: () => 1_700_000_000_000,
+      infrastructure: (task) => {
+        const uow = () => {
+          minted = task()
+          return minted
+        }
+        return {
+          unitOfWork: uow,
+          eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()),
+          commandBus: localCommandBus(uow),
+          queryBus: localQueryBus(uow),
+        }
+      },
+    }).run(
+      scenario()
+        .when(command(CreateCourse, { courseId: "cs-1", name: "N", capacity: 1 }))
+        .then(event(CourseCreated, { courseId: "cs-1", name: "N", capacity: 1 })),
+    )
+
+    // On the fixture's clock — the host never mentioned one…
+    expect(minted!.now()).toBe(1_700_000_000_000)
+    // …and carrying, so `then` can still assert a causal chain.
+    expect(typeof minted!.correlationData).toBe("function")
+  })
+
+  it("stamps the events it appends from the supplied task's clock", async () => {
+    const at = 1_800_000_000_000
+    const { events } = await testFixture(({ eventStore }) => decisions({ eventStore } as never), {
+      clock: () => at,
+      infrastructure: (task) => ({
+        unitOfWork: task,
+        eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()),
+        commandBus: localCommandBus(task),
+        queryBus: localQueryBus(task),
+      }),
+    }).run(
+      scenario()
+        .when(command(CreateCourse, { courseId: "cs-2", name: "N", capacity: 1 }))
+        .then(event(CourseCreated, { courseId: "cs-2", name: "N", capacity: 1 })),
+    )
+    expect(events.map((e) => e.timestamp)).toEqual([at])
   })
 })

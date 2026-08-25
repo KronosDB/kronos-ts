@@ -16,6 +16,7 @@ import {
 } from "@kronos-ts/core"
 import type {
   CorrelatingUnitOfWork,
+  CommandBus,
   CommandHandler,
   CommandHandlerEntry,
   CommandMessage,
@@ -34,6 +35,7 @@ import type {
   SequencedDeadLetterQueue,
   Sited,
   SnapshotCapableEventStore,
+  SubscriptionCapableQueryBus,
   TokenStore,
   UnitOfWork,
 } from "@kronos-ts/core"
@@ -130,8 +132,33 @@ export type FixtureLists = {
  * can serve it, a scope calling `ctx.schedule` typechecks for the same reason,
  * and the same scope against a bare `inMemoryEventStore()` does neither.
  */
-export type FixtureEventStore = SnapshotCapableEventStore &
-  ScheduleCapability & { readonly appended: ReadonlyArray<EventMessage>; reset(): void }
+export type EventRecording = {
+  readonly appended: ReadonlyArray<EventMessage>
+  reset(): void
+}
+
+export type FixtureEventStore = SnapshotCapableEventStore & ScheduleCapability & EventRecording
+
+/**
+ * WHAT A SCOPE IS HANDED: every resource, already wrapped for recording.
+ *
+ * The scope used to receive one log and the fixture kept the rest to itself,
+ * so a scope could not be the composition root it claimed to be. It receives
+ * the whole arrangement now — the same names a deployed root holds — and the
+ * objects are the RECORDED ones, so entries pointing at them are what the
+ * fixture judges.
+ */
+export type FixtureResources<
+  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  E extends EventStore = FixtureEventStore,
+> = {
+  readonly eventStore: E & EventRecording
+  readonly commandBus: CommandBus<U>
+  readonly queryBus: SubscriptionCapableQueryBus<U>
+  readonly unitOfWork: () => U
+  readonly tokenStore: TokenStore<U>
+  readonly deadLetterQueue: SequencedDeadLetterQueue<U>
+}
 
 /**
  * A composition root as a function of the resources the fixture owns.
@@ -145,7 +172,79 @@ export type FixtureEventStore = SnapshotCapableEventStore &
  * const fixture = testFixture((eventStore) => ({ commandHandlers: [{ ...openCourse, eventStore }], … }))
  * ```
  */
-export type FixtureScope = (eventStore: FixtureEventStore) => FixtureLists
+export type FixtureScope<
+  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  E extends EventStore = FixtureEventStore,
+> = (resources: FixtureResources<U, E>) => FixtureLists
+
+/**
+ * THE ARRANGEMENT A HOST ACTUALLY DEPLOYS, handed to the fixture instead of
+ * conjured by it.
+ *
+ * The fixture used to build every one of these itself and hand the scope only
+ * a log — which made it the one library here that conjures its delegates, and
+ * meant a test could never run against the infrastructure it was going to
+ * ship on. It takes them now and WRAPS what it is given: the recorders it
+ * needs to judge a `then` go AROUND your bus and your log, and they are
+ * capability-preserving, so a kronosdb bus stays a kronosdb bus.
+ *
+ * ```ts
+ * testFixture(scope, {
+ *   infrastructure: (task) => {
+ *     const uow = postgresUnitOfWork(task, pg)     // decorate the task you were handed
+ *     return {
+ *       unitOfWork: uow,
+ *       eventStore: postgresSnapshottingEventStore(postgresEventStore(pg, …), pg, …),
+ *       commandBus: localCommandBus(uow),
+ *       queryBus: localQueryBus(uow),
+ *       tokenStore: postgresTokenStore(pg),
+ *     }
+ *   },
+ * })
+ * ```
+ *
+ * `tokenStore` and `deadLetterQueue` are the only optional members: absent,
+ * the fixture supplies in-memory ones, which is what a scope with no
+ * persistence family wants and what every existing test gets.
+ */
+export type FixtureInfrastructure<
+  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  E extends EventStore = EventStore,
+> = {
+  readonly unitOfWork: () => U
+  readonly eventStore: E
+  readonly commandBus: CommandBus<U>
+  readonly queryBus: SubscriptionCapableQueryBus<U>
+  readonly tokenStore?: TokenStore<U>
+  readonly deadLetterQueue?: SequencedDeadLetterQueue<U>
+}
+
+/**
+ * How a host builds its infrastructure — HANDED A TASK FACTORY, NOT A CLOCK.
+ *
+ * The fixture needs two things of every task: that it reads the fixture's
+ * clock, so `wait` can move time, and that it CARRIES, so `then` can assert a
+ * causal chain. Both used to be things a host had to know and repeat —
+ * `postgresUnitOfWork(() => correlating(unitOfWork(clock)), pg)`, with a
+ * dropped `clock` or a missing `correlating` being a quiet way to get a test
+ * that cannot move time or cannot see causation.
+ *
+ * So `task` arrives already both: `() => correlating(unitOfWork(fixtureClock))`.
+ * Decorate it the way a deployed root decorates one — every adapter's
+ * unit-of-work decorator is `(next, client) => …` and composes onto it — and
+ * hand back what you built. Nothing downstream has to be told about time,
+ * because everything downstream is built from this.
+ *
+ * `clock` is the second argument for the one case that genuinely needs the raw
+ * arrow: infrastructure with its own schedule book (`inMemorySchedulingEventStore(next, { clock })`).
+ * It is a function and must stay one — it reads a base instant plus an offset
+ * `wait` advances, so whatever captured the ARROW sees time move and whatever
+ * captured a NUMBER is frozen where it was built.
+ */
+export type InfrastructureFactory<
+  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  E extends EventStore = EventStore,
+> = (task: () => FixtureUnitOfWork, clock: () => number) => FixtureInfrastructure<U, E>
 
 export type FixtureOptions = {
   /**
@@ -168,6 +267,12 @@ export type FixtureOptions = {
    * worker — where there is nothing for the fixture to jump.
    */
   readonly realTime?: boolean
+  /**
+   * The infrastructure to run against — see {@link InfrastructureFactory}.
+   * Absent, the fixture builds the in-memory stack it always did, which is
+   * what a scope with no persistence family wants.
+   */
+  readonly infrastructure?: InfrastructureFactory<any, any>
 }
 
 /** What one act did. `events` and `commands` cover THIS act only. */
@@ -222,7 +327,20 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
    * them; wrapping is idempotent in effect (the second attach writes the same
    * keys), so composing on top of this costs nothing.
    */
-  const uow = (): FixtureUnitOfWork => correlating(unitOfWork(clock))
+  // WHAT THE HOST BROUGHT, IF ANYTHING — built ONCE, from the fixture's clock,
+  // so a factory that reads that clock moves when `wait` moves. Once: calling
+  // the factory per task would mint a fresh pool, a fresh log and a fresh
+  // registry every time, and nothing would share a transaction with anything.
+  /**
+   * The task the fixture guarantees: on ITS clock, and CARRYING. A host's
+   * factory decorates this rather than rebuilding it, so neither property can
+   * be dropped on the way through.
+   */
+  const task = (): FixtureUnitOfWork => correlating(unitOfWork(clock))
+
+  const supplied = opts.infrastructure?.(task, clock) as FixtureInfrastructure | undefined
+
+  const uow: () => FixtureUnitOfWork = supplied?.unitOfWork ?? task
 
   const log = inMemoryEventStore()
   // THE FIXTURE COMPOSES WHAT A HOST COMPOSES — snapshotting AND scheduling —
@@ -238,18 +356,37 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
   // and appends the result back in through the OUTERMOST store, so a fired
   // deadline is recorded exactly like a handler's append instead of slipping in
   // beneath the recorder.
-  const scheduling = controllableSchedulingEventStore(
-    inMemorySnapshottingEventStore(log),
-    clock,
-  )
-  const eventStore: FixtureEventStore = recordingEventStore(scheduling)
-  const tokenStore = inMemoryTokenStore()
-  const deadLetterQueue = inMemoryDeadLetterQueue()
-  const commandBus = recordingCommandBus(localCommandBus(uow))
-  const queryBus = recordingQueryBus(localQueryBus(uow))
+  //
+  // THE SCHEDULE BOOK IS THE FIXTURE'S ONLY WHEN THE LOG IS. `wait` fires due
+  // deadlines by asking this directly, and there is nothing to ask when the
+  // host brought its own log — a postgres poller and a kronosdb server hold
+  // their schedules where this cannot reach, which is what `realTime` is for.
+  const scheduling =
+    supplied === undefined
+      ? controllableSchedulingEventStore(inMemorySnapshottingEventStore(log), clock)
+      : undefined
+
+  // EVERY RESOURCE: the host's where it brought one, the fixture's otherwise.
+  // The recorders go on the OUTSIDE of whatever arrived — they are
+  // capability-preserving, so a wrapped bus is still whatever it was.
+  const eventStore = recordingEventStore(
+    (supplied?.eventStore ?? scheduling) as Parameters<typeof recordingEventStore>[0],
+  ) as FixtureEventStore
+  const tokenStore = (supplied?.tokenStore ?? inMemoryTokenStore()) as TokenStore<FixtureUnitOfWork>
+  const deadLetterQueue = (supplied?.deadLetterQueue ??
+    inMemoryDeadLetterQueue()) as SequencedDeadLetterQueue<FixtureUnitOfWork>
+  const commandBus = recordingCommandBus(supplied?.commandBus ?? localCommandBus(uow))
+  const queryBus = recordingQueryBus(supplied?.queryBus ?? localQueryBus(uow))
 
   // ---- what the scope asked for -------------------------------------------
-  const lists = scope(eventStore)
+  const lists = scope({
+    eventStore,
+    commandBus,
+    queryBus,
+    unitOfWork: uow,
+    tokenStore,
+    deadLetterQueue,
+  })
 
   /**
    * Whether anything in the scope is beyond the fixture's reach.
@@ -264,7 +401,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
    * SCHEDULER as well as a foreign store, so there were two of these; a
    * scheduler is a tier on a log, so bringing one IS bringing a store.
    */
-  let foreign = false
+  let foreign = supplied !== undefined
   function ownStore(store: EventStore | undefined): void {
     if (store !== undefined && store !== eventStore) foreign = true
   }
@@ -292,7 +429,12 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     if (declared === undefined) return defaultProcessor
     const built =
       typeof declared === "function"
-        ? declared(eventStore, tokenStore, uow, deadLetterQueue)
+        ? declared(
+            eventStore,
+            tokenStore as TokenStore,
+            uow,
+            deadLetterQueue as SequencedDeadLetterQueue,
+          )
         : declared
     if (built.eventStore !== eventStore || built.tokenStore !== tokenStore) foreign = true
     readsFrom.set(built.name, built.eventStore)
@@ -400,7 +542,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
    */
   let priorSchedules = new Map<string, string>()
   function markSchedules(): void {
-    priorSchedules = new Map(scheduling.schedules.map((s) => [s.token.id, s.status]))
+    priorSchedules = new Map((scheduling?.schedules ?? []).map((s) => [s.token.id, s.status]))
   }
 
   /**
@@ -515,9 +657,14 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
       offset += duration
     }
 
-    // Fired events go in through the OUTERMOST store, so the recorder sees them.
-    const due = scheduling.due()
-    if (due.length > 0) await eventStore.append(due)
+    // Fired events go in through the OUTERMOST store, so the recorder sees
+    // them. There is a book to ask only when the fixture built the log: a
+    // host's own scheduler — a postgres poller, a kronosdb server — holds its
+    // deadlines out of reach, and only real elapsed time fires those.
+    if (scheduling !== undefined) {
+      const due = scheduling.due()
+      if (due.length > 0) await eventStore.append(due)
+    }
     await quiesce()
   }
 
@@ -528,7 +675,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     return {
       events: [...eventStore.appended],
       commands: commandBus.dispatched.filter((m) => m.identifier !== actIdentifier),
-      schedules: scheduling.schedules.filter(
+      schedules: (scheduling?.schedules ?? []).filter(
         (s) => priorSchedules.get(s.token.id) !== s.status,
       ),
     }
