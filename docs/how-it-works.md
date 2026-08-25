@@ -274,10 +274,12 @@ correlatingHandler(h.handler, (m) => ({
 
 ### The demand is conditional
 
-Wrapping a handler makes it ask for `ctx.unitOfWork: CorrelatingUnitOfWork`.
-Buses and processors are parametric in what their factory mints, and the entry
-types tie the two together — so wiring a wrapped handler against a bus built
-from a bare `() => unitOfWork()` is a **compile error**:
+Wrapping a handler gives back one that asks for `ctx.unitOfWork:
+CorrelatingUnitOfWork` — the demand is on the wrapper's *output*, so the handler
+itself never names a task. Buses and processors are parametric in what their
+factory mints, and the entry types tie the two together — so wiring a wrapped
+handler against a bus built from a bare `() => unitOfWork()` is a **compile
+error**:
 
 ```ts
 kronos({
@@ -357,13 +359,19 @@ model — the capabilities you must not have are *absent from the type*, not
 merely discouraged.
 
 ```ts
-type EventHandlerContext<U extends UnitOfWork = UnitOfWork, E extends EventStore = EventStore> =
+type EventHandlerContext<E extends EventStore = EventStore, U extends UnitOfWork = UnitOfWork> =
   { load · source · send · query · emitUpdate · isReplay() · unitOfWork: U }
   & SnapshotReads<E>      // the fused read — only when the log caches folds
   & ScheduleVerbs<E>      // schedule · scheduleAfter · cancelSchedule — only when the log holds deadlines
-type HandlerContext<U, E> = EventHandlerContext<U, E> & { append }
-type QueryHandlerContext<U, E> = { load · source · query · unitOfWork: U } & SnapshotReads<E>
+type CommandHandlerContext<E, U> = EventHandlerContext<E, U> & { append }
+type QueryHandlerContext<E, U> = { load · source · query · unitOfWork: U } & SnapshotReads<E>
 ```
+
+`E` comes first because `E` is what a handler writes: it annotates the log it
+*uses* (`ctx: CommandHandlerContext<SnapshotCapableEventStore>`). `U` stays
+defaulted — the task is something done *to* a handling, demanded by a wrapper on
+its output and minted by a bus — and a handler names it only when it reaches for
+the task directly.
 
 **A context is assembled by intersection.** The first line is what every handling
 gets; the other two are what the entry's *log* contributes, and against a log
@@ -376,6 +384,37 @@ exist", at the call site.
 both threaded through so a handler can *demand* what it needs. Both default —
 `UnitOfWork` and `EventStore` — so a handler that wants nothing special writes
 nothing special.
+
+### Name your app's context once
+
+A demand names only what it uses, and it says so by **intersecting a face** or
+naming a tier's type — never by restating parameters it has no opinion about.
+But an app that depends on several capabilities would then repeat the same
+intersection in every handler, and every handler would have to be edited the
+day the deployment learns a new trick. So name it once, in your own vocabulary:
+
+```ts
+// yours, in your app — not something the framework ships
+type UniversityCommandContext =
+  CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore> & EmitCapability
+
+const enrollStudent = commandHandler(EnrollStudent, async ({ payload }, ctx: UniversityCommandContext) => {
+  const course = await ctx.load(Course, { courseId: payload.courseId })   // needs the snapshot tier
+  ctx.append(StudentEnrolled, payload)
+  await ctx.scheduleAfter(EnrollmentLapses, payload, 86_400_000)          // needs the schedule tier
+  ctx.emitUpdate(WatchCourse, (q) => q.courseId === payload.courseId, …)  // needs the subscription tier
+})
+```
+
+One word per handler, one line to change when the app's floor moves — and the
+line still reads as a floor, so every entry is checked against it exactly as
+before. The adapter packages name theirs the same way
+(`PostgresCommandContext`, `DrizzleEventContext`), which is where the naming
+convention comes from: the thing it belongs to, then the message kind.
+
+Keep it a *floor*, not a description of your infrastructure: name the
+capability tiers you use, never a concrete store or bus type. `state()` and the
+entries do the rest.
 
 **A query context cannot `send`.** Dispatching a command from a query breaks
 command/query separation, so there is no `send` on it — and no `append`, because
@@ -688,12 +727,12 @@ const Course = state({ /* … */, snapshot: { key: "course-v1", when: afterEvent
 // ✗ — "this state declares a snapshot policy, but this handler's eventStore
 //      cannot serve one" / "wrap this entry's eventStore in the snapshotting wrapper
 //      for its persistence family — <family>SnapshottingEventStore(store, …)"
-commandHandler(OpenCourse, async (m, ctx: HandlerContext) => {
+commandHandler(OpenCourse, async (m, ctx: CommandHandlerContext) => {
   await ctx.load(Course, { courseId })
 })
 
 // ✓ — say what you need, and the ENTRY must supply it
-commandHandler(OpenCourse, async (m, ctx: HandlerContext<UnitOfWork, SnapshotCapableEventStore>) => {
+commandHandler(OpenCourse, async (m, ctx: CommandHandlerContext<SnapshotCapableEventStore>) => {
   await ctx.load(Course, { courseId })
 })
 ```
@@ -927,13 +966,13 @@ The mirror of the snapshotting demand, one capability over. Against a bare log t
 three verbs are not on the context at all:
 
 ```ts
-// ✗ — "Property 'schedule' does not exist on type 'HandlerContext'."
+// ✗ — "Property 'schedule' does not exist on type 'CommandHandlerContext'."
 eventHandler(OrderPlaced, async (m, ctx: EventHandlerContext) => {
   await ctx.scheduleAfter(PaymentTimedOut, { orderId: m.payload.orderId }, 900_000)
 })
 
 // ✓ — say what you need, and the ENTRY must supply it
-eventHandler(OrderPlaced, async (m, ctx: EventHandlerContext<UnitOfWork, ScheduleCapableEventStore>) => {
+eventHandler(OrderPlaced, async (m, ctx: EventHandlerContext<ScheduleCapableEventStore>) => {
   await ctx.scheduleAfter(PaymentTimedOut, { orderId: m.payload.orderId }, 900_000)
 })
 ```
@@ -1059,6 +1098,42 @@ permanently wrong after a crash between two writes nobody knew were separate.
 
 Absent a queue, a handler failure propagates and the batch retries.
 `batchSize` (default 1) is how many events share one unit of work.
+
+## Transactions: one owner, lenses for the rest
+
+Only one persistence family can own a task's transaction — transaction identity
+*is* the client handle, which is what the family brand pins down. That leaves a
+real question when your application code uses an ORM and your log is
+`postgresEventStore` on the same database: whose transaction does a handler run
+in?
+
+The answer depends on what the processor's handlers do, because the event
+store's append joins the **postgres** family's transaction and no other:
+
+```ts
+// ✗ ORM family owns — appends run in their OWN transaction, apart from your ORM writes.
+//   Projection-write + token-write stay atomic (that pair is what the ORM family is for),
+//   but a command handler's ctx.append is NOT atomic with its ctx.db() writes.
+const uow = drizzleUnitOfWork(() => unitOfWork(), db)
+
+// ✓ postgres owns, and the ORM rides the SAME connection as a lens —
+//   table write + append commit or roll back together.
+const uow = postgresUnitOfWork(() => unitOfWork(), pg)
+const tx  = await postgresTransaction(ctx.unitOfWork)
+const db  = drizzle(tx.unwrap<PoolClient>(), { schema })
+```
+
+So the rule, per processor: **ORM family end-to-end** when the handlers only
+project — their atomicity need is projection + token, which the family gives.
+**Postgres family with the ORM as a lens** when handlers must write tables *and*
+append in one transaction.
+
+There is no drizzle event store, deliberately: the log's SQL is engine code —
+append conditions, advisory locks, watermark queries — not application data. So
+the sharing runs in one direction only: the framework exposes its transaction
+(`unwrap()` returns the live driver connection) and your ORM binds to it. The
+mechanics — per adapter, per ORM, including the pool-owning ones — are in
+`@kronos-ts/postgres`'s README under "Handing the transaction to an ORM".
 
 ## Assembly
 
