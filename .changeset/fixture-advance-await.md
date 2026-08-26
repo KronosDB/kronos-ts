@@ -10,11 +10,23 @@ up, and only a fixture given a clock it can MOVE will run the first. BREAKING.
 // before — one verb for two ideas, and a runtime throw when it could not
 scenario().when(command(…)).wait(90_000).then(…)
 
-// after — the clock, and the world, said separately
-scenario().when(command(…)).advance(90_000).then(…)   // moves the clock
-scenario().when(command(…)).await().then(…)           // processors catch up
-scenario().when(command(…)).await(({ events }) => events.length === 3, 2_000).then(…)
+// after — moving the clock, and judging a world that is still working, are
+// different things and say so
+scenario().when(command(…)).advance(90_000).then(…)   // move the clock
+scenario().when(command(…)).then(event(Opened, …))    // holds NOW
+scenario().when(command(…)).await(event(Opened, …))   // holds EVENTUALLY
 ```
+
+`await` is `then` with a deadline: the same claims, in the same vocabulary,
+re-judged until they hold or `run`'s `within` passes. Nothing extra to
+write — what you are waiting for is what you were going to assert anyway. That
+is the shape a world which keeps working after the act returns needs: a
+projection behind a database, a processor on another node.
+
+`then` still fails on the first look, because a deterministic scope has nothing
+to wait for and waiting would only make failures slow. Which claim style to use
+is now the scenario's own statement rather than a guess the fixture made from
+whether it recognised your resources.
 
 `.advance` makes a `Scenario<true>`, and `run` accepts one only on a fixture
 built over an `advanceableClock()` — so pairing a time-advancing scenario with

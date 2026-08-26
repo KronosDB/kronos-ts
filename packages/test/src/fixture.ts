@@ -46,7 +46,7 @@ import {
   recordingEventStore,
   recordingQueryBus,
 } from "./recording.js"
-import type { Scenario, Settled } from "./scenario.js"
+import type { Scenario } from "./scenario.js"
 import { isAny, type Action, type Duration, type EventValue } from "./values.js"
 
 // ---------------------------------------------------------------------------
@@ -739,37 +739,6 @@ export function testFixture<O extends FixtureOptions = FixtureOptions>(
     await quiesce()
   }
 
-  /**
-   * WAIT FOR THE WORLD TO CATCH UP — no clock moves.
-   *
-   * Without `until`, that is the processors reaching the head of the log, which
-   * is everything an in-memory scope can be behind on. With one, the claim is
-   * re-judged until it holds or the deadline passes: against real
-   * infrastructure there is no "caught up" observable from outside, so you say
-   * what you are waiting for.
-   */
-  async function catchUp(until?: Settled, within?: Duration): Promise<void> {
-    await quiesce()
-    if (until === undefined) return
-
-    const deadline = Date.now() + (within ?? opts.within ?? DEFAULT_WITHIN)
-    for (;;) {
-      const observed = {
-        events: [...eventStore.appended],
-        commands: [...commandBus.dispatched],
-      }
-      if (await until(observed)) return
-      if (Date.now() > deadline) {
-        throw new Error(
-          "@kronos-ts/test: `.await(until)` gave up — the claim never held. " +
-            `Waited ${within ?? opts.within ?? DEFAULT_WITHIN}ms.`,
-        )
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10))
-      await quiesce()
-    }
-  }
-
   /** What the recorders currently hold, minus the act's own message. */
   function observe(
     actIdentifier: string | undefined,
@@ -807,10 +776,6 @@ export function testFixture<O extends FixtureOptions = FixtureOptions>(
         }
         if (step.kind === "advance") {
           await advance(step.duration)
-          continue
-        }
-        if (step.kind === "await") {
-          await catchUp(step.until, step.within)
           continue
         }
 
@@ -877,9 +842,15 @@ export function testFixture<O extends FixtureOptions = FixtureOptions>(
         if (failure === undefined) {
           return { result, events: outcome.events, commands: outcome.commands }
         }
-        // An all-fixture scope is deterministic: what is not true now will not
-        // become true, so waiting for it would only make failures slow.
-        if (!foreign || Date.now() > deadline) throw new ScenarioAssertionError(failure)
+        // THE SCENARIO SAYS WHICH. `then` judges the world as it stands: what
+        // is not true now will not become true in a deterministic scope, and
+        // waiting for it would only make failures slow. `await` judges the
+        // same claims until they hold, which is what a world that keeps
+        // working after the act — a projection behind a database, a processor
+        // on another node — actually needs.
+        if (scenario.judgement === "once" || Date.now() > deadline) {
+          throw new ScenarioAssertionError(failure)
+        }
         await new Promise<void>((resolve) => setTimeout(resolve, 20))
         await quiesce()
       }

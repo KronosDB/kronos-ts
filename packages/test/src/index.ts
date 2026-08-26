@@ -34,7 +34,7 @@ export {
   type Scenario,
   type ScenarioStart,
   type ScenarioActed,
-  type Settled,
+  type Judgement,
   type Advances,
   scenario,
   given,

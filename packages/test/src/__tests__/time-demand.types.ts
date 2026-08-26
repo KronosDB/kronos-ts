@@ -29,14 +29,13 @@ const advancing = scenario()
   .advance(1_000)
   .then(noEvents())
 
-const waiting = scenario()
+// `await` is `then` with a deadline — the same claims, judged until they hold.
+const eventually = scenario()
   .when(command(Do, { id: "x" }))
-  .await()
-  .then(event(Did, { id: "x" }))
+  .await(event(Did, { id: "x" }))
 
-const withUntil = scenario()
+const immediately = scenario()
   .when(command(Do, { id: "x" }))
-  .await(({ events }) => events.length === 1, 500)
   .then(event(Did, { id: "x" }))
 
 // ---------------------------------------------------------------------------
@@ -45,8 +44,8 @@ const withUntil = scenario()
 
 const movable = testFixture(scope, { clock: advanceableClock() })
 export const advancesOk = movable.run(advancing)
-export const waitsOk = movable.run(waiting)
-export const untilOk = movable.run(withUntil)
+export const eventuallyOk = movable.run(eventually)
+export const immediatelyOk = movable.run(immediately)
 
 // A fixture given no clock at all builds an advanceable one, so the default
 // stays the ergonomic one: `.advance` works out of the box.
@@ -60,8 +59,10 @@ export const defaultAdvances = byDefault.run(advancing)
 // ---------------------------------------------------------------------------
 
 const readOnly = testFixture(scope, { clock: () => 1_700_000_000_000 })
-export const stillWaits = readOnly.run(waiting)
-export const stillUntil = readOnly.run(withUntil)
+// Waiting for the world needs no clock, so it runs on a fixture that has none
+// it can move — which is exactly the real-infrastructure arrangement.
+export const stillEventually = readOnly.run(eventually)
+export const stillImmediately = readOnly.run(immediately)
 
 // @ts-expect-error — this scenario moves the clock; this fixture cannot
 export const cannotAdvance = readOnly.run(advancing)

@@ -30,21 +30,22 @@ export type Advances = boolean
 export type Step =
   | { readonly kind: "given"; readonly events: ReadonlyArray<EventValue<any>> }
   | { readonly kind: "advance"; readonly duration: Duration }
-  | { readonly kind: "await"; readonly until?: Settled; readonly within?: Duration }
   | { readonly kind: "when"; readonly action: Action }
 
 /**
- * What `await` waits FOR — a claim about the world, re-judged until it holds.
+ * HOW THE CLAIMS ARE JUDGED — once, or until they hold.
  *
- * Absent, `await` waits for the processors to catch up and nothing more, which
- * is all an in-memory scope ever needs. Against real infrastructure there is no
- * "caught up" anybody can observe from outside, so you say what you are waiting
- * for and the fixture keeps looking until it is true or the deadline passes.
+ * `then` judges the world as it stands the moment the act settles, which is
+ * everything a deterministic scope needs: if a claim does not hold now it will
+ * not hold later either, and waiting would be theatre.
+ *
+ * `await` judges the same claims REPEATEDLY until they hold or the deadline
+ * passes. That is the real-infrastructure shape — a projection behind a
+ * database, a processor on another node — where the act returning does not
+ * mean the world has finished reacting. There is nothing extra to write: what
+ * you are waiting for is what you were going to assert anyway.
  */
-export type Settled = (observed: {
-  readonly events: ReadonlyArray<EventMessage>
-  readonly commands: ReadonlyArray<CommandMessage>
-}) => boolean | Promise<boolean>
+export type Judgement = "once" | "until"
 
 /**
  * A finished scenario: the steps, the claims, and a sentence describing itself.
@@ -58,6 +59,8 @@ export type Scenario<A extends Advances = boolean> = {
   readonly advances?: A
   readonly steps: ReadonlyArray<Step>
   readonly then: ReadonlyArray<Assertion>
+  /** Whether the claims are judged once, or until they hold. */
+  readonly judgement: Judgement
   /** "given CourseCreated, when SubscribeStudent, then StudentSubscribed" */
   readonly description: string
 }
@@ -70,12 +73,6 @@ export type ScenarioStart<A extends Advances = false> = {
    * fixture will run.
    */
   advance(duration: Duration): ScenarioStart<true>
-  /**
-   * Wait for the world to catch up: the processors reach the head of the log,
-   * and — when `until` is given — keep looking until it holds. Moves no clock,
-   * so any fixture runs it.
-   */
-  await(until?: Settled, within?: Duration): ScenarioStart<A>
   /** The act — exactly one command, query or event. */
   when(action: Action): ScenarioActed<A>
 }
@@ -84,10 +81,17 @@ export type ScenarioStart<A extends Advances = false> = {
 export type ScenarioActed<A extends Advances = false> = {
   /** Move the clock — deadlines fire here. Repeatable. */
   advance(duration: Duration): ScenarioActed<true>
-  /** Wait for the world to catch up. Moves no clock. */
-  await(until?: Settled, within?: Duration): ScenarioActed<A>
-  /** What the act should have done. Terminal. */
+  /** What the act should have done, judged once. Terminal. */
   then(...assertions: Assertion[]): Scenario<A>
+  /**
+   * What the act should EVENTUALLY have done — the same claims, re-judged
+   * until they hold or `run`'s `within` passes. Terminal.
+   *
+   * For a world that keeps working after the act returns: a projection behind
+   * a database, a processor on another node. Moves no clock, so any fixture
+   * runs it.
+   */
+  await(...assertions: Assertion[]): Scenario<A>
 }
 
 /**
@@ -129,9 +133,6 @@ function start(steps: ReadonlyArray<Step>): ScenarioStart<any> {
     advance(duration) {
       return start([...steps, { kind: "advance", duration }])
     },
-    await(until, within) {
-      return start([...steps, { kind: "await", until, within }])
-    },
     when(action) {
       return acted([...steps, { kind: "when", action }])
     },
@@ -143,11 +144,21 @@ function acted(steps: ReadonlyArray<Step>): ScenarioActed<any> {
     advance(duration) {
       return acted([...steps, { kind: "advance", duration }])
     },
-    await(until, within) {
-      return acted([...steps, { kind: "await", until, within }])
-    },
     then(...assertions) {
-      return { steps, then: assertions, description: describe(steps, assertions) }
+      return {
+        steps,
+        then: assertions,
+        judgement: "once",
+        description: describe(steps, assertions),
+      }
+    },
+    await(...assertions) {
+      return {
+        steps,
+        then: assertions,
+        judgement: "until",
+        description: `${describe(steps, assertions)} (eventually)`,
+      }
     },
   }
 }
@@ -193,8 +204,6 @@ function describe(steps: ReadonlyArray<Step>, assertions: ReadonlyArray<Assertio
       clauses.push(`given ${step.events.map((e) => localName(e.descriptor)).join(", ")}`)
     } else if (step.kind === "advance") {
       clauses.push(`advance ${step.duration}ms`)
-    } else if (step.kind === "await") {
-      clauses.push(step.until === undefined ? "await" : "await until")
     } else {
       clauses.push(`when ${localName(step.action.descriptor)}`)
     }

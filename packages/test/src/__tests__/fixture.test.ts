@@ -358,13 +358,12 @@ describe("wait", () => {
     expect((failure as Error).message).toContain("advanceableClock()")
   })
 
-  it("`await` waits for the world to catch up, and moves no clock", async () => {
+  it("`await` judges the same claims, and moves no clock", async () => {
     const clock = advanceableClock(1_700_000_000_000)
     const { events } = await testFixture(withAutomation, { clock }).run(
       given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }))
         .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "s-1" }))
-        .await()
-        .then(
+        .await(
           event(StudentSubscribed, { courseId: "cs-101", studentId: "s-1" }),
           event(CourseClosed, { courseId: "cs-101" }),
         ),
@@ -374,30 +373,35 @@ describe("wait", () => {
     expect(clock()).toBe(1_700_000_000_000)
   })
 
-  it("`await(until)` keeps looking until the claim holds", async () => {
-    let seen = 0
-    await testFixture(decisions).run(
-      scenario()
-        .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
-        .await(({ events }) => {
-          seen += 1
-          return events.length === 1
-        })
-        .then(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 5 })),
-    )
-    expect(seen).toBeGreaterThan(0)
-  })
-
-  it("`await(until)` gives up when the claim never holds", async () => {
+  it("`await` keeps looking until the claims hold, then gives up", async () => {
+    const started = Date.now()
     const failure = await testFixture(decisions)
       .run(
         scenario()
           .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
-          .await(() => false, 60)
-          .then(noEvents()),
+          .await(event(CourseClosed, { courseId: "never-happens" })),
+        { within: 120 },
       )
       .catch((e: Error) => e)
-    expect((failure as Error).message).toContain("never held")
+
+    expect(failure).toBeInstanceOf(ScenarioAssertionError)
+    // It waited rather than failing on the first look.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(100)
+  })
+
+  it("`then` fails immediately — a deterministic scope has nothing to wait for", async () => {
+    const started = Date.now()
+    const failure = await testFixture(decisions)
+      .run(
+        scenario()
+          .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
+          .then(event(CourseClosed, { courseId: "never-happens" })),
+        { within: 5_000 },
+      )
+      .catch((e: Error) => e)
+
+    expect(failure).toBeInstanceOf(ScenarioAssertionError)
+    expect(Date.now() - started).toBeLessThan(1_000)
   })
 })
 
