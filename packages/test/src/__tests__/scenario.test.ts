@@ -57,15 +57,15 @@ describe("scenario — a value, not a script", () => {
     ).toEqual(a.steps[0])
   })
 
-  it("`wait` is chainable at either joint, and repeatable", () => {
+  it("`advance` is chainable at either joint, and repeatable", () => {
     const s = given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }))
-      .wait(1_000)
+      .advance(1_000)
       .when(command(CreateCourse, { courseId: "cs-202", name: "Other", capacity: 1 }))
-      .wait(500)
-      .wait(500)
+      .advance(500)
+      .advance(500)
       .then(noEvents())
 
-    expect(s.steps.map((step) => step.kind)).toEqual(["given", "wait", "when", "wait", "wait"])
+    expect(s.steps.map((step) => step.kind)).toEqual(["given", "advance", "when", "advance", "advance"])
   })
 
   it("`given()` with no facts is the same empty world as `scenario()`", () => {
@@ -111,10 +111,10 @@ describe("scenario — a value, not a script", () => {
     )
   })
 
-  it("names every assertion kind in the description, waits included", () => {
+  it("names every assertion kind in the description, advances included", () => {
     const s = scenario()
       .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 1 }))
-      .wait(30_000)
+      .advance(30_000)
       .then(
         result({ ok: true }),
         error("nope"),
@@ -125,7 +125,7 @@ describe("scenario — a value, not a script", () => {
       )
 
     expect(s.description).toBe(
-      "when CreateCourse, wait 30000ms, then a result, an error, no events, no commands, " +
+      "when CreateCourse, advance 30000ms, then a result, an error, no events, no commands, " +
         "EnrolmentClosing scheduled after 30000ms, EnrolmentClosing cancelled",
     )
   })

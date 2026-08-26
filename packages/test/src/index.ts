@@ -34,6 +34,8 @@ export {
   type Scenario,
   type ScenarioStart,
   type ScenarioActed,
+  type Settled,
+  type Advances,
   scenario,
   given,
 } from "./scenario.js"
@@ -44,6 +46,9 @@ export {
   type FixtureUnitOfWork,
   type FixtureEventHandler,
   type FixtureLists,
+  advanceableClock,
+  type AdvanceableClock,
+  type IfAdvanceable,
   type FixtureResources,
   type FixtureScope,
   type FixtureInfrastructure,

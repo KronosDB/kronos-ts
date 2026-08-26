@@ -19,6 +19,7 @@
   // the tests.
   "files": [
     "packages/drizzle/src/__tests__/drizzle-handler-inference.types.ts",
+    "packages/test/src/__tests__/time-demand.types.ts",
     "packages/drizzle/src/__tests__/correlating-drizzle-stacking.types.ts",
     "packages/core/src/correlation/__tests__/correlation-demand.types.ts",
     "packages/core/src/event-sourcing/__tests__/snapshot-demand.types.ts",

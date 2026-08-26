@@ -1,3 +1,4 @@
+import type { CommandMessage, EventMessage } from "@kronos-ts/core"
 import type { Action, Assertion, Duration, EventValue } from "./values.js"
 
 // ---------------------------------------------------------------------------
@@ -15,11 +16,35 @@ import type { Action, Assertion, Duration, EventValue } from "./values.js"
 // Scenario, which is data and has no methods at all.
 // ---------------------------------------------------------------------------
 
+/**
+ * What a step asks of the fixture's clock.
+ *
+ * `advance` is the only thing that needs one it can MOVE, and moving a clock is
+ * a capability the fixture has or does not — so it rides in the scenario's TYPE
+ * and a fixture that cannot move time refuses the scenario rather than throwing
+ * when it reaches the step.
+ */
+export type Advances = boolean
+
 /** One thing that happens, in order. */
 export type Step =
   | { readonly kind: "given"; readonly events: ReadonlyArray<EventValue<any>> }
-  | { readonly kind: "wait"; readonly duration: Duration }
+  | { readonly kind: "advance"; readonly duration: Duration }
+  | { readonly kind: "await"; readonly until?: Settled; readonly within?: Duration }
   | { readonly kind: "when"; readonly action: Action }
+
+/**
+ * What `await` waits FOR — a claim about the world, re-judged until it holds.
+ *
+ * Absent, `await` waits for the processors to catch up and nothing more, which
+ * is all an in-memory scope ever needs. Against real infrastructure there is no
+ * "caught up" anybody can observe from outside, so you say what you are waiting
+ * for and the fixture keeps looking until it is true or the deadline passes.
+ */
+export type Settled = (observed: {
+  readonly events: ReadonlyArray<EventMessage>
+  readonly commands: ReadonlyArray<CommandMessage>
+}) => boolean | Promise<boolean>
 
 /**
  * A finished scenario: the steps, the claims, and a sentence describing itself.
@@ -28,7 +53,9 @@ export type Step =
  * point: the same scenario runs against an in-memory scope and against real
  * infrastructure, and it is the same test both times.
  */
-export type Scenario = {
+export type Scenario<A extends Advances = boolean> = {
+  /** Phantom: whether any step moves the clock. Never read at runtime. */
+  readonly advances?: A
   readonly steps: ReadonlyArray<Step>
   readonly then: ReadonlyArray<Assertion>
   /** "given CourseCreated, when SubscribeStudent, then StudentSubscribed" */
@@ -36,19 +63,31 @@ export type Scenario = {
 }
 
 /** Before the act: time may pass, then exactly one thing happens. */
-export type ScenarioStart = {
-  /** Let `duration` of the fixture's time pass. Repeatable. */
-  wait(duration: Duration): ScenarioStart
+export type ScenarioStart<A extends Advances = false> = {
+  /**
+   * Move the fixture's clock forward by `duration` — deadlines armed before it
+   * fire here. Repeatable, and it makes the scenario one only a time-advancing
+   * fixture will run.
+   */
+  advance(duration: Duration): ScenarioStart<true>
+  /**
+   * Wait for the world to catch up: the processors reach the head of the log,
+   * and — when `until` is given — keep looking until it holds. Moves no clock,
+   * so any fixture runs it.
+   */
+  await(until?: Settled, within?: Duration): ScenarioStart<A>
   /** The act — exactly one command, query or event. */
-  when(action: Action): ScenarioActed
+  when(action: Action): ScenarioActed<A>
 }
 
 /** After the act: time may pass, then the claims close the scenario. */
-export type ScenarioActed = {
-  /** Let `duration` pass — deadlines fire here. Repeatable. */
-  wait(duration: Duration): ScenarioActed
+export type ScenarioActed<A extends Advances = false> = {
+  /** Move the clock — deadlines fire here. Repeatable. */
+  advance(duration: Duration): ScenarioActed<true>
+  /** Wait for the world to catch up. Moves no clock. */
+  await(until?: Settled, within?: Duration): ScenarioActed<A>
   /** What the act should have done. Terminal. */
-  then(...assertions: Assertion[]): Scenario
+  then(...assertions: Assertion[]): Scenario<A>
 }
 
 /**
@@ -59,7 +98,7 @@ export type ScenarioActed = {
  *           .then(event(CourseCreated, { courseId: "cs-101" }))
  * ```
  */
-export function scenario(): ScenarioStart {
+export function scenario(): ScenarioStart<false> {
   return start([])
 }
 
@@ -81,14 +120,17 @@ export function scenario(): ScenarioStart {
  * world either way is allowed, because a suite that builds its givens from an
  * array should not have to branch when the array is empty.
  */
-export function given(...events: EventValue<any>[]): ScenarioStart {
+export function given(...events: EventValue<any>[]): ScenarioStart<false> {
   return start(events.length === 0 ? [] : [{ kind: "given", events }])
 }
 
-function start(steps: ReadonlyArray<Step>): ScenarioStart {
+function start(steps: ReadonlyArray<Step>): ScenarioStart<any> {
   return {
-    wait(duration) {
-      return start([...steps, { kind: "wait", duration }])
+    advance(duration) {
+      return start([...steps, { kind: "advance", duration }])
+    },
+    await(until, within) {
+      return start([...steps, { kind: "await", until, within }])
     },
     when(action) {
       return acted([...steps, { kind: "when", action }])
@@ -96,10 +138,13 @@ function start(steps: ReadonlyArray<Step>): ScenarioStart {
   }
 }
 
-function acted(steps: ReadonlyArray<Step>): ScenarioActed {
+function acted(steps: ReadonlyArray<Step>): ScenarioActed<any> {
   return {
-    wait(duration) {
-      return acted([...steps, { kind: "wait", duration }])
+    advance(duration) {
+      return acted([...steps, { kind: "advance", duration }])
+    },
+    await(until, within) {
+      return acted([...steps, { kind: "await", until, within }])
     },
     then(...assertions) {
       return { steps, then: assertions, description: describe(steps, assertions) }
@@ -146,8 +191,10 @@ function describe(steps: ReadonlyArray<Step>, assertions: ReadonlyArray<Assertio
   for (const step of steps) {
     if (step.kind === "given") {
       clauses.push(`given ${step.events.map((e) => localName(e.descriptor)).join(", ")}`)
-    } else if (step.kind === "wait") {
-      clauses.push(`wait ${step.duration}ms`)
+    } else if (step.kind === "advance") {
+      clauses.push(`advance ${step.duration}ms`)
+    } else if (step.kind === "await") {
+      clauses.push(step.until === undefined ? "await" : "await until")
     } else {
       clauses.push(`when ${localName(step.action.descriptor)}`)
     }

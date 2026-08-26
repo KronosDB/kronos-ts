@@ -46,7 +46,7 @@ import {
   recordingEventStore,
   recordingQueryBus,
 } from "./recording.js"
-import type { Scenario } from "./scenario.js"
+import type { Scenario, Settled } from "./scenario.js"
 import { isAny, type Action, type Duration, type EventValue } from "./values.js"
 
 // ---------------------------------------------------------------------------
@@ -190,8 +190,8 @@ export type FixtureScope<
  *
  * ```ts
  * testFixture(scope, {
- *   infrastructure: (task) => {
- *     const uow = postgresUnitOfWork(task, pg)     // decorate the task you were handed
+ *   infrastructure: (unitOfWork) => {
+ *     const uow = postgresUnitOfWork(unitOfWork, pg)   // decorate what you were handed
  *     return {
  *       unitOfWork: uow,
  *       eventStore: postgresSnapshottingEventStore(postgresEventStore(pg, …), pg, …),
@@ -229,7 +229,7 @@ export type FixtureInfrastructure<
  * dropped `clock` or a missing `correlating` being a quiet way to get a test
  * that cannot move time or cannot see causation.
  *
- * So `task` arrives already both: `() => correlating(unitOfWork(fixtureClock))`.
+ * So `unitOfWork` arrives already both — `() => correlating(unitOfWork(clock))`.
  * Decorate it the way a deployed root decorates one — every adapter's
  * unit-of-work decorator is `(next, client) => …` and composes onto it — and
  * hand back what you built. Nothing downstream has to be told about time,
@@ -244,7 +244,53 @@ export type FixtureInfrastructure<
 export type InfrastructureFactory<
   U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
   E extends EventStore = EventStore,
-> = (task: () => FixtureUnitOfWork, clock: () => number) => FixtureInfrastructure<U, E>
+> = (unitOfWork: () => FixtureUnitOfWork, clock: () => number) => FixtureInfrastructure<U, E>
+
+/**
+ * A CLOCK YOU CAN MOVE — a clock, plus the one verb that moves it.
+ *
+ * The capability is the type: a fixture given one of these can run scenarios
+ * that `.advance`, and a fixture given a plain `() => number` cannot, so the
+ * refusal is a compile error at `run` rather than a throw when the scenario
+ * reaches the step. Reading it is reading a clock; nothing else changes.
+ */
+export type AdvanceableClock = (() => number) & {
+  /** Move time forward. What was due before is due now. */
+  advance(duration: Duration): void
+}
+
+/**
+ * A clock that starts at `from` and moves only when you say so.
+ *
+ * ```ts
+ * const clock = advanceableClock()
+ * const fixture = testFixture(scope, { clock })    // …can run `.advance` scenarios
+ * ```
+ *
+ * It is a CLOSURE over its own offset, which is what makes it work: everything
+ * downstream captured the arrow and reads through it, so a move is seen by
+ * every task minted afterwards. Capture `clock()` instead and you have frozen a
+ * number — which is why every seam in core spells it `clock?: () => number`.
+ */
+export function advanceableClock(from: number = FIXTURE_EPOCH): AdvanceableClock {
+  let offset = 0
+  const read = () => from + offset
+  return Object.assign(read, {
+    advance(duration: Duration): void {
+      offset += duration
+    },
+  })
+}
+
+/** Is this clock one the fixture can move? */
+export type IfAdvanceable<C, Capable, Bare> = C extends AdvanceableClock ? Capable : Bare
+
+/** The clock an options record carries — a bare fixture gets an advanceable one. */
+export type ClockOf<O extends FixtureOptions> = O["clock"] extends undefined
+  ? AdvanceableClock
+  : undefined extends O["clock"]
+    ? AdvanceableClock
+    : NonNullable<O["clock"]>
 
 export type FixtureOptions = {
   /**
@@ -256,17 +302,15 @@ export type FixtureOptions = {
    */
   readonly within?: Duration
   /**
-   * Where the fixture's time starts. Absent means {@link FIXTURE_EPOCH} — or
-   * system time under `realTime`, where the clock has to be real for a real wait
-   * to mean anything.
+   * The clock everything under this fixture reads.
+   *
+   * Absent, the fixture builds an {@link advanceableClock} at
+   * {@link FIXTURE_EPOCH} — so scenarios can `.advance`. Give it a plain
+   * `() => number` (`Date.now`, say) and the fixture reads time without ever
+   * moving it, which is the honest arrangement for real infrastructure: use
+   * `.await(until)` to wait for the world instead of pretending to hurry it.
    */
-  readonly clock?: () => number
-  /**
-   * Make `wait` genuinely elapse instead of jumping the clock. For a scope whose
-   * own infrastructure has its own timers — a database scheduler with a polling
-   * worker — where there is nothing for the fixture to jump.
-   */
-  readonly realTime?: boolean
+  readonly clock?: (() => number) | AdvanceableClock
   /**
    * The infrastructure to run against — see {@link InfrastructureFactory}.
    * Absent, the fixture builds the in-memory stack it always did, which is
@@ -292,8 +336,16 @@ export type RunOutcome = {
  * which is how a saga is tested: each call reports only what it caused, and the
  * world it caused it in is whatever the previous calls left behind.
  */
-export type TestFixture = {
-  run(scenario: Scenario, opts?: { within?: Duration }): Promise<RunOutcome>
+export type TestFixture<A extends boolean = boolean> = {
+  /**
+   * Run one scenario. A scenario that `.advance`s the clock is accepted only by
+   * a fixture that was given a clock it can move — otherwise the refusal lands
+   * HERE, at the line that pairs the two, instead of throwing mid-run.
+   */
+  run(
+    scenario: true extends A ? Scenario<boolean> : Scenario<false>,
+    opts?: { within?: Duration },
+  ): Promise<RunOutcome>
   /**
    * Stop the processors the fixture assembled and release their pollers.
    * A test runner that force-exits never needs this; a plain script does.
@@ -304,12 +356,26 @@ export type TestFixture = {
 const DEFAULT_WITHIN = 5000
 
 /** Wire `scope` against resources the fixture owns, and run scenarios at it. */
-export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): TestFixture {
-  const realTime = opts.realTime ?? false
-  const base: () => number = opts.clock ?? (realTime ? Date.now : () => FIXTURE_EPOCH)
-  let offset = 0
-  /** The fixture's clock: the base instant, plus whatever `wait` has jumped. */
-  const clock: () => number = () => base() + offset
+export function testFixture<O extends FixtureOptions = FixtureOptions>(
+  scope: FixtureScope,
+  opts: O = {} as O,
+): TestFixture<IfAdvanceable<ClockOf<O>, true, false>> {
+  /**
+   * THE CLOCK, and whether this fixture can move it.
+   *
+   * Given an {@link AdvanceableClock}, `.advance` works and the type says so.
+   * Given a plain clock — or none — the fixture reads it and never moves it,
+   * which is the honest answer for real infrastructure: a postgres poller and
+   * a kronosdb server keep their own time and nothing here can hurry them.
+   */
+  const supplied_clock = opts.clock
+  const advanceable: AdvanceableClock | undefined =
+    supplied_clock !== undefined && typeof (supplied_clock as AdvanceableClock).advance === "function"
+      ? (supplied_clock as AdvanceableClock)
+      : opts.clock === undefined
+        ? advanceableClock()
+        : undefined
+  const clock: () => number = advanceable ?? (supplied_clock as () => number)
   /**
    * The fixture's tasks CORRELATE.
    *
@@ -332,15 +398,17 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
   // the factory per task would mint a fresh pool, a fresh log and a fresh
   // registry every time, and nothing would share a transaction with anything.
   /**
-   * The task the fixture guarantees: on ITS clock, and CARRYING. A host's
-   * factory decorates this rather than rebuilding it, so neither property can
-   * be dropped on the way through.
+   * The unit-of-work factory the fixture guarantees: on ITS clock, and
+   * CARRYING. A host's factory decorates this rather than rebuilding it, so
+   * neither property can be dropped on the way through.
    */
-  const task = (): FixtureUnitOfWork => correlating(unitOfWork(clock))
+  const fixtureUnitOfWork = (): FixtureUnitOfWork => correlating(unitOfWork(clock))
 
-  const supplied = opts.infrastructure?.(task, clock) as FixtureInfrastructure | undefined
+  const supplied = opts.infrastructure?.(fixtureUnitOfWork, clock) as
+    | FixtureInfrastructure
+    | undefined
 
-  const uow: () => FixtureUnitOfWork = supplied?.unitOfWork ?? task
+  const uow: () => FixtureUnitOfWork = supplied?.unitOfWork ?? fixtureUnitOfWork
 
   const log = inMemoryEventStore()
   // THE FIXTURE COMPOSES WHAT A HOST COMPOSES — snapshotting AND scheduling —
@@ -360,7 +428,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
   // THE SCHEDULE BOOK IS THE FIXTURE'S ONLY WHEN THE LOG IS. `wait` fires due
   // deadlines by asking this directly, and there is nothing to ask when the
   // host brought its own log — a postgres poller and a kronosdb server hold
-  // their schedules where this cannot reach, which is what `realTime` is for.
+  // their schedules where this cannot reach, and nothing here hurries them.
   const scheduling =
     supplied === undefined
       ? controllableSchedulingEventStore(inMemorySnapshottingEventStore(log), clock)
@@ -641,31 +709,65 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     }
   }
 
-  /** Time passing: jump the clock (or really wait), fire what is due, settle. */
-  async function wait(duration: Duration): Promise<void> {
-    if (realTime) {
-      await new Promise<void>((resolve) => setTimeout(resolve, duration))
-    } else if (foreign) {
+  /**
+   * MOVE THE CLOCK, fire what that made due, settle.
+   *
+   * There is no `realTime` flag and no runtime refusal any more: whether this
+   * fixture can move time is settled by whether it was given a clock it can
+   * move, and that answer is in its TYPE — a scenario that advances does not
+   * typecheck against a fixture that cannot. The only defensive line left is
+   * for JavaScript callers.
+   */
+  async function advance(duration: Duration): Promise<void> {
+    if (advanceable === undefined) {
       throw new Error(
-        `@kronos-ts/test: \`wait(${duration})\` cannot move time for this scope. The scope brought ` +
-          `resources the fixture does not own — its own event store, or a processor built ` +
-          `over one — so there is no clock here to jump and no schedule book here to ` +
-          `fire from. Either let the fixture create the resources (take them as the scope's ` +
-          `parameters), or pass \`{ realTime: true }\` and the wait will genuinely elapse.`,
+        "@kronos-ts/test: this fixture cannot move time — it was not given a clock it can " +
+          "move. Build one with `advanceableClock()` and pass it as `clock`, or use " +
+          "`.await(until)` to wait for the world to catch up on its own.",
       )
-    } else {
-      offset += duration
     }
+    advanceable.advance(duration)
 
     // Fired events go in through the OUTERMOST store, so the recorder sees
     // them. There is a book to ask only when the fixture built the log: a
     // host's own scheduler — a postgres poller, a kronosdb server — holds its
-    // deadlines out of reach, and only real elapsed time fires those.
+    // deadlines out of reach, and nothing here can make those fire early.
     if (scheduling !== undefined) {
       const due = scheduling.due()
       if (due.length > 0) await eventStore.append(due)
     }
     await quiesce()
+  }
+
+  /**
+   * WAIT FOR THE WORLD TO CATCH UP — no clock moves.
+   *
+   * Without `until`, that is the processors reaching the head of the log, which
+   * is everything an in-memory scope can be behind on. With one, the claim is
+   * re-judged until it holds or the deadline passes: against real
+   * infrastructure there is no "caught up" observable from outside, so you say
+   * what you are waiting for.
+   */
+  async function catchUp(until?: Settled, within?: Duration): Promise<void> {
+    await quiesce()
+    if (until === undefined) return
+
+    const deadline = Date.now() + (within ?? opts.within ?? DEFAULT_WITHIN)
+    for (;;) {
+      const observed = {
+        events: [...eventStore.appended],
+        commands: [...commandBus.dispatched],
+      }
+      if (await until(observed)) return
+      if (Date.now() > deadline) {
+        throw new Error(
+          "@kronos-ts/test: `.await(until)` gave up — the claim never held. " +
+            `Waited ${within ?? opts.within ?? DEFAULT_WITHIN}ms.`,
+        )
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10))
+      await quiesce()
+    }
   }
 
   /** What the recorders currently hold, minus the act's own message. */
@@ -703,8 +805,12 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
           await applyGiven(step.events)
           continue
         }
-        if (step.kind === "wait") {
-          await wait(step.duration)
+        if (step.kind === "advance") {
+          await advance(step.duration)
+          continue
+        }
+        if (step.kind === "await") {
+          await catchUp(step.until, step.within)
           continue
         }
 
