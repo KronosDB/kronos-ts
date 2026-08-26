@@ -35,15 +35,27 @@ export type Step =
 /**
  * HOW THE CLAIMS ARE JUDGED — once, or until they hold.
  *
- * `then` judges the world as it stands the moment the act settles, which is
- * everything a deterministic scope needs: if a claim does not hold now it will
- * not hold later either, and waiting would be theatre.
+ * `then` judges the world as it stands the moment the act settles: if a claim
+ * does not hold then, it will not hold later either, and waiting would be
+ * theatre that makes every failure slow.
  *
  * `await` judges the same claims REPEATEDLY until they hold or the deadline
- * passes. That is the real-infrastructure shape — a projection behind a
- * database, a processor on another node — where the act returning does not
- * mean the world has finished reacting. There is nothing extra to write: what
- * you are waiting for is what you were going to assert anyway.
+ * passes. There is nothing extra to write — what you are waiting for is what
+ * you were going to assert anyway.
+ *
+ * WHERE THE LINE ACTUALLY FALLS, because it is not "did the act cross the
+ * event store". An append is in the recording the moment it happens, and a
+ * processor the FIXTURE HOLDS is waited for automatically: before judging
+ * anything it settles every processor it assembled against the head of the log
+ * that processor reads. So a command that appends, an automation that picks
+ * the event up, and the command THAT dispatches are all `then` — crossing the
+ * log is not the boundary.
+ *
+ * The boundary is what the fixture can WATCH SETTLE. It holds handles to its
+ * own processors and can ask them; it cannot ask a projection landing in a
+ * database on its own schedule, a processor on another node, or any effect a
+ * handler kicked off and did not wait for. Those are `await`: name what should
+ * become true, and the fixture keeps looking.
  */
 export type Judgement = "once" | "until"
 

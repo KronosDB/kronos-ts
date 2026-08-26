@@ -28,6 +28,15 @@ to wait for and waiting would only make failures slow. Which claim style to use
 is now the scenario's own statement rather than a guess the fixture made from
 whether it recognised your resources.
 
+The line is not "did this cross the event store". An append is in the recording
+the moment it happens, and a processor the fixture assembled is settled
+automatically before anything is judged — so a command that appends, an
+automation that reacts, and the command that automation dispatches are all
+`then`. The boundary is what the fixture can WATCH settle: it holds its own
+processors and can ask them; it cannot ask a projection landing in a database
+on its own schedule, a processor on another node, or an effect a handler kicked
+off without waiting for. Those are `await`.
+
 `.advance` makes a `Scenario<true>`, and `run` accepts one only on a fixture
 built over an `advanceableClock()` — so pairing a time-advancing scenario with
 a fixture that cannot move time is a compile error at the line that pairs them,

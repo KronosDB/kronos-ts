@@ -358,19 +358,56 @@ describe("wait", () => {
     expect((failure as Error).message).toContain("advanceableClock()")
   })
 
-  it("`await` judges the same claims, and moves no clock", async () => {
+  it("a processor the fixture holds settles on its own — `then` is enough", async () => {
+    // THE BOUNDARY, stated as a test. This automation crosses the event store:
+    // the command appends, a processor picks the event up, and it dispatches.
+    // No `await` here, and none needed — the fixture holds that processor, so
+    // it waits for it to reach the head of the log before judging anything.
+    // `await` is for what the fixture CANNOT watch settle.
     const clock = advanceableClock(1_700_000_000_000)
     const { events } = await testFixture(withAutomation, { clock }).run(
       given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }))
         .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "s-1" }))
-        .await(
+        .then(
           event(StudentSubscribed, { courseId: "cs-101", studentId: "s-1" }),
           event(CourseClosed, { courseId: "cs-101" }),
         ),
     )
-    // The automation ran, and the clock never moved.
     expect(events.length).toBe(2)
-    expect(clock()).toBe(1_700_000_000_000)
+    expect(clock()).toBe(1_700_000_000_000)   // and no clock moved to get there
+  })
+
+  it("`await` is for an effect the fixture cannot watch settle", async () => {
+    // A read model written outside the fixture's sight — the projection lands
+    // in its own good time, and nothing here can observe "caught up" for it.
+    const view = new Map<string, number>()
+    const clock = advanceableClock(1_700_000_000_000)
+
+    const fixture = testFixture(
+      (resources) => ({
+        ...decisions(resources),
+        eventHandlers: [
+          {
+            ...withAutomation(resources).eventHandlers![0]!,
+            handler: async () => {
+              setTimeout(() => view.set("cs-101", 1), 40)
+            },
+          },
+        ],
+      }),
+      { clock },
+    )
+
+    await fixture.run(
+      given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }))
+        .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "s-1" }))
+        .then(event(StudentSubscribed, { courseId: "cs-101", studentId: "s-1" })),
+    )
+
+    // The processor is caught up, but the effect it kicked off is not done.
+    expect(view.has("cs-101")).toBe(false)
+    await new Promise((r) => setTimeout(r, 80))
+    expect(view.get("cs-101")).toBe(1)
   })
 
   it("`await` keeps looking until the claims hold, then gives up", async () => {
