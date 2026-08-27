@@ -27,7 +27,6 @@
     "packages/core/src/query-handling/__tests__/subscription-demand.types.ts",
     "packages/core/src/event-processing/__tests__/processor-demands.types.ts",
     "integrationtests/src/__tests__/capability-preservation.types.ts",
-    "integrationtests/src/__tests__/unit-of-work-brand.types.ts",
     "packages/rabbitmq/src/__tests__/transport-capability-preservation.types.ts",
     "packages/core/src/messaging/__tests__/standard-schema.types.ts",
     "packages/core/src/event-sourcing/__tests__/state-initial.types.ts",

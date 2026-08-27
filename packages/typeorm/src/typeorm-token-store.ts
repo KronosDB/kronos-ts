@@ -5,7 +5,7 @@ import {
   serializeToken as serializeTokenData,
   deserializeToken as deserializeTokenData,
 } from "@kronos-ts/core"
-import type { TypeormManager, TypeormUnitOfWork } from "./typeorm-transaction.js"
+import type {TypeormManager} from "./typeorm-transaction.js"
 import { activeTypeormTransaction } from "./typeorm-transaction.js"
 
 /** The table this adapter owns. Not a parameter — the columns are not the caller's choice. */
@@ -67,7 +67,7 @@ function nowIso(): string {
 export function typeormTokenStore(
   manager: TypeormManager,
   options: TypeormTokenStoreOptions = {},
-): TokenStore<UnitOfWork & TypeormUnitOfWork> {
+): TokenStore<UnitOfWork> {
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
   const table = TYPEORM_TOKEN_TABLE
 
@@ -77,7 +77,24 @@ export function typeormTokenStore(
    * admin paths — writes outside any transaction.
    */
   function getManager(uow?: UnitOfWork): any {
-    return activeTypeormTransaction(uow) ?? manager
+    const tx = activeTypeormTransaction(uow)
+    if (tx !== undefined) return tx
+    // NO SILENT FALLBACK. A token write that lands outside the batch's
+    // transaction is the failure this store exists to avoid: it commits on its
+    // own, a crash lands between it and the projection it accounts for, and the
+    // read model is permanently wrong with nothing to read as the cause. A
+    // handler's accessor may fall back — whether a seam is transactional is a
+    // deployment decision — but this one may not.
+    if (uow !== undefined) {
+      throw new Error(
+        "@kronos-ts/typeorm: this unit of work carries no typeorm transaction, so the " +
+          "token write would commit outside the batch it accounts for. Build the " +
+          "processor's unitOfWork with `typeormUnitOfWork(next, manager)`.",
+      )
+    }
+    // No unit of work at all — lifecycle and admin paths, which are honestly
+    // outside any transaction.
+    return manager
   }
 
   return {

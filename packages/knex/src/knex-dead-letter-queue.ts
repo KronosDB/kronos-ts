@@ -1,6 +1,6 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { KnexClient, KnexUnitOfWork } from "./knex-transaction.js"
+import type {KnexClient} from "./knex-transaction.js"
 import { activeKnexTransaction } from "./knex-transaction.js"
 
 /**
@@ -81,7 +81,7 @@ function newId(group: string): string {
 export function knexDeadLetterQueue(
   knex: KnexClient,
   options: KnexDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue<UnitOfWork & KnexUnitOfWork> {
+): SequencedDeadLetterQueue<UnitOfWork> {
   const table = KNEX_DEAD_LETTER_TABLE
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024
@@ -93,7 +93,24 @@ export function knexDeadLetterQueue(
    * admin paths — writes outside any transaction.
    */
   function getKnex(uow?: UnitOfWork): any {
-    return activeKnexTransaction(uow) ?? knex
+    const tx = activeKnexTransaction(uow)
+    if (tx !== undefined) return tx
+    // NO SILENT FALLBACK. A dead-letter write that lands outside the batch's
+    // transaction is the failure this store exists to avoid: it commits on its
+    // own, a crash lands between it and the projection it accounts for, and the
+    // read model is permanently wrong with nothing to read as the cause. A
+    // handler's accessor may fall back — whether a seam is transactional is a
+    // deployment decision — but this one may not.
+    if (uow !== undefined) {
+      throw new Error(
+        "@kronos-ts/knex: this unit of work carries no knex transaction, so the " +
+          "dead-letter write would commit outside the batch it accounts for. Build the " +
+          "processor's unitOfWork with `knexUnitOfWork(next, knex)`.",
+      )
+    }
+    // No unit of work at all — lifecycle and admin paths, which are honestly
+    // outside any transaction.
+    return knex
   }
 
   function rowToLetter(row: any): DeadLetter {

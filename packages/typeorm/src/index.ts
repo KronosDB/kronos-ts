@@ -4,7 +4,6 @@
 // the only way to observe one without opening it.
 export {
   typeormUnitOfWork,
-  type TypeormUnitOfWork,
   typeormTransaction,
   activeTypeormTransaction,
   typeormHandler,

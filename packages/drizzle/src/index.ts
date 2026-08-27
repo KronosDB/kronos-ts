@@ -4,7 +4,6 @@
 // the only way to observe one without opening it.
 export {
   drizzleUnitOfWork,
-  type DrizzleUnitOfWork,
   drizzleTransaction,
   activeDrizzleTransaction,
   drizzleHandler,

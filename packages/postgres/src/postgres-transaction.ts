@@ -11,7 +11,7 @@
  * there is no `TransactionManager` for a host to implement or pass in.
  */
 
-import type { UnitOfWorkBrand, UnitOfWork } from "@kronos-ts/core"
+import type { UnitOfWork } from "@kronos-ts/core"
 import {
   activeTransaction,
   adapterUnitOfWork,
@@ -22,36 +22,6 @@ import {
 import type { PostgresAdapter, PostgresAdapterTransaction } from "./adapter.js"
 import { IsolationLevel } from "./adapter.js"
 
-/**
- * THE POSTGRES FAMILY MARK — a phantom, type-only brand on every unit of work
- * postgresUnitOfWork(next, pg) mints, and the thing this package's token store and
- * dead-letter queue demand back.
- *
- * WHY IT EXISTS. This family is keyed by TRANSACTION IDENTITY: the token store,
- * the dead-letter queue and what a raw-SQL handler writes through `ctx.sql()` must all
- * write through the SAME handle, or they do not commit together. Handing this
- * package's token store a unit of work from another family does not throw — the
- * store looks for ITS transaction, does not find one, and falls back to its
- * plain handle, so the token update commits OUTSIDE the batch. Every test
- * passes; then a crash lands between the projection write and the token write
- * and a read model is permanently wrong. The mark turns that into a build
- * error.
- *
- * IT IS ERASED AND NEVER CONSTRUCTED. `UnitOfWorkBrand` hangs on an ambient
- * unique symbol declared in core; nothing writes the property and nothing can
- * read it. postgresUnitOfWork(…) returns exactly what it always
- * returned and asserts the branded type, so the emitted JavaScript is
- * unchanged.
- *
- * THE FIX STRING IS THIS PACKAGE'S TO WRITE, and that is the point of putting
- * it here. Core can only say "these two are different families"; this package
- * knows precisely which factory the host should have called, so a mismatch
- * prints that sentence at the wiring site.
- */
-export type PostgresUnitOfWork = UnitOfWorkBrand<
-  "postgres",
-  "build this processor's unitOfWork with postgresUnitOfWork(next, pg) — this family's stores write through its transaction"
->
 
 /**
  * Module-private symbol attaching commit/rollback control to a tx handle.
@@ -196,8 +166,8 @@ export function postgresUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   pg: PostgresAdapter,
   isolationLevel: IsolationLevel = IsolationLevel.READ_COMMITTED,
-): () => U & PostgresUnitOfWork {
-  return adapterUnitOfWork(registry, txHooks(pg, isolationLevel), next) as () => U & PostgresUnitOfWork
+): () => U {
+  return adapterUnitOfWork(registry, txHooks(pg, isolationLevel), next) as () => U
 }
 
 /**

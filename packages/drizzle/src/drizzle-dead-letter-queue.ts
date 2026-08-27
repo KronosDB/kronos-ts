@@ -1,7 +1,7 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { and, asc, eq } from "drizzle-orm"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { DrizzleDb, DrizzleUnitOfWork } from "./drizzle-transaction.js"
+import type {DrizzleDb} from "./drizzle-transaction.js"
 import { activeDrizzleTransaction } from "./drizzle-transaction.js"
 import { kronosDeadLetters } from "./drizzle-schema.js"
 
@@ -68,7 +68,7 @@ function newId(group: string): string {
 export function drizzleDeadLetterQueue(
   db: DrizzleDb,
   options: DrizzleDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue<UnitOfWork & DrizzleUnitOfWork> {
+): SequencedDeadLetterQueue<UnitOfWork> {
   const table: any = kronosDeadLetters
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024
@@ -81,7 +81,24 @@ export function drizzleDeadLetterQueue(
    * permissive `getActiveTransaction()` did.
    */
   function getDb(uow?: UnitOfWork): any {
-    return activeDrizzleTransaction(uow) ?? db
+    const tx = activeDrizzleTransaction(uow)
+    if (tx !== undefined) return tx
+    // NO SILENT FALLBACK. A dead-letter write that lands outside the batch's
+    // transaction is the failure this store exists to avoid: it commits on its
+    // own, a crash lands between it and the projection it accounts for, and the
+    // read model is permanently wrong with nothing to read as the cause. A
+    // handler's accessor may fall back — whether a seam is transactional is a
+    // deployment decision — but this one may not.
+    if (uow !== undefined) {
+      throw new Error(
+        "@kronos-ts/drizzle: this unit of work carries no drizzle transaction, so the " +
+          "dead-letter write would commit outside the batch it accounts for. Build the " +
+          "processor's unitOfWork with `drizzleUnitOfWork(next, db)`.",
+      )
+    }
+    // No unit of work at all — lifecycle and admin paths, which are honestly
+    // outside any transaction.
+    return db
   }
   const inGroup = (group: string, seqId?: string) =>
     seqId === undefined

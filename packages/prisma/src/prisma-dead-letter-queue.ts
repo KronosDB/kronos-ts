@@ -1,6 +1,6 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { PrismaClientLike, PrismaUnitOfWork } from "./prisma-transaction.js"
+import type {PrismaClientLike} from "./prisma-transaction.js"
 import { activePrismaTransaction } from "./prisma-transaction.js"
 
 /**
@@ -98,7 +98,7 @@ type DeadLetterRow = {
 export function prismaDeadLetterQueue(
   prisma: PrismaClientLike,
   options: PrismaDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue<UnitOfWork & PrismaUnitOfWork> {
+): SequencedDeadLetterQueue<UnitOfWork> {
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024
   const claimDurationMs = options.claimDurationMs ?? 30000
@@ -109,7 +109,24 @@ export function prismaDeadLetterQueue(
    * admin paths — writes outside any transaction.
    */
   function getClient(uow?: UnitOfWork): any {
-    return activePrismaTransaction(uow) ?? prisma
+    const tx = activePrismaTransaction(uow)
+    if (tx !== undefined) return tx
+    // NO SILENT FALLBACK. A dead-letter write that lands outside the batch's
+    // transaction is the failure this store exists to avoid: it commits on its
+    // own, a crash lands between it and the projection it accounts for, and the
+    // read model is permanently wrong with nothing to read as the cause. A
+    // handler's accessor may fall back — whether a seam is transactional is a
+    // deployment decision — but this one may not.
+    if (uow !== undefined) {
+      throw new Error(
+        "@kronos-ts/prisma: this unit of work carries no prisma transaction, so the " +
+          "dead-letter write would commit outside the batch it accounts for. Build the " +
+          "processor's unitOfWork with `prismaUnitOfWork(next, prisma)`.",
+      )
+    }
+    // No unit of work at all — lifecycle and admin paths, which are honestly
+    // outside any transaction.
+    return prisma
   }
 
   function rowToLetter(row: DeadLetterRow): DeadLetter {

@@ -3,7 +3,6 @@ import type {
   CommandHandlerContext,
   QueryHandlerContext,
   UnitOfWork,
-  UnitOfWorkBrand,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -13,36 +12,6 @@ import {
   transactionRegistry,
 } from "./transaction-glue.js"
 
-/**
- * THE KYSELY FAMILY MARK — a phantom, type-only brand on every unit of work
- * kyselyUnitOfWork(next, db) mints, and the thing this package's token store and
- * dead-letter queue demand back.
- *
- * WHY IT EXISTS. This family is keyed by TRANSACTION IDENTITY: the token store,
- * the dead-letter queue and what a handler writes through `activeKyselyTransaction(ctx.unitOfWork)` must all
- * write through the SAME handle, or they do not commit together. Handing this
- * package's token store a unit of work from another family does not throw — the
- * store looks for ITS transaction, does not find one, and falls back to its
- * plain handle, so the token update commits OUTSIDE the batch. Every test
- * passes; then a crash lands between the projection write and the token write
- * and a read model is permanently wrong. The mark turns that into a build
- * error.
- *
- * IT IS ERASED AND NEVER CONSTRUCTED. `UnitOfWorkBrand` hangs on an ambient
- * unique symbol declared in core; nothing writes the property and nothing can
- * read it. kyselyUnitOfWork(…) returns exactly what it always
- * returned and asserts the branded type, so the emitted JavaScript is
- * unchanged.
- *
- * THE FIX STRING IS THIS PACKAGE'S TO WRITE, and that is the point of putting
- * it here. Core can only say "these two are different families"; this package
- * knows precisely which factory the host should have called, so a mismatch
- * prints that sentence at the wiring site.
- */
-export type KyselyUnitOfWork = UnitOfWorkBrand<
-  "kysely",
-  "build this processor's unitOfWork with kyselyUnitOfWork(next, db) — this family's stores write through its transaction"
->
 
 /**
  * A Kysely database instance. Declares only what this package needs of it —
@@ -165,8 +134,8 @@ const registry = transactionRegistry<KyselyTransaction>()
 export function kyselyUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   db: KyselyDb,
-): () => U & KyselyUnitOfWork {
-  return adapterUnitOfWork(registry, transactionHooks(db), next) as () => U & KyselyUnitOfWork
+): () => U {
+  return adapterUnitOfWork(registry, transactionHooks(db), next) as () => U
 }
 
 /**
