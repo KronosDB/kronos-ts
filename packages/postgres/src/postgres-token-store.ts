@@ -23,7 +23,6 @@ import {
 import type { QueryRow } from "./adapter.js"
 import type { PostgresResource } from "./postgres-pool.js"
 import { activePostgresTransaction } from "./postgres-transaction.js"
-import type { PostgresUnitOfWork } from "./postgres-transaction.js"
 
 /** Tuning only — everything required is the positional pool. */
 export type PostgresTokenStoreOptions = {
@@ -54,7 +53,7 @@ function nowIso(): string {
 export function postgresTokenStore(
   pg: PostgresResource,
   options: PostgresTokenStoreOptions = {},
-): TokenStore<UnitOfWork & PostgresUnitOfWork> {
+): TokenStore<UnitOfWork> {
   const table = pg.tables.tokens
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
 
@@ -64,7 +63,24 @@ export function postgresTokenStore(
    * method rather than looking one up.
    */
   function sql(uow?: UnitOfWork): SqlHandle {
-    return activePostgresTransaction(uow) ?? pg
+    const tx = activePostgresTransaction(uow)
+    if (tx !== undefined) return tx
+    // NO SILENT FALLBACK. A token write that lands outside the batch's
+    // transaction is the failure this store exists to avoid: it commits on its
+    // own, a crash lands between it and the projection it accounts for, and the
+    // read model is permanently wrong with nothing to read as the cause. A
+    // handler's accessor may fall back — whether a seam is transactional is a
+    // deployment decision — but this one may not.
+    if (uow !== undefined) {
+      throw new Error(
+        "@kronos-ts/postgres: this unit of work carries no postgres transaction, so the " +
+          "token write would commit outside the batch it accounts for. Build the " +
+          "processor's unitOfWork with `postgresUnitOfWork(next, pg)`.",
+      )
+    }
+    // No unit of work at all — lifecycle and admin paths, which are honestly
+    // outside any transaction.
+    return pg
   }
 
   function readToken(row: TokenRow | undefined): TrackingToken | undefined {

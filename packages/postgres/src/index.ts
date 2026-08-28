@@ -81,7 +81,6 @@ export {
 // `activePostgresTransaction` the only way to observe one without opening it.
 export {
   postgresUnitOfWork,
-  type PostgresUnitOfWork,
   postgresTransaction,
   activePostgresTransaction,
 } from "./postgres-transaction.js"

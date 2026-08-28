@@ -28,7 +28,6 @@ import { DeadLetterQueueOverflowError } from "@kronos-ts/core"
 import type { QueryRow } from "./adapter.js"
 import type { PostgresResource } from "./postgres-pool.js"
 import { activePostgresTransaction } from "./postgres-transaction.js"
-import type { PostgresUnitOfWork } from "./postgres-transaction.js"
 
 /** Tuning only — everything required is a positional argument. */
 export type PostgresDeadLetterQueueOptions = {
@@ -75,7 +74,7 @@ const COLUMNS =
 export function postgresDeadLetterQueue(
   pg: PostgresResource,
   options: PostgresDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue<UnitOfWork & PostgresUnitOfWork> {
+): SequencedDeadLetterQueue<UnitOfWork> {
   const table = pg.tables.deadLetters
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024
@@ -83,7 +82,24 @@ export function postgresDeadLetterQueue(
 
   /** The writer for one call: the unit of work's transaction, else the pool. */
   function sql(uow?: UnitOfWork): SqlHandle {
-    return activePostgresTransaction(uow) ?? pg
+    const tx = activePostgresTransaction(uow)
+    if (tx !== undefined) return tx
+    // NO SILENT FALLBACK. A dead-letter write that lands outside the batch's
+    // transaction is the failure this store exists to avoid: it commits on its
+    // own, a crash lands between it and the projection it accounts for, and the
+    // read model is permanently wrong with nothing to read as the cause. A
+    // handler's accessor may fall back — whether a seam is transactional is a
+    // deployment decision — but this one may not.
+    if (uow !== undefined) {
+      throw new Error(
+        "@kronos-ts/postgres: this unit of work carries no postgres transaction, so the " +
+          "dead-letter write would commit outside the batch it accounts for. Build the " +
+          "processor's unitOfWork with `postgresUnitOfWork(next, pg)`.",
+      )
+    }
+    // No unit of work at all — lifecycle and admin paths, which are honestly
+    // outside any transaction.
+    return pg
   }
 
   function rowToLetter(row: LetterRow): DeadLetter {

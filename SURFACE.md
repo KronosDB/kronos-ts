@@ -583,10 +583,10 @@ eventProcessor<U extends UnitOfWork = UnitOfWork, L extends EventProcessorLane<U
 //      anonymous ERROR/FIX record, so the compiler prints the keys at the wiring
 //      site. The construction-time throw survives as ONE defensive assert, for
 //      JavaScript callers.
-//   2. NO MIXING PERSISTENCE FAMILIES. `tokenStore` and `deadLetterQueue` are
-//      keyed on `U`, and a family's stores demand that family's brand — see the
-//      persistence section. `U` is inferred from `unitOfWork` (its one COVARIANT
-//      mention), and the stores are checked against the answer.
+//   2. NO MIXING PERSISTENCE FAMILIES — enforced by the STORES, not by a type
+//      here: a token store or DLQ handed a task carrying no transaction of its
+//      own throws, naming the factory to build `unitOfWork` with. See the
+//      persistence section for why that beats the brand it replaced.
 type EventProcessorSite<U> · EventProcessorLane<U> · EventProcessorConfig<U> · SequenceDemand<C>
 
 // ── assembly: three lists. Nothing else. ──────────────────────────────────
@@ -648,10 +648,8 @@ type SnapshotCapableEventStore = EventStore & SnapshotCapability   // added by W
 type ScheduleCapableEventStore = EventStore & ScheduleCapability   // added by WRAPPING
 type TokenStore<U = UnitOfWork>              // members take (processorName, …, uow?: U)
 type SequencedDeadLetterQueue<U = UnitOfWork> // members take (processingGroup, …, uow?: U)
-  // FUNCTION-TYPED FIELDS, NOT METHOD SHORTHAND, and that is load-bearing: TS checks
-  // method parameters BIVARIANTLY, so a store demanding a branded task would have been
-  // silently assignable to a bare slot and the family demand would be decoration.
-type UnitOfWorkBrand<Name extends string, Fix extends string>   // the family SLOT — see persistence
+  // FUNCTION-TYPED FIELDS, NOT METHOD SHORTHAND. It costs nothing and keeps the
+  // parameter positions checked contravariantly, the way a reader expects.
 type TagResolver = (event: EventMessage) => Tag[]
 inMemoryEventStore() · inMemorySnapshottingEventStore(next) · inMemoryTokenStore()
 inMemorySchedulingEventStore(next, { clock? }?)   // clock absent = system time
@@ -768,7 +766,6 @@ postgresHandler(handler, pg): handler                 // wraps the FUNCTION; ctx
 type PostgresCommandContext = CommandHandlerContext & { sql(): Sql | Tx }
 postgresSchedulingEventStore<E>(next: E, pg, { unitOfWork, tagResolver, pollIntervalMs?, batchSize? }):
   E & ScheduleCapability & { startScheduling(); stopScheduling() }
-type PostgresUnitOfWork                                   // the family brand — see below
 ```
 POSTGRES FUSES THE READ IN ONE ROUND TRIP, and "fused" is not a feature — it is
 just OWNING THE QUERY. `postgresSnapshottingEventStore.source` handles
@@ -794,67 +791,29 @@ store/DLQ must write through the same client handle the handlers write through.
 Every persistence package (postgres, drizzle, knex, kysely, prisma, typeorm)
 implements the same seven-function family for its client type.
 
-NEVER MIX FAMILIES WITHIN ONE PROCESSOR — AND NOW YOU CANNOT. That sentence used
-to be prose, which means it was a sentence nobody could read at 2am while wiring
-a processor out of two packages that both export a `tokenStore`. It is a type
-now, and it is the clearest case in this surface of the law it serves: the
-failure it prevents is not a throw, it is SILENCE. A drizzle token store handed a
-postgres unit of work does not fail — it asks for ITS transaction, is told there
-is none, and falls back to its plain handle. The token update commits OUTSIDE the
-batch. Every test passes. Then a crash lands between the projection write and the
-token write and a read model is permanently wrong in a way nobody can
-reconstruct.
+NEVER MIX FAMILIES WITHIN ONE PROCESSOR — AND THE STORES SAY SO THEMSELVES. A
+token store or dead-letter queue handed a unit of work carrying no transaction
+of its own THROWS, naming the factory to build the processor's `unitOfWork`
+with. It does not fall back to its plain handle, which is what used to make this
+the worst-shaped failure there is: the token committed OUTSIDE the batch, every
+test passed, and then a crash between the projection write and the token write
+left a read model permanently wrong with nothing to read as the cause.
 
-Each package brands what its unit-of-work decorator MINTS, and demands that brand
-back in its stores' uow-accepting signatures:
-```ts
-// core owns the SLOT and knows no occupants:
-type UnitOfWorkBrand<Name extends string, Fix extends string>   // phantom on an ambient unique symbol
+A HANDLER'S ACCESSOR STILL FALLS BACK, and the asymmetry is the point: whether
+the seam a handler runs in is transactional is a DEPLOYMENT decision, so
+`ctx.db()` works either way. A token store has no such freedom — being in the
+projection's transaction is the whole reason it exists — so absence is an error
+rather than a default.
 
-// each package writes ONE line, and it is the only place the family is named:
-type DrizzleUnitOfWork = UnitOfWorkBrand<"drizzle", "build this processor's unitOfWork with drizzleUnitOfWork(next, db)">
-
-const uow = drizzleUnitOfWork(() => correlating(unitOfWork(clock)), db)
-//    ^ () => CorrelatingUnitOfWork & DrizzleUnitOfWork — the brand and the capability coexist
-
-eventProcessor({ name, eventStore, tokenStore: drizzleTokenStore(db), unitOfWork: uow })      // ✓
-eventProcessor({ name, eventStore, tokenStore: drizzleTokenStore(db), unitOfWork: pgUow })    // ✗ compile error
-eventProcessor({ name, eventStore, tokenStore: inMemoryTokenStore(), unitOfWork: uow })       // ✓ bare demands nothing
-```
-ERASED, AND NEVER CONSTRUCTED. The brand is a phantom on a unique symbol core
-declares AMBIENTLY; no JavaScript writes it and none can read it, and each
-decorator returns exactly what it always returned and asserts the branded type.
-Emitted output is byte for byte unchanged.
-
-SOURCE-COMPATIBLE FOR SAME-FAMILY USERS: a host already following the rule
-changes nothing. The brand only refuses arrangements that were already broken.
-
-ONE FAMILY OWNS; OTHERS MAY RIDE AS LENSES. The brand refuses two families each
-holding a transaction, not two libraries on one connection: the postgres
-transaction's `unwrap()` returns the live driver handle — the SAME connection
-the event store appends on — and an ORM bound to it (`drizzle(tx.unwrap())`)
-joins that one transaction. So a processor whose handlers must write tables AND
-append atomically is a POSTGRES-family processor with the ORM as a lens; the
-ORM families exist for processors that only project, where the atomic pair is
-projection-write + token-write. Documented in `docs/how-it-works.md`
-("Transactions: one owner, lenses for the rest").
-
-THE DIAGNOSTIC BELONGS TO THE PACKAGE, and that is why `Fix` is a parameter. Core
-is certain the two families differ and certain of nothing else; the package that
-owns the store knows exactly which factory the host should have called. So the
-brands differ FIRST on their `FIX` string, and the checker prints that sentence
-at the wiring site:
-```
-Type 'UnitOfWork & PostgresUnitOfWork' is not assignable to type 'DrizzleUnitOfWork'.
-  The types of '[unitOfWorkBrand].FIX' are incompatible between these types.
-    Type '"build this processor's unitOfWork with postgresUnitOfWork(next, pg) — …"'
-      is not assignable to type '"build this processor's unitOfWork with drizzleUnitOfWork(next, db) — …"'.
-```
-THE GENERAL RULE FOR EVERY DIAGNOSTIC HERE: an error may only be as specific as
-the code that owns it is CERTAIN about. Core-owned refusals name the capability
-and the wrapper PATTERN (`<family>SnapshottingEventStore(store, …)`); a package's
-own refusals name its own functions. Specific-when-certain beats generic;
-generic-when-uncertain beats wrong.
+THERE IS NO FAMILY TYPE, and there was one. A phantom brand on the unit of work
+refused `drizzleTokenStore` against a postgres task at COMPILE time, which
+sounds strictly better until you count what it bought: it never refused
+`inMemoryTokenStore()` against a real task — a bare store is assignable
+everywhere — so the likeliest spelling of the same mistake walked straight
+past it, and the silence it existed to prevent was a bug in the fallback one
+layer down rather than a fact of life. Fix the fallback and the failure is loud
+on the first token write, in any test that runs the processor. A concept that
+catches some of a problem a one-line fix catches all of is a concept to delete.
 
 EACH PACKAGE OWNS ITS TRANSACTION GLUE, PRIVATELY. The registry (a WeakMap keyed
 by unit of work), the factory builder and the open/observe accessors behind
@@ -872,10 +831,9 @@ begin/commit and claim no connection).
 
 ## @kronos-ts/drizzle (knex · kysely · prisma · typeorm: identical family)
 ```ts
-drizzleTokenStore(db): TokenStore<UnitOfWork & DrizzleUnitOfWork>
-drizzleDeadLetterQueue(db): SequencedDeadLetterQueue<UnitOfWork & DrizzleUnitOfWork>   // group per call
-drizzleUnitOfWork<U>(next: () => U, db): () => U & DrizzleUnitOfWork   // eager tx; delegate EXPLICIT
-type DrizzleUnitOfWork = UnitOfWorkBrand<"drizzle", "build this processor's unitOfWork with drizzleUnitOfWork(next, db)">
+drizzleTokenStore(db): TokenStore          // THROWS on a task carrying no drizzle tx
+drizzleDeadLetterQueue(db): SequencedDeadLetterQueue   // group per call; same refusal
+drizzleUnitOfWork<U>(next: () => U, db): () => U   // eager tx; delegate EXPLICIT; adds no mark
 drizzleTransaction(uow): Promise<Tx>            // opens; REJECTS on a non-drizzle uow
 activeDrizzleTransaction(uow): Tx | undefined   // observes, never opens
 drizzleHandler(handler, db): handler            // ONE generic wrapper: ctx gains db()

@@ -4,7 +4,6 @@
 // the only way to observe one without opening it.
 export {
   kyselyUnitOfWork,
-  type KyselyUnitOfWork,
   kyselyTransaction,
   activeKyselyTransaction,
   kyselyHandler,

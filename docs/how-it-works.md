@@ -1086,15 +1086,20 @@ be a `throw` at construction — honest, and late, because a composition root ru
 boot. The throw survives as one defensive assert for JavaScript callers. The honest
 global-order answer for a projection is *no queue at all*: propagate and retry.
 
-**And the processor is where persistence families are checked.** `tokenStore` and
-`deadLetterQueue` are keyed on the unit of work the factory mints, and each
-adapter package brands what its decorator produces — so wiring a drizzle token
-store against a postgres unit of work is a compile error printing drizzle's own
-advice. That check matters more than it looks: the mistake it catches does not
-throw. A drizzle token store handed a foreign task asks for its transaction, is
-told there is none, falls back to its plain handle, and commits the token
-**outside** the batch. Every test passes, and the bug is a read model that is
-permanently wrong after a crash between two writes nobody knew were separate.
+**Never mix persistence families within one processor — and the stores enforce
+that themselves.** A token store or dead-letter queue handed a unit of work that
+carries no transaction of its own throws, naming the factory to build the
+processor's `unitOfWork` with. It does not fall back to its plain handle, which
+is what used to make this the worst-shaped failure there is: the token committed
+**outside** the batch, every test passed, and a later crash between the
+projection write and the token write left a read model permanently wrong with
+nothing to read as the cause.
+
+A handler's accessor still falls back, and the asymmetry is the point: whether
+the seam a handler runs in is transactional is a deployment decision, so
+`ctx.db()` works either way. A token store has no such freedom — being in the
+projection's transaction is the entire reason it exists — so absence is an error
+rather than a default.
 
 Absent a queue, a handler failure propagates and the batch retries.
 `batchSize` (default 1) is how many events share one unit of work.
@@ -1102,7 +1107,7 @@ Absent a queue, a handler failure propagates and the batch retries.
 ## Transactions: one owner, lenses for the rest
 
 Only one persistence family can own a task's transaction — transaction identity
-*is* the client handle, which is what the family brand pins down. That leaves a
+*is* the client handle. That leaves a
 real question when your application code uses an ORM and your log is
 `postgresEventStore` on the same database: whose transaction does a handler run
 in?

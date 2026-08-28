@@ -1,0 +1,68 @@
+/**
+ * THE TYPE TEST FOR MOVING TIME.
+ *
+ * Advancing a clock is a capability the fixture has or does not, so it lives in
+ * the type: `.advance` makes a `Scenario<true>`, and only a fixture built on a
+ * clock it can MOVE accepts one. The refusal lands at the line that pairs the
+ * scenario with the fixture — not as a throw part-way through a run, which is
+ * what it used to be.
+ *
+ * Judged by `bunx tsc --noEmit` through the root tsconfig `files` array.
+ */
+import { advanceableClock, testFixture, type FixtureLists } from "../index.js"
+import { scenario } from "../scenario.js"
+import { command, event, noEvents } from "../values.js"
+import { qn, command as commandDescriptor, event as eventDescriptor } from "@kronos-ts/core"
+import { z } from "zod"
+
+const Do = commandDescriptor({ name: qn("probe", "Do"), payload: z.object({ id: z.string() }) })
+const Did = eventDescriptor({ name: qn("probe", "Did"), payload: z.object({ id: z.string() }) })
+
+const scope = (): FixtureLists => ({})
+
+// ---------------------------------------------------------------------------
+// The two scenarios: one moves the clock, one only waits for the world.
+// ---------------------------------------------------------------------------
+
+const advancing = scenario()
+  .when(command(Do, { id: "x" }))
+  .advance(1_000)
+  .then(noEvents())
+
+// `await` is `then` with a deadline — the same claims, judged until they hold.
+const eventually = scenario()
+  .when(command(Do, { id: "x" }))
+  .await(event(Did, { id: "x" }))
+
+const immediately = scenario()
+  .when(command(Do, { id: "x" }))
+  .then(event(Did, { id: "x" }))
+
+// ---------------------------------------------------------------------------
+// (a) A CLOCK IT CAN MOVE — both kinds run.
+// ---------------------------------------------------------------------------
+
+const movable = testFixture(scope, { clock: advanceableClock() })
+export const advancesOk = movable.run(advancing)
+export const eventuallyOk = movable.run(eventually)
+export const immediatelyOk = movable.run(immediately)
+
+// A fixture given no clock at all builds an advanceable one, so the default
+// stays the ergonomic one: `.advance` works out of the box.
+const byDefault = testFixture(scope)
+export const defaultAdvances = byDefault.run(advancing)
+
+// ---------------------------------------------------------------------------
+// (b) A CLOCK IT CANNOT MOVE — waiting is fine, advancing is refused. This is
+// the arrangement a real-infrastructure test is in: nothing here can hurry a
+// postgres poller or a kronosdb server, and the type says so up front.
+// ---------------------------------------------------------------------------
+
+const readOnly = testFixture(scope, { clock: () => 1_700_000_000_000 })
+// Waiting for the world needs no clock, so it runs on a fixture that has none
+// it can move — which is exactly the real-infrastructure arrangement.
+export const stillEventually = readOnly.run(eventually)
+export const stillImmediately = readOnly.run(immediately)
+
+// @ts-expect-error — this scenario moves the clock; this fixture cannot
+export const cannotAdvance = readOnly.run(advancing)

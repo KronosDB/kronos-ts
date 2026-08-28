@@ -5,6 +5,10 @@ import {
   inMemoryTokenStore,
   eventProcessor,
   unitOfWork,
+  correlating,
+  inMemorySnapshottingEventStore,
+  localCommandBus,
+  localQueryBus,
 } from "@kronos-ts/core"
 import {
   any,
@@ -19,7 +23,7 @@ import {
   scheduled,
 } from "../values.js"
 import { given, scenario } from "../scenario.js"
-import { FIXTURE_EPOCH, testFixture } from "../fixture.js"
+import { FIXTURE_EPOCH, advanceableClock, testFixture } from "../fixture.js"
 import { ScenarioAssertionError } from "../diff.js"
 import {
   CloseCourse,
@@ -245,7 +249,7 @@ describe("wait", () => {
     const { events } = await testFixture(university).run(
       scenario()
         .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
-        .wait(30_000)
+        .advance(30_000)
         .then(
           event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 5 }),
           event(EnrolmentClosing, { courseId: "cs-101" }),
@@ -268,7 +272,7 @@ describe("wait", () => {
     await testFixture(university).run(
       scenario()
         .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
-        .wait(29_999)
+        .advance(29_999)
         .then(
           event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 5 }),
           scheduled(event(EnrolmentClosing, { courseId: "cs-101" }), 30_000),
@@ -281,8 +285,8 @@ describe("wait", () => {
     await testFixture(university).run(
       scenario()
         .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
-        .wait(20_000)
-        .wait(10_000)
+        .advance(20_000)
+        .advance(10_000)
         .then(
           event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 5 }),
           event(EnrolmentClosing, { courseId: "cs-101" }),
@@ -327,7 +331,7 @@ describe("wait", () => {
     const { events } = await fixture.run(
       scenario()
         .when(command(ArmReminder, { orderId: "o-2", afterMs: 1_000 }))
-        .wait(90_000)
+        .advance(90_000)
         .then(
           event(ReminderArmed, { orderId: "o-2", token: any(z.string()) }),
           event(ReminderDue, { orderId: "o-2" }),
@@ -337,32 +341,104 @@ describe("wait", () => {
     expect(events.map((e) => e.name.name)).toEqual(["ReminderArmed", "ReminderDue", "ReminderDue"])
   })
 
-  it("refuses to fake time for a scope whose resources it does not own", async () => {
-    const foreign = inMemoryEventStore()
-    const fixture = testFixture(() => decisions(foreign))
+  it("a fixture given a plain clock cannot move it — and says so", async () => {
+    // The refusal is a TYPE: `.advance` makes a `Scenario<true>`, and a fixture
+    // built on a clock it cannot move only accepts `Scenario<false>`. The throw
+    // below is the defensive line for JavaScript callers, not the mechanism.
+    const fixture = testFixture(decisions, { clock: () => 1_700_000_000_000 })
+    const advancing = scenario()
+      .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
+      .advance(1_000)
+      .then(noEvents())
 
-    const failure = await fixture
+    const failure = await (fixture.run as (s: unknown) => Promise<unknown>)(advancing).catch(
+      (e: Error) => e,
+    )
+    expect((failure as Error).message).toContain("cannot move time")
+    expect((failure as Error).message).toContain("advanceableClock()")
+  })
+
+  it("a processor the fixture holds settles on its own — `then` is enough", async () => {
+    // THE BOUNDARY, stated as a test. This automation crosses the event store:
+    // the command appends, a processor picks the event up, and it dispatches.
+    // No `await` here, and none needed — the fixture holds that processor, so
+    // it waits for it to reach the head of the log before judging anything.
+    // `await` is for what the fixture CANNOT watch settle.
+    const clock = advanceableClock(1_700_000_000_000)
+    const { events } = await testFixture(withAutomation, { clock }).run(
+      given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }))
+        .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "s-1" }))
+        .then(
+          event(StudentSubscribed, { courseId: "cs-101", studentId: "s-1" }),
+          event(CourseClosed, { courseId: "cs-101" }),
+        ),
+    )
+    expect(events.length).toBe(2)
+    expect(clock()).toBe(1_700_000_000_000)   // and no clock moved to get there
+  })
+
+  it("`await` is for an effect the fixture cannot watch settle", async () => {
+    // A read model written outside the fixture's sight — the projection lands
+    // in its own good time, and nothing here can observe "caught up" for it.
+    const view = new Map<string, number>()
+    const clock = advanceableClock(1_700_000_000_000)
+
+    const fixture = testFixture(
+      (resources) => ({
+        ...decisions(resources),
+        eventHandlers: [
+          {
+            ...withAutomation(resources).eventHandlers![0]!,
+            handler: async () => {
+              setTimeout(() => view.set("cs-101", 1), 40)
+            },
+          },
+        ],
+      }),
+      { clock },
+    )
+
+    await fixture.run(
+      given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }))
+        .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "s-1" }))
+        .then(event(StudentSubscribed, { courseId: "cs-101", studentId: "s-1" })),
+    )
+
+    // The processor is caught up, but the effect it kicked off is not done.
+    expect(view.has("cs-101")).toBe(false)
+    await new Promise((r) => setTimeout(r, 80))
+    expect(view.get("cs-101")).toBe(1)
+  })
+
+  it("`await` keeps looking until the claims hold, then gives up", async () => {
+    const started = Date.now()
+    const failure = await testFixture(decisions)
       .run(
         scenario()
           .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
-          .wait(1_000)
-          .then(noEvents()),
+          .await(event(CourseClosed, { courseId: "never-happens" })),
+        { within: 120 },
       )
       .catch((e: Error) => e)
 
-    expect((failure as Error).message).toContain("cannot move time for this scope")
-    expect((failure as Error).message).toContain("realTime: true")
+    expect(failure).toBeInstanceOf(ScenarioAssertionError)
+    // It waited rather than failing on the first look.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(100)
   })
 
-  it("under realTime a wait genuinely elapses", async () => {
+  it("`then` fails immediately — a deterministic scope has nothing to wait for", async () => {
     const started = Date.now()
-    await testFixture(decisions, { realTime: true }).run(
-      scenario()
-        .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
-        .wait(30)
-        .then(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 5 })),
-    )
-    expect(Date.now() - started).toBeGreaterThanOrEqual(25)
+    const failure = await testFixture(decisions)
+      .run(
+        scenario()
+          .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
+          .then(event(CourseClosed, { courseId: "never-happens" })),
+        { within: 5_000 },
+      )
+      .catch((e: Error) => e)
+
+    expect(failure).toBeInstanceOf(ScenarioAssertionError)
+    expect(Date.now() - started).toBeLessThan(1_000)
   })
 })
 
@@ -685,9 +761,9 @@ describe("misuse", () => {
 describe("the scope", () => {
   it("is called with the fixture's own log — ONE store, capabilities and all", async () => {
     let seen: unknown
-    await testFixture((eventStore) => {
-      seen = eventStore
-      return decisions(eventStore)
+    await testFixture((resources) => {
+      seen = resources.eventStore
+      return decisions(resources)
     }).run(
       scenario()
         .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
@@ -703,10 +779,10 @@ describe("the scope", () => {
   })
 
   it("accepts a shorter parameter list", async () => {
-    await testFixture((eventStore) => ({
-      commandHandlers: decisions(eventStore).commandHandlers!.map((h) => ({
+    await testFixture((resources) => ({
+      commandHandlers: decisions(resources).commandHandlers!.map((h) => ({
         ...h,
-        eventStore,
+        eventStore: resources.eventStore,
       })),
     })).run(
       scenario()
@@ -727,13 +803,13 @@ describe("the scope", () => {
     expect(courseViews().has("cs-101")).toBe(true)
   })
 
-  it("takes an already-built processor, and then owns nothing", async () => {
+  it("takes an already-built processor, which then reads its own log", async () => {
     const foreignStore = inMemoryEventStore()
-    const fixture = testFixture((eventStore) => ({
-      ...decisions(eventStore),
+    const fixture = testFixture((resources) => ({
+      ...decisions(resources),
       eventHandlers: [
         {
-          ...withAutomation(eventStore).eventHandlers![0]!,
+          ...withAutomation(resources).eventHandlers![0]!,
           processor: eventProcessor({
             name: "foreign",
             eventStore: foreignStore,
@@ -744,16 +820,97 @@ describe("the scope", () => {
       ],
     }))
 
-    // The processor reads a log the acts never write to, so the automation never
-    // fires — and `wait` refuses, because the fixture is no longer the site.
-    const failure = await fixture
-      .run(
-        given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }))
-          .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" }))
-          .wait(1)
-          .then(noEvents()),
-      )
-      .catch((e: Error) => e)
-    expect((failure as Error).message).toContain("cannot move time for this scope")
+    // The processor reads a log the acts never write to, so its automation
+    // never sees them — the decision's own event is all that happens.
+    const { events } = await fixture.run(
+      given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }))
+        .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" }))
+        .then(event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" })),
+    )
+    expect(events.map((e) => e.name.name)).toEqual(["StudentSubscribed"])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// THE FIXTURE TAKES INFRASTRUCTURE — it does not conjure it.
+//
+// A test should be able to run against the arrangement it is going to ship on.
+// The fixture wraps what it is handed for recording and owns nothing else; the
+// task it hands over is already on its clock and already correlating, so
+// neither property can be dropped on the way through.
+// ---------------------------------------------------------------------------
+
+describe("infrastructure", () => {
+  it("runs against buses and a log the host supplied", async () => {
+    let builtWith: (() => unknown) | undefined
+    const log = inMemorySnapshottingEventStore(inMemoryEventStore())
+
+    await testFixture(({ eventStore }) => decisions({ eventStore } as never), {
+      infrastructure: (unitOfWork) => {
+        builtWith = unitOfWork
+        return {
+          unitOfWork,
+          eventStore: log,
+          commandBus: localCommandBus(unitOfWork),
+          queryBus: localQueryBus(unitOfWork),
+        }
+      },
+    }).run(
+      scenario()
+        .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 5 }))
+        .then(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 5 })),
+    )
+
+    // The events landed in the host's OWN log, not a fixture-private one.
+    const stored = await log.source({ query: { types: [CourseCreated] } })
+    expect(stored.events.map((e) => e.name.name)).toEqual(["CourseCreated"])
+    expect(builtWith).toBeDefined()
+  })
+
+  it("hands over a task that is already on the fixture clock and already carrying", async () => {
+    let minted: ReturnType<typeof correlating> | undefined
+
+    await testFixture(({ eventStore }) => decisions({ eventStore } as never), {
+      clock: () => 1_700_000_000_000,
+      infrastructure: (unitOfWork) => {
+        const uow = () => {
+          minted = unitOfWork()
+          return minted
+        }
+        return {
+          unitOfWork: uow,
+          eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()),
+          commandBus: localCommandBus(uow),
+          queryBus: localQueryBus(uow),
+        }
+      },
+    }).run(
+      scenario()
+        .when(command(CreateCourse, { courseId: "cs-1", name: "N", capacity: 1 }))
+        .then(event(CourseCreated, { courseId: "cs-1", name: "N", capacity: 1 })),
+    )
+
+    // On the fixture's clock — the host never mentioned one…
+    expect(minted!.now()).toBe(1_700_000_000_000)
+    // …and carrying, so `then` can still assert a causal chain.
+    expect(typeof minted!.correlationData).toBe("function")
+  })
+
+  it("stamps the events it appends from the supplied task's clock", async () => {
+    const at = 1_800_000_000_000
+    const { events } = await testFixture(({ eventStore }) => decisions({ eventStore } as never), {
+      clock: () => at,
+      infrastructure: (unitOfWork) => ({
+        unitOfWork,
+        eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()),
+        commandBus: localCommandBus(unitOfWork),
+        queryBus: localQueryBus(unitOfWork),
+      }),
+    }).run(
+      scenario()
+        .when(command(CreateCourse, { courseId: "cs-2", name: "N", capacity: 1 }))
+        .then(event(CourseCreated, { courseId: "cs-2", name: "N", capacity: 1 })),
+    )
+    expect(events.map((e) => e.timestamp)).toEqual([at])
   })
 })

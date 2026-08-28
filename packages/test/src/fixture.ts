@@ -16,6 +16,7 @@ import {
 } from "@kronos-ts/core"
 import type {
   CorrelatingUnitOfWork,
+  CommandBus,
   CommandHandler,
   CommandHandlerEntry,
   CommandMessage,
@@ -34,6 +35,7 @@ import type {
   SequencedDeadLetterQueue,
   Sited,
   SnapshotCapableEventStore,
+  SubscriptionCapableQueryBus,
   TokenStore,
   UnitOfWork,
 } from "@kronos-ts/core"
@@ -130,8 +132,33 @@ export type FixtureLists = {
  * can serve it, a scope calling `ctx.schedule` typechecks for the same reason,
  * and the same scope against a bare `inMemoryEventStore()` does neither.
  */
-export type FixtureEventStore = SnapshotCapableEventStore &
-  ScheduleCapability & { readonly appended: ReadonlyArray<EventMessage>; reset(): void }
+export type EventRecording = {
+  readonly appended: ReadonlyArray<EventMessage>
+  reset(): void
+}
+
+export type FixtureEventStore = SnapshotCapableEventStore & ScheduleCapability & EventRecording
+
+/**
+ * WHAT A SCOPE IS HANDED: every resource, already wrapped for recording.
+ *
+ * The scope used to receive one log and the fixture kept the rest to itself,
+ * so a scope could not be the composition root it claimed to be. It receives
+ * the whole arrangement now — the same names a deployed root holds — and the
+ * objects are the RECORDED ones, so entries pointing at them are what the
+ * fixture judges.
+ */
+export type FixtureResources<
+  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  E extends EventStore = FixtureEventStore,
+> = {
+  readonly eventStore: E & EventRecording
+  readonly commandBus: CommandBus<U>
+  readonly queryBus: SubscriptionCapableQueryBus<U>
+  readonly unitOfWork: () => U
+  readonly tokenStore: TokenStore<U>
+  readonly deadLetterQueue: SequencedDeadLetterQueue<U>
+}
 
 /**
  * A composition root as a function of the resources the fixture owns.
@@ -145,7 +172,125 @@ export type FixtureEventStore = SnapshotCapableEventStore &
  * const fixture = testFixture((eventStore) => ({ commandHandlers: [{ ...openCourse, eventStore }], … }))
  * ```
  */
-export type FixtureScope = (eventStore: FixtureEventStore) => FixtureLists
+export type FixtureScope<
+  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  E extends EventStore = FixtureEventStore,
+> = (resources: FixtureResources<U, E>) => FixtureLists
+
+/**
+ * THE ARRANGEMENT A HOST ACTUALLY DEPLOYS, handed to the fixture instead of
+ * conjured by it.
+ *
+ * The fixture used to build every one of these itself and hand the scope only
+ * a log — which made it the one library here that conjures its delegates, and
+ * meant a test could never run against the infrastructure it was going to
+ * ship on. It takes them now and WRAPS what it is given: the recorders it
+ * needs to judge a `then` go AROUND your bus and your log, and they are
+ * capability-preserving, so a kronosdb bus stays a kronosdb bus.
+ *
+ * ```ts
+ * testFixture(scope, {
+ *   infrastructure: (unitOfWork) => {
+ *     const uow = postgresUnitOfWork(unitOfWork, pg)   // decorate what you were handed
+ *     return {
+ *       unitOfWork: uow,
+ *       eventStore: postgresSnapshottingEventStore(postgresEventStore(pg, …), pg, …),
+ *       commandBus: localCommandBus(uow),
+ *       queryBus: localQueryBus(uow),
+ *       tokenStore: postgresTokenStore(pg),
+ *     }
+ *   },
+ * })
+ * ```
+ *
+ * `tokenStore` and `deadLetterQueue` are the only optional members: absent,
+ * the fixture supplies in-memory ones, which is what a scope with no
+ * persistence family wants and what every existing test gets.
+ */
+export type FixtureInfrastructure<
+  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  E extends EventStore = EventStore,
+> = {
+  readonly unitOfWork: () => U
+  readonly eventStore: E
+  readonly commandBus: CommandBus<U>
+  readonly queryBus: SubscriptionCapableQueryBus<U>
+  readonly tokenStore?: TokenStore<U>
+  readonly deadLetterQueue?: SequencedDeadLetterQueue<U>
+}
+
+/**
+ * How a host builds its infrastructure — HANDED A TASK FACTORY, NOT A CLOCK.
+ *
+ * The fixture needs two things of every task: that it reads the fixture's
+ * clock, so `wait` can move time, and that it CARRIES, so `then` can assert a
+ * causal chain. Both used to be things a host had to know and repeat —
+ * `postgresUnitOfWork(() => correlating(unitOfWork(clock)), pg)`, with a
+ * dropped `clock` or a missing `correlating` being a quiet way to get a test
+ * that cannot move time or cannot see causation.
+ *
+ * So `unitOfWork` arrives already both — `() => correlating(unitOfWork(clock))`.
+ * Decorate it the way a deployed root decorates one — every adapter's
+ * unit-of-work decorator is `(next, client) => …` and composes onto it — and
+ * hand back what you built. Nothing downstream has to be told about time,
+ * because everything downstream is built from this.
+ *
+ * `clock` is the second argument for the one case that genuinely needs the raw
+ * arrow: infrastructure with its own schedule book (`inMemorySchedulingEventStore(next, { clock })`).
+ * It is a function and must stay one — it reads a base instant plus an offset
+ * `wait` advances, so whatever captured the ARROW sees time move and whatever
+ * captured a NUMBER is frozen where it was built.
+ */
+export type InfrastructureFactory<
+  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  E extends EventStore = EventStore,
+> = (unitOfWork: () => FixtureUnitOfWork, clock: () => number) => FixtureInfrastructure<U, E>
+
+/**
+ * A CLOCK YOU CAN MOVE — a clock, plus the one verb that moves it.
+ *
+ * The capability is the type: a fixture given one of these can run scenarios
+ * that `.advance`, and a fixture given a plain `() => number` cannot, so the
+ * refusal is a compile error at `run` rather than a throw when the scenario
+ * reaches the step. Reading it is reading a clock; nothing else changes.
+ */
+export type AdvanceableClock = (() => number) & {
+  /** Move time forward. What was due before is due now. */
+  advance(duration: Duration): void
+}
+
+/**
+ * A clock that starts at `from` and moves only when you say so.
+ *
+ * ```ts
+ * const clock = advanceableClock()
+ * const fixture = testFixture(scope, { clock })    // …can run `.advance` scenarios
+ * ```
+ *
+ * It is a CLOSURE over its own offset, which is what makes it work: everything
+ * downstream captured the arrow and reads through it, so a move is seen by
+ * every task minted afterwards. Capture `clock()` instead and you have frozen a
+ * number — which is why every seam in core spells it `clock?: () => number`.
+ */
+export function advanceableClock(from: number = FIXTURE_EPOCH): AdvanceableClock {
+  let offset = 0
+  const read = () => from + offset
+  return Object.assign(read, {
+    advance(duration: Duration): void {
+      offset += duration
+    },
+  })
+}
+
+/** Is this clock one the fixture can move? */
+export type IfAdvanceable<C, Capable, Bare> = C extends AdvanceableClock ? Capable : Bare
+
+/** The clock an options record carries — a bare fixture gets an advanceable one. */
+export type ClockOf<O extends FixtureOptions> = O["clock"] extends undefined
+  ? AdvanceableClock
+  : undefined extends O["clock"]
+    ? AdvanceableClock
+    : NonNullable<O["clock"]>
 
 export type FixtureOptions = {
   /**
@@ -157,17 +302,21 @@ export type FixtureOptions = {
    */
   readonly within?: Duration
   /**
-   * Where the fixture's time starts. Absent means {@link FIXTURE_EPOCH} — or
-   * system time under `realTime`, where the clock has to be real for a real wait
-   * to mean anything.
+   * The clock everything under this fixture reads.
+   *
+   * Absent, the fixture builds an {@link advanceableClock} at
+   * {@link FIXTURE_EPOCH} — so scenarios can `.advance`. Give it a plain
+   * `() => number` (`Date.now`, say) and the fixture reads time without ever
+   * moving it, which is the honest arrangement for real infrastructure: use
+   * `.await(until)` to wait for the world instead of pretending to hurry it.
    */
-  readonly clock?: () => number
+  readonly clock?: (() => number) | AdvanceableClock
   /**
-   * Make `wait` genuinely elapse instead of jumping the clock. For a scope whose
-   * own infrastructure has its own timers — a database scheduler with a polling
-   * worker — where there is nothing for the fixture to jump.
+   * The infrastructure to run against — see {@link InfrastructureFactory}.
+   * Absent, the fixture builds the in-memory stack it always did, which is
+   * what a scope with no persistence family wants.
    */
-  readonly realTime?: boolean
+  readonly infrastructure?: InfrastructureFactory<any, any>
 }
 
 /** What one act did. `events` and `commands` cover THIS act only. */
@@ -187,8 +336,16 @@ export type RunOutcome = {
  * which is how a saga is tested: each call reports only what it caused, and the
  * world it caused it in is whatever the previous calls left behind.
  */
-export type TestFixture = {
-  run(scenario: Scenario, opts?: { within?: Duration }): Promise<RunOutcome>
+export type TestFixture<A extends boolean = boolean> = {
+  /**
+   * Run one scenario. A scenario that `.advance`s the clock is accepted only by
+   * a fixture that was given a clock it can move — otherwise the refusal lands
+   * HERE, at the line that pairs the two, instead of throwing mid-run.
+   */
+  run(
+    scenario: true extends A ? Scenario<boolean> : Scenario<false>,
+    opts?: { within?: Duration },
+  ): Promise<RunOutcome>
   /**
    * Stop the processors the fixture assembled and release their pollers.
    * A test runner that force-exits never needs this; a plain script does.
@@ -199,12 +356,26 @@ export type TestFixture = {
 const DEFAULT_WITHIN = 5000
 
 /** Wire `scope` against resources the fixture owns, and run scenarios at it. */
-export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): TestFixture {
-  const realTime = opts.realTime ?? false
-  const base: () => number = opts.clock ?? (realTime ? Date.now : () => FIXTURE_EPOCH)
-  let offset = 0
-  /** The fixture's clock: the base instant, plus whatever `wait` has jumped. */
-  const clock: () => number = () => base() + offset
+export function testFixture<O extends FixtureOptions = FixtureOptions>(
+  scope: FixtureScope,
+  opts: O = {} as O,
+): TestFixture<IfAdvanceable<ClockOf<O>, true, false>> {
+  /**
+   * THE CLOCK, and whether this fixture can move it.
+   *
+   * Given an {@link AdvanceableClock}, `.advance` works and the type says so.
+   * Given a plain clock — or none — the fixture reads it and never moves it,
+   * which is the honest answer for real infrastructure: a postgres poller and
+   * a kronosdb server keep their own time and nothing here can hurry them.
+   */
+  const supplied_clock = opts.clock
+  const advanceable: AdvanceableClock | undefined =
+    supplied_clock !== undefined && typeof (supplied_clock as AdvanceableClock).advance === "function"
+      ? (supplied_clock as AdvanceableClock)
+      : opts.clock === undefined
+        ? advanceableClock()
+        : undefined
+  const clock: () => number = advanceable ?? (supplied_clock as () => number)
   /**
    * The fixture's tasks CORRELATE.
    *
@@ -222,7 +393,22 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
    * them; wrapping is idempotent in effect (the second attach writes the same
    * keys), so composing on top of this costs nothing.
    */
-  const uow = (): FixtureUnitOfWork => correlating(unitOfWork(clock))
+  // WHAT THE HOST BROUGHT, IF ANYTHING — built ONCE, from the fixture's clock,
+  // so a factory that reads that clock moves when `wait` moves. Once: calling
+  // the factory per task would mint a fresh pool, a fresh log and a fresh
+  // registry every time, and nothing would share a transaction with anything.
+  /**
+   * The unit-of-work factory the fixture guarantees: on ITS clock, and
+   * CARRYING. A host's factory decorates this rather than rebuilding it, so
+   * neither property can be dropped on the way through.
+   */
+  const fixtureUnitOfWork = (): FixtureUnitOfWork => correlating(unitOfWork(clock))
+
+  const supplied = opts.infrastructure?.(fixtureUnitOfWork, clock) as
+    | FixtureInfrastructure
+    | undefined
+
+  const uow: () => FixtureUnitOfWork = supplied?.unitOfWork ?? fixtureUnitOfWork
 
   const log = inMemoryEventStore()
   // THE FIXTURE COMPOSES WHAT A HOST COMPOSES — snapshotting AND scheduling —
@@ -238,18 +424,37 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
   // and appends the result back in through the OUTERMOST store, so a fired
   // deadline is recorded exactly like a handler's append instead of slipping in
   // beneath the recorder.
-  const scheduling = controllableSchedulingEventStore(
-    inMemorySnapshottingEventStore(log),
-    clock,
-  )
-  const eventStore: FixtureEventStore = recordingEventStore(scheduling)
-  const tokenStore = inMemoryTokenStore()
-  const deadLetterQueue = inMemoryDeadLetterQueue()
-  const commandBus = recordingCommandBus(localCommandBus(uow))
-  const queryBus = recordingQueryBus(localQueryBus(uow))
+  //
+  // THE SCHEDULE BOOK IS THE FIXTURE'S ONLY WHEN THE LOG IS. `wait` fires due
+  // deadlines by asking this directly, and there is nothing to ask when the
+  // host brought its own log — a postgres poller and a kronosdb server hold
+  // their schedules where this cannot reach, and nothing here hurries them.
+  const scheduling =
+    supplied === undefined
+      ? controllableSchedulingEventStore(inMemorySnapshottingEventStore(log), clock)
+      : undefined
+
+  // EVERY RESOURCE: the host's where it brought one, the fixture's otherwise.
+  // The recorders go on the OUTSIDE of whatever arrived — they are
+  // capability-preserving, so a wrapped bus is still whatever it was.
+  const eventStore = recordingEventStore(
+    (supplied?.eventStore ?? scheduling) as Parameters<typeof recordingEventStore>[0],
+  ) as FixtureEventStore
+  const tokenStore = (supplied?.tokenStore ?? inMemoryTokenStore()) as TokenStore<FixtureUnitOfWork>
+  const deadLetterQueue = (supplied?.deadLetterQueue ??
+    inMemoryDeadLetterQueue()) as SequencedDeadLetterQueue<FixtureUnitOfWork>
+  const commandBus = recordingCommandBus(supplied?.commandBus ?? localCommandBus(uow))
+  const queryBus = recordingQueryBus(supplied?.queryBus ?? localQueryBus(uow))
 
   // ---- what the scope asked for -------------------------------------------
-  const lists = scope(eventStore)
+  const lists = scope({
+    eventStore,
+    commandBus,
+    queryBus,
+    unitOfWork: uow,
+    tokenStore,
+    deadLetterQueue,
+  })
 
   /**
    * Whether anything in the scope is beyond the fixture's reach.
@@ -264,7 +469,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
    * SCHEDULER as well as a foreign store, so there were two of these; a
    * scheduler is a tier on a log, so bringing one IS bringing a store.
    */
-  let foreign = false
+  let foreign = supplied !== undefined
   function ownStore(store: EventStore | undefined): void {
     if (store !== undefined && store !== eventStore) foreign = true
   }
@@ -292,7 +497,12 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     if (declared === undefined) return defaultProcessor
     const built =
       typeof declared === "function"
-        ? declared(eventStore, tokenStore, uow, deadLetterQueue)
+        ? declared(
+            eventStore,
+            tokenStore as TokenStore,
+            uow,
+            deadLetterQueue as SequencedDeadLetterQueue,
+          )
         : declared
     if (built.eventStore !== eventStore || built.tokenStore !== tokenStore) foreign = true
     readsFrom.set(built.name, built.eventStore)
@@ -400,7 +610,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
    */
   let priorSchedules = new Map<string, string>()
   function markSchedules(): void {
-    priorSchedules = new Map(scheduling.schedules.map((s) => [s.token.id, s.status]))
+    priorSchedules = new Map((scheduling?.schedules ?? []).map((s) => [s.token.id, s.status]))
   }
 
   /**
@@ -499,25 +709,33 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     }
   }
 
-  /** Time passing: jump the clock (or really wait), fire what is due, settle. */
-  async function wait(duration: Duration): Promise<void> {
-    if (realTime) {
-      await new Promise<void>((resolve) => setTimeout(resolve, duration))
-    } else if (foreign) {
+  /**
+   * MOVE THE CLOCK, fire what that made due, settle.
+   *
+   * There is no `realTime` flag and no runtime refusal any more: whether this
+   * fixture can move time is settled by whether it was given a clock it can
+   * move, and that answer is in its TYPE — a scenario that advances does not
+   * typecheck against a fixture that cannot. The only defensive line left is
+   * for JavaScript callers.
+   */
+  async function advance(duration: Duration): Promise<void> {
+    if (advanceable === undefined) {
       throw new Error(
-        `@kronos-ts/test: \`wait(${duration})\` cannot move time for this scope. The scope brought ` +
-          `resources the fixture does not own — its own event store, or a processor built ` +
-          `over one — so there is no clock here to jump and no schedule book here to ` +
-          `fire from. Either let the fixture create the resources (take them as the scope's ` +
-          `parameters), or pass \`{ realTime: true }\` and the wait will genuinely elapse.`,
+        "@kronos-ts/test: this fixture cannot move time — it was not given a clock it can " +
+          "move. Build one with `advanceableClock()` and pass it as `clock`, or use " +
+          "`.await(until)` to wait for the world to catch up on its own.",
       )
-    } else {
-      offset += duration
     }
+    advanceable.advance(duration)
 
-    // Fired events go in through the OUTERMOST store, so the recorder sees them.
-    const due = scheduling.due()
-    if (due.length > 0) await eventStore.append(due)
+    // Fired events go in through the OUTERMOST store, so the recorder sees
+    // them. There is a book to ask only when the fixture built the log: a
+    // host's own scheduler — a postgres poller, a kronosdb server — holds its
+    // deadlines out of reach, and nothing here can make those fire early.
+    if (scheduling !== undefined) {
+      const due = scheduling.due()
+      if (due.length > 0) await eventStore.append(due)
+    }
     await quiesce()
   }
 
@@ -528,7 +746,7 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
     return {
       events: [...eventStore.appended],
       commands: commandBus.dispatched.filter((m) => m.identifier !== actIdentifier),
-      schedules: scheduling.schedules.filter(
+      schedules: (scheduling?.schedules ?? []).filter(
         (s) => priorSchedules.get(s.token.id) !== s.status,
       ),
     }
@@ -556,8 +774,8 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
           await applyGiven(step.events)
           continue
         }
-        if (step.kind === "wait") {
-          await wait(step.duration)
+        if (step.kind === "advance") {
+          await advance(step.duration)
           continue
         }
 
@@ -624,9 +842,15 @@ export function testFixture(scope: FixtureScope, opts: FixtureOptions = {}): Tes
         if (failure === undefined) {
           return { result, events: outcome.events, commands: outcome.commands }
         }
-        // An all-fixture scope is deterministic: what is not true now will not
-        // become true, so waiting for it would only make failures slow.
-        if (!foreign || Date.now() > deadline) throw new ScenarioAssertionError(failure)
+        // THE SCENARIO SAYS WHICH. `then` judges the world as it stands: what
+        // is not true now will not become true in a deterministic scope, and
+        // waiting for it would only make failures slow. `await` judges the
+        // same claims until they hold, which is what a world that keeps
+        // working after the act — a projection behind a database, a processor
+        // on another node — actually needs.
+        if (scenario.judgement === "once" || Date.now() > deadline) {
+          throw new ScenarioAssertionError(failure)
+        }
         await new Promise<void>((resolve) => setTimeout(resolve, 20))
         await quiesce()
       }

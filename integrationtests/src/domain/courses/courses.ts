@@ -17,6 +17,7 @@ import type {
  */
 type EmittingContext = EventHandlerContext & EmitCapability
 import { eventProcessor } from "@kronos-ts/core"
+import type { FixtureLists, FixtureResources, PartialProcessor } from "@kronos-ts/test"
 import { z } from "zod"
 import { withNamespace, commandHandler, eventHandler, queryHandler } from "@kronos-ts/core"
 import { state } from "@kronos-ts/core"
@@ -249,12 +250,9 @@ export const COURSE_PROJECTION = "course-projection"
  * a site that caches folds hands in a log that CAN, and the entries point at
  * the one object.
  */
-export function courses(eventStore: EventStore) {
-  const projection = (
-    log: EventStore,
-    tokenStore: TokenStore,
-    unitOfWork: () => UnitOfWork,
-  ): EventProcessor => eventProcessor({ name: COURSE_PROJECTION, eventStore: log, tokenStore, unitOfWork })
+export function courses({ eventStore }: FixtureResources): FixtureLists {
+  const projection: PartialProcessor = (log, tokenStore, unitOfWork) =>
+    eventProcessor({ name: COURSE_PROJECTION, eventStore: log, tokenStore, unitOfWork })
 
   return {
     commandHandlers: courseSlice.commandHandlers.map((h) => ({ ...h, eventStore })),

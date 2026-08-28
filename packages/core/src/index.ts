@@ -180,11 +180,6 @@ export {
 } from "./unit-of-work/unit-of-work.js"
 
 // THE PERSISTENCE-FAMILY SLOT. Core owns the mark and knows no occupants: each
-// adapter package writes `UnitOfWorkBrand<"drizzle", "…">` once and brands
-// what its unit-of-work decorator mints, so wiring one family's token store
-// against another family's task is a compile error naming the factory to call.
-// Erased entirely — a phantom on an ambient unique symbol, never constructed.
-export type { UnitOfWorkBrand } from "./unit-of-work/unit-of-work-brand.js"
 
 // ── command-handling: the command kind's whole life ────────────────────────
 // The bus shape, the local segment, both births of a command (the edge verb

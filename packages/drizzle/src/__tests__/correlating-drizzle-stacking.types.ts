@@ -41,7 +41,6 @@ import {
   drizzleUnitOfWork,
   type DrizzleCommandContext,
   type DrizzleDb,
-  type DrizzleUnitOfWork,
 } from "../drizzle-transaction.js"
 
 declare const db: DrizzleDb
@@ -61,9 +60,10 @@ const enroll = commandHandler(Enroll, async ({ payload }, ctx: DrizzleCommandCon
 })
 
 // The task is named ONCE, here, by composing the factory. Everything below
-// reads it off this value.
+// reads it off this value. `drizzleUnitOfWork` decorates what it is given and
+// adds no mark of its own: what a unit of work IS, is what it can do.
 const uow = drizzleUnitOfWork(() => correlating(unitOfWork()), db)
-type Task = CorrelatingUnitOfWork & DrizzleUnitOfWork
+type Task = CorrelatingUnitOfWork
 export const mints: () => Task = uow
 
 const commandBus = localCommandBus(uow)
@@ -104,7 +104,7 @@ const plainCommandBus = localCommandBus(drizzleOnly)
 export const busForgotCorrelation: CommandHandlerEntry<Task> = {
   ...enroll,
   handler: correlatingHandler(drizzleHandler(enroll.handler, db), correlationFrom),
-  // @ts-expect-error — this bus mints `UnitOfWork & DrizzleUnitOfWork`; the wrapped handler asks for a correlating task
+  // @ts-expect-error — this bus mints a bare task; the wrapped handler asks for a correlating one
   commandBus: plainCommandBus,
   queryBus,
   eventStore,

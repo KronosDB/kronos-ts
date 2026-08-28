@@ -3,7 +3,6 @@ import type {
   CommandHandlerContext,
   QueryHandlerContext,
   UnitOfWork,
-  UnitOfWorkBrand,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -13,36 +12,6 @@ import {
   transactionRegistry,
 } from "./transaction-glue.js"
 
-/**
- * THE TYPEORM FAMILY MARK — a phantom, type-only brand on every unit of work
- * typeormUnitOfWork(next, dataSource) mints, and the thing this package's token store and
- * dead-letter queue demand back.
- *
- * WHY IT EXISTS. This family is keyed by TRANSACTION IDENTITY: the token store,
- * the dead-letter queue and what a handler writes through `activeTypeormTransaction(ctx.unitOfWork)` must all
- * write through the SAME handle, or they do not commit together. Handing this
- * package's token store a unit of work from another family does not throw — the
- * store looks for ITS transaction, does not find one, and falls back to its
- * plain handle, so the token update commits OUTSIDE the batch. Every test
- * passes; then a crash lands between the projection write and the token write
- * and a read model is permanently wrong. The mark turns that into a build
- * error.
- *
- * IT IS ERASED AND NEVER CONSTRUCTED. `UnitOfWorkBrand` hangs on an ambient
- * unique symbol declared in core; nothing writes the property and nothing can
- * read it. typeormUnitOfWork(…) returns exactly what it always
- * returned and asserts the branded type, so the emitted JavaScript is
- * unchanged.
- *
- * THE FIX STRING IS THIS PACKAGE'S TO WRITE, and that is the point of putting
- * it here. Core can only say "these two are different families"; this package
- * knows precisely which factory the host should have called, so a mismatch
- * prints that sentence at the wiring site.
- */
-export type TypeormUnitOfWork = UnitOfWorkBrand<
-  "typeorm",
-  "build this processor's unitOfWork with typeormUnitOfWork(next, dataSource) — this family's stores write through its transaction"
->
 
 /**
  * A TypeORM handle — a `DataSource` or an `EntityManager`. Declares only what
@@ -166,8 +135,8 @@ const registry = transactionRegistry<TypeormTransaction>()
 export function typeormUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   manager: TypeormManager,
-): () => U & TypeormUnitOfWork {
-  return adapterUnitOfWork(registry, transactionHooks(manager), next) as () => U & TypeormUnitOfWork
+): () => U {
+  return adapterUnitOfWork(registry, transactionHooks(manager), next) as () => U
 }
 
 /**

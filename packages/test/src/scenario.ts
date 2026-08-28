@@ -1,3 +1,4 @@
+import type { CommandMessage, EventMessage } from "@kronos-ts/core"
 import type { Action, Assertion, Duration, EventValue } from "./values.js"
 
 // ---------------------------------------------------------------------------
@@ -15,11 +16,48 @@ import type { Action, Assertion, Duration, EventValue } from "./values.js"
 // Scenario, which is data and has no methods at all.
 // ---------------------------------------------------------------------------
 
+/**
+ * What a step asks of the fixture's clock.
+ *
+ * `advance` is the only thing that needs one it can MOVE, and moving a clock is
+ * a capability the fixture has or does not — so it rides in the scenario's TYPE
+ * and a fixture that cannot move time refuses the scenario rather than throwing
+ * when it reaches the step.
+ */
+export type Advances = boolean
+
 /** One thing that happens, in order. */
 export type Step =
   | { readonly kind: "given"; readonly events: ReadonlyArray<EventValue<any>> }
-  | { readonly kind: "wait"; readonly duration: Duration }
+  | { readonly kind: "advance"; readonly duration: Duration }
   | { readonly kind: "when"; readonly action: Action }
+
+/**
+ * HOW THE CLAIMS ARE JUDGED — once, or until they hold.
+ *
+ * `then` judges the world as it stands the moment the act settles: if a claim
+ * does not hold then, it will not hold later either, and waiting would be
+ * theatre that makes every failure slow.
+ *
+ * `await` judges the same claims REPEATEDLY until they hold or the deadline
+ * passes. There is nothing extra to write — what you are waiting for is what
+ * you were going to assert anyway.
+ *
+ * WHERE THE LINE ACTUALLY FALLS, because it is not "did the act cross the
+ * event store". An append is in the recording the moment it happens, and a
+ * processor the FIXTURE HOLDS is waited for automatically: before judging
+ * anything it settles every processor it assembled against the head of the log
+ * that processor reads. So a command that appends, an automation that picks
+ * the event up, and the command THAT dispatches are all `then` — crossing the
+ * log is not the boundary.
+ *
+ * The boundary is what the fixture can WATCH SETTLE. It holds handles to its
+ * own processors and can ask them; it cannot ask a projection landing in a
+ * database on its own schedule, a processor on another node, or any effect a
+ * handler kicked off and did not wait for. Those are `await`: name what should
+ * become true, and the fixture keeps looking.
+ */
+export type Judgement = "once" | "until"
 
 /**
  * A finished scenario: the steps, the claims, and a sentence describing itself.
@@ -28,27 +66,44 @@ export type Step =
  * point: the same scenario runs against an in-memory scope and against real
  * infrastructure, and it is the same test both times.
  */
-export type Scenario = {
+export type Scenario<A extends Advances = boolean> = {
+  /** Phantom: whether any step moves the clock. Never read at runtime. */
+  readonly advances?: A
   readonly steps: ReadonlyArray<Step>
   readonly then: ReadonlyArray<Assertion>
+  /** Whether the claims are judged once, or until they hold. */
+  readonly judgement: Judgement
   /** "given CourseCreated, when SubscribeStudent, then StudentSubscribed" */
   readonly description: string
 }
 
 /** Before the act: time may pass, then exactly one thing happens. */
-export type ScenarioStart = {
-  /** Let `duration` of the fixture's time pass. Repeatable. */
-  wait(duration: Duration): ScenarioStart
+export type ScenarioStart<A extends Advances = false> = {
+  /**
+   * Move the fixture's clock forward by `duration` — deadlines armed before it
+   * fire here. Repeatable, and it makes the scenario one only a time-advancing
+   * fixture will run.
+   */
+  advance(duration: Duration): ScenarioStart<true>
   /** The act — exactly one command, query or event. */
-  when(action: Action): ScenarioActed
+  when(action: Action): ScenarioActed<A>
 }
 
 /** After the act: time may pass, then the claims close the scenario. */
-export type ScenarioActed = {
-  /** Let `duration` pass — deadlines fire here. Repeatable. */
-  wait(duration: Duration): ScenarioActed
-  /** What the act should have done. Terminal. */
-  then(...assertions: Assertion[]): Scenario
+export type ScenarioActed<A extends Advances = false> = {
+  /** Move the clock — deadlines fire here. Repeatable. */
+  advance(duration: Duration): ScenarioActed<true>
+  /** What the act should have done, judged once. Terminal. */
+  then(...assertions: Assertion[]): Scenario<A>
+  /**
+   * What the act should EVENTUALLY have done — the same claims, re-judged
+   * until they hold or `run`'s `within` passes. Terminal.
+   *
+   * For a world that keeps working after the act returns: a projection behind
+   * a database, a processor on another node. Moves no clock, so any fixture
+   * runs it.
+   */
+  await(...assertions: Assertion[]): Scenario<A>
 }
 
 /**
@@ -59,7 +114,7 @@ export type ScenarioActed = {
  *           .then(event(CourseCreated, { courseId: "cs-101" }))
  * ```
  */
-export function scenario(): ScenarioStart {
+export function scenario(): ScenarioStart<false> {
   return start([])
 }
 
@@ -81,14 +136,14 @@ export function scenario(): ScenarioStart {
  * world either way is allowed, because a suite that builds its givens from an
  * array should not have to branch when the array is empty.
  */
-export function given(...events: EventValue<any>[]): ScenarioStart {
+export function given(...events: EventValue<any>[]): ScenarioStart<false> {
   return start(events.length === 0 ? [] : [{ kind: "given", events }])
 }
 
-function start(steps: ReadonlyArray<Step>): ScenarioStart {
+function start(steps: ReadonlyArray<Step>): ScenarioStart<any> {
   return {
-    wait(duration) {
-      return start([...steps, { kind: "wait", duration }])
+    advance(duration) {
+      return start([...steps, { kind: "advance", duration }])
     },
     when(action) {
       return acted([...steps, { kind: "when", action }])
@@ -96,13 +151,26 @@ function start(steps: ReadonlyArray<Step>): ScenarioStart {
   }
 }
 
-function acted(steps: ReadonlyArray<Step>): ScenarioActed {
+function acted(steps: ReadonlyArray<Step>): ScenarioActed<any> {
   return {
-    wait(duration) {
-      return acted([...steps, { kind: "wait", duration }])
+    advance(duration) {
+      return acted([...steps, { kind: "advance", duration }])
     },
     then(...assertions) {
-      return { steps, then: assertions, description: describe(steps, assertions) }
+      return {
+        steps,
+        then: assertions,
+        judgement: "once",
+        description: describe(steps, assertions),
+      }
+    },
+    await(...assertions) {
+      return {
+        steps,
+        then: assertions,
+        judgement: "until",
+        description: `${describe(steps, assertions)} (eventually)`,
+      }
     },
   }
 }
@@ -146,8 +214,8 @@ function describe(steps: ReadonlyArray<Step>, assertions: ReadonlyArray<Assertio
   for (const step of steps) {
     if (step.kind === "given") {
       clauses.push(`given ${step.events.map((e) => localName(e.descriptor)).join(", ")}`)
-    } else if (step.kind === "wait") {
-      clauses.push(`wait ${step.duration}ms`)
+    } else if (step.kind === "advance") {
+      clauses.push(`advance ${step.duration}ms`)
     } else {
       clauses.push(`when ${localName(step.action.descriptor)}`)
     }
