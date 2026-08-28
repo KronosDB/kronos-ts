@@ -4,12 +4,12 @@
 // the only way to observe one without opening it.
 export {
   prismaUnitOfWork,
-  type PrismaFamily,
+  type PrismaUnitOfWork,
   prismaTransaction,
   activePrismaTransaction,
   prismaHandler,
   type PrismaCapability,
-  type PrismaContext,
+  type PrismaCommandContext,
   type PrismaEventContext,
   type PrismaQueryContext,
   type PrismaClientLike,

@@ -106,7 +106,7 @@ describe("KronosDB native snapshots — one fused RPC", () => {
   let plain: EventStore
 
   beforeAll(async () => {
-    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:0.8.0")
+    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:0.9.0")
       .withExposedPorts(50051, 9240)
       // "KronosDB starting" logs when the gRPC listener BINDS, which is before
       // the raft leader gate opens — an append that wins that race is rejected

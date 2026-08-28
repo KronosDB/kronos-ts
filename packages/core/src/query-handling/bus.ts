@@ -32,7 +32,22 @@ export type QueryBus<U extends UnitOfWork = UnitOfWork> = {
     queryName: string,
     handler: (message: QueryMessage, uow: U) => Promise<unknown>,
   ): void
+}
 
+/**
+ * THE SUBSCRIPTION TIER — the third capability tier, and the first on a BUS.
+ *
+ * The base {@link QueryBus} is COMPLETE without it: a bus you can query and
+ * subscribe handlers on is everything request/response needs, and an
+ * implementer writes TWO functions, not seven. Live updates are a capability a
+ * bus HAS or does not — offered natively or added by wrapping — exactly as
+ * snapshotting and scheduling are tiers on the log. `localQueryBus` offers it
+ * natively (the machinery is in-process anyway); the transports offer it
+ * server- or broker-mediated. A bus that cannot serve live updates simply does
+ * not claim the type, and everything demanding it refuses at COMPILE TIME
+ * instead of throwing on the first subscriber somebody armed in production.
+ */
+export type SubscriptionCapability = {
   /**
    * Start a subscription query — returns the initial result plus a stream
    * of incremental updates.
@@ -89,3 +104,15 @@ export type QueryBus<U extends UnitOfWork = UnitOfWork> = {
     uow?: UnitOfWork,
   ): Promise<void>
 }
+
+/** A query bus that can also serve live subscription queries. */
+export type SubscriptionCapableQueryBus<U extends UnitOfWork = UnitOfWork> = QueryBus<U> &
+  SubscriptionCapability
+
+/**
+ * THE anchor for the subscription demand — the mirror of `IfSnapshotCapable`
+ * and `IfScheduleCapable`, branched on the BUS instead of the log. Anything
+ * later anchors HERE; add a face, not a predicate.
+ */
+export type IfSubscriptionCapable<Q extends QueryBus<any>, Capable, Bare> =
+  Q extends SubscriptionCapability ? Capable : Bare

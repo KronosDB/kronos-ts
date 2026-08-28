@@ -1,5 +1,5 @@
 import type { CommandBus } from "../command-handling/bus.js"
-import type { QueryBus } from "../query-handling/bus.js"
+import type { QueryBus, SubscriptionCapability } from "../query-handling/bus.js"
 import type { CommandMessage, Message, QueryMessage } from "../messaging/messages.js"
 import type { SubscriptionQueryResult } from "../query-handling/subscription-query.js"
 import type { SubscriptionFilter } from "../query-handling/subscription-filter.js"
@@ -81,6 +81,7 @@ export function interceptingQueryBus<B extends QueryBus<any>>(
   next: B,
   intercept: Intercept<QueryMessage>,
 ): B {
+  const capable = next as B & Partial<SubscriptionCapability>
   return {
     ...next,
 
@@ -90,41 +91,28 @@ export function interceptingQueryBus<B extends QueryBus<any>>(
     subscribe(queryName: string, handler: unknown) {
       next.subscribe(queryName, handler as never)
     },
-    subscriptionQuery(
-      message: QueryMessage,
-      bufferSize?: number,
-    ): SubscriptionQueryResult {
-      return next.subscriptionQuery(intercept(message), bufferSize)
-    },
-    subscribeToUpdates(
-      message: QueryMessage,
-      bufferSize?: number,
-    ): AsyncIterable<unknown> & { close(): void } {
-      return next.subscribeToUpdates(intercept(message), bufferSize)
-    },
-    emitUpdate(
-      queryName: string,
-      filter: SubscriptionFilter,
-      update: unknown,
-      uow?: UnitOfWork,
-    ): Promise<void> {
-      return next.emitUpdate(queryName, filter, update, uow)
-    },
-    completeSubscription(
-      queryName: string,
-      filter?: SubscriptionFilter,
-      uow?: UnitOfWork,
-    ): Promise<void> {
-      return next.completeSubscription(queryName, filter, uow)
-    },
-    completeSubscriptionExceptionally(
-      queryName: string,
-      error: Error,
-      filter?: SubscriptionFilter,
-      uow?: UnitOfWork,
-    ): Promise<void> {
-      return next.completeSubscriptionExceptionally(queryName, error, filter, uow)
-    },
+    // THE SUBSCRIPTION TIER IS WRAPPED ONLY WHERE IT EXISTS. `subscriptionQuery`
+    // and `subscribeToUpdates` carry an outgoing message, so they run the
+    // intercept — subscription queries travel correlated, exactly as primary
+    // queries do. The rest of the tier (emitUpdate, completeSubscription…)
+    // carries no outgoing query message and rides the spread untouched. A bus
+    // that never claimed the tier has nothing here to wrap, and the spread
+    // added nothing — `B` in, `B` out either way.
+    ...(typeof capable.subscriptionQuery === "function"
+      ? {
+          subscriptionQuery: (message: QueryMessage, bufferSize?: number): SubscriptionQueryResult =>
+            capable.subscriptionQuery!(intercept(message), bufferSize),
+        }
+      : {}),
+    ...(typeof capable.subscribeToUpdates === "function"
+      ? {
+          subscribeToUpdates: (
+            message: QueryMessage,
+            bufferSize?: number,
+          ): AsyncIterable<unknown> & { close(): void } =>
+            capable.subscribeToUpdates!(intercept(message), bufferSize),
+        }
+      : {}),
     // CAPABILITY-PRESERVING — see `interceptingCommandBus`.
   } as B
 }

@@ -9,7 +9,7 @@ export type BackendOrder = "alternating" | "kronos-first" | "postgres-first"
 export type PostgresAdapterName = "pg" | "bun-sql"
 
 export const BENCH_EVENT_NAME = qn("benchmark", "StateChanged")
-export const KRONOSDB_IMAGE = "ghcr.io/kronosdb/kronosdb:0.6.0"
+export const KRONOSDB_IMAGE = "ghcr.io/kronosdb/kronosdb:0.9.0"
 export const POSTGRES_IMAGE = "postgres:16-alpine"
 
 export type BenchmarkProfile = {

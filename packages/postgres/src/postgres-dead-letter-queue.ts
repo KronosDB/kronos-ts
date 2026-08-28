@@ -28,7 +28,7 @@ import { DeadLetterQueueOverflowError } from "@kronos-ts/core"
 import type { QueryRow } from "./adapter.js"
 import type { PostgresResource } from "./postgres-pool.js"
 import { activePostgresTransaction } from "./postgres-transaction.js"
-import type { PostgresFamily } from "./postgres-transaction.js"
+import type { PostgresUnitOfWork } from "./postgres-transaction.js"
 
 /** Tuning only — everything required is a positional argument. */
 export type PostgresDeadLetterQueueOptions = {
@@ -75,7 +75,7 @@ const COLUMNS =
 export function postgresDeadLetterQueue(
   pg: PostgresResource,
   options: PostgresDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue<UnitOfWork & PostgresFamily> {
+): SequencedDeadLetterQueue<UnitOfWork & PostgresUnitOfWork> {
   const table = pg.tables.deadLetters
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024

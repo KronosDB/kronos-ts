@@ -26,7 +26,7 @@
 import { z } from "zod"
 import { qn, command, event } from "../../messaging/messages.js"
 import { commandHandler } from "../../command-handling/handler.js"
-import type { HandlerContext } from "../../command-handling/context.js"
+import type { CommandHandlerContext } from "../../command-handling/context.js"
 import type { QueryHandlerContext } from "../../query-handling/context.js"
 import type { EventHandlerContext } from "../../event-processing/context.js"
 import type { CommandHandlerEntry } from "../../kronos.js"
@@ -90,26 +90,26 @@ export const plainSaysUndefined: typeof Plain extends { snapshot?: infer C }
 /** CAPABLE + SNAPSHOTTING ✓ — the arrangement the demand exists to require. */
 export const capablePlusCaching = commandHandler(
   Bump,
-  async (_m, ctx: HandlerContext<UnitOfWork, SnapshotCapableEventStore>) => {
+  async (_m, ctx: CommandHandlerContext<SnapshotCapableEventStore>) => {
     await ctx.load(Caching, { counterId: "c-1" })
   },
 )
 
 /** BARE + PLAIN ✓ — a project that never heard of snapshotting, unaffected. */
-export const barePlusPlain = commandHandler(Bump, async (_m, ctx: HandlerContext) => {
+export const barePlusPlain = commandHandler(Bump, async (_m, ctx: CommandHandlerContext) => {
   await ctx.load(Plain, { counterId: "c-1" })
 })
 
 /** CAPABLE + PLAIN ✓ — the capability widens; it never narrows. */
 export const capablePlusPlain = commandHandler(
   Bump,
-  async (_m, ctx: HandlerContext<UnitOfWork, SnapshotCapableEventStore>) => {
+  async (_m, ctx: CommandHandlerContext<SnapshotCapableEventStore>) => {
     await ctx.load(Plain, { counterId: "c-1" })
   },
 )
 
 /** BARE + SNAPSHOTTING ✗ — THE HEADLINE. */
-export const barePlusCaching = commandHandler(Bump, async (_m, ctx: HandlerContext) => {
+export const barePlusCaching = commandHandler(Bump, async (_m, ctx: CommandHandlerContext) => {
   // @ts-expect-error — this state declares a snapshot policy; wrap the entry's eventStore
   await ctx.load(Caching, { counterId: "c-1" })
 })
@@ -128,7 +128,7 @@ export const eventContextRefuses = async (ctx: EventHandlerContext) => {
 }
 
 export const eventContextAccepts = async (
-  ctx: EventHandlerContext<UnitOfWork, SnapshotCapableEventStore>,
+  ctx: EventHandlerContext<SnapshotCapableEventStore>,
 ) => {
   await ctx.load(Caching, { counterId: "c-1" })
 }
@@ -137,13 +137,13 @@ export const eventContextAccepts = async (
 // (b) ctx.source — THE OVERLOAD IS ABSENT, NOT BROKEN.
 // ---------------------------------------------------------------------------
 
-export const plainSourceAlwaysWorks = async (ctx: HandlerContext) => {
+export const plainSourceAlwaysWorks = async (ctx: CommandHandlerContext) => {
   const events = await ctx.source({ tags: { counterId: "c-1" } })
   return events.length
 }
 
 export const fusedSourceNeedsCapability = async (
-  ctx: HandlerContext<UnitOfWork, SnapshotCapableEventStore>,
+  ctx: CommandHandlerContext<SnapshotCapableEventStore>,
 ) => {
   const { snapshot, events, position } = await ctx.source(
     { tags: { counterId: "c-1" } },
@@ -152,7 +152,7 @@ export const fusedSourceNeedsCapability = async (
   return { snapshot, events, position }
 }
 
-export const fusedSourceRefusedOnBareLog = async (ctx: HandlerContext) => {
+export const fusedSourceRefusedOnBareLog = async (ctx: CommandHandlerContext) => {
   // @ts-expect-error — a bare log has no fused read; this call takes ONE argument
   await ctx.source({ tags: { counterId: "c-1" } }, { snapshot: "counter:c-1" })
 }

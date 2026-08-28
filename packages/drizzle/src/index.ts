@@ -4,12 +4,12 @@
 // the only way to observe one without opening it.
 export {
   drizzleUnitOfWork,
-  type DrizzleFamily,
+  type DrizzleUnitOfWork,
   drizzleTransaction,
   activeDrizzleTransaction,
   drizzleHandler,
   type DrizzleCapability,
-  type DrizzleContext,
+  type DrizzleCommandContext,
   type DrizzleEventContext,
   type DrizzleQueryContext,
   type DrizzleDb,

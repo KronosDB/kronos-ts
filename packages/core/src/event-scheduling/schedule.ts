@@ -87,7 +87,7 @@ export type ScheduleFunctions = {
  * `ctx`'s face of {@link IfScheduleCapable}: the three verbs when the log can
  * schedule, nothing at all when it cannot.
  *
- * A context is ASSEMBLED BY INTERSECTION — `EventHandlerContext<U, E>` is the
+ * A context is ASSEMBLED BY INTERSECTION — `EventHandlerContext<E, Q, U>` is the
  * base shape & `SnapshotReads<E>` & this — so against a bare log the verbs do
  * not exist, and `unknown` disappears from the intersection without a trace.
  * That is the same construction `SnapshotReads` uses, one capability over.

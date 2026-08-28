@@ -4,6 +4,9 @@ node_modules
 .claude/
 dist/
 *.tsbuildinfo
+# Pinned bun binary for the gRPC suites (oven-sh/bun#39796) — a 60MB download,
+# not a source artifact. See .bun-version.
+.tooling/
 # Project uses bun (bun.lock); reject stray lockfiles from other package managers
 pnpm-lock.yaml
 package-lock.json

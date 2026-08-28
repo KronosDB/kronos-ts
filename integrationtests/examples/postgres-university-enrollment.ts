@@ -1,18 +1,28 @@
 /**
- * Example: full CQRS slice on @kronos-ts/postgres.
+ * Example: a full CQRS slice on @kronos-ts/postgres, composed the way the
+ * surface intends — every part named on its own line, nothing bundled, and no
+ * builder standing between a handler and the reader.
  *
  *   write side  : kronos() + postgresPool on bunSqlAdapter (Bun.sql driver)
  *                 → events land in kronos_events, snapshots in kronos_snapshots
  *
- *   read side   : drizzle-orm/bun-sql against the SAME database
- *                 → a tracking processor projects events into course_views
+ *   read side   : a tracking processor projects into course_views, writing
+ *                 through drizzle bound to THE UNIT OF WORK'S transaction
  *
  *   query       : drizzle reads course_views for the final dump
  *
- * The framework's bunSqlAdapter and drizzle each open their own Bun.SQL
- * client against the same connection string. That's the canonical Kronos
- * composition: the framework owns its event tables; your projections live
- * wherever you want and are read with whatever query layer you prefer.
+ * ONE FAMILY OWNS THE TRANSACTION, AND THE ORM RIDES IT. The postgres family
+ * owns each task's transaction; `uowDb(ctx)` binds drizzle to the very
+ * connection the event store appends on (`tx.unwrap()`), so a projection write
+ * and the processor's token update commit or roll back together. Handing
+ * drizzle its own pool would give it its own transaction — silently
+ * non-atomic. See "Transactions: one owner, lenses for the rest" in
+ * docs/how-it-works.md.
+ *
+ * WHAT THIS FILE DELIBERATELY DOES NOT DO: no `buildProjector(db)`, no bus
+ * bundle, no `carrying()` wrapper. Handlers are plain top-level values that
+ * name what they use; the composition root names each store, bus, task factory
+ * and processor once and writes the arrows itself.
  *
  * Run: bun run integrationtests/examples/postgres-university-enrollment.ts
  * (requires docker for testcontainers, Bun >= 1.2 for Bun.SQL).
@@ -22,7 +32,7 @@ import { GenericContainer, Wait } from "testcontainers"
 import { qn, send } from "@kronos-ts/core"
 import {
   command, event, commandHandler, eventHandler, jsonSerializer,
-  eventProcessor, inMemoryTokenStore,
+  eventProcessor,
 } from "@kronos-ts/core"
 import { state } from "@kronos-ts/core"
 import {
@@ -41,12 +51,16 @@ import {
   localQueryBus,
   type UnitOfWork,
   type CommandBus,
-  type QueryBus,
+  type CommandHandlerContext,
+  type SnapshotCapableEventStore,
+  type SubscriptionCapableQueryBus,
 } from "@kronos-ts/core"
 import {
   postgresPool,
   postgresEventStore,
   postgresSnapshottingEventStore,
+  postgresTokenStore,
+  postgresTransaction,
   postgresUnitOfWork,
 } from "@kronos-ts/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
@@ -61,20 +75,6 @@ const correlationFrom = (parent: Message): Metadata => ({
   correlationId: String(parent.metadata.correlationId ?? parent.identifier),
   causationId: String(parent.identifier),
 })
-
-/**
- * The two things `kronos` needs that are not handlers. The UoW runner is named
- * once and handed to BOTH `localCommandBus` (which captures it at construction)
- * and the event processor below — writing them on adjacent lines is what makes
- * that checkable.
- */
-function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
-  return {
-    commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
-    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
-  }
-}
-
 
 // ============================================================================
 // Read-side schema (drizzle owns this table)
@@ -152,19 +152,36 @@ const EnrollStudent = command({
   routingKey: "courseId",
 })
 
-const openCourse = commandHandler(OpenCourse, async ({ payload: cmd }, ctx) => {
+// THE CONTEXT THIS APP'S COMMAND HANDLERS GET, NAMED ONCE.
+//
+// Every capability the app depends on is spelled here and nowhere else, so a
+// handler writes one word instead of an intersection that grows every time the
+// deployment learns a new trick. Add scheduling later and this line changes;
+// the handlers do not:
+//
+//   type UniversityCommandContext =
+//     CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore> & EmitCapability
+//
+// Named for the APP, matching how the adapter packages name theirs
+// (`PostgresCommandContext`, `DrizzleEventContext`). Here it says: these
+// handlers load folds that `Course` / `Student` declared a snapshot policy for,
+// so the log wired at the entry below has to be able to serve one — wire a bare
+// `postgresEventStore` and this is where the build breaks, naming the wrapper.
+type UniversityCommandContext = CommandHandlerContext<SnapshotCapableEventStore>
+
+const openCourse = commandHandler(OpenCourse, async ({ payload: cmd }, ctx: UniversityCommandContext) => {
   const course = await ctx.load(Course, { courseId: cmd.courseId })
   if (course.opened) throw new Error(`Course ${cmd.courseId} already opened`)
   ctx.append(CourseOpened, { courseId: cmd.courseId, title: cmd.title, capacity: cmd.capacity })
 })
 
-const registerStudent = commandHandler(RegisterStudent, async ({ payload: cmd }, ctx) => {
+const registerStudent = commandHandler(RegisterStudent, async ({ payload: cmd }, ctx: UniversityCommandContext) => {
   const student = await ctx.load(Student, { studentId: cmd.studentId })
   if (student.registered) throw new Error(`Student ${cmd.studentId} already registered`)
   ctx.append(StudentRegistered, { studentId: cmd.studentId, name: cmd.name, maxCourses: cmd.maxCourses })
 })
 
-const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx) => {
+const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx: UniversityCommandContext) => {
   const course = await ctx.load(Course, { courseId: cmd.courseId })
   const student = await ctx.load(Student, { studentId: cmd.studentId })
   if (!course.opened) throw new Error("Course not open")
@@ -179,29 +196,41 @@ const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx
 // Demo runner
 // ============================================================================
 
-type DrizzleDb = ReturnType<typeof drizzle<Record<string, never>>>
-
-function buildProjector(db: DrizzleDb) {
-  const onCourseOpened = eventHandler(CourseOpened, async ({ payload: e }, ctx) => {
-    await db
-      .insert(courseViews)
-      .values({ courseId: e.courseId, title: e.title, capacity: e.capacity, enrolledCount: 0 })
-      .onConflictDoUpdate({
-        target: courseViews.courseId,
-        set: { title: e.title, capacity: e.capacity, updatedAt: new Date() },
-      })
-  })
-  const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }, ctx) => {
-    await db
-      .update(courseViews)
-      .set({
-        enrolledCount: sql`${courseViews.enrolledCount} + 1`,
-        updatedAt: new Date(),
-      })
-      .where(eq(courseViews.courseId, e.courseId))
-  })
-  return [onCourseOpened, onStudentEnrolled]
+/**
+ * Drizzle bound to THE TASK'S transaction — the same connection the event
+ * store appends on, so what a projection writes commits with the token update
+ * that records it. `postgresTransaction` opens the lazy transaction if this is
+ * the first writer in the task; `unwrap()` hands over the live driver handle,
+ * and the caller owns the cast because the handle type is adapter-specific.
+ */
+async function uowDb(ctx: { readonly unitOfWork: UnitOfWork }) {
+  const tx = await postgresTransaction(ctx.unitOfWork)
+  return drizzle(tx.unwrap<string>())
 }
+
+// ── projections ─────────────────────────────────────────────────────────────
+// Plain top-level values. They close over NOTHING: the handle comes from the
+// handling, which is what lets them be written here, beside the decisions,
+// instead of inside a builder that has to be handed a database first.
+
+const onCourseOpened = eventHandler(CourseOpened, async ({ payload: e }, ctx) => {
+  const db = await uowDb(ctx)
+  await db
+    .insert(courseViews)
+    .values({ courseId: e.courseId, title: e.title, capacity: e.capacity, enrolledCount: 0 })
+    .onConflictDoUpdate({
+      target: courseViews.courseId,
+      set: { title: e.title, capacity: e.capacity, updatedAt: new Date() },
+    })
+})
+
+const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }, ctx) => {
+  const db = await uowDb(ctx)
+  await db
+    .update(courseViews)
+    .set({ enrolledCount: sql`${courseViews.enrolledCount} + 1`, updatedAt: new Date() })
+    .where(eq(courseViews.courseId, e.courseId))
+})
 
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -211,16 +240,6 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
   }
   throw new Error("Timed out waiting for condition")
 }
-
-/**
- * What a host does to make metadata propagate: one wrapper, one cargo function.
- * `correlationFrom` is the shipped default — the correlationId/causationId pair
- * — and a host wanting more (an actor, a tenant) passes its own function here.
- */
-const carrying = <H extends { handler: any }>(h: H): H => ({
-  ...h,
-  handler: correlatingHandler(h.handler, correlationFrom),
-})
 
 async function main(): Promise<void> {
   console.log("== booting postgres:16-alpine ==")
@@ -253,73 +272,95 @@ async function main(): Promise<void> {
     // There is no bundle — this app wants an event store, a snapshot store and
     // a transactional unit of work, so it says exactly that.
     //
-    // The lazy transactional UoW factory is passed INTO the bus builder so the
-    // command bus is built around it; handing it over afterwards would leave
-    // the bus running handlers outside any transaction.
     const pg = postgresPool(bunSqlAdapter({ connectionString }))
     await pg.start()
-    // The log, wrapped so it can serve the folds `Course` and `Student`
-    // declare a policy for. ONE object, ONE serializer, and without the wrap
-    // the `ctx.load` calls below would not compile.
+
+    // THE LOG, wrapped so it can serve the folds `Course` and `Student` declare
+    // a policy for. ONE object, ONE serializer — and without the wrap the
+    // `ctx.load` calls in the decisions above would not compile.
     const eventStore = postgresSnapshottingEventStore(
       postgresEventStore(pg, { tagResolver: descriptorBasedTagResolver() }),
       pg,
       { serializer: jsonSerializer() },
     )
-    // The example CORRELATES: a task that carries a map, and (below) every
-    // handler wrapped so what it births inherits the message that caused it.
+
+    // THE TASK, named once. `correlating` makes it carry a map; the postgres
+    // decorator gives it a transaction. Everything below is checked against
+    // this one type — a bus built from a bare `unitOfWork` would not fit the
+    // wrapped handlers, and a foreign family's token store would not fit the
+    // processor.
     const uow = postgresUnitOfWork(() => correlating(unitOfWork()), pg)
-    const buses = inMemoryBuses(uow)
+
+    // THE BUSES, one line each. Interception sits OUTSIDE, so a command born
+    // anywhere is stamped before anything routes it.
+    const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
+    const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
+
+    // THE DELIVERY. `postgresTokenStore` is the SAME family as `uow`, so the
+    // token update writes through the transaction the projection wrote in —
+    // mixing families here is a compile error naming the factory to call.
     const projection = eventProcessor({
       name: "course-projection",
       eventStore,
-      tokenStore: inMemoryTokenStore(),
+      tokenStore: postgresTokenStore(pg),
       unitOfWork: uow,
     })
+
+    // THE ARROWS, written out by the host — one entry per handler, each
+    // pointing at the shared objects above. A `.map` over these would have to
+    // erase the handler types to a union, which is what the `any`-typed
+    // helper this file used to carry was hiding; five explicit lines cost
+    // nothing and every wiring decision is visible on the line it belongs to.
+    //
+    // Snapshot POLICY rides on `Course` / `Student` themselves; the CAPABILITY
+    // is a site fact riding on the log attached here. `correlatingHandler`
+    // demands a correlating task on its OUTPUT — which is why no handler above
+    // had to mention one.
     const app = kronos({
-      // Snapshot POLICY rides on `Course` / `Student` themselves; the
-      // CAPABILITY is a site fact, and it rides on the log attached here.
-      commandHandlers: [openCourse, registerStudent, enrollStudent]
-        .map(carrying)
-        .map((h) => ({ ...h, eventStore, ...buses })),
-      eventHandlers: buildProjector(db)
-        .map(carrying)
-        .map((h) => ({ ...h, ...buses, processor: projection })),
+      commandHandlers: [
+        { ...openCourse, handler: correlatingHandler(openCourse.handler, correlationFrom), eventStore, commandBus, queryBus },
+        { ...registerStudent, handler: correlatingHandler(registerStudent.handler, correlationFrom), eventStore, commandBus, queryBus },
+        { ...enrollStudent, handler: correlatingHandler(enrollStudent.handler, correlationFrom), eventStore, commandBus, queryBus },
+      ],
+      eventHandlers: [
+        { ...onCourseOpened, handler: correlatingHandler(onCourseOpened.handler, correlationFrom), commandBus, queryBus, processor: projection },
+        { ...onStudentEnrolled, handler: correlatingHandler(onStudentEnrolled.handler, correlationFrom), commandBus, queryBus, processor: projection },
+      ],
     })
 
     try {
       // ---- Scenario 1: open CS-101 (cap 2), register, enroll both --------
       console.log("\n== open CS-101 (cap 2), register alice + bob, enroll both ==")
-      await send(buses.commandBus, OpenCourse, {
+      await send(commandBus, OpenCourse, {
         courseId: "CS-101", title: "Intro to DCB", capacity: 2,
       })
-      await send(buses.commandBus, RegisterStudent, {
+      await send(commandBus, RegisterStudent, {
         studentId: "alice", name: "Alice", maxCourses: 2,
       })
-      await send(buses.commandBus, RegisterStudent, {
+      await send(commandBus, RegisterStudent, {
         studentId: "bob", name: "Bob", maxCourses: 2,
       })
-      await send(buses.commandBus, EnrollStudent, {
+      await send(commandBus, EnrollStudent, {
         courseId: "CS-101", studentId: "alice",
       })
-      await send(buses.commandBus, EnrollStudent, {
+      await send(commandBus, EnrollStudent, {
         courseId: "CS-101", studentId: "bob",
       })
 
       // ---- Scenario 2: DCB conflict on CS-102 last seat -----------------
       console.log("\n== open CS-102 (cap 1), register carol + dave, race two enrolls ==")
-      await send(buses.commandBus, OpenCourse, {
+      await send(commandBus, OpenCourse, {
         courseId: "CS-102", title: "Tiny Seminar", capacity: 1,
       })
-      await send(buses.commandBus, RegisterStudent, {
+      await send(commandBus, RegisterStudent, {
         studentId: "carol", name: "Carol", maxCourses: 1,
       })
-      await send(buses.commandBus, RegisterStudent, {
+      await send(commandBus, RegisterStudent, {
         studentId: "dave", name: "Dave", maxCourses: 1,
       })
       const results = await Promise.allSettled([
-        send(buses.commandBus, EnrollStudent, { courseId: "CS-102", studentId: "carol" }),
-        send(buses.commandBus, EnrollStudent, { courseId: "CS-102", studentId: "dave" }),
+        send(commandBus, EnrollStudent, { courseId: "CS-102", studentId: "carol" }),
+        send(commandBus, EnrollStudent, { courseId: "CS-102", studentId: "dave" }),
       ])
       const winners = results.filter((r) => r.status === "fulfilled").length
       const losers = results.filter((r) => r.status === "rejected")
@@ -331,9 +372,13 @@ async function main(): Promise<void> {
 
       // ---- Wait for projection to catch up ------------------------------
       console.log("\n== waiting for projection to catch up ==")
+      // Wait for EVERY enrollment the log accepted, not just the first course:
+      // the dump below prints what the projection holds, so it has to wait for
+      // all of it or it prints a race.
       await waitFor(async () => {
-        const cs101 = await db.select().from(courseViews).where(eq(courseViews.courseId, "CS-101"))
-        return cs101[0]?.enrolledCount === 2
+        const rows = await db.select().from(courseViews)
+        const byId = new Map(rows.map((r) => [r.courseId, r.enrolledCount]))
+        return byId.get("CS-101") === 2 && byId.get("CS-102") === 1
       })
 
       // ---- Dump everything via drizzle ----------------------------------
@@ -393,12 +438,17 @@ async function main(): Promise<void> {
     }
   } finally {
     // Close drizzle's Bun.SQL client before tearing down the container.
-    await db.$client.end()
+    await (db.$client as unknown as { end(): Promise<void> }).end()
     await container.stop()
   }
 }
 
-main().catch((err) => {
+// TOP-LEVEL AWAIT, not `main().catch(…)`. A floating promise does not hold
+// Bun's event loop open across testcontainers' docker calls, so the older
+// spelling exited 0 having printed one line and done nothing.
+try {
+  await main()
+} catch (err) {
   console.error(err)
   process.exit(1)
-})
+}

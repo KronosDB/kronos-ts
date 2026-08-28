@@ -4,12 +4,12 @@
 // the only way to observe one without opening it.
 export {
   knexUnitOfWork,
-  type KnexFamily,
+  type KnexUnitOfWork,
   knexTransaction,
   activeKnexTransaction,
   knexHandler,
   type KnexCapability,
-  type KnexContext,
+  type KnexCommandContext,
   type KnexEventContext,
   type KnexQueryContext,
   type KnexClient,

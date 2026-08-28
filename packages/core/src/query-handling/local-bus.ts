@@ -1,4 +1,4 @@
-import type { QueryBus } from "./bus.js"
+import type { QueryBus, SubscriptionCapableQueryBus } from "./bus.js"
 import {
   withInstant,
   type QueryMessage,
@@ -28,13 +28,13 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
  */
 export function localQueryBus<U extends UnitOfWork = UnitOfWork>(
   unitOfWork: () => U,
-): QueryBus<U> {
+): SubscriptionCapableQueryBus<U> {
   const handlers = new Map<string, (message: QueryMessage, uow: U) => Promise<unknown>>()
 
   // Active subscription query handlers, keyed by query identifier
   const subscriptions = new Map<string, UpdateHandler>()
 
-  const bus: QueryBus<U> = {
+  const bus: SubscriptionCapableQueryBus<U> = {
     async query(message: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       const key = qualifiedNameToString(message.name)
       const handler = handlers.get(key)

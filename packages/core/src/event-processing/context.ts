@@ -3,7 +3,8 @@ import type { EventStore } from "../event-sourcing/event-store.js"
 import { scheduleFunctions, type ScheduleVerbs } from "../event-scheduling/schedule.js"
 import { queryFunction } from "../query-handling/query.js"
 import { sendFunction } from "../command-handling/send.js"
-import { emitUpdateFunction, type EmitUpdateFunction } from "../query-handling/emit-update.js"
+import { emitUpdateFunction, type SubscriptionEmit } from "../query-handling/emit-update.js"
+import type { QueryBus } from "../query-handling/bus.js"
 import type {
   ContextLoadFunction,
   ContextQueryFunction,
@@ -30,9 +31,10 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
  * boundary; the type makes it unrepresentable rather than discouraged.
  */
 export type EventHandlerContext<
-  U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
-> = EventHandlerContextBase<U, E> & SnapshotReads<E> & ScheduleVerbs<E>
+  Q extends QueryBus<any> = QueryBus,
+  U extends UnitOfWork = UnitOfWork,
+> = EventHandlerContextBase<E, U> & SnapshotReads<E> & ScheduleVerbs<E> & SubscriptionEmit<Q>
 
 /**
  * The context every handling gets, before the entry's log has been asked what
@@ -46,13 +48,16 @@ export type EventHandlerContext<
  * seam any later capability tier extends: derive a face from the tier's own
  * `If…Capable` anchor and intersect it here.
  *
- * THERE ARE TWO STORE TIERS TODAY and both are visible on this line. Nothing
- * about the construction is per-tier; a third would be a third intersection
- * member and nothing else would move.
+ * THERE ARE THREE TIERS TODAY and all three are visible on this line — two on
+ * the log (`E`), one on the query bus (`Q`, the subscription tier's
+ * `SubscriptionEmit`). Nothing about the construction is per-tier: a fourth
+ * would be a fourth intersection member and nothing else would move. `Q` sits
+ * between `E` and `U` because a handler annotates what it USES, in frequency
+ * order: its log often, its bus rarely, its task almost never.
  */
 type EventHandlerContextBase<
-  U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
+  U extends UnitOfWork = UnitOfWork,
 > = {
   /** Load event-sourced state within this UnitOfWork (cached per UoW). */
   readonly load: ContextLoadFunction<E>
@@ -66,8 +71,10 @@ type EventHandlerContextBase<
   readonly send: ContextSendFunction
   /** Consult a query handler (cross-module read) within this UnitOfWork. */
   readonly query: ContextQueryFunction
-  /** Emit a subscription-query update through the query bus, after commit. */
-  readonly emitUpdate: EmitUpdateFunction
+  // `emitUpdate` IS NOT DECLARED HERE. It is the subscription tier's face —
+  // `SubscriptionEmit<Q>` contributes it, and only to a context whose entry
+  // wired a bus that can serve live subscribers. It lives with the tier that
+  // adds it, exactly as `SnapshotReads<E>` lives with the read it widens.
   /**
    * True while the owning processor is replaying history. Use it to skip
    * side effects (emails, webhooks) that must not fire twice.
@@ -84,19 +91,22 @@ type EventHandlerContextBase<
    *
    * It is TYPED as whatever the seam's unit-of-work factory mints — `U`, which
    * defaults to the bare {@link UnitOfWork} and is threaded here by the bus or
-   * processor that opened the task. That is what lets a handler DEMAND a
-   * composed capability: a handler annotated
-   * `ctx: HandlerContext<CorrelatingUnitOfWork>` (which is what
-   * `correlatingHandler` produces) does not typecheck against a bus built from
-   * a bare `() => unitOfWork()`.
+   * processor that opened the task. That is what lets a WRAPPER demand a
+   * composed capability on a handler's behalf: what `correlatingHandler`
+   * produces asks for `unitOfWork: CorrelatingUnitOfWork`, and does not
+   * typecheck against a bus built from a bare `() => unitOfWork()`. A handler
+   * itself writes `U` only when it reaches for the task directly — which is
+   * why it is the SECOND parameter, behind the log it reads.
    */
   readonly unitOfWork: U
 }
 
 /** Build the EVENT handler context for one invocation. */
-export function eventHandlerContext<U extends UnitOfWork, E extends EventStore = EventStore>(
-  deps: HandlerContextDeps<U, E>,
-): EventHandlerContext<U, E> {
+export function eventHandlerContext<
+  U extends UnitOfWork,
+  E extends EventStore = EventStore,
+  Q extends QueryBus<any> = QueryBus,
+>(deps: HandlerContextDeps<U, E>): EventHandlerContext<E, Q, U> {
   const { uow } = deps
   // ONE `source` FUNCTION, BOTH SHAPES — and THREE scheduling verbs, built
   // whether or not this entry's log can serve them. The demands are types, and
@@ -113,5 +123,5 @@ export function eventHandlerContext<U extends UnitOfWork, E extends EventStore =
     emitUpdate: emitUpdateFunction(deps),
     isReplay: () => uow.replaying,
     unitOfWork: uow,
-  } as EventHandlerContext<U, E>
+  } as EventHandlerContext<E, Q, U>
 }

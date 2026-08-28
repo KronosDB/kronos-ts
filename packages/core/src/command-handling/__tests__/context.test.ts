@@ -14,7 +14,7 @@ import { commandHandler } from "../handler.js"
 import { eventHandler } from "../../event-processing/handler.js"
 import type { CommandBus } from "../bus.js"
 import { unitOfWork, type UnitOfWork } from "../../unit-of-work/unit-of-work.js"
-import { handlerContext, type HandlerContext } from "../context.js"
+import { commandHandlerContext, type CommandHandlerContext } from "../context.js"
 import { inMemoryEventStore } from "../../event-sourcing/in-memory.js"
 import { state } from "../../event-sourcing/state.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
@@ -87,9 +87,9 @@ function makeCommandMessage(descriptor: CommandDescriptor, payload: any): Comman
 // ---------------------------------------------------------------------------
 
 describe("handler context", () => {
-  it("command handlers receive the HandlerContext as second argument", async () => {
+  it("command handlers receive the CommandHandlerContext as second argument", async () => {
     const bus = createRecordingCommandBus()
-    let received: HandlerContext | undefined
+    let received: CommandHandlerContext | undefined
     let seenUow: UnitOfWork | undefined
     const handler = commandHandler(CreateCourse, async (_message, ctx) => {
       received = ctx
@@ -197,11 +197,11 @@ describe("handler context", () => {
   it("event context deliberately has no append capability", () => {
     const uow = unitOfWork()
     expect((eventHandlerContext({ uow }) as unknown as Record<string, unknown>).append).toBeUndefined()
-    expect((handlerContext({ uow }) as unknown as Record<string, unknown>).append).toBeDefined()
+    expect((commandHandlerContext({ uow }) as unknown as Record<string, unknown>).append).toBeDefined()
   })
 
   it("every invocation gets its OWN context object", async () => {
-    const contexts: HandlerContext[] = []
+    const contexts: CommandHandlerContext[] = []
     const bus = createRecordingCommandBus()
     const handler = commandHandler(CreateCourse, async (_m, ctx) => { contexts.push(ctx) })
     subscribeCommandHandlers([handler], { commandBus: bus, ...deps({ commandBus: bus }) })
@@ -217,7 +217,7 @@ describe("handler context", () => {
   })
 
   it("a context outliving its unit of work refuses to mutate", async () => {
-    let escaped: HandlerContext | undefined
+    let escaped: CommandHandlerContext | undefined
     const bus = createRecordingCommandBus()
     const handler = commandHandler(CreateCourse, async (_m, ctx) => { escaped = ctx })
     subscribeCommandHandlers([handler], { commandBus: bus, ...deps({ commandBus: bus }) })
@@ -268,7 +268,7 @@ describe("handler context", () => {
  * parameter, which is only possible because the capabilities are values on an
  * object rather than module-level statics bound to an ambient UnitOfWork.
  */
-async function openCourseVia(ctx: HandlerContext, courseId: string): Promise<{ exists: boolean }> {
+async function openCourseVia(ctx: CommandHandlerContext, courseId: string): Promise<{ exists: boolean }> {
   const existing = await ctx.load(CourseExistence, { courseId })
   ctx.append(CourseCreated, { courseId, name: "Intro" })
   return existing

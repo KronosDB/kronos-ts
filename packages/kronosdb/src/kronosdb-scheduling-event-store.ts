@@ -109,11 +109,12 @@ export function kronosDbSchedulingEventStore<E extends EventStore>(
   next: E,
   connection: KronosDbConnection,
   options: KronosDbSchedulingOptions,
+  context: string = connection.config.context,
 ): E & ScheduleCapability & KronosDbSchedulingControl {
   const { serializer } = options
 
   function getMetadata() {
-    return kronosMetadata(connection.config)
+    return kronosMetadata({ context, token: connection.config.token })
   }
 
   return {

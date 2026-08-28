@@ -4,6 +4,7 @@ import {
   runAfterCommitOrImmediately,
   updateHandler,
   type QueryBus,
+  type SubscriptionCapableQueryBus,
   type QueryMessage,
   type SubscriptionFilter,
   type SubscriptionQueryResult,
@@ -98,7 +99,7 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
   next: QueryBus<U>,
   rabbit: RabbitMqQueryBusSource,
   options: RabbitMqBusOptions = {},
-): QueryBus<U> {
+): SubscriptionCapableQueryBus<U> {
   const transport = rabbit.queryTransport
   const registry = rabbit.subscriberRegistry
   const localHandlers = new Set<string>()
@@ -172,7 +173,7 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
     }
   }
 
-  const bus: QueryBus<U> = {
+  const bus: SubscriptionCapableQueryBus<U> = {
     async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       const queryName = qualifiedNameToString(unstamped.name)
       if (preferLocal && localHandlers.has(queryName)) {

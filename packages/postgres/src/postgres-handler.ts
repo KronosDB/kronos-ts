@@ -13,8 +13,8 @@
  *      gives every unit of work a transaction.
  *   4. A HANDLER WRAPPER      — `postgresHandler(handler, pg)`, which adds a capability
  *      to the ctx a handler FUNCTION receives. The host spreads the entry.
- *   5. A NAMED CONTEXT TYPE   — `PostgresContext`, so a slice's signature reads
- *      `ctx: PostgresContext` rather than an anonymous intersection.
+ *   5. A NAMED CONTEXT TYPE   — `PostgresCommandContext`, so a slice's signature reads
+ *      `ctx: PostgresCommandContext` rather than an anonymous intersection.
  *
  * All of them share ONE piece of state — the uow-keyed registry in
  * `./postgres-transaction.js` — which is what makes the capability and the
@@ -25,7 +25,7 @@
 
 import type {
   EventHandlerContext,
-  HandlerContext,
+  CommandHandlerContext,
   QueryHandlerContext,
   UnitOfWork,
 } from "@kronos-ts/core"
@@ -59,7 +59,7 @@ export type PostgresCapability = {
 }
 
 /** A command handler's context, plus this family's capability. */
-export type PostgresContext = HandlerContext & PostgresCapability
+export type PostgresCommandContext = CommandHandlerContext & PostgresCapability
 /** An event handler's context, plus this family's capability. */
 export type PostgresEventContext = EventHandlerContext & PostgresCapability
 /** A query handler's context, plus this family's capability. */
@@ -77,7 +77,7 @@ export type PostgresQueryContext = QueryHandlerContext & PostgresCapability
  * `descriptor`, `name` and `appendCondition` survive untouched.
  *
  * ```ts
- * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: PostgresContext) => {
+ * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: PostgresCommandContext) => {
  *   await ctx.sql().query("UPDATE widgets SET name = $2 WHERE id = $1", [payload.id, payload.name])
  *   ctx.append(WidgetUpdated, payload)
  * })

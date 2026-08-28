@@ -51,23 +51,30 @@ type CorrelatingCapable = {
  * earlier one. Metadata the CALLER passes to a verb wins over the overlay,
  * because a caller naming a key means it.
  *
- * The demand is the point. `C` must present a {@link CorrelatingUnitOfWork}, so
- * a handler wrapped here does not typecheck against a bus or a processor built
- * from a bare `() => unitOfWork()` factory: wrap your handlers, and the
- * compiler makes you wrap your unit of work. This is a wrapper you OPT IN to —
+ * The demand is the point, and it is made ON THE WRAPPER'S OUTPUT, never on the
+ * handler it wraps. `next` asks for whatever context it likes — usually an
+ * unannotated one that knows nothing about tasks — and what comes back asks
+ * for `C & { unitOfWork: CorrelatingUnitOfWork }`. So a handler wrapped here
+ * does not typecheck against a bus or a processor built from a bare
+ * `() => unitOfWork()` factory: wrap your handlers, and the compiler makes you
+ * wrap your unit of work — and the handler never had to say so, because
+ * carrying is something done TO a handling, not something a handling does.
+ * A handler that reaches for the map itself (`ctx.unitOfWork.attachCorrelationData`)
+ * is the one exception, and it annotates `ctx` the way any other demand does.
+ * This is a wrapper you OPT IN to —
  * nothing in core demands it, which is why the previous attempt (a correlation
  * capability hardcoded into `ctx` and the bus signatures) had to be reverted.
  * An unconditional demand propagates contravariantly through every transport; a
  * conditional one propagates exactly as far as somebody asked for it.
  */
-export function correlatingHandler<M extends Message, C extends CorrelatingCapable, R>(
+export function correlatingHandler<M extends Message, C, R>(
   next: (message: M, context: C) => R,
   from: (message: Message) => Metadata,
-): (message: M, context: C) => R {
+): (message: M, context: C & CorrelatingCapable) => R {
   return (message, context) => {
     const uow = context.unitOfWork
     uow.attachCorrelationData(stringly(from(message)))
-    return next(message, overlaid(context, uow) as C)
+    return next(message, overlaid(context, uow) as unknown as C)
   }
 }
 

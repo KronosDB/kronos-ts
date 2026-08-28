@@ -43,7 +43,7 @@
     },
     "packages/axon-server": {
       "name": "@kronos-ts/axon-server",
-      "version": "0.3.1",
+      "version": "0.5.0",
       "dependencies": {
         "@bufbuild/protobuf": "^2.3",
         "@grpc/grpc-js": "^1.12",
@@ -61,18 +61,18 @@
     },
     "packages/core": {
       "name": "@kronos-ts/core",
-      "version": "0.1.0",
+      "version": "0.3.0",
       "dependencies": {
         "uuid": "^11",
-        "zod": "^4.3.6",
       },
       "devDependencies": {
         "@types/node": "^25.5.2",
+        "zod": "^4.3.6",
       },
     },
     "packages/drizzle": {
       "name": "@kronos-ts/drizzle",
-      "version": "0.4.1",
+      "version": "0.6.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -82,7 +82,7 @@
     },
     "packages/knex": {
       "name": "@kronos-ts/knex",
-      "version": "0.3.5",
+      "version": "0.5.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -92,7 +92,7 @@
     },
     "packages/kronosdb": {
       "name": "@kronos-ts/kronosdb",
-      "version": "0.5.1",
+      "version": "0.7.0",
       "dependencies": {
         "@bufbuild/protobuf": "^2.3",
         "@grpc/grpc-js": "^1.12",
@@ -110,7 +110,7 @@
     },
     "packages/kysely": {
       "name": "@kronos-ts/kysely",
-      "version": "0.2.10",
+      "version": "0.4.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -120,14 +120,14 @@
     },
     "packages/otlp": {
       "name": "@kronos-ts/otlp",
-      "version": "0.1.0",
+      "version": "0.3.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
     },
     "packages/postgres": {
       "name": "@kronos-ts/postgres",
-      "version": "0.9.1",
+      "version": "0.11.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -148,7 +148,7 @@
     },
     "packages/prisma": {
       "name": "@kronos-ts/prisma",
-      "version": "0.2.10",
+      "version": "0.4.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -158,7 +158,7 @@
     },
     "packages/rabbitmq": {
       "name": "@kronos-ts/rabbitmq",
-      "version": "0.4.1",
+      "version": "0.6.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -177,15 +177,17 @@
     },
     "packages/test": {
       "name": "@kronos-ts/test",
-      "version": "0.2.2",
+      "version": "0.4.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
+      },
+      "devDependencies": {
         "zod": "^4.3.6",
       },
     },
     "packages/typeorm": {
       "name": "@kronos-ts/typeorm",
-      "version": "0.2.10",
+      "version": "0.4.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },

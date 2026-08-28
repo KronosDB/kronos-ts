@@ -54,8 +54,8 @@ export function otlpCommandBus<B extends CommandBus<any>>(next: B, exporter: Otl
     },
     // CAPABILITY-PRESERVING. `B` in, `B` out, over a spread of everything the
     // wrapped bus had — so tracing a bus that mints correlating units of work
-    // yields a bus that still mints them, and a handler demanding
-    // `HandlerContext<CorrelatingUnitOfWork>` still fits behind it. Typed
+    // yields a bus that still mints them, and a `correlatingHandler`-wrapped
+    // handler (which demands a correlating task) still fits behind it. Typed
     // `(CommandBus) => CommandBus` this erased `U` outright, which made
     // tracing silently incompatible with correlation: the runtime worked and
     // the build did not.
@@ -95,25 +95,9 @@ export function otlpQueryBus<B extends QueryBus<any>>(next: B, exporter: OtlpExp
       next.subscribe(queryName, handler)
     },
 
-    subscriptionQuery(message, bufferSize) {
-      return next.subscriptionQuery(message, bufferSize)
-    },
-
-    subscribeToUpdates(message, bufferSize) {
-      return next.subscribeToUpdates(message, bufferSize)
-    },
-
-    emitUpdate(queryName, filter, update, uow) {
-      return next.emitUpdate(queryName, filter, update, uow)
-    },
-
-    completeSubscription(queryName, filter, uow) {
-      return next.completeSubscription(queryName, filter, uow)
-    },
-
-    completeSubscriptionExceptionally(queryName, error, filter, uow) {
-      return next.completeSubscriptionExceptionally(queryName, error, filter, uow)
-    },
+    // The subscription tier, where the bus claims it, rides the spread
+    // untouched — tracing wraps the primary query only, and `B` in, `B` out
+    // keeps whatever tier the wrapped bus carried.
     // CAPABILITY-PRESERVING — see `otlpCommandBus`.
   } as B
 }

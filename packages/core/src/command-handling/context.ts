@@ -130,10 +130,11 @@ export type ContextQueryFunction = <P extends StandardSchemaV1, R extends Standa
  * plus `append` — the command handler is the atomic decide-and-append
  * boundary, and its UnitOfWork flushes buffered events at PREPARE_COMMIT.
  */
-export type HandlerContext<
-  U extends UnitOfWork = UnitOfWork,
+export type CommandHandlerContext<
   E extends EventStore = EventStore,
-> = EventHandlerContext<U, E> & {
+  Q extends QueryBus<any> = QueryBus,
+  U extends UnitOfWork = UnitOfWork,
+> = EventHandlerContext<E, Q, U> & {
   /** Append events to this UnitOfWork, buffered until commit. */
   readonly append: ContextAppendFunction
 }
@@ -175,11 +176,13 @@ export type HandlerContextDeps<
 }
 
 /** Build the COMMAND handler context for one invocation. */
-export function handlerContext<U extends UnitOfWork, E extends EventStore = EventStore>(
-  deps: HandlerContextDeps<U, E>,
-): HandlerContext<U, E> {
+export function commandHandlerContext<
+  U extends UnitOfWork,
+  E extends EventStore = EventStore,
+  Q extends QueryBus<any> = QueryBus,
+>(deps: HandlerContextDeps<U, E>): CommandHandlerContext<E, Q, U> {
   return {
     ...eventHandlerContext(deps),
     append: appendFunction(deps) as ContextAppendFunction,
-  } as HandlerContext<U, E>
+  } as CommandHandlerContext<E, Q, U>
 }

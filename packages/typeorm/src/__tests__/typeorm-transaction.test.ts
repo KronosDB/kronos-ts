@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
 import {
   activeTypeormTransaction,
-  type TypeormContext,
+  type TypeormCommandContext,
   type TypeormManager,
   typeormHandler,
   typeormTransaction,
@@ -141,8 +141,8 @@ describe("typeormTransaction / activeTypeormTransaction", () => {
 // ---------------------------------------------------------------------------
 
 /** A command handler that REQUIRES the typeorm context — what the wrapper takes. */
-function handlerReading(read: (ctx: TypeormContext) => void) {
-  return async (_message: unknown, ctx: TypeormContext): Promise<void> => {
+function handlerReading(read: (ctx: TypeormCommandContext) => void) {
+  return async (_message: unknown, ctx: TypeormCommandContext): Promise<void> => {
     read(ctx)
   }
 }
@@ -192,10 +192,10 @@ describe("typeormHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const manager = createMockDataSource()
-    const entry: CommandHandler<any, any, TypeormContext> = {
+    const entry: CommandHandler<any, any, TypeormCommandContext> = {
       kind: "command-handler",
       descriptor: {} as never,
-      handler: async (_message, ctx: TypeormContext) => {
+      handler: async (_message, ctx: TypeormCommandContext) => {
         ctx.manager()
       },
     }

@@ -1,12 +1,21 @@
 import type {
   CommandHandler,
+  EmitCapability,
   EventHandler,
+  EventHandlerContext,
   EventProcessor,
   EventStore,
   QueryHandler,
   TokenStore,
   UnitOfWork,
 } from "@kronos-ts/core"
+
+/**
+ * These projections push live updates, so they say so — and they say ONLY
+ * that: the face is intersected, not spelled as a type argument, so nothing
+ * here restates the log it never had an opinion about.
+ */
+type EmittingContext = EventHandlerContext & EmitCapability
 import { eventProcessor } from "@kronos-ts/core"
 import { z } from "zod"
 import { withNamespace, commandHandler, eventHandler, queryHandler } from "@kronos-ts/core"
@@ -140,7 +149,7 @@ type CourseView = {
 
 const courseViews = new Map<string, CourseView>()
 
-const onCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
+const onCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx: EmittingContext) => {
   courseViews.set(e.courseId, {
     courseId: e.courseId,
     name: e.name,
@@ -151,7 +160,7 @@ const onCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
   ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
 })
 
-const onCapChanged = eventHandler(CourseCapacityChanged, async ({ payload: e }, ctx) => {
+const onCapChanged = eventHandler(CourseCapacityChanged, async ({ payload: e }, ctx: EmittingContext) => {
   const view = courseViews.get(e.courseId)
   if (view) {
     view.capacity = e.capacity
@@ -159,7 +168,7 @@ const onCapChanged = eventHandler(CourseCapacityChanged, async ({ payload: e }, 
   }
 })
 
-const onSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
+const onSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx: EmittingContext) => {
   const view = courseViews.get(e.courseId)
   if (view) {
     view.enrolledCount++
@@ -168,7 +177,7 @@ const onSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx)
   }
 })
 
-const onUnsubscribed = eventHandler(StudentUnsubscribed, async ({ payload: e }, ctx) => {
+const onUnsubscribed = eventHandler(StudentUnsubscribed, async ({ payload: e }, ctx: EmittingContext) => {
   const view = courseViews.get(e.courseId)
   if (view) {
     view.enrolledCount--

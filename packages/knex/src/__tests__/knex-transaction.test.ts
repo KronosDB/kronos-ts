@@ -3,7 +3,7 @@ import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
 import {
   activeKnexTransaction,
   type KnexClient,
-  type KnexContext,
+  type KnexCommandContext,
   knexHandler,
   knexTransaction,
   knexUnitOfWork,
@@ -141,8 +141,8 @@ describe("knexTransaction / activeKnexTransaction", () => {
 // ---------------------------------------------------------------------------
 
 /** A command handler that REQUIRES the knex context — what the wrapper takes. */
-function handlerReading(read: (ctx: KnexContext) => void) {
-  return async (_message: unknown, ctx: KnexContext): Promise<void> => {
+function handlerReading(read: (ctx: KnexCommandContext) => void) {
+  return async (_message: unknown, ctx: KnexCommandContext): Promise<void> => {
     read(ctx)
   }
 }
@@ -192,10 +192,10 @@ describe("knexHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const knex = createMockKnex()
-    const entry: CommandHandler<any, any, KnexContext> = {
+    const entry: CommandHandler<any, any, KnexCommandContext> = {
       kind: "command-handler",
       descriptor: {} as never,
-      handler: async (_message, ctx: KnexContext) => {
+      handler: async (_message, ctx: KnexCommandContext) => {
         ctx.knex()
       },
     }

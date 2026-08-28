@@ -4,12 +4,12 @@
 // the only way to observe one without opening it.
 export {
   kyselyUnitOfWork,
-  type KyselyFamily,
+  type KyselyUnitOfWork,
   kyselyTransaction,
   activeKyselyTransaction,
   kyselyHandler,
   type KyselyCapability,
-  type KyselyContext,
+  type KyselyCommandContext,
   type KyselyEventContext,
   type KyselyQueryContext,
   type KyselyDb,

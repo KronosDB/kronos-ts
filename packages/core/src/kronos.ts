@@ -5,7 +5,7 @@ import type { QueryBus } from "./query-handling/bus.js"
 import type { CommandHandler } from "./command-handling/handler.js"
 import type { QueryHandler } from "./query-handling/handler.js"
 import type { EventHandler } from "./event-processing/handler.js"
-import type { HandlerContext } from "./command-handling/context.js"
+import type { CommandHandlerContext } from "./command-handling/context.js"
 import type { EventHandlerContext } from "./event-processing/context.js"
 import type { QueryHandlerContext } from "./query-handling/context.js"
 import type { UnitOfWork } from "./unit-of-work/unit-of-work.js"
@@ -91,18 +91,24 @@ export type Sited<T, E extends EventStore = EventStore> = T & HandlerSite<E>
 export type CommandHandlerEntry<
   U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
-> = Sited<CommandHandler<any, any, HandlerContext<U, E>>, E> & {
+  Q extends QueryBus<U> = QueryBus<U>,
+> = Sited<CommandHandler<any, any, CommandHandlerContext<E, Q, U>>, E> & {
   /** The bus this handler is subscribed on, and the one `ctx.send` dispatches through. */
   readonly commandBus: CommandBus<U>
-  /** The bus `ctx.query` and `ctx.emitUpdate` reach. */
-  readonly queryBus: QueryBus<U>
+  /**
+   * The bus `ctx.query` — and, when it claims the subscription tier,
+   * `ctx.emitUpdate` — reach. Its TYPE is what decides whether this handler
+   * may emit subscription updates at all: a handler demanding `emitUpdate`
+   * refuses an entry whose bus never claimed `SubscriptionCapableQueryBus`.
+   */
+  readonly queryBus: Q
 }
 
 /** A query handler `kronos` subscribes onto its query bus. */
 export type QueryHandlerEntry<
   U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
-> = Sited<QueryHandler<any, any, QueryHandlerContext<U, E>>, E> & {
+> = Sited<QueryHandler<any, any, QueryHandlerContext<E, U>>, E> & {
   /** The bus this handler is subscribed on, and the one `ctx.query` reaches. */
   readonly queryBus: QueryBus<U>
 }
@@ -119,11 +125,12 @@ export type QueryHandlerEntry<
 export type EventHandlerEntry<
   U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
-> = Sited<EventHandler<any, EventHandlerContext<U, E>>, E> & {
+  Q extends QueryBus<U> = QueryBus<U>,
+> = Sited<EventHandler<any, EventHandlerContext<E, Q, U>>, E> & {
   /** Backs `ctx.send`. */
   readonly commandBus: CommandBus<U>
-  /** Backs `ctx.query` and `ctx.emitUpdate`. */
-  readonly queryBus: QueryBus<U>
+  /** Backs `ctx.query` — and `ctx.emitUpdate`, when its type claims the tier. */
+  readonly queryBus: Q
   /** The delivery this handler belongs to. */
   readonly processor: EventProcessor<U>
 }
@@ -226,13 +233,14 @@ export type App = {
 export function kronos<
   U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
+  Q extends QueryBus<U> = QueryBus<U>,
 >(opts: {
   /** Handlers subscribed onto their own command bus. */
-  commandHandlers?: ReadonlyArray<CommandHandlerEntry<U, E>>
+  commandHandlers?: ReadonlyArray<CommandHandlerEntry<U, E, Q>>
   /** Handlers subscribed onto their own query bus. */
   queryHandlers?: ReadonlyArray<QueryHandlerEntry<U, E>>
   /** Handlers delivered to by their own processor. */
-  eventHandlers?: ReadonlyArray<EventHandlerEntry<U, E>>
+  eventHandlers?: ReadonlyArray<EventHandlerEntry<U, E, Q>>
 }): App {
   // ---- Subscribe the two synchronous kinds -------------------------------
   // Plainly-typed loops over flat lists. Each entry brings its OWN buses and
@@ -266,7 +274,7 @@ export function kronos<
   // both entries, because the alternative is two processors fighting over one
   // cursor.
   /** What one event-handler entry contributes to its delivery. */
-  function processorEntry(handler: EventHandlerEntry<U, E>): ProcessorHandlerEntry<U, E> {
+  function processorEntry(handler: EventHandlerEntry<U, E, Q>): ProcessorHandlerEntry<U, E> {
     return {
       definition: handler,
       commandBus: handler.commandBus,

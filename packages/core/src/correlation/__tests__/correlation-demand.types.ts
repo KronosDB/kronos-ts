@@ -22,8 +22,9 @@ import { z } from "zod"
 import { qn, command, event, type Message, type Metadata } from "../../messaging/messages.js"
 import { commandHandler } from "../../command-handling/handler.js"
 import { eventHandler } from "../../event-processing/handler.js"
-import type { HandlerContext } from "../../command-handling/context.js"
-import type { EventHandlerContext } from "../../event-processing/context.js"
+import type { CommandHandlerContext } from "../../command-handling/context.js"
+import type { EventStore } from "../../event-sourcing/event-store.js"
+import type { QueryBus } from "../../query-handling/bus.js"
 import { localCommandBus } from "../../command-handling/local-bus.js"
 import { localQueryBus } from "../../query-handling/local-bus.js"
 import { eventProcessor } from "../../event-processing/processor.js"
@@ -77,20 +78,19 @@ const correlatingProcessor = eventProcessor({
   unitOfWork: correlatingUow,
 })
 
-/** A slice-side handler, annotated the way a slice annotates once it correlates. */
-const enroll = commandHandler(
-  Enroll,
-  async ({ payload }, ctx: HandlerContext<CorrelatingUnitOfWork>) => {
-    ctx.append(Enrolled, { studentId: payload.studentId })
-  },
-)
+/**
+ * A slice-side handler, written exactly as an uncorrelated one is. NOTHING
+ * HERE NAMES A TASK: the demand is made by the wrapper below, on its output,
+ * so a handler never has to know whether somebody composed correlation around
+ * it.
+ */
+const enroll = commandHandler(Enroll, async ({ payload }, ctx) => {
+  ctx.append(Enrolled, { studentId: payload.studentId })
+})
 
-const onEnrolled = eventHandler(
-  Enrolled,
-  async (message, ctx: EventHandlerContext<CorrelatingUnitOfWork>) => {
-    await ctx.send(Enroll, { studentId: message.payload.studentId })
-  },
-)
+const onEnrolled = eventHandler(Enrolled, async (message, ctx) => {
+  await ctx.send(Enroll, { studentId: message.payload.studentId })
+})
 
 export const correlatedCommandEntry: CommandHandlerEntry<CorrelatingUnitOfWork> = {
   ...enroll,
@@ -143,16 +143,28 @@ export const processorTooPlain: EventHandlerEntry<CorrelatingUnitOfWork> = {
 }
 
 // ---------------------------------------------------------------------------
-// (c) THE WRAPPER'S OWN DEMAND — `correlatingHandler` on a handler whose ctx is
-// the bare context. There is no map on that unit of work to attach to.
+// (c) THE DEMAND IS ON THE OUTPUT — wrapping adds it; the handler never held it.
+// A handler that annotated the BARE context wraps fine, and what comes out asks
+// for a correlating task: the map is something the wrapper needs, not `next`.
 // ---------------------------------------------------------------------------
 
-const uncorrelatable = commandHandler(Enroll, async ({ payload }, ctx: HandlerContext) => {
+const uncorrelatable = commandHandler(Enroll, async ({ payload }, ctx: CommandHandlerContext) => {
   ctx.append(Enrolled, { studentId: payload.studentId })
 })
 
-// @ts-expect-error — a bare `UnitOfWork` has no correlation map to carry
-export const cannotWrap = correlatingHandler(uncorrelatable.handler, correlationFrom)
+export const wrapsFine: (
+  message: Parameters<typeof uncorrelatable.handler>[0],
+  ctx: CommandHandlerContext<EventStore, QueryBus, CorrelatingUnitOfWork>,
+) => void | Promise<void> = correlatingHandler(uncorrelatable.handler, correlationFrom)
+
+export const stillTooPlain: CommandHandlerEntry = {
+  ...uncorrelatable,
+  // @ts-expect-error — the wrapped handler asks for a correlating task; this entry's bus mints bare ones
+  handler: correlatingHandler(uncorrelatable.handler, correlationFrom),
+  commandBus: bareCommandBus,
+  queryBus: bareQueryBus,
+  eventStore,
+}
 
 /**
  * And the cargo function is REQUIRED. A default here would decide, for every

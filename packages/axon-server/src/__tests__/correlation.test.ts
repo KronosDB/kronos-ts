@@ -23,7 +23,7 @@ import {
 import {
   correlating,
   correlatingHandler,
-  handlerContext,
+  commandHandlerContext,
   interceptingCommandBus,
   interceptingQueryBus,
   correlation,
@@ -155,7 +155,7 @@ function causingCommand(): CommandMessage {
 async function sendFinishFrom(bus: CommandBus): Promise<void> {
   const uow = correlating(unitOfWork())
   await uow.execute(async () => {
-    const ctx = handlerContext({ uow, commandBus: bus })
+    const ctx = commandHandlerContext({ uow, commandBus: bus })
     const handler = correlatingHandler(async (_m, c: typeof ctx) => {
       await c.send(Finish, { id: "x" })
     }, correlationFrom)
@@ -265,7 +265,7 @@ describe("Axon Server command bus — correlation", () => {
 async function askFindThingFrom(bus: QueryBus): Promise<void> {
   const uow = correlating(unitOfWork())
   await uow.execute(async () => {
-    const ctx = handlerContext({ uow, queryBus: bus })
+    const ctx = commandHandlerContext({ uow, queryBus: bus })
     const handler = correlatingHandler(async (_m, c: typeof ctx) => {
       await c.query(FindThing, { id: "x" })
     }, correlationFrom)

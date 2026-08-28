@@ -11,13 +11,13 @@
  *
  * The runtime side of the same story is in `drizzle-transaction.test.ts`.
  */
-import type { CommandHandler, CommandMessage, HandlerContext } from "@kronos-ts/core"
-import { type DrizzleContext, type DrizzleDb, drizzleHandler } from "../drizzle-transaction.js"
+import type { CommandHandler, CommandMessage, CommandHandlerContext } from "@kronos-ts/core"
+import { type DrizzleCommandContext, type DrizzleDb, drizzleHandler } from "../drizzle-transaction.js"
 
 declare const db: DrizzleDb
 
-/** A slice-side handler, annotated the way a slice annotates: `ctx: DrizzleContext`. */
-declare const asksForDb: (message: CommandMessage, ctx: DrizzleContext) => Promise<void>
+/** A slice-side handler, annotated the way a slice annotates: `ctx: DrizzleCommandContext`. */
+declare const asksForDb: (message: CommandMessage, ctx: DrizzleCommandContext) => Promise<void>
 
 // ---------------------------------------------------------------------------
 // (a) DIRECTIONAL ERASURE — db() goes in, the base context comes out.
@@ -26,7 +26,7 @@ declare const asksForDb: (message: CommandMessage, ctx: DrizzleContext) => Promi
 const supplied = drizzleHandler(asksForDb, db)
 
 /** The wrapped handler asks only for the BASE context… */
-export const base: (message: CommandMessage, ctx: HandlerContext) => Promise<void> = supplied
+export const base: (message: CommandMessage, ctx: CommandHandlerContext) => Promise<void> = supplied
 
 /** …which is exactly what lets the host drop it into an entry unchanged. */
 export const entry: CommandHandler = {
@@ -43,7 +43,7 @@ export const entry: CommandHandler = {
 export const twice = drizzleHandler(supplied, db)
 
 // @ts-expect-error — a handler that never asked for db() cannot have it supplied
-export const never = drizzleHandler(async (_m: CommandMessage, _ctx: HandlerContext) => {}, db)
+export const never = drizzleHandler(async (_m: CommandMessage, _ctx: CommandHandlerContext) => {}, db)
 
 /**
  * A capability-agnostic wrapper — the shape every non-persistence wrapper has

@@ -21,7 +21,7 @@ import { queryHandler } from "../../query-handling/handler.js"
 import { correlating, type CorrelatingUnitOfWork } from "../../correlation/correlating.js"
 import { correlatingHandler } from "../../correlation/correlating-handler.js"
 import { kronos } from "../../kronos.js"
-import type { HandlerContext } from "../../command-handling/context.js"
+import type { CommandHandlerContext } from "../../command-handling/context.js"
 import type { EventHandlerContext } from "../../event-processing/context.js"
 import type { CommandBus } from "../../command-handling/bus.js"
 import type { QueryBus } from "../../query-handling/bus.js"
@@ -60,23 +60,17 @@ const onCharged = eventHandler(Charged, ({ payload }) => {
 const getBalance = queryHandler(GetBalance, async ({ payload }) => payload.accountId.length)
 
 /**
- * The same two, annotated the way a slice annotates ONCE IT CORRELATES. That
- * demand belongs to `correlatingHandler` and is unchanged by validation:
- * `validatingHandler` asks the context for nothing, so it neither adds a demand
- * nor satisfies one.
+ * The same two, unannotated — a slice never names its task. The correlation
+ * demand belongs to `correlatingHandler` (on its OUTPUT) and is unchanged by
+ * validation: `validatingHandler` asks the context for nothing, so it neither
+ * adds a demand nor satisfies one.
  */
-const openAccountCorrelating = commandHandler(
-  OpenAccount,
-  async ({ payload }, _ctx: HandlerContext<CorrelatingUnitOfWork>) => ({
-    accountId: payload.accountId,
-  }),
-)
-const onChargedCorrelating = eventHandler(
-  Charged,
-  ({ payload }, _ctx: EventHandlerContext<CorrelatingUnitOfWork>) => {
-    void payload.amount
-  },
-)
+const openAccountCorrelating = commandHandler(OpenAccount, async ({ payload }) => ({
+  accountId: payload.accountId,
+}))
+const onChargedCorrelating = eventHandler(Charged, ({ payload }) => {
+  void payload.amount
+})
 
 // ---------------------------------------------------------------------------
 // (b) `validate` GIVES BACK THE DESCRIPTOR'S OWN TYPE.

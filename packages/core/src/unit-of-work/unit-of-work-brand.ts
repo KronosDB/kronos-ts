@@ -27,9 +27,9 @@
  * reads it, and nothing is ever constructed with it: the family decorators
  * assert their return type rather than writing a property. It is not exported
  * either, so no module can import a value that does not exist at runtime; what
- * IS exported is {@link PersistenceFamily}, which is a type and nothing else.
+ * IS exported is {@link UnitOfWorkBrand}, which is a type and nothing else.
  */
-declare const persistenceFamily: unique symbol
+declare const unitOfWorkBrand: unique symbol
 
 /**
  * A unit of work's PERSISTENCE FAMILY — the mark a `<pkg>UnitOfWork` decorator
@@ -43,7 +43,7 @@ declare const persistenceFamily: unique symbol
  *
  * ```ts
  * // in @kronos-ts/drizzle, once:
- * export type DrizzleFamily = PersistenceFamily<
+ * export type DrizzleUnitOfWork = UnitOfWorkBrand<
  *   "drizzle",
  *   "build this processor's unitOfWork with drizzleUnitOfWork(next, db)"
  * >
@@ -61,8 +61,8 @@ declare const persistenceFamily: unique symbol
  * Core could only have said something general; the package that owns the store
  * knows exactly which factory the host should have called, so it says so.
  */
-export type PersistenceFamily<Name extends string, Fix extends string> = {
-  readonly [persistenceFamily]: {
+export type UnitOfWorkBrand<Name extends string, Fix extends string> = {
+  readonly [unitOfWorkBrand]: {
     /**
      * FIRST, so it is the member TypeScript reports on. The checker drills to
      * the first incompatible property of a mismatched object type, and this is

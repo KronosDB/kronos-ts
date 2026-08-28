@@ -36,6 +36,7 @@ import type {
   CommandBus,
   CommandMessage,
   QueryBus,
+  SubscriptionCapableQueryBus,
   QueryMessage,
   SubscriptionFilter,
   SubscriptionQueryResult,
@@ -505,16 +506,17 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
  * `scatterGather` and `subscriptionQuery`. Because the wrap is outside, the
  * shortcut branch gets identical correlation to the remote branch.
  *
- * KNOWN GAP: `subscriptionQuery` / `subscribeToUpdates` build their proto
- * straight from `message.metadata`, and `interceptingQueryBus` (in
- * `@kronos-ts/core`) forwards those two calls to the delegate without
- * running the dispatch chain. Closing that needs a core change.
+ * Subscription queries run the dispatch chain: `interceptingQueryBus` wraps
+ * `subscriptionQuery` / `subscribeToUpdates` with the same intercept the
+ * primary `query` gets, so the proto built from `message.metadata` already
+ * carries whatever the host's intercept stamped (pinned in core by
+ * `interception/__tests__/subscription-interception.test.ts`).
  */
 export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
   next: QueryBus<U>,
   conn: AxonServerBusSource,
   options: AxonServerQueryBusOptions = {},
-): QueryBus<U> {
+): SubscriptionCapableQueryBus<U> {
   const {
     connection,
     serializer,
@@ -774,7 +776,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
     }
   }
 
-  const routing: QueryBus<U> = {
+  const routing: SubscriptionCapableQueryBus<U> = {
     async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       try {

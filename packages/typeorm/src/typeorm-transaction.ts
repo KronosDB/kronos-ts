@@ -1,9 +1,9 @@
 import type {
   EventHandlerContext,
-  HandlerContext,
+  CommandHandlerContext,
   QueryHandlerContext,
   UnitOfWork,
-  PersistenceFamily,
+  UnitOfWorkBrand,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -28,7 +28,7 @@ import {
  * and a read model is permanently wrong. The mark turns that into a build
  * error.
  *
- * IT IS ERASED AND NEVER CONSTRUCTED. `PersistenceFamily` hangs on an ambient
+ * IT IS ERASED AND NEVER CONSTRUCTED. `UnitOfWorkBrand` hangs on an ambient
  * unique symbol declared in core; nothing writes the property and nothing can
  * read it. typeormUnitOfWork(…) returns exactly what it always
  * returned and asserts the branded type, so the emitted JavaScript is
@@ -39,7 +39,7 @@ import {
  * knows precisely which factory the host should have called, so a mismatch
  * prints that sentence at the wiring site.
  */
-export type TypeormFamily = PersistenceFamily<
+export type TypeormUnitOfWork = UnitOfWorkBrand<
   "typeorm",
   "build this processor's unitOfWork with typeormUnitOfWork(next, dataSource) — this family's stores write through its transaction"
 >
@@ -166,8 +166,8 @@ const registry = transactionRegistry<TypeormTransaction>()
 export function typeormUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   manager: TypeormManager,
-): () => U & TypeormFamily {
-  return adapterUnitOfWork(registry, transactionHooks(manager), next) as () => U & TypeormFamily
+): () => U & TypeormUnitOfWork {
+  return adapterUnitOfWork(registry, transactionHooks(manager), next) as () => U & TypeormUnitOfWork
 }
 
 /**
@@ -214,8 +214,8 @@ export function activeTypeormTransaction(
 //      unit-of-work factory that gives every unit of work a transaction.
 //   3. A HANDLER WRAPPER — `typeormHandler(handler, manager)`, which adds a capability to
 //      the ctx a handler FUNCTION receives. The host spreads the entry.
-//   4. A NAMED CONTEXT TYPE — `TypeormContext`, so a slice's signature reads
-//      `ctx: TypeormContext` rather than an anonymous intersection.
+//   4. A NAMED CONTEXT TYPE — `TypeormCommandContext`, so a slice's signature reads
+//      `ctx: TypeormCommandContext` rather than an anonymous intersection.
 //
 // All four share ONE piece of state — the uow-keyed registry above — which is
 // what makes the capability and the transaction the same transaction.
@@ -236,7 +236,7 @@ export type TypeormCapability = {
 }
 
 /** A command handler's context, plus this extension's capability. */
-export type TypeormContext = HandlerContext & TypeormCapability
+export type TypeormCommandContext = CommandHandlerContext & TypeormCapability
 /** An event handler's context, plus this extension's capability. */
 export type TypeormEventContext = EventHandlerContext & TypeormCapability
 /** A query handler's context, plus this extension's capability. */
@@ -254,7 +254,7 @@ export type TypeormQueryContext = QueryHandlerContext & TypeormCapability
  * (`descriptor`, `name`, `appendCondition`) survives untouched:
  *
  * ```ts
- * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: TypeormContext) => {
+ * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: TypeormCommandContext) => {
  *   await ctx.manager().query("UPDATE widgets SET name = $2 WHERE id = $1", [payload.id, payload.name])
  * })
  *

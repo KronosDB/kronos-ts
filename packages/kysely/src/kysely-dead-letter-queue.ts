@@ -1,6 +1,6 @@
 import type { DeadLetter, EnqueueDecision, SequencedDeadLetterQueue } from "@kronos-ts/core"
 import { DeadLetterQueueOverflowError, type UnitOfWork } from "@kronos-ts/core"
-import type { KyselyDb, KyselyFamily } from "./kysely-transaction.js"
+import type { KyselyDb, KyselyUnitOfWork } from "./kysely-transaction.js"
 import { activeKyselyTransaction } from "./kysely-transaction.js"
 
 /**
@@ -95,7 +95,7 @@ type DeadLetterRow = {
 export function kyselyDeadLetterQueue(
   db: KyselyDb,
   options: KyselyDeadLetterQueueOptions = {},
-): SequencedDeadLetterQueue<UnitOfWork & KyselyFamily> {
+): SequencedDeadLetterQueue<UnitOfWork & KyselyUnitOfWork> {
   const table = KYSELY_DEAD_LETTER_TABLE
   const maxSequences = options.maxSequences ?? 1024
   const maxSequenceSize = options.maxSequenceSize ?? 1024

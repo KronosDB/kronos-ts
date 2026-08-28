@@ -5,7 +5,7 @@ import {
   serializeToken as serializeTokenData,
   deserializeToken as deserializeTokenData,
 } from "@kronos-ts/core"
-import type { PrismaClientLike, PrismaFamily } from "./prisma-transaction.js"
+import type { PrismaClientLike, PrismaUnitOfWork } from "./prisma-transaction.js"
 import { activePrismaTransaction } from "./prisma-transaction.js"
 
 /** Tuning only — everything required is a positional argument. */
@@ -78,7 +78,7 @@ function isClaimExpired(row: TokenRow, claimTimeoutMs: number): boolean {
 export function prismaTokenStore(
   prisma: PrismaClientLike,
   options: PrismaTokenStoreOptions = {},
-): TokenStore<UnitOfWork & PrismaFamily> {
+): TokenStore<UnitOfWork & PrismaUnitOfWork> {
   const claimTimeoutMs = options.claimTimeoutMs ?? 10000
 
   /**
