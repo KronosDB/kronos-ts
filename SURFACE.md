@@ -24,7 +24,7 @@ The rules this surface is held to — every export must survive all of them:
      option and no field a host can set to claim a capability the value does not
      have.
   2. DEMANDS ARE FLOORS. A consumer says the least it needs and never names an
-     implementation: `CommandHandlerContext<SnapshotCapableEventStore>`,
+     implementation: `CommandHandlerContext & ScheduleCapability`,
      never `PostgresEventStore`. A floor admits everything above it — so a
      demand narrows what may be WIRED without narrowing who may supply it, and
      adding a family never touches a consumer.
@@ -96,9 +96,9 @@ event-processing/   ← kronos({ eventHandlers })     handler · context ·
                     token-store · segment · sequence · dead-lettering ·
                     dead-letter-queue · dead-letter-reprocessor
 event-scheduling/   events that have not happened yet, and the SECOND STORE TIER:
-                    scheduler (the capability CONTRACT — ScheduleCapability ·
+                    scheduler (the capability CONTRACT — ScheduleStoreCapability ·
                     ScheduleCapableEventStore · ScheduleToken · CancelResult) ·
-                    schedule (the DEMAND — IfScheduleCapable · ScheduleVerbs —
+                    schedule (the DEMAND — IfScheduleCapable · SuppliedScheduleCapability —
                     and the ctx verbs behind it) ·
                     in-memory-scheduling-event-store
 interception/ · correlation/ · upcasting/ · validation/ · kronos.ts · index.ts
@@ -203,13 +203,13 @@ type CommandBus<U extends UnitOfWork = UnitOfWork> = {
 type QueryBus<U extends UnitOfWork = UnitOfWork> = { query(m, uow?); subscribe(name, (m, uow: U) => …) }
 //   TWO members. Live updates are THE THIRD CAPABILITY TIER — the first on a
 //   bus — added the way snapshotting and scheduling are added to a log:
-type SubscriptionCapability = { subscriptionQuery · subscribeToUpdates · emitUpdate · completeSubscription · completeSubscriptionExceptionally }
-type SubscriptionCapableQueryBus<U> = QueryBus<U> & SubscriptionCapability
+type SubscriptionBusCapability = { subscriptionQuery · subscribeToUpdates · emitUpdate · completeSubscription · completeSubscriptionExceptionally }
+type SubscriptionCapableQueryBus<U> = QueryBus<U> & SubscriptionBusCapability
 //   IfSubscriptionCapable<Q, Capable, Bare> is THE anchor (query-handling/bus.ts);
-//   SubscriptionEmit<Q> derives ctx.emitUpdate from it — structurally ABSENT on a
+//   SuppliedSubscriptionCapability<Q> derives ctx.emitUpdate from it — structurally ABSENT on a
 //   context whose entry wired a bus that never claimed the tier.
-type EmitCapability = { emitUpdate }   // ← WHAT A HANDLER WRITES, and all it writes:
-//   `ctx: EventHandlerContext & EmitCapability`. A DEMAND NAMES ONLY WHAT IT USES —
+type SubscriptionCapability = { emitUpdate }   // ← WHAT A HANDLER WRITES, and all it writes:
+//   `ctx: EventHandlerContext & SubscriptionCapability`. A DEMAND NAMES ONLY WHAT IT USES —
 //   type parameters are POSITIONAL, so annotating the bus would restate the log the
 //   handler had no opinion about. Parameters are the SUPPLY side (the entry threads
 //   its bus and log in); intersections are the DEMAND side. Same as the persistence
@@ -257,16 +257,16 @@ upcastingEventStore(next: EventStore, upcast: Upcast): EventStore   // READ path
 // If snapshotting exists at all it exists ON THE EVENT STORE, added by WRAPPING
 // one — which is why there is no seam, no `snapshotStore` field, and nothing a
 // host can wire half of.
-type SnapshotCapability = {          // what a wrapper ADDS; the read is already
+type SnapshotStoreCapability = {          // what a wrapper ADDS; the read is already
   storeSnapshot(key: string, snapshot: Snapshot, uow?: UnitOfWork): Promise<void>
 }                                    // in `source()`, via `condition.snapshot`
-type SnapshotCapableEventStore = EventStore & SnapshotCapability
+type SnapshotCapableEventStore = EventStore & SnapshotStoreCapability
 type Snapshot = { state: unknown; position: bigint }        // TWO fields. No version.
 snapshotIdentifier(id: unknown): string                 // the id flattening state() uses
 matchesInitialStructure(specimen, candidate): boolean   // the safety net
 afterEvents(n) · whenSourcingTimeExceeds(ms) · noSnapshotPolicy()   // the POLICY, .or()-composable
 //
-// FOUR WRAPPERS, ONE PER FAMILY, and each is ADDITIVE — `E` in, `E & SnapshotCapability`
+// FOUR WRAPPERS, ONE PER FAMILY, and each is ADDITIVE — `E` in, `E & SnapshotStoreCapability`
 // out, so nothing the inner store carried is thrown away:
 //   inMemorySnapshottingEventStore(next)                                 // core
 //   postgresSnapshottingEventStore(next, pg, { serializer })             // ONE round trip
@@ -277,34 +277,30 @@ afterEvents(n) · whenSourcingTimeExceeds(ms) · noSnapshotPolicy()   // the POL
 // in what a wrapper can REACH, not in what the capability MEANS, and a server
 // that grows a fused RPC changes one function body and no host's code.
 //
-// THE COMPILE-TIME DEMAND — and it is the headline. `state({ snapshot })` types
-// the state as snapshotting, and `ctx.load` REFUSES one against an entry whose
-// log cannot serve it. The wiring mistake that used to be a silent full replay
-// is a build error naming the fix:
+// NO CONTEXT CAPABILITY — and that is the headline. Snapshotting is a STORE
+// tier: a handler has nothing new to call, so nothing on any context names it.
+// `state({ snapshot })` says a state wants caching, the wrapped log serves it
+// through `ctx.load`, and a handler's signature is the bare context:
 //
-//   // A state that caches its fold…
 //   const Course = state({ …, snapshot: { key: "course-v1", when: afterEvents(100) } })
-//
-//   // …cannot be loaded through a log that was never wrapped.
 //   commandHandler(Open, async (m, ctx: CommandHandlerContext) => {
-//     await ctx.load(Course, id)     // ✗ "this state declares a snapshot policy,
-//   })                               //    but this handler's eventStore cannot serve one"
-//
-//   // Say what you need, and the entry must supply it.
-//   commandHandler(Open, async (m, ctx: CommandHandlerContext<SnapshotCapableEventStore>) => {
-//     await ctx.load(Course, id)     // ✓ and the entry's `eventStore` must now be wrapped
+//     await ctx.load(Course, id)     // the wired log decides; the handler names nothing
 //   })
 //
-// ONE ALIAS SAYS IT, and every read surface derives from that one alias:
-//   IfSnapshotCapable<E, Capable, Bare>          // THE anchor, in event-sourcing/load.ts
-//   SnapshotReads<E>   = IfSnapshotCapable<E, { source: FusedSourceFunction }, unknown>
-//   SnapshotDemand<E>  = IfSnapshotCapable<E, unknown, { snapshot?: <branded refusal> }>
-// Contexts are ASSEMBLED BY INTERSECTION — `CommandHandlerContext<E, U>` is the base
-// shape & `SnapshotReads<E>` — so against a bare log the fused
-// `ctx.source(query, { snapshot })` overload is structurally ABSENT rather than
-// present-and-complaining. Anything later anchors HERE; add a face, not a
-// predicate. NOTHING RUNS: the whole demand is erased, and the only runtime
-// trace is one defensive `throw` in `repository.ts` for JavaScript callers.
+// A policy loaded through a log that was never wrapped is refused at RUNTIME,
+// loudly, on the first load in any test that runs the handler
+// (`capableOrThrow` in `repository.ts`), naming the wrapper. That replaced a
+// compile-time demand keyed on the handler's DECLARED store parameter, which
+// forced every handler loading a cached state to spell
+// `CommandHandlerContext<SnapshotCapableEventStore>` — the positional-parameter
+// contamination the bus tier's rule forbids. Same argument that deleted the
+// family brand: a check that catches some of a problem and contaminates every
+// signature loses to a runtime throw that catches all of it.
+//
+// THE RULE THIS SETTLED: A CONTEXT CAPABILITY EXISTS ONLY WHEN A HANDLER HAS
+// SOMETHING NEW TO CALL. Additive only — no overloads on existing members. A
+// tier that is fully served by wiring the store underneath is a store tier and
+// the handler never hears of it. `ctx.source` has ONE signature everywhere.
 //
 // THE RAW LAYER IS THE CAPABILITY; state() IS SUGAR OVER IT. Two primitives, off
 // ONE object, and everything else here is those two with the key composition and
@@ -389,11 +385,11 @@ afterEvents(n) · whenSourcingTimeExceeds(ms) · noSnapshotPolicy()   // the POL
 // its time comes is the LOG. So scheduling is not a seam beside the store, it is
 // a tier ON it — added by wrapping, exactly like snapshotting, and demanded
 // through the same construction.
-type ScheduleCapability = {            // what a wrapper ADDS. TWO members, because
+type ScheduleStoreCapability = {            // what a wrapper ADDS. TWO members, because
   schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken>
   cancelSchedule(token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult>
 }                                      // neither half was in EventStore's shape already
-type ScheduleCapableEventStore = EventStore & ScheduleCapability
+type ScheduleCapableEventStore = EventStore & ScheduleStoreCapability
 type ScheduleToken  = { id: string }   // opaque; PERSIST IT if you mean to cancel
 type CancelResult   = { kind: "cancelled" | "already-appended" | "not-found" }
   // THREE OUTCOMES, AS NEWS RATHER THAN THROWS. Compensating for a deadline that
@@ -401,7 +397,7 @@ type CancelResult   = { kind: "cancelled" | "already-appended" | "not-found" }
   // same three words so it is written once.
 //
 // THREE WRAPPERS, ONE PER FAMILY THAT HAS ONE, each ADDITIVE — `E` in,
-// `E & ScheduleCapability` out:
+// `E & ScheduleStoreCapability` out:
 //   inMemorySchedulingEventStore(next, { clock? }?)                        // core; Map + setTimeout
 //   postgresSchedulingEventStore(next, pg, { unitOfWork, tagResolver, … }) // table + polling worker
 //   kronosDbSchedulingEventStore(next, kdb, { serializer })                // SERVER-SIDE; no timer here
@@ -427,7 +423,7 @@ type CancelResult   = { kind: "cancelled" | "already-appended" | "not-found" }
 //
 // THE COMPILE-TIME DEMAND, and it is the mirror of snapshotting's:
 //   IfScheduleCapable<E, Capable, Bare>       // THE anchor, in event-scheduling/schedule.ts
-//   ScheduleVerbs<E> = IfScheduleCapable<E, { schedule; scheduleAfter; cancelSchedule }, unknown>
+//   SuppliedScheduleCapability<E> = IfScheduleCapable<E, { schedule; scheduleAfter; cancelSchedule }, unknown>
 // Contexts intersect it, so against a bare log the three verbs are structurally
 // ABSENT — "Property 'schedule' does not exist on type 'CommandHandlerContext'" at the
 // call site, rather than `throw new Error("No event scheduler configured")` on
@@ -441,11 +437,11 @@ type CancelResult   = { kind: "cancelled" | "already-appended" | "not-found" }
 //     await ctx.scheduleAfter(PaymentTimedOut, { orderId }, 900_000)   // ✓ and the entry's log must be wrapped
 //   })
 //
-// ONE FACE, NOT TWO. Snapshotting needed a second (`SnapshotDemand`) because a
-// STATE can declare that it caches, so there was something to refuse as well as
-// something to offer. Nothing declares that it schedules — a handler calls the
-// verb or does not — so this side of the mirror is one conditional and the
-// construction is otherwise identical.
+// THIS IS THE STORE TIER THAT REACHES A CONTEXT. A handler has three new
+// members to call, so there is a capability (`ScheduleCapability`) and a
+// supply-side conditional (`SuppliedScheduleCapability<E>`) deciding whether the
+// entry's log provides it. Snapshotting, the other store tier, adds nothing a
+// handler calls and has no context capability at all.
 //
 // NOTHING RUNS: the demand is erased, and the only runtime trace is one
 // defensive assert for JavaScript callers, whose message names the CAPABILITY
@@ -515,32 +511,37 @@ commandHandler(descriptor, (message, ctx: CommandHandlerContext) => result)
 queryHandler(descriptor,  (message, ctx: QueryHandlerContext) => result)
 eventHandler(descriptor,  (message, ctx: EventHandlerContext) => void)
 // A HOST NAMES ITS OWN CONTEXT ONCE and every handler writes that one word:
-//   type UniversityCommandContext =
-//     CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore> & EmitCapability
-// The app's floor lives on ONE line — add a tier and no handler is edited.
-// Named for the thing it belongs to, then the kind, exactly as the adapter
-// packages name theirs (`PostgresCommandContext`, `DrizzleEventContext`).
-// Keep it a FLOOR: name tiers, never a concrete store or bus.
+//   type CmdCtx = CommandHandlerContext & ScheduleCapability & SubscriptionCapability & DrizzleCapability
+// The app's floor lives on ONE line — add a tier and no handler is edited. NO
+// TYPE PARAMETERS IN SLICE CODE: a demand is a capability intersected onto the
+// base, never a store or bus named positionally. There are no per-package
+// `<Pkg><Kind>Context` aliases; this one line is what they were a worse
+// spelling of. Keep it a FLOOR: name capabilities, never a concrete store or bus.
+//
+// ONE NAMING RULE. `<Tier>Capability` is what a handler intersects on ctx
+// (`ScheduleCapability`, `SubscriptionCapability`, `DrizzleCapability`).
+// `<Tier>StoreCapability` / `<Tier>BusCapability` is what a wrapper adds to a
+// store or bus (`SnapshotStoreCapability`, `ScheduleStoreCapability`,
+// `SubscriptionBusCapability`). `<Tier>Capable<Thing>` is the alias a
+// composition root wires. Snapshotting has only the store half.
 type EventHandlerContext<E extends EventStore = EventStore, Q extends QueryBus = QueryBus, U extends UnitOfWork = UnitOfWork> =
   { load · source · send · query · isReplay · unitOfWork: U }
-  & SnapshotReads<E> & ScheduleVerbs<E> & SubscriptionEmit<Q>   // ← ALL THREE TIERS, one intersection each
+  & SuppliedScheduleCapability<E> & SuppliedSubscriptionCapability<Q>   // ← the tiers that reach a context
 type CommandHandlerContext<E, Q, U> = EventHandlerContext<E, Q, U> & { append }  // the atomic decide-append boundary
-type QueryHandlerContext<E, U> = { load · source · query · unitOfWork: U } & SnapshotReads<E>
-  // A query handling gets NO scheduling verbs at any tier — a read gives birth to nothing.
-  // PARAMETERS IN FREQUENCY ORDER OF WHAT A HANDLER WRITES: `E` first (a log that caches
-  // folds, a log that holds deadlines), `Q` second (a bus that serves live subscribers —
-  // rare), `U` last and almost never written: the task is something done TO a handling
-  // (a wrapper demands it on its output, a bus mints it), and a handler names it only when
-  // it reaches for the task directly. Each is the ENTRY's object, threaded from the
-  // composition root through the subscribe glue, defaulted so plain code never writes any
-  // of them. Buses never carry a store; entries carry both.
+type QueryHandlerContext<U> = { load · source · query · unitOfWork: U }
+  // A query handling cannot schedule at any tier — a read gives birth to nothing — and
+  // no tier reaches it, so it has no store parameter at all.
+  // `E` AND `Q` ARE THE SUPPLY SIDE, written by the ENTRY, never by a handler: the
+  // composition root threads its real log and bus through the subscribe glue, the
+  // conditionals resolve, and assignability of the supplied context to the demanded
+  // intersection is the whole check. `U` is the task, minted by a bus or processor, and a
+  // handler names it only when it reaches for the task directly. Buses never carry a
+  // store; entries carry both.
 
 // ── the two reads: state() derives, ctx.source lets you write ──────────────
 ctx.source(query: EventQuery): Promise<ReadonlyArray<EventMessage>>
-ctx.source(query: EventQuery, opts: { snapshot: string }): Promise<SnapshottedSource>
-  // ↑ the second one EXISTS ONLY when `E` is snapshot-capable — contributed by
-  // `SnapshotReads<E>`, absent otherwise, so a bare log's `ctx.source` takes ONE argument.
-type SnapshottedSource = { snapshot: Snapshot | undefined; events; position: bigint }
+  // ONE SIGNATURE, on every context, whatever the log can do. The fused read a
+  // snapshotting store serves is consumed by the repository behind `ctx.load`.
   // THE RAW LAYER — you write the query, you run the fold, the append condition still holds.
   // The read is recorded on the task exactly as `ctx.load`'s is, so a hand-rolled `is()` +
   // `reduce` gets the identical DCB guarantee a decision state gets. Declaring `types`
@@ -644,8 +645,8 @@ state({ id, tags: (id) => TagRecord | readonly [TagRecord, ...],
 
 // ── store seams + in-memory implementations ────────────────────────────────
 type EventStore                       // COMPLETE for event sourcing; says nothing about caches or deadlines
-type SnapshotCapableEventStore = EventStore & SnapshotCapability   // added by WRAPPING
-type ScheduleCapableEventStore = EventStore & ScheduleCapability   // added by WRAPPING
+type SnapshotCapableEventStore = EventStore & SnapshotStoreCapability   // added by WRAPPING
+type ScheduleCapableEventStore = EventStore & ScheduleStoreCapability   // added by WRAPPING
 type TokenStore<U = UnitOfWork>              // members take (processorName, …, uow?: U)
 type SequencedDeadLetterQueue<U = UnitOfWork> // members take (processingGroup, …, uow?: U)
   // FUNCTION-TYPED FIELDS, NOT METHOD SHORTHAND. It costs nothing and keeps the
@@ -710,8 +711,8 @@ rabbitMqQueryBus(next: QueryBus, rabbit, { preferLocal?, timeoutMs? }?): QueryBu
 ```ts
 kronosDbConnection({ host, port, componentName }): Promise<KronosDbConnection>   // one channel; start()/close()
 kronosDbEventStore(kdb, context: string): EventStore
-kronosDbSnapshottingEventStore<E>(next: E, kdb, context): E & SnapshotCapability
-kronosDbSchedulingEventStore<E>(next: E, kdb, { serializer }): E & ScheduleCapability & { listSchedules() }
+kronosDbSnapshottingEventStore<E>(next: E, kdb, context): E & SnapshotStoreCapability
+kronosDbSchedulingEventStore<E>(next: E, kdb, { serializer }): E & ScheduleStoreCapability & { listSchedules() }
 kronosDbCommandBus(next: CommandBus, kdb, bus?: string): CommandBus   // inbound runs through YOUR local bus
 kronosDbQueryBus(next: QueryBus, kdb, bus?: string): QueryBus
 kronosDbControlPlane(kdb, processors): ControlPlane
@@ -728,7 +729,7 @@ subscribe via any node, dispatch via any node, the server forwards.
 ## @kronos-ts/axon-server — same family as kronosdb
 ```ts
 axonServerConnection(…) · axonServerEventStore(conn, ctx)
-axonServerSnapshottingEventStore<E>(next: E, conn, ctx): E & SnapshotCapability
+axonServerSnapshottingEventStore<E>(next: E, conn, ctx): E & SnapshotStoreCapability
 axonServerCommandBus(next, conn) · axonServerQueryBus(next, conn) · axonServerControlPlane(conn, processors)
 ```
 KRONOSDB FUSES THE READ NATIVELY, IN ONE CALL. Since 0.8 its snapshots ride the
@@ -757,15 +758,15 @@ it needs, not everything a backend offers.
 ```ts
 postgresPool(connectionString | adapter): PostgresResource   // start()/close()
 postgresEventStore(pg, { tagResolver }): EventStore   // no serializer; knows no snapshots
-postgresSnapshottingEventStore<E>(next: E, pg, { serializer }): E & SnapshotCapability
+postgresSnapshottingEventStore<E>(next: E, pg, { serializer }): E & SnapshotStoreCapability
 postgresUnitOfWork<U>(next: () => U, pg): () => U     // THING-FIRST; lazy tx — its honest default
 postgresTokenStore(pg): TokenStore                    // joins the SAME tx as your raw-sql writes
 postgresDeadLetterQueue(pg): SequencedDeadLetterQueue
 postgresTransaction(uow) · activePostgresTransaction(uow)
 postgresHandler(handler, pg): handler                 // wraps the FUNCTION; ctx gains sql(): Sql | Tx
-type PostgresCommandContext = CommandHandlerContext & { sql(): Sql | Tx }
+type PostgresCapability = { sql(): Sql | Tx }             // a slice writes `ctx: CommandHandlerContext & PostgresCapability`
 postgresSchedulingEventStore<E>(next: E, pg, { unitOfWork, tagResolver, pollIntervalMs?, batchSize? }):
-  E & ScheduleCapability & { startScheduling(); stopScheduling() }
+  E & ScheduleStoreCapability & { startScheduling(); stopScheduling() }
 ```
 POSTGRES FUSES THE READ IN ONE ROUND TRIP, and "fused" is not a feature — it is
 just OWNING THE QUERY. `postgresSnapshottingEventStore.source` handles
@@ -837,7 +838,7 @@ drizzleUnitOfWork<U>(next: () => U, db): () => U   // eager tx; delegate EXPLICI
 drizzleTransaction(uow): Promise<Tx>            // opens; REJECTS on a non-drizzle uow
 activeDrizzleTransaction(uow): Tx | undefined   // observes, never opens
 drizzleHandler(handler, db): handler            // ONE generic wrapper: ctx gains db()
-type DrizzleCommandContext = CommandHandlerContext & { db(): Db | Tx }             // + Event/Query variants
+type DrizzleCapability = { db(): Db | Tx }                 // a slice writes `ctx: CommandHandlerContext & DrizzleCapability`
 ```
 HANDLER WRAPPERS ARE FUNCTION-LEVEL — `(next, ...config) => (message, ctx) => result`,
 with `<M, C, R>` inferred and no entry type anywhere. The host wraps by spreading
@@ -976,7 +977,7 @@ recordingEventStore(store): EventStore & { appended; reset() }
 recordingCommandBus(bus):   CommandBus & { dispatched; reset() }
 recordingQueryBus(bus):     QueryBus   & { queried;    reset() }
 controllableSchedulingEventStore<E>(next: E, clock: () => number):
-  E & ScheduleCapability & { schedules; due(); resetSchedules() }   // no timer, no sink
+  E & ScheduleStoreCapability & { schedules; due(); resetSchedules() }   // no timer, no sink
   // `due()` HANDS BACK the fired events rather than appending them, so the fixture
   // puts them in through the OUTERMOST store and the recorder sees a fired deadline
   // exactly as it sees a handler's append. `resetSchedules()`, not `reset()`: the

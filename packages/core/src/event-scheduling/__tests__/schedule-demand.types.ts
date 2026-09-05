@@ -14,8 +14,8 @@
  * field, discovered by the first deadline anybody armed in production — does
  * not survive the build.
  *
- * It is the mirror of `event-sourcing/__tests__/snapshot-demand.types.ts`, one
- * capability over, and the two are meant to be read side by side.
+ * `event-sourcing/__tests__/snapshot-demand.types.ts` pins the OTHER answer:
+ * snapshotting is a store tier with no context face at all.
  */
 import { z } from "zod"
 import { qn, command, event } from "../../messaging/messages.js"
@@ -76,7 +76,7 @@ export const capablePlusSilent = commandHandler(
 /**
  * BARE + SCHEDULES ✗ — THE HEADLINE.
  *
- * STRUCTURALLY ABSENT, NOT PRESENT-AND-COMPLAINING. `ScheduleVerbs<E>` resolves
+ * STRUCTURALLY ABSENT, NOT PRESENT-AND-COMPLAINING. `SuppliedScheduleCapability<E>` resolves
  * to `unknown` against a bare log and vanishes from the intersection, so the
  * diagnostic is "Property 'schedule' does not exist on type 'CommandHandlerContext'"
  * — a fact about what this context IS, at the call site, rather than a
@@ -104,16 +104,13 @@ export const eventContextAccepts = async (
 }
 
 /**
- * A QUERY handling has no scheduling verbs AT ALL, capable log or not — and
- * that is a different refusal from the one above. A read does not give birth
- * to anything, so `QueryHandlerContext` never had them and this tier does not
- * hand them out. The demand narrows what a context CAN have; the context still
- * decides what it WANTS.
+ * A QUERY handling cannot schedule AT ALL, capable log or not — and that is a
+ * different refusal from the one above. A read does not give birth to
+ * anything, so `QueryHandlerContext` has no store parameter and this tier does
+ * not reach it.
  */
-export const queryContextNeverSchedules = async (
-  ctx: QueryHandlerContext<ScheduleCapableEventStore>,
-) => {
-  // @ts-expect-error — a query handling has no birth verbs, capable log or not
+export const queryContextNeverSchedules = async (ctx: QueryHandlerContext) => {
+  // @ts-expect-error — a query handling births nothing, capable log or not
   await ctx.schedule(Reminded, { ticketId: "t-1" }, new Date())
 }
 
@@ -209,7 +206,7 @@ export const sandwichedSnapshots: SnapshotCapableEventStore = upcastSandwiched
 export const demandsBoth = commandHandler(
   Open,
   async (m, ctx: CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore>) => {
-    await ctx.source({ tags: { ticketId: m.payload.ticketId } }, { snapshot: `ticket:${m.payload.ticketId}` })
+    await ctx.source({ tags: { ticketId: m.payload.ticketId } })
     await ctx.schedule(Reminded, { ticketId: m.payload.ticketId }, new Date())
   },
 )

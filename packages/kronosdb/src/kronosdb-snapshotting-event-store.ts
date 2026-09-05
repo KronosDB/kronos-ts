@@ -30,7 +30,7 @@
 // off-by-one did not survive the move, and no caller has to know it was there.
 // ---------------------------------------------------------------------------
 
-import type { EventStore, Snapshot, SnapshotCapability, SourcingCondition, SourcingResult } from "@kronos-ts/core"
+import type { EventStore, Snapshot, SnapshotStoreCapability, SourcingCondition, SourcingResult } from "@kronos-ts/core"
 import type { ConsistencyMarker, EventMessage, Serializer } from "@kronos-ts/core"
 import { markerAt, noMarker } from "@kronos-ts/core"
 import { contextView, kronosMetadata } from "./connection.js"
@@ -84,7 +84,7 @@ function createSnapshotConverters(serializer: Serializer) {
  * )
  * ```
  *
- * ADDITIVE, NOT COLLAPSING. It returns `E & SnapshotCapability` — the store you
+ * ADDITIVE, NOT COLLAPSING. It returns `E & SnapshotStoreCapability` — the store you
  * passed in, plus the write — so capabilities stack in either order and nothing
  * the inner store carried is laundered on the way through.
  *
@@ -101,7 +101,7 @@ export function kronosDbSnapshottingEventStore<E extends EventStore>(
   next: E,
   kdb: Pick<KronosDbConnectionHandle, "connection" | "serializer">,
   context: string = kdb.connection.config.context,
-): E & SnapshotCapability {
+): E & SnapshotStoreCapability {
   const connection = contextView(kdb.connection, context)
   const { stateToProto, snapshotFromProto } = createSnapshotConverters(kdb.serializer)
   const { eventFromProto } = createEventConverters(kdb.serializer)
@@ -195,5 +195,5 @@ export function kronosDbSnapshottingEventStore<E extends EventStore>(
 
       return { events, marker, ...(snapshot !== undefined ? { snapshot } : {}) }
     },
-  } as E & SnapshotCapability
+  } as E & SnapshotStoreCapability
 }

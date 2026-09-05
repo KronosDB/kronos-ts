@@ -133,10 +133,10 @@ export {
 //   axonServerSnapshottingEventStore(axonServerEventStore(axon, ctx), axon, ctx)
 //
 // AND THE COMPILER MAKES YOU. `state({ snapshot: { key, when } })` types the
-// state as snapshotting, and `ctx.load` refuses one against an entry whose
-// `eventStore` cannot serve it — a wiring mistake that used to be a silent full
-// replay is now a build error naming the fix. One anchor says it for every read
-// surface: `IfSnapshotCapable`, exported below and documented in `load.ts`.
+// state as snapshotting. Nothing on a handler's context names the tier: the
+// repository behind `ctx.load` asks the wired log for the fused read, and a
+// policy loaded through a bare log is refused at runtime, loudly, on the first
+// load (`capableOrThrow` in `repository.ts`).
 //
 // THE KEY IS YOURS, and it is the whole invalidation story: `ctx.source(query,
 // { snapshot })` at the raw layer, `state({ snapshot: { key, when } })` through
@@ -213,11 +213,11 @@ export {
 // them apart: one definition object declares, a bus first dispatches.
 export {
   type QueryBus,
-  type SubscriptionCapability,
+  type SubscriptionBusCapability,
   type SubscriptionCapableQueryBus,
   type IfSubscriptionCapable,
 } from "./query-handling/bus.js"
-export { type EmitCapability, type SubscriptionEmit } from "./query-handling/emit-update.js"
+export { type SubscriptionCapability, type SuppliedSubscriptionCapability } from "./query-handling/emit-update.js"
 export { localQueryBus } from "./query-handling/local-bus.js"
 export { query, type QueryDispatchFunction } from "./query-handling/query.js"
 export {
@@ -353,7 +353,7 @@ export {
 export {
   type EventStore,
   type SnapshotCapableEventStore,
-  type SnapshotCapability,
+  type SnapshotStoreCapability,
   type SourcingResult,
 } from "./event-sourcing/event-store.js"
 export {
@@ -399,19 +399,9 @@ export {
 
 // Handler capabilities are reached via the CommandHandlerContext (second handler
 // argument). The implementations live beside the state model; only their types
-// are public here.
-// THE DEMAND lives with the source types, because it is a question about what a
-// READ can ask for. `IfSnapshotCapable` is the one predicate; `SnapshotReads`
-// and `SnapshotDemand` are its two faces, and anything later anchors here too.
-export type {
-  LoadFunction,
-  SourceFunction,
-  FusedSourceFunction,
-  SnapshottedSource,
-  IfSnapshotCapable,
-  SnapshotReads,
-  SnapshotDemand,
-} from "./event-sourcing/load.js"
+// are public here. Snapshotting has NO type here: it is a store tier the
+// repository consumes, and a context never names it.
+export type { LoadFunction, SourceFunction } from "./event-sourcing/load.js"
 export type { EventList, AppendFunction } from "./event-sourcing/append.js"
 
 // ── event-processing: tracked delivery; the processor is a value ───────────
@@ -516,7 +506,7 @@ export {
 // log that was WRAPPED, and the three verbs reach a handler only when its
 // entry wired one.
 export {
-  type ScheduleCapability,
+  type ScheduleStoreCapability,
   type ScheduleCapableEventStore,
   type ScheduleToken,
   type CancelResult,
@@ -528,11 +518,11 @@ export {
 } from "./event-scheduling/in-memory-scheduling-event-store.js"
 export type {
   IfScheduleCapable,
-  ScheduleVerbs,
+  SuppliedScheduleCapability,
   ScheduleFunction,
   ScheduleAfterFunction,
   CancelScheduleFunction,
-  ScheduleFunctions,
+  ScheduleCapability,
 } from "./event-scheduling/schedule.js"
 
 // ── assembly: three lists ──────────────────────────────────────────────────

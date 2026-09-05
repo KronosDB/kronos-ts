@@ -1,6 +1,6 @@
 import { generateIdentifier, requireInvocation, NoActiveUnitOfWork } from "@kronos-ts/core"
 import type {
-  SubscriptionCapability,
+  SubscriptionBusCapability,
   AppendCondition,
   AppendTransaction,
   CancelResult,
@@ -11,7 +11,7 @@ import type {
   EventStore,
   QueryBus,
   QueryMessage,
-  ScheduleCapability,
+  ScheduleStoreCapability,
   ScheduleToken,
   SubscriptionFilter,
   SubscriptionQueryResult,
@@ -170,7 +170,7 @@ export type QueryRecording = {
 export function recordingQueryBus<B extends QueryBus<any>>(
   bus: B,
 ): B & QueryRecording {
-  const capable = bus as B & Partial<SubscriptionCapability>
+  const capable = bus as B & Partial<SubscriptionBusCapability>
   const log: Array<QueryMessage> = []
 
   return {
@@ -267,7 +267,7 @@ export type ScheduleRecording = {
  * where they go — in a fixture, in through the OUTERMOST store, so the recorder
  * above this one sees them exactly as it sees a handler's append.
  *
- * ADDITIVE: `E & ScheduleCapability & ScheduleRecording`, never a collapse. The
+ * ADDITIVE: `E & ScheduleStoreCapability & ScheduleRecording`, never a collapse. The
  * fixture composes it over the snapshotting tier and under the recorder, and a
  * signature that returned a bare intersection would throw one of the other two
  * capabilities away on the way through.
@@ -285,7 +285,7 @@ export type ScheduleRecording = {
 export function controllableSchedulingEventStore<E extends EventStore>(
   next: E,
   clock: () => number,
-): E & ScheduleCapability & ScheduleRecording {
+): E & ScheduleStoreCapability & ScheduleRecording {
   type Entry = {
     record: ScheduleRecord
     armed: boolean
@@ -375,5 +375,5 @@ export function controllableSchedulingEventStore<E extends EventStore>(
     },
     // The spread of a generic is opaque to the checker, so the shape it
     // produces is asserted rather than inferred; the probe keeps it honest.
-  } as E & ScheduleCapability & ScheduleRecording
+  } as E & ScheduleStoreCapability & ScheduleRecording
 }

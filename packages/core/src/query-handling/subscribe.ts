@@ -17,7 +17,7 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
  * work, and `ctx.load` throws naming the state it could not source.
  */
 export function subscribeQueryHandlers<U extends UnitOfWork, E extends EventStore = EventStore>(
-  handlers: ReadonlyArray<QueryHandler<any, any, QueryHandlerContext<E, U>>>,
+  handlers: ReadonlyArray<QueryHandler<any, any, QueryHandlerContext<U>>>,
   deps: {
     queryBus: QueryBus<U>
     /** The log `ctx.load` sources from, and what it is allowed to load. */
@@ -29,7 +29,7 @@ export function subscribeQueryHandlers<U extends UnitOfWork, E extends EventStor
     const invocation = async (message: QueryMessage, uow: U) => {
       return reg.handler(
         message,
-        queryHandlerContext<U, E>({
+        queryHandlerContext<U>({
           uow,
           ...(deps.eventStore ? { eventStore: deps.eventStore } : {}),
           // ctx.query from a query handler: reads may compose reads.

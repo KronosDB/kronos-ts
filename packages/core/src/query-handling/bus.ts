@@ -47,7 +47,7 @@ export type QueryBus<U extends UnitOfWork = UnitOfWork> = {
  * not claim the type, and everything demanding it refuses at COMPILE TIME
  * instead of throwing on the first subscriber somebody armed in production.
  */
-export type SubscriptionCapability = {
+export type SubscriptionBusCapability = {
   /**
    * Start a subscription query — returns the initial result plus a stream
    * of incremental updates.
@@ -107,12 +107,12 @@ export type SubscriptionCapability = {
 
 /** A query bus that can also serve live subscription queries. */
 export type SubscriptionCapableQueryBus<U extends UnitOfWork = UnitOfWork> = QueryBus<U> &
-  SubscriptionCapability
+  SubscriptionBusCapability
 
 /**
- * THE anchor for the subscription demand — the mirror of `IfSnapshotCapable`
- * and `IfScheduleCapable`, branched on the BUS instead of the log. Anything
- * later anchors HERE; add a face, not a predicate.
+ * THE anchor for the subscription demand — the mirror of `IfScheduleCapable`,
+ * branched on the BUS instead of the log. Anything later anchors HERE; add a
+ * capability, not a predicate.
  */
 export type IfSubscriptionCapable<Q extends QueryBus<any>, Capable, Bare> =
-  Q extends SubscriptionCapability ? Capable : Bare
+  Q extends SubscriptionBusCapability ? Capable : Bare

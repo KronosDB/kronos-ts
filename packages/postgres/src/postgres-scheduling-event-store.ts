@@ -3,7 +3,7 @@
  * postgres family: the `kronos_scheduled_events` table, plus a polling worker
  * that fires due schedules into the log this wraps.
  *
- * ADDITIVE, like every capability adder: `E` in, `E & ScheduleCapability` out,
+ * ADDITIVE, like every capability adder: `E` in, `E & ScheduleStoreCapability` out,
  * so a store that already caches folds still caches them after this.
  *
  * ```ts
@@ -71,7 +71,7 @@
 import { qualifiedNameToString, qualifiedNameFromString } from "@kronos-ts/core"
 import type { EventMessage } from "@kronos-ts/core"
 import type {
-  ScheduleCapability,
+  ScheduleStoreCapability,
   ScheduleToken,
   CancelResult,
   UnitOfWork,
@@ -107,7 +107,7 @@ export type PostgresSchedulingConfig = {
 /**
  * WHAT THE POSTGRES TIER ADDS BEYOND THE CAPABILITY: the worker's lifecycle.
  *
- * Not part of {@link ScheduleCapability}, because "poll a table" is a property
+ * Not part of {@link ScheduleStoreCapability}, because "poll a table" is a property
  * of a tier that HAS a table to poll — the in-memory tier holds timers instead,
  * and KronosDB holds nothing at all because the server does the waiting. The
  * names are prefixed so a composed store can carry them beside whatever else it
@@ -135,7 +135,7 @@ export function postgresSchedulingEventStore<E extends EventStore>(
   next: E,
   pg: PostgresResource,
   config: PostgresSchedulingConfig,
-): E & ScheduleCapability & PostgresSchedulingControl {
+): E & ScheduleStoreCapability & PostgresSchedulingControl {
   const { unitOfWork, tagResolver } = config
   const tables = pg.tables
   const pollIntervalMs = config.pollIntervalMs ?? 1000
@@ -336,5 +336,5 @@ export function postgresSchedulingEventStore<E extends EventStore>(
     // The spread of a generic is opaque to the checker, so the shape it
     // produces is asserted rather than inferred. The probe is what makes the
     // assertion honest.
-  } as E & ScheduleCapability & PostgresSchedulingControl
+  } as E & ScheduleStoreCapability & PostgresSchedulingControl
 }

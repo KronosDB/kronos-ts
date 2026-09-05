@@ -1,15 +1,13 @@
 import { describe, it, expect } from "bun:test"
 import { unitOfWork } from "@kronos-ts/core"
-import type { CommandHandler } from "@kronos-ts/core"
+import type { CommandHandler, CommandHandlerContext, EventHandlerContext, QueryHandlerContext } from "@kronos-ts/core"
 import type { PostgresAdapter, PostgresAdapterTransaction, ListenSubscription } from "../adapter.js"
 import type { IsolationLevel } from "../adapter.js"
 import { postgresPool } from "../postgres-pool.js"
 import { postgresTransaction, postgresUnitOfWork } from "../postgres-transaction.js"
 import {
   postgresHandler,
-  type PostgresCommandContext,
-  type PostgresEventContext,
-  type PostgresQueryContext,
+  type PostgresCapability,
 } from "../postgres-handler.js"
 
 function fakeAdapter(): PostgresAdapter {
@@ -45,18 +43,18 @@ function fakeAdapter(): PostgresAdapter {
 // functions — the wrapper takes a FUNCTION, and an entry only ever appears
 // where the host spreads one.
 function commandHandlerFn(
-  handler: (message: unknown, ctx: PostgresCommandContext) => Promise<void>,
-): (message: unknown, ctx: PostgresCommandContext) => Promise<void> {
+  handler: (message: unknown, ctx: CommandHandlerContext & PostgresCapability) => Promise<void>,
+): (message: unknown, ctx: CommandHandlerContext & PostgresCapability) => Promise<void> {
   return handler
 }
 function eventHandlerFn(
-  handler: (message: unknown, ctx: PostgresEventContext) => Promise<void>,
-): (message: unknown, ctx: PostgresEventContext) => Promise<void> {
+  handler: (message: unknown, ctx: EventHandlerContext & PostgresCapability) => Promise<void>,
+): (message: unknown, ctx: EventHandlerContext & PostgresCapability) => Promise<void> {
   return handler
 }
 function queryHandlerFn(
-  handler: (message: unknown, ctx: PostgresQueryContext) => Promise<unknown>,
-): (message: unknown, ctx: PostgresQueryContext) => Promise<unknown> {
+  handler: (message: unknown, ctx: QueryHandlerContext & PostgresCapability) => Promise<unknown>,
+): (message: unknown, ctx: QueryHandlerContext & PostgresCapability) => Promise<unknown> {
   return handler
 }
 
@@ -159,10 +157,10 @@ describe("postgresHandler", () => {
 
   it("leaves the ENTRY to the host — the spread carries every other field", async () => {
     const pool = postgresPool(fakeAdapter(), { bootstrap: false })
-    const entry: CommandHandler<any, any, PostgresCommandContext> = {
+    const entry: CommandHandler<any, any, CommandHandlerContext & PostgresCapability> = {
       kind: "command-handler",
       descriptor: {} as never,
-      handler: async (_m, ctx: PostgresCommandContext) => {
+      handler: async (_m, ctx: CommandHandlerContext & PostgresCapability) => {
         ctx.sql()
       },
     }

@@ -108,7 +108,7 @@ export type CommandHandlerEntry<
 export type QueryHandlerEntry<
   U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
-> = Sited<QueryHandler<any, any, QueryHandlerContext<E, U>>, E> & {
+> = Sited<QueryHandler<any, any, QueryHandlerContext<U>>, E> & {
   /** The bus this handler is subscribed on, and the one `ctx.query` reaches. */
   readonly queryBus: QueryBus<U>
 }

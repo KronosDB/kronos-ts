@@ -25,7 +25,7 @@
 import type {
   EventStore,
   Snapshot,
-  SnapshotCapability,
+  SnapshotStoreCapability,
   SourcingCondition,
   SourcingResult,
 } from "@kronos-ts/core"
@@ -92,7 +92,7 @@ function encodeKey(key: string): Uint8Array {
  * )
  * ```
  *
- * ADDITIVE, NOT COLLAPSING. It returns `E & SnapshotCapability` — the store you
+ * ADDITIVE, NOT COLLAPSING. It returns `E & SnapshotStoreCapability` — the store you
  * passed in, plus the write — so capabilities stack in either order and nothing
  * the inner store carried is laundered on the way through.
  *
@@ -111,7 +111,7 @@ export function axonServerSnapshottingEventStore<E extends EventStore>(
   next: E,
   conn: AxonServerStoreSource,
   context: string,
-): E & SnapshotCapability {
+): E & SnapshotStoreCapability {
   const { connection, serializer, metadata: createAxonMetadata } = contextView(conn, context)
   const { snapshotToProto, snapshotFromProto } = createSnapshotConverters(serializer)
 
@@ -187,5 +187,5 @@ export function axonServerSnapshottingEventStore<E extends EventStore>(
       const result = await next.source({ ...plain, start })
       return { ...result, snapshot }
     },
-  } as E & SnapshotCapability
+  } as E & SnapshotStoreCapability
 }

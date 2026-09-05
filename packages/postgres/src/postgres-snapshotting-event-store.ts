@@ -24,7 +24,7 @@ import type {
   EventStore,
   Serializer,
   Snapshot,
-  SnapshotCapability,
+  SnapshotStoreCapability,
   SourcingCondition,
   SourcingResult,
   UnitOfWork,
@@ -61,7 +61,7 @@ export type PostgresSnapshottingEventStoreConfig = {
  * )
  * ```
  *
- * ADDITIVE, NOT COLLAPSING. It returns `E & SnapshotCapability` — the store you
+ * ADDITIVE, NOT COLLAPSING. It returns `E & SnapshotStoreCapability` — the store you
  * passed in, plus the write — so nothing the inner store carried is laundered
  * on the way through and capabilities stack in either order. Wrapping an
  * upcasting store leaves an upcasting store; wrapping this in an upcasting
@@ -85,7 +85,7 @@ export function postgresSnapshottingEventStore<E extends EventStore>(
   next: E,
   pg: PostgresResource,
   config: PostgresSnapshottingEventStoreConfig,
-): E & SnapshotCapability {
+): E & SnapshotStoreCapability {
   const adapter = pg
   const { serializer } = config
   const tables = pg.tables
@@ -221,5 +221,5 @@ export function postgresSnapshottingEventStore<E extends EventStore>(
     // The spread of a generic is opaque to the checker, so the shape it
     // produces is asserted rather than inferred; the type probe is what makes
     // the assertion honest.
-  } as E & SnapshotCapability
+  } as E & SnapshotStoreCapability
 }

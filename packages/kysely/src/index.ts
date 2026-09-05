@@ -8,9 +8,6 @@ export {
   activeKyselyTransaction,
   kyselyHandler,
   type KyselyCapability,
-  type KyselyCommandContext,
-  type KyselyEventContext,
-  type KyselyQueryContext,
   type KyselyDb,
   type KyselyTransaction,
 } from "./kysely-transaction.js"

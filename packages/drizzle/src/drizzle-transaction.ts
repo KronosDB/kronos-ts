@@ -1,7 +1,4 @@
 import type {
-  EventHandlerContext,
-  CommandHandlerContext,
-  QueryHandlerContext,
   UnitOfWork,
 } from "@kronos-ts/core"
 import {
@@ -220,10 +217,8 @@ export function activeDrizzleTransaction(
 //   3. A HANDLER WRAPPER — `drizzleHandler(handler, db)`, which adds a capability to
 //      the ctx a handler function receives. It wraps the FUNCTION, not the
 //      entry: the host spreads the entry itself.
-//   4. A NAMED CONTEXT TYPE — `DrizzleCommandContext`, so a slice's signature reads
-//      `ctx: DrizzleCommandContext` rather than an anonymous intersection.
 //
-// All four share ONE piece of state — the uow-keyed registry above — which is
+// All share ONE piece of state — the uow-keyed registry above — which is
 // what makes the capability and the transaction the same transaction.
 // ---------------------------------------------------------------------------
 
@@ -241,12 +236,6 @@ export type DrizzleCapability = {
   db(): DrizzleDb | DrizzleTransaction
 }
 
-/** A command handler's context, plus this extension's capability. */
-export type DrizzleCommandContext = CommandHandlerContext & DrizzleCapability
-/** An event handler's context, plus this extension's capability. */
-export type DrizzleEventContext = EventHandlerContext & DrizzleCapability
-/** A query handler's context, plus this extension's capability. */
-export type DrizzleQueryContext = QueryHandlerContext & DrizzleCapability
 
 /**
  * Wrap a HANDLER FUNCTION — command, event or query — so its context gains
@@ -260,7 +249,7 @@ export type DrizzleQueryContext = QueryHandlerContext & DrizzleCapability
  * (`descriptor`, `name`, `appendCondition`) survives untouched:
  *
  * ```ts
- * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: DrizzleCommandContext) => {
+ * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: CommandHandlerContext & DrizzleCapability) => {
  *   await ctx.db().update(widgets).set({ name: payload.name })
  * })
  *

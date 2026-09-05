@@ -9,7 +9,6 @@ import {
 import { appendFunction } from "../event-sourcing/append.js"
 import type { EventQuery } from "../event-sourcing/dcb-query.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
-import type { SnapshotDemand } from "../event-sourcing/load.js"
 import type { State } from "../event-sourcing/state.js"
 import type { CommandBus } from "./bus.js"
 import type { QueryBus } from "../query-handling/bus.js"
@@ -60,15 +59,12 @@ export type ContextAppendFunction = {
  * value at the call site and the log on the entry's site, so passing it IS the
  * whole arrangement.
  *
- * AND THE TWO ARE CHECKED AGAINST EACH OTHER. `E` is the entry's log, threaded
- * down from the composition root; a state that declares a snapshot policy is
- * refused here unless `E` can serve one. See `SnapshotDemand` — and
- * `IfSnapshotCapable` behind it — in `event-sourcing/load.ts`.
+ * Whether the entry's log can serve the snapshot policy a state declares is a
+ * fact about the WIRED store, not about this signature: the repository behind
+ * `load` refuses at runtime, loudly, on the first load. Nothing about
+ * snapshotting appears on a context — see `event-sourcing/load.ts`.
  */
-export type ContextLoadFunction<E extends EventStore = EventStore> = <Id, S>(
-  state: State<Id, S, any> & SnapshotDemand<E>,
-  id: Id,
-) => Promise<S>
+export type ContextLoadFunction = <Id, S>(state: State<Id, S, any>, id: Id) => Promise<S>
 
 /**
  * `source` as a context capability — THE RAW LAYER under {@link
@@ -85,11 +81,9 @@ export type ContextLoadFunction<E extends EventStore = EventStore> = <Id, S>(
  * since". A hand-rolled fold is a first-class DCB decision, not an escape
  * hatch that gives one up.
  *
- * ONE SIGNATURE HERE. The FUSED form — `ctx.source(query, { snapshot })` — is
- * not part of this type: a context is ASSEMBLED by intersection, and that
- * overload is contributed by `SnapshotReads<E>` only when the entry's log can
- * serve it. Against a bare log it is structurally ABSENT, so asking for it is
- * "this call takes one argument", not "your argument is wrong".
+ * ONE SIGNATURE, EVERYWHERE. Snapshotting is a store tier consumed by the
+ * repository behind `load`; a hand-rolled fold has no fused read on the
+ * context, and a context never changes shape when a host wraps the log.
  */
 export type ContextSourceFunction = (query: EventQuery) => Promise<ReadonlyArray<EventMessage>>
 
@@ -120,10 +114,9 @@ export type ContextQueryFunction = <P extends StandardSchemaV1, R extends Standa
 // capability types beside these, duplicating the three in
 // `event-scheduling/schedule.ts` — because a context ALWAYS had them and the
 // only question was whether the field they read was populated. It is not always
-// so any more: `ScheduleVerbs<E>` contributes them, and only to a context whose
+// so any more: `SuppliedScheduleCapability<E>` contributes them, and only to a context whose
 // entry wired a log that can hold events that have not happened yet. They live
-// with the tier that adds them, exactly as `SnapshotReads<E>` lives with the
-// read it widens.
+// with the tier that adds them.
 
 /**
  * Capabilities available to command handlers: everything an event handler has,

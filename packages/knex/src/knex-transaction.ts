@@ -1,7 +1,4 @@
 import type {
-  EventHandlerContext,
-  CommandHandlerContext,
-  QueryHandlerContext,
   UnitOfWork,
 } from "@kronos-ts/core"
 import {
@@ -214,10 +211,8 @@ export function activeKnexTransaction(uow: UnitOfWork | undefined): KnexTransact
 //      unit-of-work factory that gives every unit of work a transaction.
 //   3. A HANDLER WRAPPER — `knexHandler(handler, knex)`, which adds a capability to
 //      the ctx a handler FUNCTION receives. The host spreads the entry.
-//   4. A NAMED CONTEXT TYPE — `KnexCommandContext`, so a slice's signature reads
-//      `ctx: KnexCommandContext` rather than an anonymous intersection.
 //
-// All four share ONE piece of state — the uow-keyed registry above — which is
+// All share ONE piece of state — the uow-keyed registry above — which is
 // what makes the capability and the transaction the same transaction.
 // ---------------------------------------------------------------------------
 
@@ -235,12 +230,6 @@ export type KnexCapability = {
   knex(): KnexClient | KnexTransaction
 }
 
-/** A command handler's context, plus this extension's capability. */
-export type KnexCommandContext = CommandHandlerContext & KnexCapability
-/** An event handler's context, plus this extension's capability. */
-export type KnexEventContext = EventHandlerContext & KnexCapability
-/** A query handler's context, plus this extension's capability. */
-export type KnexQueryContext = QueryHandlerContext & KnexCapability
 
 /**
  * Wrap a HANDLER FUNCTION — command, event or query — so its context gains
@@ -254,7 +243,7 @@ export type KnexQueryContext = QueryHandlerContext & KnexCapability
  * (`descriptor`, `name`, `appendCondition`) survives untouched:
  *
  * ```ts
- * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: KnexCommandContext) => {
+ * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: CommandHandlerContext & KnexCapability) => {
  *   await ctx.knex()("widgets").update({ name: payload.name })
  * })
  *

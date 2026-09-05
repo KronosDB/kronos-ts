@@ -1,9 +1,9 @@
-import { loadFunction, sourceFunction, type SnapshotReads } from "../event-sourcing/load.js"
+import { loadFunction, sourceFunction } from "../event-sourcing/load.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
-import { scheduleFunctions, type ScheduleVerbs } from "../event-scheduling/schedule.js"
+import { scheduleFunctions, type SuppliedScheduleCapability } from "../event-scheduling/schedule.js"
 import { queryFunction } from "../query-handling/query.js"
 import { sendFunction } from "../command-handling/send.js"
-import { emitUpdateFunction, type SubscriptionEmit } from "../query-handling/emit-update.js"
+import { emitUpdateFunction, type SuppliedSubscriptionCapability } from "../query-handling/emit-update.js"
 import type { QueryBus } from "../query-handling/bus.js"
 import type {
   ContextLoadFunction,
@@ -34,33 +34,35 @@ export type EventHandlerContext<
   E extends EventStore = EventStore,
   Q extends QueryBus<any> = QueryBus,
   U extends UnitOfWork = UnitOfWork,
-> = EventHandlerContextBase<E, U> & SnapshotReads<E> & ScheduleVerbs<E> & SubscriptionEmit<Q>
+> = EventHandlerContextBase<U> & SuppliedScheduleCapability<E> & SuppliedSubscriptionCapability<Q>
 
 /**
- * The context every handling gets, before the entry's log has been asked what
- * it can do.
+ * The context every handling gets, before the entry's log and bus have been
+ * asked what they can do.
  *
  * A CONTEXT IS ASSEMBLED BY INTERSECTION. This is the part that is always
- * there; the other members are what a capable log adds — `SnapshotReads<E>`
- * contributes the fused read, `ScheduleVerbs<E>` the three scheduling verbs.
- * Splitting them is what makes each one structurally ABSENT against a log that
- * cannot serve it rather than present-and-complaining, and the pattern is the
- * seam any later capability tier extends: derive a face from the tier's own
- * `If…Capable` anchor and intersect it here.
+ * there; the other members are what a capable log or bus adds —
+ * `SuppliedScheduleCapability<E>` contributes `ScheduleCapability`,
+ * `SuppliedSubscriptionCapability<Q>` contributes `SubscriptionCapability`.
+ * Splitting them is what makes each one structurally ABSENT against an entry
+ * that cannot serve it rather than present-and-complaining, and the pattern is
+ * the seam any later tier extends: a capability is a set of NEW members, the
+ * tier's `If…Capable` anchor decides whether they are supplied, and this line
+ * intersects the result.
  *
- * THERE ARE THREE TIERS TODAY and all three are visible on this line — two on
- * the log (`E`), one on the query bus (`Q`, the subscription tier's
- * `SubscriptionEmit`). Nothing about the construction is per-tier: a fourth
- * would be a fourth intersection member and nothing else would move. `Q` sits
- * between `E` and `U` because a handler annotates what it USES, in frequency
- * order: its log often, its bus rarely, its task almost never.
+ * THE SUPPLY SIDE IS `E` AND `Q`; THE DEMAND SIDE IS THE CAPABILITY. A handler
+ * never writes these parameters — it intersects the capability it uses
+ * (`ctx: EventHandlerContext & ScheduleCapability`) and the entry threads its
+ * real log and bus in here. Assignability of the supplied context to the
+ * demanded one is the whole check.
+ *
+ * SNAPSHOTTING HAS NO MEMBER HERE. It is a store tier the repository behind
+ * `load` consumes; a handler has nothing new to call, so a context never
+ * changes shape when a host wraps the log. See `event-sourcing/load.ts`.
  */
-type EventHandlerContextBase<
-  E extends EventStore = EventStore,
-  U extends UnitOfWork = UnitOfWork,
-> = {
+type EventHandlerContextBase<U extends UnitOfWork = UnitOfWork> = {
   /** Load event-sourced state within this UnitOfWork (cached per UoW). */
-  readonly load: ContextLoadFunction<E>
+  readonly load: ContextLoadFunction
   /**
    * THE RAW LAYER under `load`: run an event query against this entry's log and
    * fold the result yourself. The read is recorded on the unit of work the same
@@ -71,10 +73,10 @@ type EventHandlerContextBase<
   readonly send: ContextSendFunction
   /** Consult a query handler (cross-module read) within this UnitOfWork. */
   readonly query: ContextQueryFunction
-  // `emitUpdate` IS NOT DECLARED HERE. It is the subscription tier's face —
-  // `SubscriptionEmit<Q>` contributes it, and only to a context whose entry
-  // wired a bus that can serve live subscribers. It lives with the tier that
-  // adds it, exactly as `SnapshotReads<E>` lives with the read it widens.
+  // `emitUpdate` IS NOT DECLARED HERE. It is the subscription tier's capability —
+  // `SuppliedSubscriptionCapability<Q>` contributes it, and only to a context
+  // whose entry wired a bus that can serve live subscribers. It lives with the
+  // tier that adds it, as `ScheduleCapability` lives with the scheduling tier.
   /**
    * True while the owning processor is replaying history. Use it to skip
    * side effects (emails, webhooks) that must not fire twice.
@@ -95,8 +97,7 @@ type EventHandlerContextBase<
    * composed capability on a handler's behalf: what `correlatingHandler`
    * produces asks for `unitOfWork: CorrelatingUnitOfWork`, and does not
    * typecheck against a bus built from a bare `() => unitOfWork()`. A handler
-   * itself writes `U` only when it reaches for the task directly — which is
-   * why it is the SECOND parameter, behind the log it reads.
+   * itself writes `U` only when it reaches for the task directly.
    */
   readonly unitOfWork: U
 }
@@ -108,14 +109,14 @@ export function eventHandlerContext<
   Q extends QueryBus<any> = QueryBus,
 >(deps: HandlerContextDeps<U, E>): EventHandlerContext<E, Q, U> {
   const { uow } = deps
-  // ONE `source` FUNCTION, BOTH SHAPES — and THREE scheduling verbs, built
-  // whether or not this entry's log can serve them. The demands are types, and
-  // types are erased: what is built here is exactly what was built before any
-  // of this existed, and what a handler is ALLOWED to reach was settled by the
-  // compiler long before this line ran. A JavaScript caller who reaches one of
-  // the verbs against a bare log gets the named error from `requireScheduling`.
+  // EVERY MEMBER IS BUILT, whether or not this entry's log or bus can serve
+  // it. The demands are types, and types are erased: what a handler is ALLOWED
+  // to reach was settled by the compiler long before this line ran. A
+  // JavaScript caller who reaches a scheduling member against a bare log gets
+  // the named error from `requireScheduling`; the same for `emitUpdate`
+  // against a bare bus.
   return {
-    load: loadFunction(deps) as ContextLoadFunction<E>,
+    load: loadFunction(deps),
     source: sourceFunction(deps),
     ...scheduleFunctions(deps),
     send: sendFunction(deps) as ContextSendFunction,

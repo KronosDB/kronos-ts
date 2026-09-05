@@ -1,5 +1,5 @@
 import type { CommandBus } from "../command-handling/bus.js"
-import type { QueryBus, SubscriptionCapability } from "../query-handling/bus.js"
+import type { QueryBus, SubscriptionBusCapability } from "../query-handling/bus.js"
 import type { CommandMessage, Message, QueryMessage } from "../messaging/messages.js"
 import type { SubscriptionQueryResult } from "../query-handling/subscription-query.js"
 import type { SubscriptionFilter } from "../query-handling/subscription-filter.js"
@@ -81,7 +81,7 @@ export function interceptingQueryBus<B extends QueryBus<any>>(
   next: B,
   intercept: Intercept<QueryMessage>,
 ): B {
-  const capable = next as B & Partial<SubscriptionCapability>
+  const capable = next as B & Partial<SubscriptionBusCapability>
   return {
     ...next,
 
