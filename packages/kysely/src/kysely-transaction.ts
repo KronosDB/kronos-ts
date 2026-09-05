@@ -1,7 +1,4 @@
 import type {
-  EventHandlerContext,
-  CommandHandlerContext,
-  QueryHandlerContext,
   UnitOfWork,
 } from "@kronos-ts/core"
 import {
@@ -182,10 +179,8 @@ export function activeKyselyTransaction(
 //      unit-of-work factory that gives every unit of work a transaction.
 //   3. A HANDLER WRAPPER — `kyselyHandler(handler, db)`, which adds a capability to
 //      the ctx a handler FUNCTION receives. The host spreads the entry.
-//   4. A NAMED CONTEXT TYPE — `KyselyCommandContext`, so a slice's signature reads
-//      `ctx: KyselyCommandContext` rather than an anonymous intersection.
 //
-// All four share ONE piece of state — the uow-keyed registry above — which is
+// All share ONE piece of state — the uow-keyed registry above — which is
 // what makes the capability and the transaction the same transaction.
 // ---------------------------------------------------------------------------
 
@@ -203,12 +198,6 @@ export type KyselyCapability = {
   db(): KyselyDb | KyselyTransaction
 }
 
-/** A command handler's context, plus this extension's capability. */
-export type KyselyCommandContext = CommandHandlerContext & KyselyCapability
-/** An event handler's context, plus this extension's capability. */
-export type KyselyEventContext = EventHandlerContext & KyselyCapability
-/** A query handler's context, plus this extension's capability. */
-export type KyselyQueryContext = QueryHandlerContext & KyselyCapability
 
 /**
  * Wrap a HANDLER FUNCTION — command, event or query — so its context gains
@@ -222,7 +211,7 @@ export type KyselyQueryContext = QueryHandlerContext & KyselyCapability
  * (`descriptor`, `name`, `appendCondition`) survives untouched:
  *
  * ```ts
- * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: KyselyCommandContext) => {
+ * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: CommandHandlerContext & KyselyCapability) => {
  *   await ctx.db().updateTable("widgets").set({ name: payload.name }).execute()
  * })
  *

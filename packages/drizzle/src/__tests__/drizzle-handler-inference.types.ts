@@ -12,12 +12,12 @@
  * The runtime side of the same story is in `drizzle-transaction.test.ts`.
  */
 import type { CommandHandler, CommandMessage, CommandHandlerContext } from "@kronos-ts/core"
-import { type DrizzleCommandContext, type DrizzleDb, drizzleHandler } from "../drizzle-transaction.js"
+import { type DrizzleCapability, type DrizzleDb, drizzleHandler } from "../drizzle-transaction.js"
 
 declare const db: DrizzleDb
 
-/** A slice-side handler, annotated the way a slice annotates: `ctx: DrizzleCommandContext`. */
-declare const asksForDb: (message: CommandMessage, ctx: DrizzleCommandContext) => Promise<void>
+/** A slice-side handler, annotated the way a slice annotates: `ctx: CommandHandlerContext & DrizzleCapability`. */
+declare const asksForDb: (message: CommandMessage, ctx: CommandHandlerContext & DrizzleCapability) => Promise<void>
 
 // ---------------------------------------------------------------------------
 // (a) DIRECTIONAL ERASURE — db() goes in, the base context comes out.

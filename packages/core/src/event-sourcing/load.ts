@@ -3,8 +3,7 @@ import { repositoryFor } from "./repository.js"
 import type { EventMessage } from "../messaging/messages.js"
 import type { EventQuery } from "./dcb-query.js"
 import { sourcingCondition } from "./sourcing-condition.js"
-import type { EventStore, SnapshotCapableEventStore } from "./event-store.js"
-import type { Snapshot } from "./snapshot.js"
+import type { EventStore } from "./event-store.js"
 import type { State } from "./state.js"
 
 // ---------------------------------------------------------------------------
@@ -24,98 +23,16 @@ import type { State } from "./state.js"
 // same task fails if anything matching what you read landed in between. That
 // is `recordSourcing` below, and it is deliberately the ONLY way either read
 // contributes to a write.
+//
+// SNAPSHOTTING IS NOT VISIBLE HERE, and that is deliberate. It is a tier on
+// the STORE: wrap the entry's log in `<family>SnapshottingEventStore`, declare
+// `state({ snapshot })`, and the repository behind `ctx.load` asks the log for
+// the fused read. A handler's context has no member for it — there is nothing
+// new a handler would call — so nothing on a context changes shape when a
+// host adds the tier. A state with a snapshot policy loaded through a log that
+// cannot serve one is refused at runtime, loudly, by `capableOrThrow` in
+// `repository.ts`, on the first load in any test that runs the handler.
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// THE DEMAND — one alias, and every read surface that needs the snapshotting
-// capability derives from it.
-// ---------------------------------------------------------------------------
-
-/**
- * THE DEMAND. Branch on whether `E` — the log an entry actually wired — carries
- * the snapshotting capability.
- *
- * THIS IS THE ONE PLACE THE QUESTION IS ASKED. Both public faces of the demand
- * are written in terms of it and neither repeats the `extends` for itself:
- *
- * - {@link SnapshotReads} — what a CAPABLE store ADDS to a context: the fused
- *   `ctx.source(query, { snapshot })` overload. Against a bare store that
- *   overload is structurally ABSENT — not present-and-erroring — so a
- *   two-argument call is a no-such-signature error rather than a type mismatch
- *   inside a signature nobody should have been offered.
- * - {@link SnapshotDemand} — what a BARE store ADDS to `ctx.load`'s state
- *   parameter: a refusal branded with the fix, so a state that declares a
- *   snapshot policy cannot be loaded through a log that cannot serve one.
- *
- * The two faces are exact mirrors, which is not a coincidence: the capability
- * either widens what you may ask for, or narrows what you may ask it OF.
- *
- * ANCHOR ANYTHING LATER HERE. A native KronosDB fused read, a family that grows
- * a second capability, a store tier nobody has thought of yet — every one of
- * them is a question about what a wired store can serve, and asking it in one
- * place is what keeps the answer consistent across three contexts, two read
- * verbs and four storage families. Add a face; do not add a predicate.
- *
- * NOTHING RUNS. This is erased entirely: the JavaScript a demanded `ctx.load`
- * emits is byte for byte the JavaScript an undemanded one emits, and the only
- * runtime trace of the whole mechanism is one defensive `throw` in
- * `repository.ts` for callers who have no compiler at all.
- */
-export type IfSnapshotCapable<E extends EventStore, Capable, Bare> =
-  E extends SnapshotCapableEventStore ? Capable : Bare
-
-/**
- * `ctx.load`'s face of {@link IfSnapshotCapable}: nothing extra when the log is
- * capable, a BRANDED REFUSAL on `snapshot` when it is not.
- *
- * THE REFUSAL IS SPELLED INLINE, AND THAT IS DELIBERATE. Give the object type a
- * name and TypeScript prints the NAME in the diagnostic — `WrapTheEventStore`,
- * which tells a reader nothing. Left anonymous, the compiler has no shorthand
- * to reach for and prints the structure, so the property keys ARE the error
- * message and they arrive at the call site without anybody following a link.
- *
- * A state that declares `snapshot: { key, when }` types that field as a
- * `SnapshotConfig`; this demands two properties a config does not have, so the
- * compiler reports exactly which state, and what to do. A state WITHOUT a
- * policy types the field `undefined`, satisfies the demand vacuously, and never
- * sees a word of any of this.
- *
- * THE FIX IS SPELLED GENERALLY, AND THAT IS A RULE RATHER THAN A HEDGE. A
- * diagnostic may only be as specific as the code that owns it is CERTAIN about,
- * and core is certain about the capability and the shape of the wrapper — not
- * about which family this host chose. Naming a postgres function here would be
- * a confident wrong answer for the five hosts that are not on postgres. The
- * packages that DO know say so in their own diagnostics; see the family brands
- * in the persistence packages, which name their own factory because they are
- * entitled to.
- */
-export type SnapshotDemand<E extends EventStore> = IfSnapshotCapable<
-  E,
-  unknown,
-  {
-    readonly snapshot?: {
-      readonly ERROR: "this state declares a snapshot policy, but this handler's eventStore cannot serve one"
-      readonly FIX: "wrap this entry's eventStore in the snapshotting wrapper for its persistence family — <family>SnapshottingEventStore(store, …)"
-    }
-  }
->
-
-/**
- * `ctx.source`'s face of {@link IfSnapshotCapable}: the FUSED overload when the
- * log is capable, nothing at all when it is not.
- *
- * A context is ASSEMBLED by intersection — `EventHandlerContext<E, Q, U>` is the
- * base shape (whose `source` has only the plain one-argument signature)
- * intersected with this. Against a capable store the property becomes an
- * overload set, plain signature first; against a bare one it stays exactly the
- * single-signature function it has always been, and `unknown` disappears from
- * the intersection without a trace.
- */
-export type SnapshotReads<E extends EventStore> = IfSnapshotCapable<
-  E,
-  { readonly source: FusedSourceFunction },
-  unknown
->
 
 /**
  * Load event-sourced state for a state value within the unit of work.
@@ -124,16 +41,11 @@ export type SnapshotReads<E extends EventStore> = IfSnapshotCapable<
  * off the ENTRY's site, so the pair `ctx.load` needs is complete the moment it
  * is called. A state is data; data needs no invitation.
  *
- * `E` IS THE ENTRY'S LOG, threaded here from the composition root so the state
- * and the log can be checked against each other. The third argument to `State`
- * is `any` deliberately: this verb takes a state of EITHER snapshot-ness, and
- * which ones it will actually accept is said once, beside it, by
- * {@link SnapshotDemand} — not by narrowing the parameter twice.
+ * The third argument to `State` is `any` deliberately: this takes a state of
+ * EITHER snapshot-ness. Whether the entry's log can serve the policy a state
+ * declares is a fact about the wired store, checked where the store is used.
  */
-export type LoadFunction<E extends EventStore = EventStore> = <Id, S>(
-  state: State<Id, S, any> & SnapshotDemand<E>,
-  id: Id,
-) => Promise<S>
+export type LoadFunction = <Id, S>(state: State<Id, S, any>, id: Id) => Promise<S>
 
 /**
  * Run a query against the log this handling reads from and get the matching
@@ -142,65 +54,8 @@ export type LoadFunction<E extends EventStore = EventStore> = <Id, S>(
  * The query is the same plain data a `state()` derives for itself: `types` is
  * an any-of, `tags` an all-of, and an array of items is an OR. What is NOT
  * different is the consistency story — see {@link sourceFunction}.
- *
- * ONE SIGNATURE. The fused two-argument form is not here: it is contributed by
- * {@link SnapshotReads}, and only to a context whose log can serve it.
  */
 export type SourceFunction = (query: EventQuery) => Promise<ReadonlyArray<EventMessage>>
-
-/**
- * THE FUSED READ, contributed to a context only by a capable log: the cached
- * fold filed under `snapshot`, plus only the events after it. See
- * {@link SnapshottedSource}.
- */
-export type FusedSourceFunction = (
-  query: EventQuery,
-  opts: { snapshot: string },
-) => Promise<SnapshottedSource>
-
-/**
- * What a FUSED raw read hands back — the three things a hand-rolled fold needs
- * and nothing else.
- *
- * This is the whole snapshotting mechanism at the raw layer. You brought a key,
- * you get back whatever is filed under it and the events that came after it;
- * what you do with the pair is your fold's business, including whether to
- * trust the cached value at all.
- *
- * ```ts
- * const { snapshot, events, position } = await ctx.source(
- *   { tags: { courseId }, types: [CourseCreated, StudentSubscribed] },
- *   { snapshot: `course:${courseId}` },
- * )
- * const state = events.reduce(fold, snapshot ? (snapshot.state as S) : initial)
- * if (events.length > 100) await eventStore.storeSnapshot(`course:${courseId}`, { state, position })
- * ```
- *
- * BOTH HALVES COME OFF THE SAME OBJECT, and that is the whole ergonomic gain of
- * the capability tier over the old separate seam: the read verb you already had
- * grew an overload, and the write is a member of the log the slice already
- * holds. There is no second resource to wire and no second field to forget.
- */
-export type SnapshottedSource = {
-  /**
-   * The cached fold, or nothing when the key missed. FITNESS IS YOURS: nothing
-   * in the framework judges whether this value is still usable at the raw
-   * layer, because nothing in the framework knows what your fold folds into.
-   * Check it, or change your key when its meaning changes, or both.
-   */
-  readonly snapshot: Snapshot | undefined
-  /**
-   * The matching events AFTER `snapshot.position`, in stream order — the whole
-   * matching history when there was no snapshot. Fold these on top.
-   */
-  readonly events: ReadonlyArray<EventMessage>
-  /**
-   * The consistency marker's position for this read — what a snapshot you write
-   * from this fold should record as its own `position`, and the same value the
-   * append condition was stamped with.
-   */
-  readonly position: bigint
-}
 
 /**
  * The log a read comes off, or an error naming exactly what was missing and
@@ -265,11 +120,11 @@ function stableIdKey(id: unknown): string {
  * re-querying the store) and records a sourcing info per call, which the
  * PREPARE_COMMIT flush turns into the DCB append condition.
  */
-export function loadFunction<E extends EventStore = EventStore>(deps: {
+export function loadFunction(deps: {
   uow: UnitOfWork
-  eventStore?: E
-}): LoadFunction<E> {
-  return (async <Id, S>(state: State<Id, S, any>, id: Id): Promise<S> => {
+  eventStore?: EventStore
+}): LoadFunction {
+  return async <Id, S>(state: State<Id, S, any>, id: Id): Promise<S> => {
     const uow = requireLive(deps.uow)
     const eventStore = requireLog(deps.eventStore, `ctx.load(${state.identity}, …)`)
 
@@ -288,7 +143,7 @@ export function loadFunction<E extends EventStore = EventStore>(deps: {
     }
     recordSourcing(uow, result.sourcingInfo)
     return result.state
-  }) as LoadFunction<E>
+  }
 }
 
 /**
@@ -330,42 +185,12 @@ export function loadFunction<E extends EventStore = EventStore>(deps: {
 export function sourceFunction(deps: {
   uow: UnitOfWork
   eventStore?: EventStore
-}): SourceFunction & FusedSourceFunction {
-  return (async (
-    query: EventQuery,
-    opts?: { snapshot?: string },
-  ): Promise<ReadonlyArray<EventMessage> | SnapshottedSource> => {
+}): SourceFunction {
+  return async (query: EventQuery): Promise<ReadonlyArray<EventMessage>> => {
     const uow = requireLive(deps.uow)
     const eventStore = requireLog(deps.eventStore, "ctx.source(…)")
-
-    const key = opts?.snapshot
-
-    // THE PLAIN READ, byte for byte what it always was. No key, no fusion, and
-    // the return is the array — a caller who never heard of snapshotting is
-    // unaffected by any of this.
-    if (key === undefined) {
-      const { events, marker } = await eventStore.source(sourcingCondition(query))
-      recordSourcing(uow, { query, markerPosition: marker.position })
-      return events
-    }
-
-    // THE FUSED READ. The key goes onto the CONDITION, which is the one place
-    // the whole mechanism is addressed from — and by the time control gets
-    // here the TYPES have already established that this log can serve it: the
-    // overload that accepts a second argument only exists on a context whose
-    // `E` is capable. A store that somehow still ignores the key hands back the
-    // full history, which is correct, just not accelerated.
-    const { events, marker, snapshot } = await eventStore.source(
-      sourcingCondition(query, undefined, { key }),
-    )
-
-    // THE BOOKKEEPING IS IDENTICAL. Fusing the read narrows which events come
-    // back; it does not narrow what was READ, so the append condition is
-    // stamped with exactly the query and marker a plain read would have
-    // stamped. A fold seeded from a snapshot has the same DCB guarantee a fold
-    // that replayed everything has.
+    const { events, marker } = await eventStore.source(sourcingCondition(query))
     recordSourcing(uow, { query, markerPosition: marker.position })
-
-    return { snapshot, events, position: marker.position }
-  }) as SourceFunction & FusedSourceFunction
+    return events
+  }
 }

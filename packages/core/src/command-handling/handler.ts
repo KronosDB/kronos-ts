@@ -20,7 +20,7 @@ export type CommandHandler<
    * takes a handler FUNCTION asking for its own richer context and returns one
    * asking only for the base, having supplied the difference. The host spreads
    * the entry — `{ ...h, handler: drizzleHandler(h.handler, db) }` — which is what lets
-   * a slice write `ctx: DrizzleCommandContext` and still compose into `kronos`.
+   * a slice write `ctx: CommandHandlerContext & DrizzleCapability` and still compose into `kronos`.
    */
   readonly handler: (
     message: CommandMessage<InferOutput<P>>,

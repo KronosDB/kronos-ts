@@ -10,7 +10,7 @@ import { requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work
 import type { EventStore } from "../event-sourcing/event-store.js"
 import type {
   CancelResult,
-  ScheduleCapability,
+  ScheduleStoreCapability,
   ScheduleCapableEventStore,
   ScheduleToken,
 } from "./scheduler.js"
@@ -18,17 +18,18 @@ import type {
 // ---------------------------------------------------------------------------
 // THE DEMAND — one alias, and every scheduling surface derives from it.
 //
-// This is the SECOND member of the store-tier category, and it is written to
-// look like the first on purpose: `IfSnapshotCapable` in
-// `event-sourcing/load.ts` is the anchor pattern, and a reader who has
-// understood one has understood both.
+// This is the store tier that REACHES A CONTEXT: a handler has three new
+// members to call, so there is a capability (`ScheduleCapability`) and a
+// supply-side conditional that decides whether the entry's log provides it.
+// Snapshotting, the other store tier, adds nothing a handler calls and so has
+// no context capability at all — see `event-sourcing/load.ts`.
 // ---------------------------------------------------------------------------
 
 /**
  * THE DEMAND. Branch on whether `E` — the log an entry actually wired — carries
  * the scheduling capability.
  *
- * THIS IS THE ONE PLACE THE QUESTION IS ASKED, and {@link ScheduleVerbs} is its
+ * THIS IS THE ONE PLACE THE QUESTION IS ASKED, and {@link SuppliedScheduleCapability} is its
  * single face: what a CAPABLE store ADDS to a context. Against a bare store
  * those three verbs are structurally ABSENT — not present-and-throwing — so
  * `ctx.schedule(...)` is a "property does not exist" error at the call site
@@ -74,27 +75,28 @@ export type CancelScheduleFunction = (token: ScheduleToken) => Promise<CancelRes
 /**
  * The three scheduling capabilities, built together because they share deps.
  *
- * INTERNAL to the builder. What a CONTEXT gets is {@link ScheduleVerbs}, which
+ * INTERNAL to the builder. What a CONTEXT gets is {@link SuppliedScheduleCapability}, which
  * is this record or nothing at all depending on the entry's log.
  */
-export type ScheduleFunctions = {
+export type ScheduleCapability = {
   readonly schedule: ScheduleFunction
   readonly scheduleAfter: ScheduleAfterFunction
   readonly cancelSchedule: CancelScheduleFunction
 }
 
 /**
- * `ctx`'s face of {@link IfScheduleCapable}: the three verbs when the log can
- * schedule, nothing at all when it cannot.
+ * THE SUPPLY SIDE of {@link ScheduleCapability}: the capability when the
+ * entry's log can schedule, `unknown` when it cannot.
  *
  * A context is ASSEMBLED BY INTERSECTION — `EventHandlerContext<E, Q, U>` is the
- * base shape & `SnapshotReads<E>` & this — so against a bare log the verbs do
- * not exist, and `unknown` disappears from the intersection without a trace.
- * That is the same construction `SnapshotReads` uses, one capability over.
+ * base shape & this & the subscription tier's — so against a bare log the
+ * members do not exist, and `unknown` disappears from the intersection without
+ * a trace. A handler never writes this type; it intersects `ScheduleCapability`
+ * and the entry's `E` decides whether the supplied context satisfies it.
  */
-export type ScheduleVerbs<E extends EventStore> = IfScheduleCapable<
+export type SuppliedScheduleCapability<E extends EventStore> = IfScheduleCapable<
   E,
-  ScheduleFunctions,
+  ScheduleCapability,
   unknown
 >
 
@@ -107,9 +109,9 @@ export type ScheduleVerbs<E extends EventStore> = IfScheduleCapable<
  * is JavaScript callers and `as any` — for whom a named mistake beats
  * `undefined is not a function`.
  */
-function requireScheduling(eventStore: EventStore | undefined, call: string): ScheduleCapability {
-  if (eventStore && typeof (eventStore as Partial<ScheduleCapability>).schedule === "function") {
-    return eventStore as unknown as ScheduleCapability
+function requireScheduling(eventStore: EventStore | undefined, call: string): ScheduleStoreCapability {
+  if (eventStore && typeof (eventStore as Partial<ScheduleStoreCapability>).schedule === "function") {
+    return eventStore as unknown as ScheduleStoreCapability
   }
   // GENERAL, BECAUSE CORE CANNOT KNOW THE FAMILY. Which wrapper this host
   // should reach for is a fact about the persistence package it chose, and core
@@ -145,7 +147,7 @@ function requireScheduling(eventStore: EventStore | undefined, call: string): Sc
 export function scheduleFunctions(deps: {
   uow: UnitOfWork
   eventStore?: EventStore
-}): ScheduleFunctions {
+}): ScheduleCapability {
   const schedule = (async <P extends StandardSchemaV1>(
     event: EventDescriptor<P>,
     payload: InferOutput<P>,

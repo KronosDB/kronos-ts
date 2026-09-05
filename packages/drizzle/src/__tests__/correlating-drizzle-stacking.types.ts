@@ -6,7 +6,7 @@
  * without the handler knowing either exists:
  *
  *   - `drizzleHandler` demands on its INPUT (`ctx.db()` is something the
- *     handler USES, so the handler says so: `ctx: DrizzleCommandContext`) and
+ *     handler USES, so the handler says so: `ctx: CommandHandlerContext & DrizzleCapability`) and
  *     ERASES it on the way out — the entry never sees `db`.
  *   - `correlatingHandler` demands on its OUTPUT (carrying is something done
  *     TO a handling, so the handler never mentions it) — what comes out asks
@@ -30,6 +30,7 @@ import {
   localQueryBus,
   qn,
   unitOfWork,
+  type CommandHandlerContext,
   type CommandHandlerEntry,
   type CorrelatingUnitOfWork,
   type Message,
@@ -39,7 +40,7 @@ import {
 import {
   drizzleHandler,
   drizzleUnitOfWork,
-  type DrizzleCommandContext,
+  type DrizzleCapability,
   type DrizzleDb,
 } from "../drizzle-transaction.js"
 
@@ -54,7 +55,7 @@ declare const enrollPayload: StandardSchemaV1<{ studentId: string }>
 const Enroll = command({ name: qn("probe", "Enroll"), payload: enrollPayload })
 
 /** The handler says ONE thing — it uses `db()` — and nothing about its task. */
-const enroll = commandHandler(Enroll, async ({ payload }, ctx: DrizzleCommandContext) => {
+const enroll = commandHandler(Enroll, async ({ payload }, ctx: CommandHandlerContext & DrizzleCapability) => {
   void ctx.db()
   void payload.studentId
 })

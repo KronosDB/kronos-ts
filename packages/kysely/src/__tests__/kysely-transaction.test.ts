@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test"
-import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
+import { type CommandHandler, type CommandHandlerContext, unitOfWork } from "@kronos-ts/core"
 import {
   activeKyselyTransaction,
-  type KyselyCommandContext,
+  type KyselyCapability,
   type KyselyDb,
   kyselyHandler,
   kyselyTransaction,
@@ -145,8 +145,8 @@ describe("kyselyTransaction / activeKyselyTransaction", () => {
 // ---------------------------------------------------------------------------
 
 /** A command handler that REQUIRES the kysely context — what the wrapper takes. */
-function handlerReading(read: (ctx: KyselyCommandContext) => void) {
-  return async (_message: unknown, ctx: KyselyCommandContext): Promise<void> => {
+function handlerReading(read: (ctx: CommandHandlerContext & KyselyCapability) => void) {
+  return async (_message: unknown, ctx: CommandHandlerContext & KyselyCapability): Promise<void> => {
     read(ctx)
   }
 }
@@ -196,10 +196,10 @@ describe("kyselyHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const db = createMockDb()
-    const entry: CommandHandler<any, any, KyselyCommandContext> = {
+    const entry: CommandHandler<any, any, CommandHandlerContext & KyselyCapability> = {
       kind: "command-handler",
       descriptor: {} as never,
-      handler: async (_message, ctx: KyselyCommandContext) => {
+      handler: async (_message, ctx: CommandHandlerContext & KyselyCapability) => {
         ctx.db()
       },
     }

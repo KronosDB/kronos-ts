@@ -13,8 +13,8 @@ import type { EventHandlerContext } from "../../event-processing/context.js"
 import { localCommandBus } from "../../command-handling/local-bus.js"
 import { localQueryBus } from "../../query-handling/local-bus.js"
 import type { QueryBus, SubscriptionCapableQueryBus } from "../bus.js"
-import type { EmitCapability } from "../emit-update.js"
-import type { SnapshotCapableEventStore } from "../../event-sourcing/event-store.js"
+import type { SubscriptionCapability } from "../emit-update.js"
+import type { ScheduleCapability } from "../../event-scheduling/schedule.js"
 import { subscriptionQuery } from "../subscription-query.js"
 import { interceptingQueryBus } from "../../interception/intercepting-bus.js"
 import { eventProcessor } from "../../event-processing/processor.js"
@@ -54,7 +54,7 @@ export const plain = eventHandler(Enrolled, async (_m, ctx) => {
 
 export const emitting = eventHandler(
   Enrolled,
-  async (_m, ctx: EventHandlerContext & EmitCapability) => {
+  async (_m, ctx: EventHandlerContext & SubscriptionCapability) => {
     ctx.emitUpdate(Watch, (q: { id: string }) => q.id === "x", 1)
   },
 )
@@ -72,7 +72,7 @@ export const wired = {
 // The command context carries the same face — a decision may push an update.
 export const emittingDecision = commandHandler(
   command({ name: qn("probe", "Do"), payload: z.object({}) }),
-  async (_m, ctx: CommandHandlerContext & EmitCapability) => {
+  async (_m, ctx: CommandHandlerContext & SubscriptionCapability) => {
     ctx.emitUpdate(Watch, () => true, 1)
   },
 )
@@ -86,13 +86,13 @@ export const emittingByParameter = eventHandler(
   },
 )
 
-// Faces COMPOSE with the log demands — one intersection per thing used, and
-// the log is named only because THIS handler reads a cached fold.
-export const emittingAndSnapshotting = eventHandler(
+// Capabilities COMPOSE — one intersection per thing used, and no type
+// parameter anywhere: the schedule tier is demanded the same way this one is.
+export const emittingAndScheduling = eventHandler(
   Enrolled,
-  async (_m, ctx: EventHandlerContext<SnapshotCapableEventStore> & EmitCapability) => {
+  async (_m, ctx: EventHandlerContext & ScheduleCapability & SubscriptionCapability) => {
     ctx.emitUpdate(Watch, () => true, 1)
-    void ctx.source
+    void ctx.schedule
   },
 )
 

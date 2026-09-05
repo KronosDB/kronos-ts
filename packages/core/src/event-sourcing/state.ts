@@ -168,8 +168,8 @@ export type EvolveTuple<E extends EvolveShape, Id = unknown, S = InitialState<E>
  * `State<Id, S>` is one whose config is `undefined` and can never be anything
  * else. `state()` reads it off the definition you wrote — pass a `snapshot`
  * config and you get `true` back — and `ctx.load` reads it off the value you
- * hand it, which is what turns "this state snapshots" into a fact the compiler
- * can hold the WIRING to. See `IfSnapshotCapable` in `load.ts`.
+ * hand it, which is what the repository reads to decide whether to ask the
+ * wired log for a snapshot. Nothing on a handler's context names the tier.
  */
 export type State<
   Id = unknown,
@@ -480,9 +480,8 @@ export function state<
   // WHETHER THIS FOLD IS CACHED, read off the definition. Writing a `snapshot`
   // config gives `C` that config's type and the return says `State<…, true>`;
   // writing none leaves `C` at its default and the return says `State<…,
-  // false>`. That one inference is what every downstream compile-time demand
-  // stands on — see `IfSnapshotCapable` in `load.ts` — and a host writes
-  // nothing to get it.
+  // false>`. The repository reads that inference at runtime to decide whether
+  // to ask the wired log for a snapshot, and a host writes nothing to get it.
   C extends SnapshotConfig | undefined = undefined,
 >(def: {
   id: IS

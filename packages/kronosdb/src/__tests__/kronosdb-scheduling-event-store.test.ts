@@ -82,7 +82,7 @@ describe("kronosDbSchedulingEventStore", () => {
       event: { event: { name: string; payload: Uint8Array }; tags: { key: Uint8Array; value: Uint8Array }[] }
     }
     expect(request.dueMs).toBe(1_800_000_000_000n)
-    // THE SERVER MINTS THE TOKEN. `ScheduleCapability.schedule` has no
+    // THE SERVER MINTS THE TOKEN. `ScheduleStoreCapability.schedule` has no
     // caller-supplied idempotency key, because two of the three families cannot
     // honour one and a capability is what all of them can promise.
     expect(request.token).toBe("")

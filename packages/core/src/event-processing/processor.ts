@@ -138,7 +138,7 @@ export type EventProcessorConfig<U extends UnitOfWork = UnitOfWork> =
  * Branch on the config the caller actually wrote. A `deadLetterQueue` present
  * and a `sequence` absent adds a REQUIRED property the literal does not have,
  * so the compiler reports a missing member whose keys ARE the message — the
- * same trick `SnapshotDemand` uses, and for the same reason: give the object
+ * same trick the correlation demand uses, and for the same reason: give the object
  * type a name and TypeScript prints the NAME, which tells a reader nothing.
  * Left anonymous, it has no shorthand to reach for and prints the structure.
  *

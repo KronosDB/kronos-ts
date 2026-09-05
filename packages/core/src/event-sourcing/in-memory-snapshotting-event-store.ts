@@ -13,7 +13,7 @@
 // both halves into a single statement because it holds the connection.
 // ---------------------------------------------------------------------------
 
-import type { EventStore, SnapshotCapability } from "./event-store.js"
+import type { EventStore, SnapshotStoreCapability } from "./event-store.js"
 import type { Snapshot } from "./snapshot.js"
 import { withoutSnapshotKey } from "./sourcing-condition.js"
 
@@ -60,7 +60,7 @@ import { withoutSnapshotKey } from "./sourcing-condition.js"
  */
 export function inMemorySnapshottingEventStore<E extends EventStore>(
   next: E,
-): E & SnapshotCapability {
+): E & SnapshotStoreCapability {
   const snapshots = new Map<string, Snapshot>()
 
   return {
@@ -97,5 +97,5 @@ export function inMemorySnapshottingEventStore<E extends EventStore>(
     // produces is asserted rather than inferred. The probe is what makes the
     // assertion honest: it pins that the result still satisfies BOTH the
     // capability and whatever `E` was.
-  } as E & SnapshotCapability
+  } as E & SnapshotStoreCapability
 }

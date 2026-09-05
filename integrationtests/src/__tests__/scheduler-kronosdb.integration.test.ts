@@ -18,7 +18,7 @@
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { inMemoryEventStore, qn, tag } from "@kronos-ts/core"
-import type { EventMessage, ScheduleCapability } from "@kronos-ts/core"
+import type { EventMessage, ScheduleStoreCapability } from "@kronos-ts/core"
 import {
   connectToKronosDb,
   kronosDbSchedulingEventStore,
@@ -80,7 +80,7 @@ const waitUntil = async (probe: () => Promise<boolean>, timeoutMs = 15_000) => {
 describe("KronosDB scheduler (e2e)", () => {
   let container: StartedTestContainer
   let connection: KronosDbConnection
-  let scheduler: ScheduleCapability & KronosDbSchedulingControl
+  let scheduler: ScheduleStoreCapability & KronosDbSchedulingControl
   let schedulerAvailable = false
 
   beforeAll(async () => {
@@ -170,7 +170,7 @@ describe("KronosDB scheduler (e2e)", () => {
   }, 30_000)
 
   // THE CALLER-SUPPLIED IDEMPOTENCY TOKEN IS GONE, and with it the test that
-  // covered it. `ScheduleCapability.schedule` has no such parameter, because
+  // covered it. `ScheduleStoreCapability.schedule` has no such parameter, because
   // neither the postgres nor the in-memory tier can honour one and a capability
   // is what every member of the tier can promise. A host that needs KronosDB's
   // idempotent retry reaches `connection.scheduler.scheduleAppend` directly —

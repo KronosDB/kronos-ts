@@ -27,7 +27,7 @@ import type {
   Metadata,
   EventProcessor,
   EventStore,
-  ScheduleCapability,
+  ScheduleStoreCapability,
   QueryHandler,
   QueryHandlerEntry,
   QueryMessage,
@@ -137,7 +137,7 @@ export type EventRecording = {
   reset(): void
 }
 
-export type FixtureEventStore = SnapshotCapableEventStore & ScheduleCapability & EventRecording
+export type FixtureEventStore = SnapshotCapableEventStore & ScheduleStoreCapability & EventRecording
 
 /**
  * WHAT A SCOPE IS HANDED: every resource, already wrapped for recording.

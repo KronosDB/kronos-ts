@@ -95,12 +95,12 @@ export type EventStore = EventStorageEngine & EventBus
  * )
  * ```
  *
- * And the compiler makes you: a handler that `ctx.load`s a state declaring a
- * snapshot policy does not typecheck against an entry whose `eventStore` is
- * bare. See `IfSnapshotCapable` in `load.ts` — the one demand every read
- * surface derives from.
+ * Nothing on a handler's context names this tier. `state({ snapshot })` says a
+ * state wants caching, the wrapped log serves it through `ctx.load`, and a
+ * policy loaded through a bare log is refused at runtime by `capableOrThrow`
+ * in `repository.ts`, on the first load.
  */
-export type SnapshotCapableEventStore = EventStore & SnapshotCapability
+export type SnapshotCapableEventStore = EventStore & SnapshotStoreCapability
 
 /**
  * WHAT A SNAPSHOTTING WRAPPER ADDS, named on its own — so a wrapper can be
@@ -111,11 +111,11 @@ export type SnapshotCapableEventStore = EventStore & SnapshotCapability
  * delegates them, but the type says only "a capable event store", and anything
  * the inner store had — a second tier, a family-specific member — is gone from
  * the caller's view. So the four family wrappers are spelled
- * `<E extends EventStore>(next: E, …) => E & SnapshotCapability`, which is the
+ * `<E extends EventStore>(next: E, …) => E & SnapshotStoreCapability`, which is the
  * general rule for a capability adder: preserve the input's type, intersect the
  * addition.
  */
-export type SnapshotCapability = {
+export type SnapshotStoreCapability = {
   /**
    * Replace the cached fold filed under `key`.
    *

@@ -52,7 +52,6 @@ import {
   type UnitOfWork,
   type CommandBus,
   type CommandHandlerContext,
-  type SnapshotCapableEventStore,
   type SubscriptionCapableQueryBus,
 } from "@kronos-ts/core"
 import {
@@ -160,14 +159,14 @@ const EnrollStudent = command({
 // the handlers do not:
 //
 //   type UniversityCommandContext =
-//     CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore> & EmitCapability
+//     CommandHandlerContext & ScheduleCapability & SubscriptionCapability & DrizzleCapability
 //
-// Named for the APP, matching how the adapter packages name theirs
-// (`PostgresCommandContext`, `DrizzleEventContext`). Here it says: these
-// handlers load folds that `Course` / `Student` declared a snapshot policy for,
-// so the log wired at the entry below has to be able to serve one — wire a bare
-// `postgresEventStore` and this is where the build breaks, naming the wrapper.
-type UniversityCommandContext = CommandHandlerContext<SnapshotCapableEventStore>
+// Named for the APP. Today this app uses nothing beyond the base context:
+// `Course` / `Student` declare a snapshot policy, but snapshotting is a STORE
+// tier — the wrapped log below serves it through `ctx.load`, and a handler has
+// nothing to name. Wire a bare `postgresEventStore` instead and the first load
+// throws, naming the wrapper.
+type UniversityCommandContext = CommandHandlerContext
 
 const openCourse = commandHandler(OpenCourse, async ({ payload: cmd }, ctx: UniversityCommandContext) => {
   const course = await ctx.load(Course, { courseId: cmd.courseId })

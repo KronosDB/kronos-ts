@@ -25,8 +25,8 @@
  * ```
  *
  * And the compiler makes you: `ctx.schedule` is structurally ABSENT from a
- * handling whose entry's log was never wrapped. See `IfScheduleCapable` in
- * `schedule.ts` — the mirror of `IfSnapshotCapable` in `event-sourcing/load.ts`.
+ * handling whose entry's log was never wrapped. See `IfScheduleCapable` and
+ * `ScheduleCapability` in `schedule.ts`.
  *
  * ── SEMANTICS, UNCHANGED ───────────────────────────────────────────────────
  *
@@ -37,7 +37,7 @@
  *   schedule the moment it is told — the wrapper says so in its own doc.
  *
  * - Once committed, the event WILL be appended at or after `at` unless
- *   {@link ScheduleCapability.cancelSchedule} wins the race. "At or after",
+ *   {@link ScheduleStoreCapability.cancelSchedule} wins the race. "At or after",
  *   because workers poll: a fire time is a floor, not a deadline.
  *
  * - `cancelSchedule(token)` answers a {@link CancelResult} rather than throwing,
@@ -56,7 +56,7 @@ import type { EventStore } from "../event-sourcing/event-store.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
 
 /**
- * Opaque handle returned by {@link ScheduleCapability.schedule}. Hand it back
+ * Opaque handle returned by {@link ScheduleStoreCapability.schedule}. Hand it back
  * to cancel. Tokens are family-specific (postgres uses the row PK, the
  * in-memory tier a UUID, KronosDB the server's own token) but always carry a
  * stable `id`.
@@ -71,7 +71,7 @@ export type ScheduleToken = {
 }
 
 /**
- * Outcome of {@link ScheduleCapability.cancelSchedule}.
+ * Outcome of {@link ScheduleStoreCapability.cancelSchedule}.
  *
  * - `cancelled`        — the schedule was pending and is now cancelled. The
  *                        event will NOT be appended.
@@ -89,18 +89,18 @@ export type CancelResult =
  * WHAT A SCHEDULING WRAPPER ADDS, named on its own — so a wrapper can be
  * ADDITIVE rather than collapsing.
  *
- * The exact mirror of `SnapshotCapability`, and for the exact same reason. A
+ * The exact mirror of `SnapshotStoreCapability`, and for the exact same reason. A
  * wrapper typed `(next: EventStore) => ScheduleCapableEventStore` would LAUNDER
  * every other capability its input carried: the runtime object still delegates
  * them, but the type says only "a schedulable event store", and a snapshotting
  * tier underneath is gone from the caller's view. So every family wrapper is
- * spelled `<E extends EventStore>(next: E, …) => E & ScheduleCapability`.
+ * spelled `<E extends EventStore>(next: E, …) => E & ScheduleStoreCapability`.
  *
  * TWO MEMBERS, and both had to be named — unlike snapshotting, where the read
  * was already in `EventStore`'s shape and only the write needed a name. A
  * schedule is not a read of the log, so neither half was there.
  */
-export type ScheduleCapability = {
+export type ScheduleStoreCapability = {
   /**
    * Schedule `event` for append at `at`.
    *
@@ -142,4 +142,4 @@ export type ScheduleCapability = {
  * So the CONTRACT is written here and each wrapper's return type is annotated
  * with it; the type probe asserts they all still satisfy it.
  */
-export type ScheduleCapableEventStore = EventStore & ScheduleCapability
+export type ScheduleCapableEventStore = EventStore & ScheduleStoreCapability

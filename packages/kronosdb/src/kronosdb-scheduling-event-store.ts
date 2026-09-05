@@ -12,7 +12,7 @@
  * durable the moment `schedule()` resolves — quorum-acknowledged like any
  * append.
  *
- * ADDITIVE, like every capability adder: `E` in, `E & ScheduleCapability` out,
+ * ADDITIVE, like every capability adder: `E` in, `E & ScheduleStoreCapability` out,
  * so a store already wrapped for snapshots still serves them.
  *
  * ```ts
@@ -40,7 +40,7 @@ import {
 import type {
   CancelResult,
   EventStore,
-  ScheduleCapability,
+  ScheduleStoreCapability,
   ScheduleToken,
   UnitOfWork,
 } from "@kronos-ts/core"
@@ -77,7 +77,7 @@ export class ScheduleAlreadyExistsError extends Error {
 
 // `ScheduleAlreadyResolvedError` and `ScheduleNotFoundError` are GONE. They
 // were the two cancel outcomes spelled as throws, from a time when this was a
-// standalone scheduler with its own vocabulary. `ScheduleCapability.cancelSchedule`
+// standalone scheduler with its own vocabulary. `ScheduleStoreCapability.cancelSchedule`
 // answers a `CancelResult` — `already-appended`, `not-found`, `cancelled` —
 // because those are three pieces of NEWS a caller branches on, not three
 // failures, and every family answers in the same three words so a compensating
@@ -89,7 +89,7 @@ export class ScheduleAlreadyExistsError extends Error {
  * `listSchedules` is a read of what the SERVER is holding, which no other
  * family can answer as cheaply — postgres would have to query its table and the
  * in-memory tier has nothing durable to report. It stays out of
- * {@link ScheduleCapability} for exactly that reason: a capability is what every
+ * {@link ScheduleStoreCapability} for exactly that reason: a capability is what every
  * member of the tier can honestly promise.
  */
 export type KronosDbSchedulingControl = {
@@ -110,7 +110,7 @@ export function kronosDbSchedulingEventStore<E extends EventStore>(
   connection: KronosDbConnection,
   options: KronosDbSchedulingOptions,
   context: string = connection.config.context,
-): E & ScheduleCapability & KronosDbSchedulingControl {
+): E & ScheduleStoreCapability & KronosDbSchedulingControl {
   const { serializer } = options
 
   function getMetadata() {
@@ -130,7 +130,7 @@ export function kronosDbSchedulingEventStore<E extends EventStore>(
           {
             dueMs: BigInt(dueMs),
             // THE SERVER MINTS THE TOKEN. The standalone scheduler let a caller
-            // supply one as an idempotency key; `ScheduleCapability.schedule`
+            // supply one as an idempotency key; `ScheduleStoreCapability.schedule`
             // has no such parameter, because two of the three families have no
             // way to honour it and a capability is what all of them can promise.
             // A host that needs KronosDB's idempotent retry reaches the
@@ -191,7 +191,7 @@ export function kronosDbSchedulingEventStore<E extends EventStore>(
     },
     // The spread of a generic is opaque to the checker, so the shape it
     // produces is asserted rather than inferred; the probe keeps it honest.
-  } as E & ScheduleCapability & KronosDbSchedulingControl
+  } as E & ScheduleStoreCapability & KronosDbSchedulingControl
 }
 
 function isGrpcStatus(error: unknown, status: Status): boolean {

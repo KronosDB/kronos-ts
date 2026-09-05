@@ -90,9 +90,6 @@ export {
 export {
   postgresHandler,
   type PostgresCapability,
-  type PostgresCommandContext,
-  type PostgresEventContext,
-  type PostgresQueryContext,
   type Sql,
   type Tx,
 } from "./postgres-handler.js"

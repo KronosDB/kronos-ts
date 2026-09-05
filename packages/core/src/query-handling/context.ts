@@ -1,5 +1,4 @@
-import { loadFunction, sourceFunction, type SnapshotReads } from "../event-sourcing/load.js"
-import type { EventStore } from "../event-sourcing/event-store.js"
+import { loadFunction, sourceFunction } from "../event-sourcing/load.js"
 import { queryFunction } from "./query.js"
 import type {
   ContextLoadFunction,
@@ -20,19 +19,16 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
  * Deliberately narrow: no `append` (a query must not write), and no `send`
  * (dispatching a command from a query breaks command/query separation).
  * `query` IS here: a read composing another module's read stays a read.
+ *
+ * NO STORE PARAMETER. No tier adds a member to a QUERY context: snapshotting
+ * is served by the store to `ctx.load` without a handler naming it, and a read
+ * gives birth to nothing, so the scheduling tier never reaches here. The entry
+ * still carries its log — `ctx.load` sources from it — but nothing about the
+ * log's tiers changes this shape.
  */
-export type QueryHandlerContext<
-  E extends EventStore = EventStore,
-  U extends UnitOfWork = UnitOfWork,
-> = QueryHandlerContextBase<E, U> & SnapshotReads<E>
-
-/** The always-there part; see `EventHandlerContext` for why it is split out. */
-type QueryHandlerContextBase<
-  E extends EventStore = EventStore,
-  U extends UnitOfWork = UnitOfWork,
-> = {
+export type QueryHandlerContext<U extends UnitOfWork = UnitOfWork> = {
   /** Load event-sourced state within this UnitOfWork (cached per UoW). */
-  readonly load: ContextLoadFunction<E>
+  readonly load: ContextLoadFunction
   /**
    * THE RAW LAYER under `load`: run an event query against this entry's log and
    * fold the result yourself. A pure read here — a query handling has no
@@ -49,14 +45,14 @@ type QueryHandlerContextBase<
 }
 
 /** Build the QUERY handler context for one invocation. */
-export function queryHandlerContext<U extends UnitOfWork, E extends EventStore = EventStore>(
-  deps: HandlerContextDeps<U, E>,
-): QueryHandlerContext<E, U> {
+export function queryHandlerContext<U extends UnitOfWork>(
+  deps: HandlerContextDeps<U>,
+): QueryHandlerContext<U> {
   const { uow } = deps
   return {
-    load: loadFunction(deps) as ContextLoadFunction<E>,
+    load: loadFunction(deps),
     source: sourceFunction(deps),
     query: queryFunction(deps) as ContextQueryFunction,
     unitOfWork: uow,
-  } as QueryHandlerContext<E, U>
+  } as QueryHandlerContext<U>
 }

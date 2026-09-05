@@ -1,6 +1,6 @@
 import type {
   CommandHandler,
-  EmitCapability,
+  SubscriptionCapability,
   EventHandler,
   EventHandlerContext,
   EventProcessor,
@@ -15,7 +15,7 @@ import type {
  * that: the face is intersected, not spelled as a type argument, so nothing
  * here restates the log it never had an opinion about.
  */
-type EmittingContext = EventHandlerContext & EmitCapability
+type EmittingContext = EventHandlerContext & SubscriptionCapability
 import { eventProcessor } from "@kronos-ts/core"
 import type { FixtureLists, FixtureResources, PartialProcessor } from "@kronos-ts/test"
 import { z } from "zod"

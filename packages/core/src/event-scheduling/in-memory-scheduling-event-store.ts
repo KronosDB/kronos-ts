@@ -16,7 +16,7 @@
 
 import type { EventMessage } from "../messaging/messages.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
-import type { CancelResult, ScheduleCapability, ScheduleToken } from "./scheduler.js"
+import type { CancelResult, ScheduleStoreCapability, ScheduleToken } from "./scheduler.js"
 import { NoActiveUnitOfWork, requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work.js"
 import { generateIdentifier } from "../messaging/identifier.js"
 
@@ -41,7 +41,7 @@ export type InMemorySchedulingOptions = {
 /**
  * WHAT THE IN-MEMORY TIER ADDS BEYOND THE CAPABILITY: a way to disarm.
  *
- * Not part of {@link ScheduleCapability}, because "cancel every timer you are
+ * Not part of {@link ScheduleStoreCapability}, because "cancel every timer you are
  * holding" is a property of a tier that HOLDS timers, and the postgres tier
  * holds a poller instead. Tests call it in `afterEach` so a schedule armed by
  * one test cannot fire into the next.
@@ -96,7 +96,7 @@ export type InMemorySchedulingControl = {
 export function inMemorySchedulingEventStore<E extends EventStore>(
   next: E,
   options: InMemorySchedulingOptions = {},
-): E & ScheduleCapability & InMemorySchedulingControl {
+): E & ScheduleStoreCapability & InMemorySchedulingControl {
   const now = options.clock ?? Date.now
   const records = new Map<string, ScheduleRecord>()
 
@@ -191,5 +191,5 @@ export function inMemorySchedulingEventStore<E extends EventStore>(
     // produces is asserted rather than inferred. The probe is what makes the
     // assertion honest: it pins that the result still satisfies BOTH the
     // capability and whatever `E` was.
-  } as E & ScheduleCapability & InMemorySchedulingControl
+  } as E & ScheduleStoreCapability & InMemorySchedulingControl
 }

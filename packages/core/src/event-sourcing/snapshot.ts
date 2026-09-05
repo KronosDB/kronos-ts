@@ -8,10 +8,10 @@
 // VOCABULARY the fold and the wrappers share: what one cached fold IS
 // ({@link Snapshot}), when one is due ({@link SnapshotPolicy}), what a state
 // declares ({@link SnapshotConfig}) and how an id becomes part of a key. The
-// CAPABILITY is `SnapshotCapableEventStore` in `event-store.ts`; the DEMAND
-// that makes wiring it a compile-time obligation is `IfSnapshotCapable` in
-// `load.ts`; the FITNESS CHECK is `structural-fitness.ts`, beside the
-// repository that asks it.
+// CAPABILITY is `SnapshotStoreCapability` in `event-store.ts` — a STORE tier
+// with no context face, consumed by the repository; the runtime refusal for a
+// policy against a bare log is `capableOrThrow` in `repository.ts`; the
+// FITNESS CHECK is `structural-fitness.ts`, beside the repository that asks it.
 //
 // A snapshot is not a fact and not a record. It is the answer to a fold that
 // somebody already computed, kept so the next reader does not have to compute

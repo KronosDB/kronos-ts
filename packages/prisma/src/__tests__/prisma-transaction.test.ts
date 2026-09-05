@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { type CommandHandler, unitOfWork } from "@kronos-ts/core"
+import { type CommandHandler, type CommandHandlerContext, unitOfWork } from "@kronos-ts/core"
 import {
   activePrismaTransaction,
   type PrismaClientLike,
-  type PrismaCommandContext,
+  type PrismaCapability,
   prismaHandler,
   prismaTransaction,
   prismaUnitOfWork,
@@ -164,8 +164,8 @@ describe("prismaTransaction / activePrismaTransaction", () => {
 // ---------------------------------------------------------------------------
 
 /** A command handler that REQUIRES the prisma context — what the wrapper takes. */
-function handlerReading(read: (ctx: PrismaCommandContext) => void) {
-  return async (_message: unknown, ctx: PrismaCommandContext): Promise<void> => {
+function handlerReading(read: (ctx: CommandHandlerContext & PrismaCapability) => void) {
+  return async (_message: unknown, ctx: CommandHandlerContext & PrismaCapability): Promise<void> => {
     read(ctx)
   }
 }
@@ -215,10 +215,10 @@ describe("prismaHandler", () => {
     // The wrapper knows nothing about entries; wrapping is the host's own
     // `{ ...h, handler: … }`, which is exactly why nothing else can be lost.
     const prisma = createMockPrisma()
-    const entry: CommandHandler<any, any, PrismaCommandContext> = {
+    const entry: CommandHandler<any, any, CommandHandlerContext & PrismaCapability> = {
       kind: "command-handler",
       descriptor: {} as never,
-      handler: async (_message, ctx: PrismaCommandContext) => {
+      handler: async (_message, ctx: CommandHandlerContext & PrismaCapability) => {
         ctx.prisma()
       },
     }

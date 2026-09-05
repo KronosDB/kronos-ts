@@ -69,11 +69,12 @@ export type StateRepository<Id = unknown, S = unknown> = {
  * entry's log — a store wrapped in its family's `…SnapshottingEventStore`. With
  * either half missing this repository never touches a snapshot.
  *
- * AND THE COMPILER ALREADY CHECKED. A state with a policy cannot reach a
- * `ctx.load` whose log is bare — see `IfSnapshotCapable` in `load.ts` — so by
- * the time control arrives here the pair is guaranteed. The check below is a
- * DEFENSIVE assertion for callers who compiled nothing at all, not a branch the
- * design depends on.
+ * THE CHECK IS HERE, AND IT IS THE ONLY ONE. Nothing on a handler's context
+ * names snapshotting — a handler has nothing new to call — so whether the
+ * wired log can serve a state's policy is decided where the log is used: a
+ * policy against a bare log throws, naming the wrapper, on the first load in
+ * any test that runs the handler. Loud on first use beats a compile-time
+ * demand that forced every handler to name a store tier it never touched.
  *
  * ALL OF THIS IS SUGAR. `ctx.source(query, { snapshot })` plus an
  * `eventStore.storeSnapshot(key, …)` call is the same mechanism with the policy

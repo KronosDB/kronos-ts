@@ -34,7 +34,7 @@ import {
   type EventDescriptor,
   type EventMessage,
   type EventStore,
-  type SnapshotCapability,
+  type SnapshotStoreCapability,
 } from "@kronos-ts/core"
 import {
   kronosDbConnection,
@@ -102,7 +102,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 10_000): P
 describe("KronosDB native snapshots — one fused RPC", () => {
   let container: StartedTestContainer
   let backend: KronosDbConnectionHandle
-  let store: EventStore & SnapshotCapability
+  let store: EventStore & SnapshotStoreCapability
   let plain: EventStore
 
   beforeAll(async () => {
