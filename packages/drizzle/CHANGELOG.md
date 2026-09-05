@@ -1,5 +1,102 @@
 # @kronos-ts/drizzle
 
+## 0.7.0
+
+### Minor Changes
+
+- 0a6a030: A context capability exists only when a handler has something new to call. BREAKING renames and deletions.
+
+  **Snapshotting is a store tier with no context type.** `SnapshotReads`, `SnapshotDemand`, `IfSnapshotCapable`, `FusedSourceFunction` and `SnapshottedSource` are gone. `ctx.source` has one signature everywhere, `ctx.load` accepts any state against any context, and a snapshot-policy state loaded through a bare log throws at runtime on the first load (`capableOrThrow`). Wire `<family>SnapshottingEventStore` underneath and declare `state({ snapshot })`; no handler names the tier.
+
+  **One naming rule.** `<Tier>Capability` is what a handler intersects on its context. `<Tier>StoreCapability` / `<Tier>BusCapability` is what a wrapper adds to a store or bus. `<Tier>Capable<Thing>` aliases for composition roots are unchanged.
+
+  | before                                     | after                                                                 |
+  | ------------------------------------------ | --------------------------------------------------------------------- |
+  | `EmitCapability` (ctx)                     | `SubscriptionCapability`                                              |
+  | `ScheduleFunctions` (ctx)                  | `ScheduleCapability`                                                  |
+  | `SubscriptionCapability` (bus)             | `SubscriptionBusCapability`                                           |
+  | `ScheduleCapability` (store)               | `ScheduleStoreCapability`                                             |
+  | `SnapshotCapability` (store)               | `SnapshotStoreCapability`                                             |
+  | `ScheduleVerbs<E>` / `SubscriptionEmit<Q>` | `SuppliedScheduleCapability<E>` / `SuppliedSubscriptionCapability<Q>` |
+
+  **The per-package `<Pkg>CommandContext` / `<Pkg>EventContext` / `<Pkg>QueryContext` aliases are deleted** (drizzle, knex, kysely, prisma, postgres). A host names its context once:
+
+  ```ts
+  // before
+  commandHandler(Edit, async (m, ctx: CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore> & EmitCapability & DrizzleCapability) => …)
+  commandHandler(Edit, async (m, ctx: DrizzleCommandContext) => …)
+
+  // after — one contexts file, no type parameters in slice code
+  type CmdCtx = CommandHandlerContext & ScheduleCapability & SubscriptionCapability & DrizzleCapability
+  commandHandler(Edit, async (m, ctx: CmdCtx) => …)
+  ```
+
+- 303f268: `DrizzleFamily` is `DrizzleUnitOfWork`, and `DrizzleContext` is `DrizzleCommandContext`. BREAKING for
+  anyone who spelled either.
+
+  ```ts
+  // before
+  type Task = CorrelatingUnitOfWork & DrizzleFamily;
+  commandHandler(Edit, async (m, ctx: DrizzleContext) => {
+    ctx.db();
+  });
+
+  // after
+  type Task = CorrelatingUnitOfWork & DrizzleUnitOfWork;
+  commandHandler(Edit, async (m, ctx: DrizzleCommandContext) => {
+    ctx.db();
+  });
+  ```
+
+  The brand names what the factory mints — `drizzleUnitOfWork(next, …)` returns
+  `() => U & DrizzleUnitOfWork` — and the command context sits beside
+  `DrizzleEventContext` and `DrizzleQueryContext` with a matching name.
+
+- 6890230: The persistence-family type is gone. The stores enforce the rule themselves,
+  and they catch more of it than the type did. BREAKING: `PersistenceFamily` and
+  the six `XFamily` types are removed.
+
+  ```ts
+  // before — a phantom brand on the task, and a compile error when they disagreed
+  type DrizzleUnitOfWork = PersistenceFamily<"drizzle", "…">
+  drizzleUnitOfWork<U>(next: () => U, db): () => U & DrizzleUnitOfWork
+  drizzleTokenStore(db): TokenStore<UnitOfWork & DrizzleUnitOfWork>
+
+  // after — nothing marks a task, and the store says what it needs when asked
+  drizzleUnitOfWork<U>(next: () => U, db): () => U
+  drizzleTokenStore(db): TokenStore
+  ```
+
+  **Why it went.** The brand existed because mixing families failed SILENTLY: a
+  drizzle token store handed a postgres task asked for its transaction, was told
+  there was none, fell back to its plain handle, and committed the token outside
+  the batch. But that silence was a bug in the fallback, not a fact of life — and
+  the brand never caught the likeliest spelling of the same mistake, because
+  `inMemoryTokenStore()` is assignable into any processor and commits outside the
+  batch just as happily.
+
+  So the fallback is fixed instead: a token store or dead-letter queue handed a
+  unit of work carrying no transaction of its own now THROWS, naming the factory
+  to build the processor's `unitOfWork` with. The failure is loud on the first
+  token write, in any test that runs the processor, whichever store you mixed in.
+
+  A handler's accessor still falls back — `ctx.db()` works whether or not the seam
+  it runs in is transactional, because that is a deployment decision. A token
+  store has no such freedom, which is why absence is an error there and a default
+  here.
+
+  Source-compatible for anyone already following the rule; the six
+  `<pkg>UnitOfWork` type exports are removed, and nothing else changes.
+
+### Patch Changes
+
+- Updated dependencies [0a6a030]
+- Updated dependencies [303f268]
+- Updated dependencies [303f268]
+- Updated dependencies [6890230]
+- Updated dependencies [303f268]
+  - @kronos-ts/core@0.4.0
+
 ## 0.6.0
 
 ### Minor Changes
