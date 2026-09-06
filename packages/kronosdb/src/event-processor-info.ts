@@ -1,53 +1,43 @@
 /**
- * Status of a single event processor, reported to KronosDB.
+ * What a processor reports about itself, and how it goes on the wire.
+ *
+ * SIX FIELDS. The wire message (`EventProcessorInfo`, shared with Axon's
+ * control protocol) also carries thread counts, a token-store identifier, a
+ * "streaming" flag and a per-segment list. kronos processors have none of
+ * those — one lane, one cursor — so the wire fields are filled with the only
+ * values they can have, here, once, instead of every processor pretending to
+ * hold a per-segment map.
  */
 export type ProcessorStatus = {
   readonly name: string
   readonly running: boolean
-  readonly mode: "Tracking" | "Subscribing"
-  readonly isStreamingProcessor: boolean
-  readonly activeThreads: number
-  readonly availableThreads: number
-  readonly error: boolean
-  readonly errorMessage?: string
-  readonly tokenStoreIdentifier: string
-  readonly segments: SegmentStatus[]
-}
-
-export type SegmentStatus = {
-  readonly segmentId: number
   readonly caughtUp: boolean
   readonly replaying: boolean
-  readonly onePartOf: number
-  readonly tokenPosition: bigint
-  readonly errorState: string
+  readonly position: bigint
+  readonly error?: string
 }
 
-/**
- * Converts a ProcessorStatus to the proto EventProcessorInfo format.
- */
 export function toEventProcessorInfo(status: ProcessorStatus): any {
   return {
     processorName: status.name,
-    mode: status.mode,
-    activeThreads: status.activeThreads,
+    mode: "Tracking",
+    activeThreads: status.running ? 1 : 0,
     running: status.running,
-    error: status.error,
-    segmentStatus: status.segments.map((seg) => ({
-      segmentId: seg.segmentId,
-      caughtUp: seg.caughtUp,
-      replaying: seg.replaying,
-      onePartOf: seg.onePartOf,
-      tokenPosition: seg.tokenPosition,
-      errorState: seg.errorState,
-    })),
-    availableThreads: status.availableThreads,
-    tokenStoreIdentifier: status.tokenStoreIdentifier,
-    isStreamingProcessor: status.isStreamingProcessor,
+    error: status.error !== undefined,
+    segmentStatus: [
+      {
+        segmentId: 0,
+        caughtUp: status.caughtUp,
+        replaying: status.replaying,
+        onePartOf: 1,
+        tokenPosition: status.position,
+        errorState: status.error ?? "",
+      },
+    ],
+    availableThreads: 0,
+    tokenStoreIdentifier: "",
+    isStreamingProcessor: true,
   }
 }
 
-/**
- * Supplier function that returns the current status of all event processors.
- */
 export type ProcessorStatusSupplier = () => ProcessorStatus[]

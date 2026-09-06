@@ -82,9 +82,6 @@ function spyProcessor(name: string, overrides: Partial<ManagedEventProcessor> = 
     name,
     stop: () => void calls.push("stop"),
     start: async () => void calls.push("start"),
-    releaseSegment: (id: number) => void calls.push(`release:${id}`),
-    splitSegment: (id: number) => void calls.push(`split:${id}`),
-    mergeSegment: (id: number) => void calls.push(`merge:${id}`),
     ...overrides,
   }
   return { proc, calls }
@@ -135,11 +132,10 @@ describe("axonServerControlPlane — instruction routing", () => {
 
     await platform.emit({ kind: "pause-processor", processorName: "proc-a" })
     await platform.emit({ kind: "start-processor", processorName: "proc-a" })
-    await platform.emit({ kind: "release-segment", processorName: "proc-a", segmentId: 3 })
     await platform.emit({ kind: "split-segment", processorName: "proc-a", segmentId: 4 })
-    await platform.emit({ kind: "merge-segment", processorName: "proc-a", segmentId: 5 })
 
-    expect(a.calls).toEqual(["stop", "start", "release:3", "split:4", "merge:5"])
+    // split/merge/release are ignored: one lane per processor
+    expect(a.calls).toEqual(["stop", "start"])
     expect(b.calls).toEqual([])
   })
 
@@ -176,71 +172,26 @@ describe("axonServerControlPlane — instruction routing", () => {
 })
 
 describe("axonServerControlPlane — status reporting", () => {
-  it("reports a synthetic single segment for a processor with no per-segment status", async () => {
+  it("reports name, running and position for a processor with no status()", async () => {
     const platform = fakePlatform()
     const proc: ManagedEventProcessor = { name: "p", running: true, position: 17n }
     await axonServerControlPlane({ platform }, [proc])
 
     const [status] = platform.statuses()
-    expect(status!.name).toBe("p")
-    expect(status!.running).toBe(true)
-    expect(status!.mode).toBe("Tracking")
-    expect(status!.isStreamingProcessor).toBe(true)
-    expect(status!.activeThreads).toBe(1)
-    expect(status!.segments).toEqual([
-      {
-        segmentId: 0,
-        caughtUp: true,
-        replaying: false,
-        onePartOf: 1,
-        tokenPosition: 17n,
-        errorState: "",
-      },
-    ])
+    expect(status).toEqual({ name: "p", running: true, caughtUp: true, replaying: false, position: 17n, error: undefined })
   })
 
-  it("maps per-segment processing status when the processor exposes it", async () => {
+  it("reads status() when the processor has one", async () => {
     const platform = fakePlatform()
     const proc: ManagedEventProcessor = {
       name: "p",
       running: true,
-      processingStatus: () =>
-        new Map([
-          [0, { position: 5n, caughtUp: true, replaying: false }],
-          [1, { position: 9n, caughtUp: false, replaying: true, error: new Error("boom") }],
-        ]),
+      status: () => ({ position: 9n, caughtUp: false, replaying: true, error: new Error("boom") }),
     }
     await axonServerControlPlane({ platform }, [proc])
 
     const [status] = platform.statuses()
-    expect(status!.segments).toEqual([
-      {
-        segmentId: 0,
-        caughtUp: true,
-        replaying: false,
-        onePartOf: 1,
-        tokenPosition: 5n,
-        errorState: "",
-      },
-      {
-        segmentId: 1,
-        caughtUp: false,
-        replaying: true,
-        onePartOf: 1,
-        tokenPosition: 9n,
-        errorState: "boom",
-      },
-    ])
-  })
-
-  it("reports a non-resettable processor as Subscribing", async () => {
-    const platform = fakePlatform()
-    const proc: ManagedEventProcessor = { name: "sub", supportsReset: () => false }
-    await axonServerControlPlane({ platform }, [proc])
-
-    const [status] = platform.statuses()
-    expect(status!.mode).toBe("Subscribing")
-    expect(status!.isStreamingProcessor).toBe(false)
+    expect(status).toEqual({ name: "p", running: true, caughtUp: false, replaying: true, position: 9n, error: "boom" })
   })
 
   it("reads LIVE processor state on every report", async () => {

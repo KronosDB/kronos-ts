@@ -3,9 +3,10 @@
  * backend.
  *
  * This is not persistence and not transport. KronosDB pushes instructions at a
- * connected client (pause-processor, start-processor, release-segment,
- * split-segment, merge-segment) and the client reports processor status back so
- * the admin UI can render it. It only ever lived inside the backend because it
+ * connected client (pause-processor, start-processor) and the client reports
+ * processor status back so the admin UI can render it. Segment instructions
+ * (split, merge, release) exist on the wire for Axon clients; a kronos
+ * processor has one lane and ignores them. It only ever lived inside the backend because it
  * shares the same gRPC connection as the data path — so it takes that
  * connection's platform stream as an argument and is otherwise independent.
  *
@@ -33,21 +34,23 @@ import type { KronosDbConnectionHandle } from "./kronosdb.js"
 import type { ProcessorStatus } from "./event-processor-info.js"
 
 /**
- * The subset of a live processor the control plane drives. Structurally
- * satisfied by TrackingEventProcessor / StreamingEventProcessor; everything past
- * `name` is optional so an instruction is skipped rather than crashing when a
- * processor kind does not implement it.
+ * The subset of a live processor the control plane drives and reports on.
+ * `RunningProcessor` satisfies it structurally; everything past `name` is
+ * optional so a foreign processor-shaped object is skipped rather than crashed on.
  */
 export type ManagedEventProcessor = {
   readonly name: string
+  readonly running?: boolean
+  readonly replaying?: boolean
+  readonly position?: bigint
   start?(): Promise<void> | void
   stop?(): void
-  releaseSegment?(segmentId: number): Promise<void> | void
-  splitSegment?(segmentId: number): Promise<void> | void
-  mergeSegment?(segmentId: number): Promise<void> | void
-  supportsReset?(): boolean
-  processingStatus?(): Map<number, unknown>
-  readonly running?: boolean
+  status?(): {
+    readonly caughtUp?: boolean
+    readonly replaying?: boolean
+    readonly position?: bigint
+    readonly error?: Error
+  }
 }
 
 /**
@@ -114,42 +117,15 @@ function findProcessor(
 }
 
 /** Maps one live processor onto the status shape the admin UI consumes. */
-function toProcessorStatus(processor: ManagedEventProcessor): ProcessorStatus {
-  const proc = processor as ManagedEventProcessor & {
-    replaying?: boolean
-    position?: bigint
-  }
-
+function toProcessorStatus(proc: ManagedEventProcessor): ProcessorStatus {
+  const status = proc.status?.()
   return {
     name: proc.name,
     running: proc.running ?? false,
-    mode: proc.supportsReset?.() === false ? "Subscribing" : "Tracking",
-    isStreamingProcessor: proc.supportsReset?.() !== false,
-    activeThreads: proc.running ? 1 : 0,
-    availableThreads: 0,
-    error: false,
-    tokenStoreIdentifier: "",
-    segments: proc.processingStatus
-      ? Array.from(proc.processingStatus().entries() as Iterable<[number, any]>).map(
-          ([segId, status]: [number, any]) => ({
-            segmentId: segId,
-            caughtUp: status.caughtUp ?? false,
-            replaying: status.replaying ?? false,
-            onePartOf: 1,
-            tokenPosition: status.position ?? 0n,
-            errorState: status.error?.message ?? "",
-          }),
-        )
-      : [
-          {
-            segmentId: 0,
-            caughtUp: true,
-            replaying: proc.replaying ?? false,
-            onePartOf: 1,
-            tokenPosition: proc.position ?? 0n,
-            errorState: "",
-          },
-        ],
+    caughtUp: status?.caughtUp ?? true,
+    replaying: status?.replaying ?? proc.replaying ?? false,
+    position: status?.position ?? proc.position ?? 0n,
+    error: status?.error?.message,
   }
 }
 
@@ -195,21 +171,7 @@ export function kronosDbControlPlane(
         if (proc?.start) await proc.start()
         break
       }
-      case "release-segment": {
-        const proc = findProcessor(processors, instruction.processorName)
-        if (proc?.releaseSegment) await proc.releaseSegment(instruction.segmentId)
-        break
-      }
-      case "split-segment": {
-        const proc = findProcessor(processors, instruction.processorName)
-        if (proc?.splitSegment) await proc.splitSegment(instruction.segmentId)
-        break
-      }
-      case "merge-segment": {
-        const proc = findProcessor(processors, instruction.processorName)
-        if (proc?.mergeSegment) await proc.mergeSegment(instruction.segmentId)
-        break
-      }
+      // release/split/merge-segment: a kronos processor has one lane. Ignored.
     }
   })
 

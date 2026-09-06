@@ -355,23 +355,13 @@ export {
   type SnapshotCapableEventStore,
   type SnapshotStoreCapability,
   type SourcingResult,
+  type AppendTransaction,
 } from "./event-sourcing/event-store.js"
 export {
   type EventStoreTransaction,
   eventStoreTransaction,
 } from "./event-sourcing/event-store-transaction.js"
-export {
-  type EventStorageEngine,
-  type AppendTransaction,
-} from "./event-sourcing/event-storage-engine.js"
 export { inMemoryEventStore, AppendConditionError } from "./event-sourcing/in-memory.js"
-
-// Event publication seam. `EventSink` is public because `ctx.append` takes one;
-// `EventBus` / `SubscribableEventSource` are
-// NOT — they are the internal shape `EventStore` is declared against, and no
-// host writes them. `simpleEventBus` is gone with the on-commit lane it served:
-// event delivery is tracked-only, through `eventProcessor`.
-export { type EventSink } from "./event-sourcing/event-sink.js"
 
 // Decision models — the fold side of the same events.
 export {
@@ -432,24 +422,7 @@ export {
   type StreamableEventSource,
   type StreamingCondition,
   type MessageStream,
-  messageStream,
-  emptyMessageStream,
-  failedMessageStream,
 } from "./event-processing/source.js"
-
-// Segments
-export {
-  type Segment,
-  ROOT_SEGMENT,
-  segment,
-  segmentMatches,
-  splitSegment,
-  mergeSegments,
-  isMergeable,
-  segmentCount,
-  hashOf,
-  segments,
-} from "./event-processing/segment.js"
 
 // Tracking tokens
 export {

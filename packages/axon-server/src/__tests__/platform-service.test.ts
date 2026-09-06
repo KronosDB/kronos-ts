@@ -179,13 +179,9 @@ describe("platformConnection — armConnectionMonitoring (data path)", () => {
       {
         name: "p",
         running: true,
-        mode: "Tracking",
-        isStreamingProcessor: true,
-        activeThreads: 1,
-        availableThreads: 0,
-        error: false,
-        tokenStoreIdentifier: "",
-        segments: [],
+        caughtUp: true,
+        replaying: false,
+        position: 0n,
       },
     ])
 
@@ -208,13 +204,9 @@ describe("platformConnection — start (control plane) over an already-armed str
       {
         name: "p",
         running: true,
-        mode: "Tracking",
-        isStreamingProcessor: true,
-        activeThreads: 1,
-        availableThreads: 0,
-        error: false,
-        tokenStoreIdentifier: "",
-        segments: [],
+        caughtUp: true,
+        replaying: false,
+        position: 0n,
       },
     ])
     await platform.start()
@@ -234,13 +226,9 @@ describe("platformConnection — start (control plane) over an already-armed str
       {
         name: "p",
         running: true,
-        mode: "Tracking",
-        isStreamingProcessor: true,
-        activeThreads: 1,
-        availableThreads: 0,
-        error: false,
-        tokenStoreIdentifier: "",
-        segments: [],
+        caughtUp: true,
+        replaying: false,
+        position: 0n,
       },
     ])
 

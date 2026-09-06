@@ -7,6 +7,7 @@
  * the one that used to live in the serializer, and it is the one that matters
  * most: THE LOG NEVER ACCEPTS A LIE.
  */
+import { sourcingCondition } from "../../event-sourcing/sourcing-condition.js"
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn, command, event, queryDescriptor } from "../../messaging/messages.js"
@@ -332,10 +333,8 @@ describe("validatingHandler — outbound births", () => {
 describe("validatingHandler — the log never accepts a lie", () => {
   it("a wrapped ctx.append refuses an invalid payload before the store sees it", async () => {
     const eventStore = inMemoryEventStore()
-    const stored: EventMessage[] = []
-    eventStore.subscribe(async (events) => {
-      stored.push(...events)
-    })
+    const stored = async (): Promise<ReadonlyArray<EventMessage>> =>
+      (await eventStore.source(sourcingCondition({}))).events
 
     const honest = commandHandler(RecordCharge, async ({ payload }, ctx) => {
       ctx.append(Charged, { accountId: payload.accountId, amount: payload.amount })
@@ -358,15 +357,15 @@ describe("validatingHandler — the log never accepts a lie", () => {
 
     try {
       await send(commandBus, RecordCharge, { accountId: "a-1", amount: 10 })
-      expect(stored).toHaveLength(1)
-      expect(stored[0]?.payload).toEqual({ accountId: "a-1", amount: 10, currency: "EUR" })
+      expect(await stored()).toHaveLength(1)
+      expect((await stored())[0]?.payload).toEqual({ accountId: "a-1", amount: 10, currency: "EUR" })
 
       await expect(send(commandBus, Notify, { accountId: "a-2" })).rejects.toThrow(
         /billing\.Charged.*failed validation/s,
       )
       // A buggy handler's garbage fails at the moment of the lie, not later in a
       // replay that did nothing wrong.
-      expect(stored).toHaveLength(1)
+      expect(await stored()).toHaveLength(1)
     } finally {
       await app.stop()
     }
