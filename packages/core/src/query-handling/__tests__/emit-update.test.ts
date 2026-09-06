@@ -53,7 +53,7 @@ describe("emitUpdate", () => {
     })
 
     expect(capturedError).toBeInstanceOf(WrongUoWPhase)
-    expect((capturedError as WrongUoWPhase).message).toContain("INVOCATION")
+    expect((capturedError as WrongUoWPhase).message).toContain('only allowed during "invocation"')
   })
 
   it("throws 'No query bus configured' when no bus was bound", async () => {
