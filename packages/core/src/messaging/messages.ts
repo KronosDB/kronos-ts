@@ -14,7 +14,7 @@
 // moves down here.
 
 import type { Tag } from "./tag.js"
-import { tag, tagsFromRecord } from "./tag.js"
+import { tag } from "./tag.js"
 import type { InferOutput, StandardSchemaV1 } from "./standard-schema.js"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -373,18 +373,22 @@ export type CommandDescriptor<
 
 /**
  * How an event derives its tags, as a record of EXTRACTORS: the record's own
- * keys ARE the tag keys, and each value pulls that tag's value off the payload.
+ * keys ARE the tag keys, and each value pulls that tag's value — or values —
+ * off the payload.
  *
  * ```typescript
  * tags: { courseId: (p) => p.courseId, studentId: (p) => p.studentId }
+ * tags: { copyId: (p) => p.copyIds }        // one event about several copies
  * ```
  *
- * This shape exists so the tag KEYS are statically evident to the framework
- * without running anything — see {@link EventDescriptor.tagKeys}.
+ * An extractor returns one string, an array of strings (one tag per element,
+ * all under the same key), or `undefined` / `[]` for "no tag this time". The
+ * KEYS are the record's keys either way, which is what lets the framework know
+ * them without running anything — see {@link EventDescriptor.tagKeys}.
  */
 export type TagExtractors<P extends StandardSchemaV1 = StandardSchemaV1> = Record<
   string,
-  (payload: InferOutput<P>) => string
+  (payload: InferOutput<P>) => string | ReadonlyArray<string> | undefined
 >
 
 /**
@@ -398,20 +402,16 @@ export type EventDescriptor<P extends StandardSchemaV1 = StandardSchemaV1> = {
   readonly payload: P
   readonly tags?: (payload: InferOutput<P>) => Tag[]
   /**
-   * The tag KEYS every instance of this event carries — the event's half of the
-   * DCB query, known WITHOUT a payload in hand.
+   * The tag KEYS every instance of this event can carry — the event's half of
+   * the DCB query, known WITHOUT a payload in hand. Derived by `event()` from
+   * the keys of the `tags` record; `[]` for an event declared without tags.
    *
    * State query derivation intersects this with the state's own tag record to
    * scope each event type to the tags it can actually be matched on (see
-   * `event-sourcing/state.ts`). That intersection is only sound if this list is
-   * exhaustive and payload-independent.
-   *
-   * `[]` means "carries no tags". `undefined` means NOT KNOWN — the descriptor
-   * was given an opaque `tags` FUNCTION and no explicit `tagKeys`. Undefined is
-   * never guessed at: a state that folds such an event fails loudly at boot
-   * rather than deriving a query from an assumed key set.
+   * `event-sourcing/state.ts`). The record form makes that list exhaustive and
+   * payload-independent by construction.
    */
-  readonly tagKeys?: readonly string[]
+  readonly tagKeys: readonly string[]
 }
 
 /**
@@ -497,8 +497,8 @@ export function command(def: any): CommandDescriptor {
 /**
  * Creates an event descriptor.
  *
- * PREFER the record-of-extractors form — the record's keys are the tag keys, so
- * the framework knows them without running your code, and state queries can be
+ * `tags` is a record of extractors — the record's keys are the tag keys, so the
+ * framework knows them without running your code, and state queries can be
  * scoped per event type (see {@link EventDescriptor.tagKeys}):
  *
  * ```typescript
@@ -509,17 +509,15 @@ export function command(def: any): CommandDescriptor {
  * })
  * ```
  *
- * A FUNCTION returning `Tag[]` or `Record<string, string>` is still accepted for
- * tag sets a per-key extractor cannot express — a key that varies with the
- * payload, or a variable number of tags. The keys of a function are not
- * knowable, so declare them alongside it whenever a state folds this event:
+ * An extractor may return several values, and the event then carries one tag
+ * per value under that key — the shape of a fact about several entities at
+ * once. A state scoped by that key sees the event for every one of them:
  *
  * ```typescript
  * event({
  *   name: qn("catalog", "ItemsRelabelled"),
- *   payload: z.object({ items: z.array(z.string()) }),
- *   tags: (p) => p.items.map((id) => tag("itemId", id)),
- *   tagKeys: ["itemId"],   // not derivable from the function — say it
+ *   payload: z.object({ items: z.array(z.string()), shelf: z.string() }),
+ *   tags: { itemId: (p) => p.items },
  * })
  * ```
  */
@@ -527,56 +525,29 @@ export function event<P extends StandardSchemaV1>(def: {
   name: QualifiedName
   version?: string
   payload: P
-  tags?: TagExtractors<P> | ((payload: InferOutput<P>) => Tag[] | Record<string, string>)
-  /**
-   * The tag keys this event carries. REQUIRED ONLY for the function form, and
-   * only when a state folds this event — the record form derives them.
-   */
-  tagKeys?: readonly string[]
+  tags?: TagExtractors<P>
 }): EventDescriptor<P> {
-  const rawTags = def.tags
-
-  if (rawTags !== undefined && typeof rawTags !== "function") {
-    // Record-of-extractors: the keys are right there, no inference needed.
-    const extractors = Object.entries(rawTags as TagExtractors<P>)
-    if (def.tagKeys !== undefined) {
-      throw new Error(
-        `event(${qualifiedNameToString(def.name)}): \`tagKeys\` was given alongside a \`tags\` record. ` +
-        "The record's own keys ARE the tag keys — they cannot disagree, so remove `tagKeys`. " +
-        "`tagKeys` is only for the `tags` FUNCTION form, whose keys cannot be derived.",
-      )
-    }
-    return {
-      kind: "event" as const,
-      name: def.name,
-      version: def.version ?? "1.0",
-      payload: def.payload,
-      tags: (payload: InferOutput<P>): Tag[] =>
-        extractors.map(([key, extract]) => tag(key, extract(payload))),
-      tagKeys: extractors.map(([key]) => key),
-    }
-  }
-
-  const tags: ((payload: InferOutput<P>) => Tag[]) | undefined = rawTags
-    ? (payload: InferOutput<P>): Tag[] => {
-        const result = (rawTags as (p: InferOutput<P>) => Tag[] | Record<string, string>)(payload)
-        return Array.isArray(result) ? result : tagsFromRecord(result)
-      }
-    : undefined
-
-  // No `tags` at all means this event carries none — that IS a known key set
-  // (the empty one), not an unknown one. A `tags` function without `tagKeys` is
-  // genuinely unknown, and stays `undefined` so it can fail loudly at the point
-  // a state actually needs it.
-  const tagKeys: readonly string[] | undefined = def.tagKeys ?? (tags ? undefined : [])
+  const extractors = Object.entries(def.tags ?? {})
 
   return {
     kind: "event" as const,
     name: def.name,
     version: def.version ?? "1.0",
     payload: def.payload,
-    ...(tags ? { tags } : {}),
-    ...(tagKeys ? { tagKeys } : {}),
+    ...(extractors.length > 0
+      ? {
+          tags: (payload: InferOutput<P>): Tag[] =>
+            extractors.flatMap(([key, extract]) => {
+              const value = extract(payload)
+              if (value === undefined) return []
+              return typeof value === "string" ? [tag(key, value)] : value.map((v) => tag(key, v))
+            }),
+        }
+      : {}),
+    // No `tags` at all means this event carries none — a KNOWN key set, the
+    // empty one — so a state that folds it is refused for sharing no key,
+    // not for being unknowable.
+    tagKeys: extractors.map(([key]) => key),
   }
 }
 
@@ -685,8 +656,7 @@ export function withNamespace(namespace: string) {
     event<P extends StandardSchemaV1>(name: string, def: {
       payload: P
       version?: string
-      tags?: TagExtractors<P> | ((payload: InferOutput<P>) => Tag[] | Record<string, string>)
-      tagKeys?: readonly string[]
+      tags?: TagExtractors<P>
     }) {
       return event({ name: qn(namespace, name), ...def })
     },

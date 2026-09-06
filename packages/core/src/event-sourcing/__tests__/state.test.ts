@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn, event } from "../../messaging/messages.js"
-import { tag } from "../../messaging/tag.js"
 import { state } from "../state.js"
+import { inMemoryEventStore } from "../in-memory.js"
+import { eventSourcedRepository } from "../repository.js"
+import { generateIdentifier } from "../../messaging/identifier.js"
 
 // -- Fixtures --
 
@@ -349,42 +351,43 @@ describe("granular query derivation", () => {
     ).toThrow(/university\.SemesterRolled.*carries no tags/s)
   })
 
-  it("refuses to guess when a folded event never declared its tag keys", () => {
-    const Opaque = event({
-      name: qn("university", "Opaque"),
-      payload: z.object({ courseId: z.string() }),
-      // Function form, no `tagKeys` — the keys are genuinely unknown.
-      tags: (p) => [tag("courseId", p.courseId)],
+  it("a multi-value extractor: one event about several entities is seen by each of them", async () => {
+    const CopiesRelabelled = event({
+      name: qn("library", "CopiesRelabelled"),
+      payload: z.object({ copyIds: z.array(z.string()), shelf: z.string() }),
+      tags: { copyId: (p) => p.copyIds },
     })
 
-    expect(Opaque.tagKeys).toBeUndefined()
-    expect(() =>
-      state({
-        id: { courseId: z.string() },
-        tags: (id) => ({ courseId: id.courseId }),
-        evolve: [() => ({}), [Opaque, (s) => s]],
-      }),
-    ).toThrow(/does not declare its tag keys/)
-  })
-
-  it("an explicit `tagKeys` makes the function form usable again", () => {
-    const Declared = event({
-      name: qn("university", "Declared"),
-      payload: z.object({ courseId: z.string() }),
-      tags: (p) => [tag("courseId", p.courseId)],
-      tagKeys: ["courseId"],
+    const Copy = state({
+      id: { copyId: z.string() },
+      tags: (id) => ({ copyId: id.copyId }),
+      evolve: [() => ({ shelf: "" }), [CopiesRelabelled, (s, { payload }) => ({ ...s, shelf: payload.shelf })]],
     })
 
-    const Course = state({
-      id: { courseId: z.string() },
-      tags: (id) => ({ courseId: id.courseId }),
-      evolve: [() => ({}), [Declared, (s) => s]],
+    // the derived query is unchanged: ONE item, scoped by the record's key
+    expect(Copy.query({ copyId: "b" })).toEqual({
+      tags: { copyId: "b" },
+      types: ["library.CopiesRelabelled"],
     })
 
-    expect(Course.query({ courseId: "cs-101" })).toEqual({
-      tags: { courseId: "cs-101" },
-      types: ["university.Declared"],
-    })
+    // and a store sees the event under every value the extractor produced
+    const store = inMemoryEventStore()
+    await store.appendEvents([
+      {
+        kind: "event",
+        identifier: generateIdentifier(),
+        name: CopiesRelabelled.name,
+        version: CopiesRelabelled.version,
+        payload: { copyIds: ["a", "b"], shelf: "B" },
+        metadata: {},
+        timestamp: 0,
+        tags: CopiesRelabelled.tags?.({ copyIds: ["a", "b"], shelf: "B" }) ?? [],
+      },
+    ])
+    const loaded = await eventSourcedRepository(Copy, store).load({ copyId: "b" })
+    expect(loaded.state).toEqual({ shelf: "B" })
+    const other = await eventSourcedRepository(Copy, store).load({ copyId: "c" })
+    expect(other.state).toEqual({ shelf: "" })
   })
 
   it("the derived query is never match-all — every item carries a tag", () => {

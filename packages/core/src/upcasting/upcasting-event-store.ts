@@ -43,6 +43,7 @@
 //   upcastingEventStore(store, (e) => v3(v2(v1(e))))
 
 import type { EventMessage } from "../messaging/messages.js"
+import type { SequencedEvent } from "../event-processing/source.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
 
 /**
@@ -118,13 +119,17 @@ export function upcastingEventStore<E extends EventStore>(next: E, upcast: Upcas
     },
 
     open(condition) {
-      return next
-        .open(condition)
-        .map((sequenced) => ({ ...sequenced, event: upcast(sequenced.event) }))
-    },
-
-    subscribe(handler) {
-      return next.subscribe((events) => handler(events.map(upcast)))
+      const inner = next.open(condition)
+      const lift = (s: SequencedEvent | undefined) => (s === undefined ? undefined : { ...s, event: upcast(s.event) })
+      return {
+        next: () => lift(inner.next()),
+        peek: () => lift(inner.peek()),
+        hasNextAvailable: () => inner.hasNextAvailable(),
+        isCompleted: () => inner.isCompleted(),
+        error: () => inner.error(),
+        setCallback: (cb) => inner.setCallback(cb),
+        close: () => inner.close(),
+      }
     },
     // CAPABILITY-PRESERVING, and the type says so. `E` in, `E` out: a store
     // that could cache folds still can after upcasting is added, and a

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { is, qn, type Message } from "../messages.js"
-import { tag } from "../tag.js"
 import { command, event, query } from "../../index.js"
 
 describe("Message Descriptors", () => {
@@ -81,7 +80,7 @@ describe("Message Descriptors", () => {
   })
 
   describe("tagKeys", () => {
-    it("derives them from the record-of-extractors form", () => {
+    it("derives them from the record of extractors", () => {
       const Subscribed = event({
         name: qn("university", "StudentSubscribedToCourse"),
         payload: z.object({ courseId: z.string(), studentId: z.string() }),
@@ -96,30 +95,31 @@ describe("Message Descriptors", () => {
       ])
     })
 
-    it("is UNDEFINED — not guessed — for the opaque function form", () => {
-      const Opaque = event({
-        name: qn("university", "Opaque"),
-        payload: z.object({ courseId: z.string() }),
-        tags: (p) => [tag("courseId", p.courseId)],
+    it("an extractor may return several values — one tag per value, one key", () => {
+      const Relabelled = event({
+        name: qn("catalog", "ItemsRelabelled"),
+        payload: z.object({ items: z.array(z.string()), shelf: z.string() }),
+        tags: { itemId: (p) => p.items, shelf: (p) => p.shelf },
       })
 
-      expect(Opaque.tagKeys).toBeUndefined()
-      expect(Opaque.tags?.({ courseId: "cs-101" })).toEqual([{ key: "courseId", value: "cs-101" }])
-    })
-
-    it("takes an explicit declaration alongside the function form", () => {
-      const Declared = event({
-        name: qn("university", "Declared"),
-        payload: z.object({ items: z.array(z.string()) }),
-        tags: (p) => p.items.map((id) => tag("itemId", id)),
-        tagKeys: ["itemId"],
-      })
-
-      expect(Declared.tagKeys).toEqual(["itemId"])
-      expect(Declared.tags?.({ items: ["a", "b"] })).toEqual([
+      expect(Relabelled.tagKeys).toEqual(["itemId", "shelf"])
+      expect(Relabelled.tags?.({ items: ["a", "b"], shelf: "B" })).toEqual([
         { key: "itemId", value: "a" },
         { key: "itemId", value: "b" },
+        { key: "shelf", value: "B" },
       ])
+    })
+
+    it("an extractor may decline — undefined or [] carries no tag under that key", () => {
+      const Moved = event({
+        name: qn("catalog", "ItemMoved"),
+        payload: z.object({ itemId: z.string(), toShelf: z.string().optional(), copies: z.array(z.string()) }),
+        tags: { itemId: (p) => p.itemId, shelf: (p) => p.toShelf, copyId: (p) => p.copies },
+      })
+
+      // the KEYS are still known without a payload — that is the point of the record
+      expect(Moved.tagKeys).toEqual(["itemId", "shelf", "copyId"])
+      expect(Moved.tags?.({ itemId: "i-1", copies: [] })).toEqual([{ key: "itemId", value: "i-1" }])
     })
 
     it("an event with NO tags declares the empty key set, not an unknown one", () => {
@@ -130,17 +130,6 @@ describe("Message Descriptors", () => {
 
       expect(Untagged.tagKeys).toEqual([])
       expect(Untagged.tags).toBeUndefined()
-    })
-
-    it("rejects `tagKeys` given alongside a tags RECORD — they cannot disagree", () => {
-      expect(() =>
-        event({
-          name: qn("university", "Conflicted"),
-          payload: z.object({ courseId: z.string() }),
-          tags: { courseId: (p) => p.courseId },
-          tagKeys: ["somethingElse"],
-        }),
-      ).toThrow(/cannot disagree|remove `tagKeys`/)
     })
   })
 

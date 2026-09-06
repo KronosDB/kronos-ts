@@ -144,17 +144,6 @@ describe("upcastingEventStore", () => {
     expect(first?.event.payload).toMatchObject({ capacity: 30 })
   })
 
-  it("upcasts what `subscribe` pushes", async () => {
-    const store = upcastingEventStore(inMemoryEventStore(), capacityAdded)
-    const seen: EventMessage[] = []
-    store.subscribe(async (events) => {
-      seen.push(...events)
-    })
-
-    await store.append([stored()])
-    expect(seen).toHaveLength(1)
-    expect(seen[0]!.payload).toMatchObject({ capacity: 30 })
-  })
 
   it("WRITES ARE UNTOUCHED — what was appended is what is stored", async () => {
     const inner = inMemoryEventStore()

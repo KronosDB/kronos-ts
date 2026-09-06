@@ -151,8 +151,6 @@ export type ReplayToken = TrackingToken & {
   readonly currentToken: TrackingToken
   /** The token representing the position when reset was triggered. Events before this are replayed. */
   readonly tokenAtReset: TrackingToken
-  /** Optional user-provided context (e.g., reason for the reset). */
-  readonly resetContext?: unknown
 }
 
 /**
@@ -164,18 +162,15 @@ export type ReplayToken = TrackingToken & {
  *
  * @param tokenAtReset The head position when reset was triggered
  * @param currentToken Where replay is currently reading from
- * @param resetContext Optional user-provided context
  */
 export function replayToken(
   tokenAtReset: TrackingToken,
   currentToken: TrackingToken,
-  resetContext?: unknown,
 ): ReplayToken {
   return {
     kind: "replay",
     currentToken,
     tokenAtReset,
-    resetContext,
 
     position: () => currentToken.position(),
 
@@ -185,7 +180,7 @@ export function replayToken(
       const inner = currentToken.lowerBound(other)
       // If the lower bound is still within replay range, keep the replay wrapper
       if (!inner.covers(tokenAtReset)) {
-        return replayToken(tokenAtReset, inner, resetContext)
+        return replayToken(tokenAtReset, inner)
       }
       return inner
     },
@@ -196,7 +191,7 @@ export function replayToken(
       if (inner.covers(tokenAtReset)) {
         return inner
       }
-      return replayToken(tokenAtReset, inner, resetContext)
+      return replayToken(tokenAtReset, inner)
     },
 
     samePositionAs: (other) => currentToken.samePositionAs(other),
@@ -241,7 +236,7 @@ export function advanceTokenTo(token: TrackingToken, next: TrackingToken): Track
   }
 
   // Still replaying — wrap the advanced token
-  return replayToken(token.tokenAtReset, next, token.resetContext)
+  return replayToken(token.tokenAtReset, next)
 }
 
 /**

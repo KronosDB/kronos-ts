@@ -247,7 +247,8 @@ let stateSequence = 0
  * rather than by annotations on a class.
  *
  * Two facts make the intersection sound rather than a guess. `tagKeys` is
- * exhaustive and payload-independent by construction (see `event()`), and an
+ * exhaustive and payload-independent by construction — the keys of the `tags`
+ * record, whatever values an extractor produces for a given payload — and an
  * EMPTY intersection is an error, not an empty filter — a state that folds an
  * event sharing none of its tags has declared a fold it can never source, which
  * is a modelling mistake worth failing on.
@@ -283,16 +284,6 @@ function deriveGranularQuery(
   for (const [descriptor] of evolvers) {
     const type = qualifiedNameToString(descriptor.name)
     const declared = descriptor.tagKeys
-
-    if (declared === undefined) {
-      throw new Error(
-        `State ${label} folds "${type}", but "${type}" does not declare its tag keys, ` +
-        "so the state's query cannot be scoped to it. " +
-        "Give that event's `tags` as a record of extractors — " +
-        "`tags: { courseId: (p) => p.courseId }` — or, if it needs the function form, " +
-        "declare `tagKeys: [...]` next to it.",
-      )
-    }
 
     const shared = stateKeys.filter((key) => declared.includes(key))
 
@@ -446,9 +437,9 @@ const BOOT_PROBE_ID_VALUE = "kronos:boot-probe"
  * an evolver whose event shares NO key with the state's tags is a boot error:
  * that fold can never fire, so it is a modelling mistake, not a no-op.
  *
- * This requires each folded event to declare its tag keys, which the record
- * form of `event({ tags })` does for free. See {@link StateTags} for the array
- * override, and `EventDescriptor.tagKeys` for the function-form escape hatch.
+ * This relies on each folded event's tag keys being the keys of its `tags`
+ * record (`EventDescriptor.tagKeys`). See {@link StateTags} for the array
+ * override.
  *
  * THE FIELD ORDER IS THE READING ORDER — `id · tags · evolve · snapshot? ·
  * lifecycle?`. NOTHING NAMES A STATE: a state that caches its fold says WHERE

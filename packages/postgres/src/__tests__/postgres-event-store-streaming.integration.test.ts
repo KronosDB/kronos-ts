@@ -290,30 +290,7 @@ describe("StreamableEventSource extras", () => {
     expect(head).toBe(0n)
   })
 
-  it("publish appends and is observable via source", async () => {
-    await store.publish([makeEvent("P1", [{ key: "k", value: "p" }])])
-    const result = await store.source({
-      query: { tags: { k: "p" } },
-      start: 0n,
-    })
-    expect(result.events.length).toBe(1)
-  })
 
-  it("subscribe fires on append and the unsubscribe function stops deliveries", async () => {
-    const seen: number[] = []
-    const unsubscribe = store.subscribe(async (events) => {
-      seen.push(events.length)
-    })
-    await store.append([makeEvent("S1", [{ key: "k", value: "1" }])])
-    // Give the subscriber a moment to fire
-    await new Promise((r) => setTimeout(r, 100))
-    expect(seen).toEqual([1])
-    unsubscribe()
-    await store.append([makeEvent("S2", [{ key: "k", value: "2" }])])
-    await new Promise((r) => setTimeout(r, 100))
-    // No additional callback fire after unsubscribe.
-    expect(seen).toEqual([1])
-  })
 
   it("firstToken / latestToken are valid TrackingTokens", async () => {
     const first = await store.firstToken()

@@ -93,7 +93,7 @@ event-sourcing/     ← NO list. The log AND the folds over it, because state IS
                     key) · structural-fitness · in-memory-snapshotting-event-store
 event-processing/   ← kronos({ eventHandlers })     handler · context ·
                     processor · running-processor · source · tracking-token ·
-                    token-store · segment · sequence · dead-lettering ·
+                    token-store · sequence · dead-lettering ·
                     dead-letter-queue · dead-letter-reprocessor
 event-scheduling/   events that have not happened yet, and the SECOND STORE TIER:
                     scheduler (the capability CONTRACT — ScheduleStoreCapability ·
@@ -182,13 +182,14 @@ type CommandMessage · QueryMessage · EventMessage · SequencedEventMessage
 // the bus fills it from uow.now(), a transport from system time at the wire,
 // ctx.append at birth.
 command({ name, payload, result? }) · query({ name, payload, result? })
-event({ name, payload, tags?, tagKeys?, version? })
+event({ name, payload, tags?, version? })
 is<D extends MessageDescriptor>(message: Message, descriptor: D): message is <the message type for D>
   // ONE guard, all three kinds: kinds equal AND qualified names equal AND — for
   // an EVENT, the only kind carrying a version on the message — versions equal.
   // Narrows the payload via InferOutput off the descriptor's own schema.
-  // tags: { key: (p) => string }  — record of extractors; keys ARE the tag keys
-  // tags: (p) => Tag[] needs explicit tagKeys when a state folds it
+  // tags: { key: (p) => string | string[] | undefined }  — ONE form: a record of
+  // extractors. The keys ARE the tag keys; an array fans out to one tag per value
+  // under that key (a fact about several entities), undefined/[] carries none.
 withNamespace(ns): { command, query, event }
 
 // ── DCB queries: plain data, spec vocabulary ───────────────────────────────
