@@ -321,23 +321,16 @@ describe("inMemorySnapshottingEventStore — the capability, client-side", () =>
     const log = inMemoryEventStore()
     const eventStore = inMemorySnapshottingEventStore(log)
 
-    const seen: EventMessage[] = []
-    const unsubscribe = eventStore.subscribe(async (events) => {
-      seen.push(...events)
-    })
-
     // when — a write through the decorator, and a stream off it
     await eventStore.append([bumped("c-10", 1)])
     const stream = eventStore.open({ position: 0n })
     const first = stream.next()
 
     // then
-    expect(seen.length).toBe(1)
     expect(first?.event.name.name).toBe("Bumped")
     expect(await eventStore.getHeadPosition()).toBe(1n)
 
     stream.close()
-    unsubscribe()
   })
 })
 

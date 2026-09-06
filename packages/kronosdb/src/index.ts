@@ -52,7 +52,6 @@ export {
 
 export {
   type ProcessorStatus,
-  type SegmentStatus,
   type ProcessorStatusSupplier,
   toEventProcessorInfo,
 } from "./event-processor-info.js"

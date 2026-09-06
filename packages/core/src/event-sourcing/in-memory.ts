@@ -10,7 +10,6 @@ import {
   type MessageStream,
   type SequencedEvent,
   type StreamingCondition,
-  messageStream,
 } from "../event-processing/source.js"
 import {
   type TrackingToken,
@@ -18,7 +17,7 @@ import {
   FIRST_TOKEN,
 } from "../event-processing/tracking-token.js"
 import type { EventStore, SourcingResult } from "./event-store.js"
-import type { AppendTransaction } from "./event-storage-engine.js"
+import type { AppendTransaction } from "./event-store.js"
 import type { AppendCondition } from "./append-condition.js"
 import type { SourcingCondition } from "./sourcing-condition.js"
 import { markerAt, type ConsistencyMarker } from "./consistency-marker.js"
@@ -35,7 +34,6 @@ export function inMemoryEventStore(): EventStore {
   const streamListeners = new Set<() => void>()
 
   // Push-based subscribers — notified with actual events on append
-  const eventSubscribers = new Set<(events: ReadonlyArray<EventMessage>) => Promise<void>>()
 
   function matchesCriteria(event: EventMessage, criteria: EventCriteria): boolean {
     switch (criteria.kind) {
@@ -129,9 +127,6 @@ export function inMemoryEventStore(): EventStore {
           committed = true
           // Events are already in the array — notify listeners
           notifyListeners()
-          for (const subscriber of eventSubscribers) {
-            try { await subscriber(newEvents) } catch { /* ignore */ }
-          }
         },
         async afterCommit() {
           return markerAt(endPosition)
@@ -174,11 +169,6 @@ export function inMemoryEventStore(): EventStore {
       // Notify open streams that new events are available
       notifyListeners()
 
-      // Notify push-based subscribers with the actual events
-      for (const subscriber of eventSubscribers) {
-        try { await subscriber(newEvents) } catch { /* ignore subscriber errors */ }
-      }
-
       return markerAt(nextPosition - 1n)
     },
 
@@ -206,7 +196,7 @@ export function inMemoryEventStore(): EventStore {
         return undefined
       }
 
-      return messageStream<SequencedEvent>({
+      return {
         next() {
           const item = findNext()
           if (item) {
@@ -240,7 +230,7 @@ export function inMemoryEventStore(): EventStore {
           availableCallback = null
           streamListeners.delete(listener)
         },
-      })
+      }
     },
 
     async getHeadPosition(): Promise<bigint> {
@@ -255,22 +245,6 @@ export function inMemoryEventStore(): EventStore {
       return globalSequenceToken(nextPosition)
     },
 
-    async publish(publishedEvents: ReadonlyArray<EventMessage>): Promise<void> {
-      // In the in-memory store, publish = append without condition
-      for (const event of publishedEvents) {
-        events.push({ position: nextPosition, event })
-        nextPosition++
-      }
-      notifyListeners()
-      for (const subscriber of eventSubscribers) {
-        try { await subscriber(publishedEvents) } catch { /* ignore */ }
-      }
-    },
-
-    subscribe(handler: (events: ReadonlyArray<EventMessage>) => Promise<void>): () => void {
-      eventSubscribers.add(handler)
-      return () => { eventSubscribers.delete(handler) }
-    },
   }
 }
 

@@ -1,62 +1,41 @@
-import type { EventProcessorInfo, EventProcessorInfo_SegmentStatus } from "./generated/control.js"
+import type { EventProcessorInfo } from "./generated/control.js"
 
 /**
- * Status of a single event processor, reported to Axon Server.
- * Aligned with Java's EventProcessorInfo proto message.
+ * What a processor reports about itself. SIX FIELDS — see the kronosdb
+ * package's twin for why the wire's thread counts, token-store identifier and
+ * per-segment list are filled with constants here rather than carried.
  */
 export type ProcessorStatus = {
   readonly name: string
   readonly running: boolean
-  readonly mode: "Tracking" | "Subscribing"
-  readonly isStreamingProcessor: boolean
-  readonly activeThreads: number
-  readonly availableThreads: number
-  readonly error: boolean
-  readonly errorMessage?: string
-  readonly tokenStoreIdentifier: string
-  readonly segments: SegmentStatus[]
-}
-
-export type SegmentStatus = {
-  readonly segmentId: number
   readonly caughtUp: boolean
   readonly replaying: boolean
-  readonly onePartOf: number
-  readonly tokenPosition: bigint
-  readonly errorState: string
+  readonly position: bigint
+  readonly error?: string
 }
 
-/**
- * Converts a ProcessorStatus to the proto EventProcessorInfo format.
- */
 export function toEventProcessorInfo(status: ProcessorStatus): EventProcessorInfo {
   return {
     processorName: status.name,
-    mode: status.mode,
-    activeThreads: status.activeThreads,
+    mode: "Tracking",
+    activeThreads: status.running ? 1 : 0,
     running: status.running,
-    error: status.error,
-    segmentStatus: status.segments.map(toSegmentStatus),
-    availableThreads: status.availableThreads,
-    tokenStoreIdentifier: status.tokenStoreIdentifier,
-    isStreamingProcessor: status.isStreamingProcessor,
+    error: status.error !== undefined,
+    segmentStatus: [
+      {
+        segmentId: 0,
+        caughtUp: status.caughtUp,
+        replaying: status.replaying,
+        onePartOf: 1,
+        tokenPosition: status.position,
+        errorState: status.error ?? "",
+      },
+    ],
+    availableThreads: 0,
+    tokenStoreIdentifier: "",
+    isStreamingProcessor: true,
     loadBalancingStrategyName: "",
   }
 }
 
-function toSegmentStatus(seg: SegmentStatus): EventProcessorInfo_SegmentStatus {
-  return {
-    segmentId: seg.segmentId,
-    caughtUp: seg.caughtUp,
-    replaying: seg.replaying,
-    onePartOf: seg.onePartOf,
-    tokenPosition: seg.tokenPosition,
-    errorState: seg.errorState,
-  }
-}
-
-/**
- * Supplier function that returns the current status of all event processors.
- * Registered with the platform connection for periodic reporting.
- */
 export type ProcessorStatusSupplier = () => ProcessorStatus[]
