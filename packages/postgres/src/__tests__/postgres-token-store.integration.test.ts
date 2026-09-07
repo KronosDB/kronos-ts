@@ -32,6 +32,17 @@ beforeEach(async () => {
 })
 
 describe("postgresTokenStore", () => {
+  it("opens the lazy postgres transaction itself when the batch wrote nothing before the token", async () => {
+    // A projection that writes through another client, or an automation that
+    // only loads and sends, never begins the (lazy) postgres transaction. The
+    // token store must be able to be the FIRST writer, not only join one.
+    const uow = postgresUnitOfWork(unitOfWork, pool)()
+    await uow.execute(async () => {
+      await store.store("lazy", 0, globalSequenceToken(5n), uow)
+    })
+    expect((await store.get("lazy", 0))!.position()).toBe(5n)
+  })
+
   it("stores and reads back a token", async () => {
     await store.store("proc", 0, globalSequenceToken(42n))
     const token = await store.get("proc", 0)

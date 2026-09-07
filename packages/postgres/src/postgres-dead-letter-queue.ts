@@ -8,7 +8,7 @@
  * `process()` safe across multiple nodes.
  *
  * PRINCIPLE: like `postgresTokenStore`, every write goes through
- * {@link activePostgresTransaction}, so enqueue/evict/requeue commit in the SAME
+ * {@link sharedPostgresTransaction}, so enqueue/evict/requeue commit in the SAME
  * postgres transaction as the token update. A crash cannot advance a
  * processor's token while losing the letter it parked.
  *
@@ -27,7 +27,7 @@ import type {
 import { DeadLetterQueueOverflowError } from "@kronos-ts/core"
 import type { QueryRow } from "./adapter.js"
 import type { PostgresResource } from "./postgres-pool.js"
-import { activePostgresTransaction } from "./postgres-transaction.js"
+import { sharedPostgresTransaction } from "./postgres-transaction.js"
 
 /** Tuning only — everything required is a positional argument. */
 export type PostgresDeadLetterQueueOptions = {
@@ -81,8 +81,13 @@ export function postgresDeadLetterQueue(
   const claimDurationMs = options.claimDurationMs ?? 30000
 
   /** The writer for one call: the unit of work's transaction, else the pool. */
-  function sql(uow?: UnitOfWork): SqlHandle {
-    const tx = activePostgresTransaction(uow)
+  async function sql(uow?: UnitOfWork): Promise<SqlHandle> {
+    // OPENS the transaction if the unit of work is a postgres one that nobody
+    // has written through yet. The postgres transaction is LAZY — begun by the
+    // first writer — and in a batch whose handler only read, or wrote through
+    // another client, this store IS the first writer. Observing instead of
+    // opening threw on every such batch.
+    const tx = await sharedPostgresTransaction(uow)
     if (tx !== undefined) return tx
     // NO SILENT FALLBACK. A dead-letter write that lands outside the batch's
     // transaction is the failure this store exists to avoid: it commits on its
@@ -164,7 +169,7 @@ export function postgresDeadLetterQueue(
 
   const queue: SequencedDeadLetterQueue = {
     async enqueue(group, letter, uow) {
-      const handle = sql(uow)
+      const handle = await sql(uow)
       const existing = await sequenceRows(handle, group, letter.sequenceIdentifier)
       if (existing.length === 0) {
         if ((await distinctSequences(handle, group)).length >= maxSequences) {
@@ -181,7 +186,7 @@ export function postgresDeadLetterQueue(
     },
 
     async enqueueIfPresent(group, sequenceIdentifier, letterSupplier, uow) {
-      const handle = sql(uow)
+      const handle = await sql(uow)
       const existing = await sequenceRows(handle, group, sequenceIdentifier)
       if (existing.length === 0) return false
       if (existing.length >= maxSequenceSize) {
@@ -197,7 +202,7 @@ export function postgresDeadLetterQueue(
     async evict(group, _sequenceIdentifier, letter, uow) {
       const id = (letter.diagnostics as Record<string, unknown>)[DL_ID]
       if (typeof id !== "string") return
-      await sql(uow).query(
+      await (await sql(uow)).query(
         `DELETE FROM ${table} WHERE processing_group = $1 AND dead_letter_id = $2`,
         [group, id],
       )
@@ -211,7 +216,7 @@ export function postgresDeadLetterQueue(
       const diagnostics = update?.diagnostics
         ? { ...baseDiagnostics, ...update.diagnostics }
         : baseDiagnostics
-      await sql(uow).query(
+      await (await sql(uow)).query(
         `UPDATE ${table}
             SET cause_type = $3, cause_message = $4, diagnostics = $5, last_touched = $6
           WHERE processing_group = $1 AND dead_letter_id = $2`,
@@ -220,7 +225,7 @@ export function postgresDeadLetterQueue(
     },
 
     async contains(group, sequenceIdentifier, uow) {
-      const rows = await sql(uow).query(
+      const rows = await (await sql(uow)).query(
         `SELECT 1 FROM ${table}
           WHERE processing_group = $1 AND sequence_identifier = $2 LIMIT 1`,
         [group, sequenceIdentifier],
@@ -229,15 +234,15 @@ export function postgresDeadLetterQueue(
     },
 
     async deadLetterSequence(group, sequenceIdentifier, uow) {
-      return (await sequenceRows(sql(uow), group, sequenceIdentifier)).map(rowToLetter)
+      return (await sequenceRows(await sql(uow), group, sequenceIdentifier)).map(rowToLetter)
     },
 
     async sequenceIdentifiers(group, uow) {
-      return distinctSequences(sql(uow), group)
+      return distinctSequences(await sql(uow), group)
     },
 
     async process(group, sequenceFilter, processingTask, uow) {
-      const handle = sql(uow)
+      const handle = await sql(uow)
       const candidates = (await distinctSequences(handle, group)).filter(sequenceFilter)
       if (candidates.length === 0) return false
 
@@ -298,7 +303,7 @@ export function postgresDeadLetterQueue(
     },
 
     async size(group, uow) {
-      const rows = await sql(uow).query<{ count: string | number }>(
+      const rows = await (await sql(uow)).query<{ count: string | number }>(
         `SELECT count(*)::bigint AS count FROM ${table} WHERE processing_group = $1`,
         [group],
       )
@@ -306,15 +311,15 @@ export function postgresDeadLetterQueue(
     },
 
     async amountOfSequences(group, uow) {
-      return (await distinctSequences(sql(uow), group)).length
+      return (await distinctSequences(await sql(uow), group)).length
     },
 
     async clear(group, uow) {
-      await sql(uow).query(`DELETE FROM ${table} WHERE processing_group = $1`, [group])
+      await (await sql(uow)).query(`DELETE FROM ${table} WHERE processing_group = $1`, [group])
     },
 
     async isFull(group, sequenceIdentifier, uow) {
-      const handle = sql(uow)
+      const handle = await sql(uow)
       const rows = await sequenceRows(handle, group, sequenceIdentifier)
       if (rows.length > 0) return rows.length >= maxSequenceSize
       return (await distinctSequences(handle, group)).length >= maxSequences

@@ -62,6 +62,17 @@ beforeEach(async () => {
 })
 
 describe("postgresDeadLetterQueue", () => {
+  it("opens the lazy postgres transaction itself when the batch wrote nothing before the letter", async () => {
+    // The dead-letter write can be the FIRST writer in a batch (a handler that
+    // failed before touching the database). Observing the transaction instead
+    // of opening it threw here.
+    const uow = postgresUnitOfWork(unitOfWork, pool)()
+    await uow.execute(async () => {
+      await queue.enqueue(GROUP, makeLetter("lazy", "a"), uow)
+    })
+    expect(await queue.size(GROUP)).toBe(1)
+  })
+
   it("enqueues and reads back a sequence in insertion order", async () => {
     await queue.enqueue(GROUP, makeLetter("s1", "a"))
     await queue.enqueue(GROUP, makeLetter("s1", "b"))
