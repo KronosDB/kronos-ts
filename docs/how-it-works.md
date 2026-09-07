@@ -93,12 +93,12 @@ It drives a fixed phase protocol:
 
 ```ts
 export const Phase = {
-  PRE_INVOCATION: -10000,   // transaction begin
-  INVOCATION: 0,            // the handler runs
-  POST_INVOCATION: 10000,
-  PREPARE_COMMIT: 20000,    // event flush, token store write
-  COMMIT: 30000,            // driver transaction commit
-  AFTER_COMMIT: 40000,      // subscription updates, notifications
+  PRE_INVOCATION: "pre-invocation", // transaction begin
+  INVOCATION: "invocation", // the handler runs
+  POST_INVOCATION: "post-invocation",
+  PREPARE_COMMIT: "prepare-commit", // event flush, token store write
+  COMMIT: "commit", // driver transaction commit
+  AFTER_COMMIT: "after-commit", // subscription updates, notifications
 } as const
 ```
 

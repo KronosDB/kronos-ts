@@ -2,29 +2,31 @@ import type { EventQuery } from "../event-sourcing/dcb-query.js"
 import type { EventMessage } from "../messaging/messages.js"
 
 /**
- * Lifecycle phases for message processing, ordered by execution priority.
+ * Lifecycle phases of one unit of work, in the order `execute` runs them:
+ * PRE_INVOCATION → INVOCATION → POST_INVOCATION → PREPARE_COMMIT → COMMIT →
+ * AFTER_COMMIT. Actions within a phase run in registration order; an action
+ * registered for the current phase during its own execution still runs
+ * (`runPhase` drains its bucket until it is empty); one registered for a phase
+ * already past is dropped.
  *
- * Phases execute in ascending order. Actions within the same phase
- * execute in registration order. Actions registered during execution
- * (e.g. `onPrepareCommit` from a handler) are picked up when their
- * phase comes.
- *
- * The numeric values are stable — external code (handler transformers,
- * processors) compares phase numbers.
+ * THE ORDER IS THE CODE IN `drivePhases`, NOT THE VALUES. There is no custom
+ * phase and nothing sorts by these — the values are names, chosen so a phase
+ * prints as itself in an error rather than as an ordering key inherited from
+ * another framework.
  */
 export const Phase = {
   /** Setup before handler invocation (e.g. transaction start). */
-  PRE_INVOCATION: -10000,
+  PRE_INVOCATION: "pre-invocation",
   /** Actual handler execution. */
-  INVOCATION: 0,
+  INVOCATION: "invocation",
   /** Cleanup after handler, before commit. */
-  POST_INVOCATION: 10000,
+  POST_INVOCATION: "post-invocation",
   /** Prepare for commit (e.g. event store flush, token store). */
-  PREPARE_COMMIT: 20000,
+  PREPARE_COMMIT: "prepare-commit",
   /** Actual commit (e.g. database transaction commit). */
-  COMMIT: 30000,
+  COMMIT: "commit",
   /** Post-commit notifications (e.g. subscription query updates). */
-  AFTER_COMMIT: 40000,
+  AFTER_COMMIT: "after-commit",
 } as const
 
 export type PhaseValue = (typeof Phase)[keyof typeof Phase]
@@ -61,7 +63,7 @@ export class WrongUoWPhase extends Error {
   readonly currentPhase: PhaseValue | null
   constructor(currentPhase: PhaseValue | null) {
     super(
-      `Mutating helper called during phase ${currentPhase} — must be called during INVOCATION (${Phase.INVOCATION}) only. ` +
+      `Mutating helper called during phase "${currentPhase}" — only allowed during "${Phase.INVOCATION}". ` +
       `Do not call append/send/emitUpdate from lifecycle hooks (onPrepareCommit, onCommit, onAfterCommit, onError, whenComplete).`
     )
     this.name = "WrongUoWPhase"
@@ -298,8 +300,8 @@ export function unitOfWork(clock?: () => number): UnitOfWork {
 
   // ── private: the lifecycle-driving loop ───────────────────────────────
   //
-  // Re-sort semantics: actions registered during a phase's own execution at
-  // EARLIER phase values are silently dropped (the phase is already past).
+  // Actions registered during a phase's own execution for a phase that is
+  // already past are silently dropped.
   // `runPhase` drains its own bucket repeatedly so actions registered for the
   // SAME phase during execution are picked up before moving on.
 
