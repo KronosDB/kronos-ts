@@ -62,6 +62,8 @@ export {
   type InferResult,
   command,
   event,
+  tagsOf,
+  tagKeysOf,
   withNamespace,
 } from "./messaging/messages.js"
 
@@ -317,13 +319,6 @@ export {
   compileQuery,
   resolveTypeName,
 } from "./event-sourcing/dcb-query.js"
-
-export {
-  type TagResolver,
-  descriptorBasedTagResolver,
-  metadataBasedTagResolver,
-  multiTagResolver,
-} from "./event-sourcing/tag-resolver.js"
 
 export {
   type ConsistencyMarker,

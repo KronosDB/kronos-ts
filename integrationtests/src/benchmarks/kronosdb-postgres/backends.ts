@@ -3,7 +3,6 @@ import { arch, cpus, platform, release } from "node:os"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { jsonSerializer } from "@kronos-ts/core"
 import type { EventStore } from "@kronos-ts/core"
-import { descriptorBasedTagResolver } from "@kronos-ts/core"
 import { connectToKronosDb, kronosDbEventStore, type KronosDbConnection } from "@kronos-ts/kronosdb"
 import {
   bootstrapSchema,
@@ -162,9 +161,7 @@ async function startPostgres(options: BenchmarkOptions): Promise<BackendHarness>
       throw new Error(`Postgres durability is not strict: fsync=${fsync}, synchronous_commit=${synchronousCommit}`)
     }
 
-    const store = postgresEventStore(postgresPool(adapter), {
-      tagResolver: descriptorBasedTagResolver(),
-    })
+    const store = postgresEventStore(postgresPool(adapter))
     const metadata: BackendMetadata = {
       backend: "postgres",
       image: POSTGRES_IMAGE,

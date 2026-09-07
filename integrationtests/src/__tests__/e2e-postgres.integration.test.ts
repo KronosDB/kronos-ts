@@ -32,7 +32,6 @@ import { state } from "@kronos-ts/core"
 import {
   type EventStore,
   afterEvents,
-  descriptorBasedTagResolver,
 } from "@kronos-ts/core"
 import {
   kronos,
@@ -172,7 +171,7 @@ function sitedOn(
  */
 function postgresStack(pool: PostgresResource) {
   const eventStore = postgresSnapshottingEventStore(
-    postgresEventStore(pool, { tagResolver: descriptorBasedTagResolver() }),
+    postgresEventStore(pool),
     pool,
     { serializer: jsonSerializer() },
   )

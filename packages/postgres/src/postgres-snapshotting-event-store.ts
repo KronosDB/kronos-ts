@@ -55,7 +55,7 @@ export type PostgresSnapshottingEventStoreConfig = {
  *
  * ```ts
  * const eventStore = postgresSnapshottingEventStore(
- *   postgresEventStore(pg, { tagResolver }),
+ *   postgresEventStore(pg),
  *   pg,
  *   { serializer: jsonSerializer() },
  * )

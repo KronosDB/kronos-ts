@@ -1,3 +1,4 @@
+import { tagsOf, emptyMetadata } from "../messaging/messages.js"
 import { describe, it, expect } from "bun:test"
 import { z } from "zod"
 import {
@@ -151,7 +152,7 @@ describe("the clock seam", () => {
         payload: { ticketId: "t-1" },
         metadata: {},
         timestamp: 0,
-        tags: TicketOpened.tags!({ ticketId: "t-1" }),
+        tags: tagsOf(TicketOpened, { ticketId: "t-1" }, emptyMetadata()),
       }
       await eventStore.append([seed])
 

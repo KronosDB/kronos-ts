@@ -3,8 +3,7 @@ import {
   emptyMetadata,
   type Metadata,
   type EventDescriptor,
-  type EventMessage,
-} from "../messaging/messages.js"
+  type EventMessage, tagsOf } from "../messaging/messages.js"
 import { generateIdentifier } from "../messaging/identifier.js"
 import { requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
@@ -176,7 +175,7 @@ export function scheduleFunctions(deps: {
       payload,
       metadata: eventMetadata,
       timestamp: uow.now(),
-      tags: event.tags ? event.tags(payload) : [],
+      tags: tagsOf(event, payload, eventMetadata),
     }
     return log.schedule(eventMessage, at, uow)
   }) as ScheduleFunction

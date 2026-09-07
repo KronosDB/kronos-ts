@@ -5,7 +5,6 @@ import { DEFAULT_TABLE_NAMES } from "../schema.js"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { postgresEventStore } from "../postgres-event-store.js"
 import { postgresSnapshottingEventStore } from "../postgres-snapshotting-event-store.js"
-import { descriptorBasedTagResolver } from "@kronos-ts/core"
 import type { Snapshot } from "@kronos-ts/core"
 import type { Serializer, SerializedObject } from "@kronos-ts/core"
 
@@ -40,7 +39,7 @@ beforeAll(async () => {
   // The serializer stays an EXPLICIT argument: the payload column is BYTEA and
   // what goes into it is the application's decision, not the store's.
   store = postgresSnapshottingEventStore(
-    postgresEventStore(pool, { tagResolver: descriptorBasedTagResolver() }),
+    postgresEventStore(pool),
     pool,
     { serializer: COUNTING_SERIALIZER },
   )

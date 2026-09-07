@@ -702,7 +702,7 @@ const eventStore = inMemorySnapshottingEventStore(inMemoryEventStore())
 const eventStore = kronosDbSnapshottingEventStore(kronosDbEventStore(kdb, ctx), kdb, ctx)
 const eventStore = axonServerSnapshottingEventStore(axonServerEventStore(axon, ctx), axon, ctx)
 const eventStore = postgresSnapshottingEventStore(
-  postgresEventStore(pool, { tagResolver }), pool, { serializer },
+  postgresEventStore(pool), pool, { serializer },
 )
 ```
 
@@ -825,7 +825,7 @@ The **capability** is a site fact, and it rides on the log:
 
 ```ts
 const eventStore = postgresSnapshottingEventStore(
-  postgresEventStore(pg, { tagResolver }), pg, { serializer },
+  postgresEventStore(pg), pg, { serializer },
 )
 kronos({ commandHandlers: handlers.map((h) => ({ ...h, eventStore })) })
 ```
@@ -889,7 +889,7 @@ Both wrap the log. The documented order is **upcasting outermost**:
 
 ```ts
 upcastingEventStore(
-  postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+  postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
   upcast,
 )
 ```
@@ -942,7 +942,7 @@ Three wrappers, one per family that has one, each **additive**:
 ```ts
 const eventStore = inMemorySchedulingEventStore(inMemoryEventStore())
 const eventStore = postgresSchedulingEventStore(
-  postgresEventStore(pool, { tagResolver }), pool, { unitOfWork: uow, tagResolver },
+  postgresEventStore(pool), pool, { unitOfWork: uow },
 )
 const eventStore = kronosDbSchedulingEventStore(kronosDbEventStore(kdb, ctx), kdb, { serializer })
 ```
@@ -1010,8 +1010,8 @@ The store-tier category has two members now, and they compose:
 ```ts
 const eventStore = upcastingEventStore(
   postgresSchedulingEventStore(
-    postgresSnapshottingEventStore(postgresEventStore(pool, { tagResolver }), pool, { serializer }),
-    pool, { unitOfWork: uow, tagResolver },
+    postgresSnapshottingEventStore(postgresEventStore(pool), pool, { serializer }),
+    pool, { unitOfWork: uow },
   ),
   upcast,
 )

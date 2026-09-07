@@ -24,7 +24,6 @@ import { IsolationLevel } from "../adapter.js"
 import { postgresUnitOfWork, postgresTransaction } from "../postgres-transaction.js"
 import { postgresPool } from "../postgres-pool.js"
 import { postgresSchedulingEventStore } from "../postgres-scheduling-event-store.js"
-import type { TagResolver } from "../postgres-event-store.js"
 
 // ── Fake adapter ────────────────────────────────────────────────────────
 
@@ -173,7 +172,6 @@ function createFakeEventStore() {
   return { store, appended }
 }
 
-const passthroughTagResolver: TagResolver = (e) => e.tags
 
 function makeEvent(over: Partial<EventMessage> = {}): EventMessage {
   return {
@@ -200,7 +198,6 @@ function wire(opts: { adapter: PostgresAdapter; store: import("@kronos-ts/core")
   // field pointed at a second object.
   const scheduler = postgresSchedulingEventStore(opts.store, pool, {
     unitOfWork: uowFactory,
-    tagResolver: passthroughTagResolver,
     pollIntervalMs: 5,
     batchSize: 10,
   })

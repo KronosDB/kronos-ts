@@ -17,6 +17,7 @@ import {
   queryDescriptor,
   type EventDescriptor,
   type EventMessage,
+  tagsOf,
 } from "../../messaging/messages.js"
 import { generateIdentifier } from "../../messaging/identifier.js"
 import { commandHandler } from "../../command-handling/handler.js"
@@ -77,7 +78,7 @@ function fact(descriptor: EventDescriptor<any>, payload: any, version?: string):
     payload,
     metadata: emptyMetadata(),
     timestamp: Date.now(),
-    tags: descriptor.tags ? descriptor.tags(payload) : [],
+    tags: tagsOf(descriptor, payload, emptyMetadata()),
   }
 }
 

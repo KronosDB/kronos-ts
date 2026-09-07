@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test"
 import { emptyMetadata, qn } from "../messaging/messages.js"
 import { inMemoryEventStore } from "../event-sourcing/in-memory.js"
 import { inMemoryDeadLetterQueue } from "../event-processing/dead-letter-queue.js"
-import { type TagResolver } from "../event-sourcing/tag-resolver.js"
 import {
   command,
   commandHandler,
@@ -152,37 +151,6 @@ describe("billing", () => {
   // including its OWN command bus, so its handlers were unreachable from the
   // app-level gateway. `kronos` no longer has a component registry; the only
   // thing a handler can override is what the host attaches to it (eventStore /
-  // tagResolver) — the command/query buses are strictly
-  // app-level now. The closest surviving case is `tagResolver`: it is NOT a
-  // persistence concern, so it demonstrates the same "not just persistence"
-  // point within what a sited entry can still express.
-  it("a handler can override tagResolver too, not just persistence", async () => {
-    const ledger = newLedger()
-    const eventStore = inMemoryEventStore()
-    const seenEventNames: string[] = []
-    const stampingTagResolver: TagResolver = (evt) => {
-      seenEventNames.push(evt.name.name)
-      return [{ key: "stamped", value: "yes" }]
-    }
-
-    const slice = billLinesSlice(ledger)
-    const tagResolver = stampingTagResolver
-    const buses = inMemoryBuses()
-    const app = kronos({
-      commandHandlers: slice.commandHandlers.map((h) => ({ ...h, ...buses, eventStore, tagResolver })),
-    })
-
-    await send(buses.commandBus, OpenBill, { billId: "x" }, emptyMetadata())
-
-    expect(seenEventNames).toContain("BillOpened")
-    const { events } = await eventStore.source({
-      query: { tags: { billId: "x" } },
-    } as never)
-    expect(events[0]!.tags).toEqual(
-      expect.arrayContaining([{ key: "stamped", value: "yes" }]),
-    )
-    await app.stop()
-  })
 })
 
 // ---------------------------------------------------------------------------

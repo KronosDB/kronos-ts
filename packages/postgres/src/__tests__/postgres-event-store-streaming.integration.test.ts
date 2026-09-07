@@ -5,23 +5,13 @@ import { DEFAULT_TABLE_NAMES } from "../schema.js"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { postgresEventStore } from "../postgres-event-store.js"
 import { generateIdentifier } from "@kronos-ts/core"
-import type { EventMessage, SequencedEvent, SerializedObject, Serializer } from "@kronos-ts/core"
+import type { EventMessage, SequencedEvent } from "@kronos-ts/core"
 
 let pg: RunningPostgres
 let adapter: ReturnType<typeof pgAdapter>
 let pool: PostgresResource
 let store: ReturnType<typeof postgresEventStore>
 
-const NOOP_SERIALIZER: Serializer = {
-  serialize: (x: unknown, type: string, revision = ""): SerializedObject => ({
-    type,
-    revision,
-    data: new TextEncoder().encode(JSON.stringify(x)),
-  }),
-  deserialize: <T,>(o: SerializedObject): T => JSON.parse(new TextDecoder().decode(o.data)) as T,
-  canConvert: () => true,
-}
-const NOOP_TAG_RESOLVER = (e: EventMessage) => e.tags
 
 function makeEvent(type: string, tags: { key: string; value: string }[]): EventMessage {
   return {
@@ -57,10 +47,7 @@ beforeAll(async () => {
   adapter = pgAdapter({ connectionString: pg.connectionString })
   pool = postgresPool(adapter)
   await pool.start()
-  store = postgresEventStore(pool, {
-    serializer: NOOP_SERIALIZER,
-    tagResolver: NOOP_TAG_RESOLVER,
-  })
+  store = postgresEventStore(pool)
 }, 60_000)
 
 afterAll(async () => {

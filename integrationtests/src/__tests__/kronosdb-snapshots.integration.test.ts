@@ -35,6 +35,7 @@ import {
   type EventMessage,
   type EventStore,
   type SnapshotStoreCapability,
+  tagsOf,
 } from "@kronos-ts/core"
 import {
   kronosDbConnection,
@@ -82,7 +83,7 @@ function fact(descriptor: EventDescriptor<any>, payload: any): EventMessage {
     payload,
     metadata: emptyMetadata(),
     timestamp: Date.now(),
-    tags: descriptor.tags ? descriptor.tags(payload) : [],
+    tags: tagsOf(descriptor, payload, emptyMetadata()),
   }
 }
 
