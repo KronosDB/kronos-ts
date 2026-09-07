@@ -1,5 +1,5 @@
 /**
- * postgresEventStore — full EventStorageEngine + EventBus implementation.
+ * postgresEventStore — the Postgres EventStore.
  *
  * Plan 12-04 delivered: source, appendEvents, append.
  * Plan 12-05 adds: open (gap-free tailing via xid8 + pg_snapshot_xmin),
@@ -27,7 +27,6 @@
  */
 
 import type {
-  EventStorageEngine,
   AppendTransaction,
   EventStore,
 } from "@kronos-ts/core"
@@ -46,7 +45,6 @@ import type {
   UnitOfWork,
 } from "@kronos-ts/core"
 import {
-  messageStream,
   globalSequenceToken,
   gapAwareToken,
   isGapAwareToken,
@@ -77,9 +75,6 @@ import { decodeEvent, type EventRow, EVENT_COLUMNS } from "./event-row.js"
 export function postgresEventStore(pg: PostgresResource): EventStore {
   const adapter: PostgresAdapter = pg
   const tables = pg.tables
-
-  // Push-based subscriber registry (EventBus.subscribe contract)
-  const eventSubscribers = new Set<(events: ReadonlyArray<EventMessage>) => Promise<void>>()
 
   // LISTEN/NOTIFY channel name for wake-up of tailing streams (D-12.14)
   const notifyChannel = `kronos_events_${tables.events}`
@@ -302,11 +297,8 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
           committed = true
           resolveTxControl("commit")
           await outer
-          // Wake up tailing streams + notify push-based subscribers after commit
+          // Wake up tailing streams after commit
           await adapter.query(`NOTIFY ${notifyChannel}`)
-          for (const sub of eventSubscribers) {
-            try { await sub(events) } catch { /* ignore subscriber errors */ }
-          }
         },
         async afterCommit() {
           const result = await outer
@@ -332,16 +324,13 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       // everything else in it — scheduler inserts, token store, future
       // outbox), opening it lazily on first request; or open our own
       // short-lived tx when no unit of work was handed in. The shared path
-      // defers NOTIFY + subscriber dispatch to AFTER_COMMIT because the tx
+      // defers NOTIFY to AFTER_COMMIT because the tx
       // hasn't actually committed yet when checkAndInsert returns.
       const targets = lockTargetsForCondition(condition)
       const shared = await sharedPostgresTransaction(uow)
 
-      const notifyAndFanout = async () => {
+      const notify = async () => {
         await adapter.query(`NOTIFY ${notifyChannel}`)
-        for (const sub of eventSubscribers) {
-          try { await sub(events) } catch { /* ignore subscriber errors */ }
-        }
       }
 
       const runAppend = async (tx: PostgresAdapterTransaction): Promise<ConsistencyMarker> => {
@@ -365,7 +354,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
         } catch (err) {
           translateError(err)
         }
-        uow!.onAfterCommit(notifyAndFanout)
+        uow!.onAfterCommit(notify)
         return marker!
       }
 
@@ -375,7 +364,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       } catch (err) {
         translateError(err)
       }
-      await notifyAndFanout()
+      await notify()
       return marker!
     },
 
@@ -396,56 +385,6 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       )
       const head = row?.head ? BigInt(row.head) : 0n
       return globalSequenceToken(head)
-    },
-
-    async publish(events: ReadonlyArray<EventMessage>, uow?: UnitOfWork): Promise<void> {
-      // publish = append without condition; same shared/own tx split as append().
-      const targets: LockTarget[] = []
-      const shared = await sharedPostgresTransaction(uow)
-
-      const notifyAndFanout = async () => {
-        await adapter.query(`NOTIFY ${notifyChannel}`)
-        for (const sub of eventSubscribers) {
-          try { await sub(events) } catch { /* ignore subscriber errors */ }
-        }
-      }
-
-      const runPublish = async (tx: PostgresAdapterTransaction): Promise<void> => {
-        await acquireWriteLocks(tx, targets)
-        await checkAndInsert(tx, events, undefined)
-      }
-
-      if (shared !== undefined) {
-        try {
-          await runPublish(shared)
-        } catch (err) {
-          if ((err as { code?: string }).code === "23505") {
-            throw AppendConditionError.fromConflictCount(0, -1n)
-          }
-          throw err
-        }
-        uow!.onAfterCommit(notifyAndFanout)
-        return
-      }
-
-      try {
-        await adapter.transaction(IsolationLevel.READ_COMMITTED, runPublish)
-      } catch (err) {
-        if ((err as { code?: string }).code === "23505") {
-          throw AppendConditionError.fromConflictCount(0, -1n)
-        }
-        throw err
-      }
-      await notifyAndFanout()
-    },
-
-    subscribe(
-      handler: (events: ReadonlyArray<EventMessage>) => Promise<void>,
-    ): () => void {
-      eventSubscribers.add(handler)
-      return () => {
-        eventSubscribers.delete(handler)
-      }
     },
 
     open(condition: StreamingCondition): MessageStream<SequencedEvent> {
@@ -584,7 +523,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       // Also run an immediate fetch to pick up any pre-existing events
       void pump()
 
-      return messageStream<SequencedEvent>({
+      return {
         next() {
           return buffer.shift()
         },
@@ -612,7 +551,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
           }
           if (listenSub) void listenSub.unlisten()
         },
-      })
+      }
     },
   }
 }

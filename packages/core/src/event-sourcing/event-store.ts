@@ -1,6 +1,7 @@
 import type { EventMessage } from "../messaging/messages.js"
-import type { EventBus } from "./event-bus.js"
-import type { EventStorageEngine } from "./event-storage-engine.js"
+import type { StreamableEventSource } from "../event-processing/source.js"
+import type { SourcingCondition } from "./sourcing-condition.js"
+import type { AppendCondition } from "./append-condition.js"
 import type { ConsistencyMarker } from "./consistency-marker.js"
 import type { Snapshot } from "./snapshot.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
@@ -36,32 +37,50 @@ export type SourcingResult = {
 }
 
 /**
- * The event store — dual-role component that combines event storage
- * with event distribution.
+ * An append in two halves: stage, then commit or roll back. `afterCommit`
+ * resolves the marker the write settled at. Used by the stores' own `append`
+ * and by the test recorder; a handler never sees it.
+ */
+export type AppendTransaction = {
+  commit(): Promise<void>
+  afterCommit(): Promise<ConsistencyMarker>
+  rollback(): void
+}
+
+/**
+ * THE LOG. A source you can read by condition, append to under a condition,
+ * and open as a stream from a position.
  *
- * Extends:
- * - `EventStorageEngine` — raw storage (source, append, stream)
- * - `EventBus` — event publication + push-based subscription
- *
- * In an event sourcing context, the EventStore persists events durably while
- * simultaneously distributing them to subscribed event handlers, eliminating
- * the need for a separate EventBus component.
+ * ONE TYPE. It used to be `EventStorageEngine & EventBus`, with the bus half
+ * carrying `publish` and `subscribe` — Axon 4's decomposition. Nothing read
+ * through `subscribe`: processors open a stream and are woken by the store
+ * (LISTEN/NOTIFY, a gRPC stream, an in-memory listener), and `publish` was an
+ * append without a condition. Both are gone; what is left is what the DCB
+ * model needs.
  *
  * ── THIS CONTRACT MENTIONS SNAPSHOTS NOWHERE, AND THAT IS THE POINT ─────────
  *
- * It is COMPLETE for event sourcing: a log you can source from, append to,
- * stream and subscribe to is everything the DCB model needs, and most
- * well-designed projects never need one line more. Snapshotting is not a
- * missing piece of this contract and never was — it is a CAPABILITY TIER on
- * top of it, and if it exists at all it exists ON THE EVENT STORE, added by
- * WRAPPING one: `postgresSnapshottingEventStore(postgresEventStore(pg, …), pg, …)`.
- * See {@link SnapshotCapableEventStore}.
- *
- * A store that never gets wrapped has no snapshot surface to misuse, no seam
- * to leave unwired, and no field on an entry to forget. That is not an
- * omission; it is the base being the right size.
+ * Snapshotting is a CAPABILITY TIER on top of it, added by WRAPPING a store:
+ * `postgresSnapshottingEventStore(postgresEventStore(pg, …), pg, …)`. See
+ * {@link SnapshotCapableEventStore}. A store that never gets wrapped has no
+ * snapshot surface to misuse.
  */
-export type EventStore = EventStorageEngine & EventBus
+export type EventStore = StreamableEventSource & {
+  /** Read the events matching a condition, with the marker the read reached. */
+  source(condition: SourcingCondition): Promise<SourcingResult>
+  /** Stage an append; the returned transaction commits or rolls it back. */
+  appendEvents(
+    events: ReadonlyArray<EventMessage>,
+    condition?: AppendCondition,
+    uow?: UnitOfWork,
+  ): Promise<AppendTransaction>
+  /** Append under a condition and settle. The common path. */
+  append(
+    events: ReadonlyArray<EventMessage>,
+    condition?: AppendCondition,
+    uow?: UnitOfWork,
+  ): Promise<ConsistencyMarker>
+}
 
 /**
  * A log that ALSO caches folds — the capability tier, and the only place

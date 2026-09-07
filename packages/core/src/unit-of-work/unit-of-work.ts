@@ -3,8 +3,7 @@ import type { EventMessage } from "../messaging/messages.js"
 
 /**
  * Lifecycle phases of one unit of work, in the order `execute` runs them:
- * PRE_INVOCATION → INVOCATION → POST_INVOCATION → PREPARE_COMMIT → COMMIT →
- * AFTER_COMMIT. Actions within a phase run in registration order; an action
+ * PRE_INVOCATION → INVOCATION → PREPARE_COMMIT → COMMIT → AFTER_COMMIT. Actions within a phase run in registration order; an action
  * registered for the current phase during its own execution still runs
  * (`runPhase` drains its bucket until it is empty); one registered for a phase
  * already past is dropped.
@@ -19,8 +18,6 @@ export const Phase = {
   PRE_INVOCATION: "pre-invocation",
   /** Actual handler execution. */
   INVOCATION: "invocation",
-  /** Cleanup after handler, before commit. */
-  POST_INVOCATION: "post-invocation",
   /** Prepare for commit (e.g. event store flush, token store). */
   PREPARE_COMMIT: "prepare-commit",
   /** Actual commit (e.g. database transaction commit). */
@@ -160,8 +157,8 @@ export type UnitOfWork = {
   /** Register an action for an arbitrary phase. */
   /**
    * Run `action` inside this unit of work, driving the phase protocol:
-   * PRE_INVOCATION → INVOCATION → the action → POST_INVOCATION →
-   * PREPARE_COMMIT → COMMIT → AFTER_COMMIT, or the error handlers on failure.
+   * PRE_INVOCATION → INVOCATION → the action → PREPARE_COMMIT → COMMIT →
+   * AFTER_COMMIT, or the error handlers on failure.
    *
    * The protocol lives HERE, on the handle, rather than in a free `run*`
    * function, because it is the unit of work's own lifecycle — nothing else
@@ -333,7 +330,6 @@ export function unitOfWork(clock?: () => number): UnitOfWork {
       }
       const result = await action()
 
-      await runPhase(Phase.POST_INVOCATION)
       await runPhase(Phase.PREPARE_COMMIT)
       await runPhase(Phase.COMMIT)
       await runPhase(Phase.AFTER_COMMIT)

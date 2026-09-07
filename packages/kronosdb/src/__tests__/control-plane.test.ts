@@ -68,15 +68,6 @@ function fakeProcessor(name: string) {
     stop() {
       events.push("stop")
     },
-    releaseSegment(id) {
-      events.push(`release:${id}`)
-    },
-    splitSegment(id) {
-      events.push(`split:${id}`)
-    },
-    mergeSegment(id) {
-      events.push(`merge:${id}`)
-    },
   }
   return proc
 }
@@ -116,11 +107,10 @@ describe("kronosDbControlPlane", () => {
 
       await platform.push({ kind: "pause-processor", processorName: "proc-a" })
       await platform.push({ kind: "start-processor", processorName: "proc-a" })
-      await platform.push({ kind: "release-segment", processorName: "proc-a", segmentId: 1 })
       await platform.push({ kind: "split-segment", processorName: "proc-a", segmentId: 2 })
-      await platform.push({ kind: "merge-segment", processorName: "proc-a", segmentId: 3 })
 
-      expect(proc.events).toEqual(["stop", "start", "release:1", "split:2", "merge:3"])
+      // split/merge/release are ignored: one lane per processor
+      expect(proc.events).toEqual(["stop", "start"])
     })
 
     it("ignores an instruction for an unknown processor without throwing", async () => {
@@ -193,51 +183,25 @@ describe("kronosDbControlPlane", () => {
   })
 
   describe("status reporting", () => {
-    it("reports a default single segment when the processor has no processingStatus()", () => {
+    it("reports name, running and a default position when the processor exposes no status()", () => {
       const platform = fakePlatform()
       kronosDbControlPlane({ platform }, [fakeProcessor("proc-a")])
 
       const [status] = platform.status()
-      expect(status?.name).toBe("proc-a")
-      expect(status?.running).toBe(true)
-      expect(status?.mode).toBe("Tracking")
-      expect(status?.segments).toHaveLength(1)
-      expect(status?.segments[0]?.segmentId).toBe(0)
+      expect(status).toEqual({ name: "proc-a", running: true, caughtUp: true, replaying: false, position: 0n, error: undefined })
     })
 
-    it("maps processingStatus() entries onto segment statuses", () => {
+    it("reads status() when the processor has one", () => {
       const platform = fakePlatform()
       const proc: ManagedEventProcessor = {
         name: "proc-a",
         running: true,
-        processingStatus: () =>
-          new Map<number, unknown>([
-            [0, { caughtUp: true, replaying: false, position: 10n }],
-            [1, { caughtUp: false, replaying: true, position: 4n }],
-          ]),
+        status: () => ({ caughtUp: false, replaying: true, position: 4n, error: new Error("boom") }),
       }
       kronosDbControlPlane({ platform }, [proc])
 
       const [status] = platform.status()
-      expect(status?.segments).toEqual([
-        { segmentId: 0, caughtUp: true, replaying: false, onePartOf: 1, tokenPosition: 10n, errorState: "" },
-        { segmentId: 1, caughtUp: false, replaying: true, onePartOf: 1, tokenPosition: 4n, errorState: "" },
-      ])
-    })
-
-    it("reports Subscribing mode when the processor does not support reset", () => {
-      const platform = fakePlatform()
-      const proc: ManagedEventProcessor = {
-        name: "sub",
-        running: false,
-        supportsReset: () => false,
-      }
-      kronosDbControlPlane({ platform }, [proc])
-
-      const [status] = platform.status()
-      expect(status?.mode).toBe("Subscribing")
-      expect(status?.isStreamingProcessor).toBe(false)
-      expect(status?.activeThreads).toBe(0)
+      expect(status).toEqual({ name: "proc-a", running: true, caughtUp: false, replaying: true, position: 4n, error: "boom" })
     })
   })
 

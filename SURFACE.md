@@ -93,7 +93,7 @@ event-sourcing/     ← NO list. The log AND the folds over it, because state IS
                     key) · structural-fitness · in-memory-snapshotting-event-store
 event-processing/   ← kronos({ eventHandlers })     handler · context ·
                     processor · running-processor · source · tracking-token ·
-                    token-store · segment · sequence · dead-lettering ·
+                    token-store · sequence · dead-lettering ·
                     dead-letter-queue · dead-letter-reprocessor
 event-scheduling/   events that have not happened yet, and the SECOND STORE TIER:
                     scheduler (the capability CONTRACT — ScheduleStoreCapability ·

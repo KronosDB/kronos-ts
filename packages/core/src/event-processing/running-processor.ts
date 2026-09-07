@@ -345,7 +345,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       return reprocessor.reprocess(filter)
     },
 
-    async resetTokens(startPosition: bigint = 0n, resetContext?: unknown) {
+    async resetTokens(startPosition: bigint = 0n) {
       if (isRunning) {
         throw new Error(`Processor "${name}" must be stopped before resetting tokens`)
       }
@@ -358,7 +358,6 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
           : replayToken(
               globalSequenceToken(headPosition),
               globalSequenceToken(startPosition),
-              resetContext,
             )
 
       await tokenStore.store(name, segment, token)

@@ -215,7 +215,7 @@ export type RunningProcessor = {
    * Reset the processor to replay events from a starting position. The
    * processor must be stopped before calling this.
    */
-  resetTokens(startPosition?: bigint, resetContext?: unknown): Promise<void>
+  resetTokens(startPosition?: bigint): Promise<void>
   /**
    * Replay parked dead letters back through the handlers (the oldest matching
    * lane). No-op returning false when no dead-letter queue is configured. Safe
