@@ -64,31 +64,18 @@ import type { PostgresResource } from "./postgres-pool.js"
 import { sharedPostgresTransaction } from "./postgres-transaction.js"
 import { decodeEvent, type EventRow, EVENT_COLUMNS } from "./event-row.js"
 
-// Minimal TagResolver structural shape — the real slot is declared in the
-// core; we accept anything compatible. Serializer uses the canonical type.
-export type TagResolver = (event: EventMessage) => ReadonlyArray<{ key: string; value: string }>
-
-export type PostgresEventStoreConfig = {
-  readonly tagResolver: TagResolver
-}
-
 /**
  * The DCB event store — and NOTHING BUT. `pg` carries both the client and the
- * table names, so the only thing left to say is how tags are read off an event.
+ * table names, and an event carries its tags, so there is nothing else to say.
  *
  * IT HAS NEVER HEARD OF SNAPSHOTS. There is no `serializer` in its config any
  * more and no snapshot branch in its `source`: the base contract is complete
  * for event sourcing, and a host that wants a cache over the fold WRAPS this —
- * `postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg,
- * { serializer })` — which is the one place the snapshots table is mentioned
+ * `postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer })` — which is the one place the snapshots table is mentioned
  * and the one place a serializer is needed.
  */
-export function postgresEventStore(
-  pg: PostgresResource,
-  config: PostgresEventStoreConfig,
-): EventStore {
+export function postgresEventStore(pg: PostgresResource): EventStore {
   const adapter: PostgresAdapter = pg
-  const { tagResolver } = config
   const tables = pg.tables
 
   // Push-based subscriber registry (EventBus.subscribe contract)
@@ -130,7 +117,7 @@ export function postgresEventStore(
   }
 
   function encodedTagsOf(e: EventMessage): string[] {
-    return tagResolver(e).map((t) => encodeTag(t.key, t.value))
+    return e.tags.map((t) => encodeTag(t.key, t.value))
   }
 
   /**

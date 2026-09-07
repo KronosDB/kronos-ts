@@ -18,9 +18,9 @@
  *
  * ```ts
  * const eventStore = postgresSchedulingEventStore(
- *   postgresEventStore(pg, { tagResolver }),
+ *   postgresEventStore(pg),
  *   pg,
- *   { unitOfWork: uow, tagResolver },
+ *   { unitOfWork: uow },
  * )
  * ```
  *

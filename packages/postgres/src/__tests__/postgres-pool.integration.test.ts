@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
-import { descriptorBasedTagResolver, jsonSerializer } from "@kronos-ts/core"
+import { jsonSerializer } from "@kronos-ts/core"
 import { pgAdapter } from "../adapters/pg.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
 import { postgresPool } from "../postgres-pool.js"
@@ -71,9 +71,7 @@ describe("postgresPool", () => {
     const pool = postgresPool(pg.connectionString)
     await pool.start()
     try {
-      const eventStore = postgresEventStore(pool, {
-        tagResolver: descriptorBasedTagResolver(),
-      })
+      const eventStore = postgresEventStore(pool)
       const cachingStore = postgresSnapshottingEventStore(eventStore, pool, {
         serializer: jsonSerializer(),
       })

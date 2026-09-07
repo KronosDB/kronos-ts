@@ -103,7 +103,7 @@ export type Upcast = (event: EventMessage) => EventMessage
  *
  * ```typescript
  * const eventStore = upcastingEventStore(
- *   postgresEventStore(pg, { tagResolver }),
+ *   postgresEventStore(pg),
  *   (e) => capacityAdded(departmentAdded(e)),
  * )
  * ```

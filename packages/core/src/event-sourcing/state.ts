@@ -2,8 +2,7 @@ import type { InferOutput, StandardSchemaV1 } from "../messaging/standard-schema
 import {
   qualifiedNameToString,
   type EventMessage,
-  type EventDescriptor,
-} from "../messaging/messages.js"
+  type EventDescriptor, tagKeysOf } from "../messaging/messages.js"
 import type { EventQuery, QueryItem } from "./dcb-query.js"
 import type { SnapshotConfig } from "./snapshot.js"
 /**
@@ -235,7 +234,7 @@ let stateSequence = 0
  * path, and the reason `tags` is a single record even for multi-stream states.
  *
  * Per folded event type, the state's tag record is intersected with the KEYS
- * that event type declares (`EventDescriptor.tagKeys`). The DISTINCT
+ * that event type declares (the keys of `EventDescriptor.tags`). The DISTINCT
  * intersections become the ITEMS of the query — items are ORed — and each event
  * type joins every item whose tag set it declares in full. Event types with the
  * same intersection share an item, so a single-stream state still derives
@@ -246,7 +245,7 @@ let stateSequence = 0
  * on the tags IT declares" resolution, driven by the descriptor and the fold
  * rather than by annotations on a class.
  *
- * Two facts make the intersection sound rather than a guess. `tagKeys` is
+ * Two facts make the intersection sound rather than a guess. the key set is
  * exhaustive and payload-independent by construction (see `event()`), and an
  * EMPTY intersection is an error, not an empty filter — a state that folds an
  * event sharing none of its tags has declared a fold it can never source, which
@@ -282,17 +281,7 @@ function deriveGranularQuery(
 
   for (const [descriptor] of evolvers) {
     const type = qualifiedNameToString(descriptor.name)
-    const declared = descriptor.tagKeys
-
-    if (declared === undefined) {
-      throw new Error(
-        `State ${label} folds "${type}", but "${type}" does not declare its tag keys, ` +
-        "so the state's query cannot be scoped to it. " +
-        "Give that event's `tags` as a record of extractors — " +
-        "`tags: { courseId: (p) => p.courseId }` — or, if it needs the function form, " +
-        "declare `tagKeys: [...]` next to it.",
-      )
-    }
+    const declared = tagKeysOf(descriptor)
 
     const shared = stateKeys.filter((key) => declared.includes(key))
 
@@ -448,7 +437,7 @@ const BOOT_PROBE_ID_VALUE = "kronos:boot-probe"
  *
  * This requires each folded event to declare its tag keys, which the record
  * form of `event({ tags })` does for free. See {@link StateTags} for the array
- * override, and `EventDescriptor.tagKeys` for the function-form escape hatch.
+ * override, and the keys of `EventDescriptor.tags` for the event's half.
  *
  * THE FIELD ORDER IS THE READING ORDER — `id · tags · evolve · snapshot? ·
  * lifecycle?`. NOTHING NAMES A STATE: a state that caches its fold says WHERE

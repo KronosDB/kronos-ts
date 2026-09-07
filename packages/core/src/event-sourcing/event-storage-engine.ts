@@ -34,8 +34,7 @@ export type AppendTransaction = {
  * to provide persistent event storage.
  *
  * Not intended for direct use by application code. The {@link EventStore}
- * composes an EventStorageEngine with event distribution (EventSink) and
- * tag resolution (TagResolver).
+ * composes an EventStorageEngine with event distribution (EventSink).
  */
 export type EventStorageEngine = StreamableEventSource & {
   /**

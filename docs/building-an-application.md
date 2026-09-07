@@ -235,7 +235,7 @@ const eventStore = inMemoryEventStore()
 // after
 const pool = postgresPool(process.env.DATABASE_URL!)
 await pool.start()
-const eventStore = postgresEventStore(pool, { tagResolver: descriptorBasedTagResolver() })
+const eventStore = postgresEventStore(pool)
 ```
 
 Nothing above the composition root changes. That is the whole payoff of entries

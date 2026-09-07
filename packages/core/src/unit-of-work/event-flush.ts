@@ -23,7 +23,6 @@ export type EventFlushStore = {
 
 export type EventFlushOptions = {
   eventStore: EventFlushStore
-  tagResolver?: (event: EventMessage) => Array<{ key: string; value: string }>
   /** Command-path hook: lets a handler definition override the sourced query. */
   appendCondition?: (sourcedQuery: EventQuery) => EventQuery
 }
@@ -32,7 +31,7 @@ export type EventFlushOptions = {
  * Register the flush on `uow` (no-op if already registered — the
  * `flushRegistered` flag on the unit of work is the once-per-UoW guard).
  *
- * At PREPARE_COMMIT: resolve tags, build the append condition from the unit of
+ * At PREPARE_COMMIT: build the append condition from the unit of
  * work's sourcing infos (every `load()` contributed a query + a consistency
  * marker), and append the buffer in one store call — inside the unit of work,
  * so the write joins its transaction.
@@ -44,14 +43,9 @@ export function registerEventFlush(uow: UnitOfWork, options: EventFlushOptions):
     const buffered = uow.events.buffered
     if (buffered.length === 0) return
 
-    // Correlation data is applied per-event at append() time, so the buffer
-    // already carries the active correlation here.
-    const resolvedEvents = options.tagResolver
-      ? buffered.map((event) => ({
-          ...event,
-          tags: [...event.tags, ...options.tagResolver!(event)],
-        }))
-      : buffered
+    // Correlation and tags are both settled per event at append() time — the
+    // buffer is what gets flushed, byte for byte.
+    const resolvedEvents = buffered
 
     const sourcingInfos = uow.events.sourcingInfos
     let appendCondition: unknown

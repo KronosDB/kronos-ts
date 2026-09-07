@@ -8,6 +8,7 @@ import {
   localCommandBus,
   localQueryBus,
   unitOfWork,
+  tagsOf,
 } from "@kronos-ts/core"
 import type { EventDescriptor, EventMessage } from "@kronos-ts/core"
 import {
@@ -34,7 +35,7 @@ function message(descriptor: EventDescriptor<any>, payload: any): EventMessage {
     payload,
     metadata: emptyMetadata(),
     timestamp: FROZEN,
-    tags: descriptor.tags ? descriptor.tags(payload) : [],
+    tags: tagsOf(descriptor, payload, emptyMetadata()),
   }
 }
 

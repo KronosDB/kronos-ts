@@ -64,7 +64,6 @@ import { otlpCommandBus, otlpQueryBus, type OtlpExporter } from "@kronos-ts/otlp
 declare const pg: PostgresResource
 declare const kdb: Parameters<typeof kronosDbEventStore>[0]
 declare const axon: Parameters<typeof axonServerEventStore>[0]
-declare const tagResolver: Parameters<typeof postgresEventStore>[1]["tagResolver"]
 
 const serializer = jsonSerializer()
 
@@ -80,7 +79,7 @@ export const inMemoryCapable: SnapshotCapableEventStore = inMemorySnapshottingEv
 )
 
 export const postgresCapable: SnapshotCapableEventStore = postgresSnapshottingEventStore(
-  postgresEventStore(pg, { tagResolver }),
+  postgresEventStore(pg),
   pg,
   { serializer },
 )
@@ -100,7 +99,6 @@ export const axonServerCapable: SnapshotCapableEventStore = axonServerSnapshotti
 /** And the bases are NOT capable, so none of the above is vacuous. */
 // @ts-expect-error — the base postgres store mentions snapshots nowhere
 export const postgresBaseIsNotCapable: SnapshotCapableEventStore = postgresEventStore(pg, {
-  tagResolver,
 })
 // @ts-expect-error — nor does the base kronosdb store
 export const kronosDbBaseIsNotCapable: SnapshotCapableEventStore = kronosDbEventStore(kdb, "default")
@@ -117,12 +115,12 @@ export const axonBaseIsNotCapable: SnapshotCapableEventStore = axonServerEventSt
 // ---------------------------------------------------------------------------
 
 export const upcastOutsideSnapshots: SnapshotCapableEventStore = upcastingEventStore(
-  postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+  postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
   (e) => e,
 )
 
 export const snapshotsOutsideUpcast: SnapshotCapableEventStore = postgresSnapshottingEventStore(
-  upcastingEventStore(postgresEventStore(pg, { tagResolver }), (e) => e),
+  upcastingEventStore(postgresEventStore(pg), (e) => e),
   pg,
   { serializer },
 )
@@ -147,18 +145,17 @@ export const threeDeep: SnapshotCapableEventStore = upcastingEventStore(
 
 /** The postgres pair, scheduling outermost — the arrangement a host writes. */
 const postgresBoth = postgresSchedulingEventStore(
-  postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+  postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
   pg,
-  { unitOfWork: postgresUnitOfWork(unitOfWork, pg), tagResolver },
+  { unitOfWork: postgresUnitOfWork(unitOfWork, pg) },
 )
 export const postgresBothSchedules: ScheduleCapableEventStore = postgresBoth
 export const postgresBothSnapshots: SnapshotCapableEventStore = postgresBoth
 
 /** The same pair, the other way up. Order is a preference, never a constraint. */
 const postgresBothReversed = postgresSnapshottingEventStore(
-  postgresSchedulingEventStore(postgresEventStore(pg, { tagResolver }), pg, {
+  postgresSchedulingEventStore(postgresEventStore(pg), pg, {
     unitOfWork: postgresUnitOfWork(unitOfWork, pg),
-    tagResolver,
   }),
   pg,
   { serializer },
@@ -190,11 +187,10 @@ export const everythingSnapshots: SnapshotCapableEventStore = everything
 /** And neither tier grants the other, so none of the above is vacuous. */
 // @ts-expect-error — the postgres snapshotting wrapper adds no scheduling
 export const pgSnapshotIsNotSchedulable: ScheduleCapableEventStore =
-  postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer })
+  postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer })
 
 // @ts-expect-error — and the base postgres store is neither
 export const pgBaseIsNotSchedulable: ScheduleCapableEventStore = postgresEventStore(pg, {
-  tagResolver,
 })
 
 // ---------------------------------------------------------------------------
@@ -284,7 +280,7 @@ export const deeplyWrappedStillSatisfiesTheDemand = (
 export const proof = deeplyWrappedStillSatisfiesTheDemand(
   recordingEventStore(
     upcastingEventStore(
-      postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+      postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
       (e) => e,
     ),
   ),
@@ -297,9 +293,9 @@ export const scheduleProof = deeplyWrappedStillSchedules(
   recordingEventStore(
     upcastingEventStore(
       postgresSchedulingEventStore(
-        postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+        postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
         pg,
-        { unitOfWork: postgresUnitOfWork(unitOfWork, pg), tagResolver },
+        { unitOfWork: postgresUnitOfWork(unitOfWork, pg) },
       ),
       (e) => e,
     ),

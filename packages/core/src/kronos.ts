@@ -1,4 +1,3 @@
-import { descriptorBasedTagResolver, type TagResolver } from "./event-sourcing/tag-resolver.js"
 import type { EventStore } from "./event-sourcing/event-store.js"
 import type { CommandBus } from "./command-handling/bus.js"
 import type { QueryBus } from "./query-handling/bus.js"
@@ -72,8 +71,6 @@ export type HandlerSite<E extends EventStore = EventStore> = {
    * into `ctx` in this field's TYPE.
    */
   readonly eventStore?: E
-  /** Tag resolution at append time. Defaults to descriptor-derived tags. */
-  readonly tagResolver?: TagResolver
   /** Diagnostics label — used in boot errors. */
   readonly name?: string
 }
@@ -254,7 +251,6 @@ export function kronos<
       commandBus: handler.commandBus,
       queryBus: handler.queryBus,
       eventStore,
-      tagResolver: handler.tagResolver ?? descriptorBasedTagResolver(),
     })
   }
 

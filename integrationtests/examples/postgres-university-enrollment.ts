@@ -37,7 +37,6 @@ import {
 import { state } from "@kronos-ts/core"
 import {
   afterEvents,
-  descriptorBasedTagResolver,
 } from "@kronos-ts/core"
 import { kronos } from "@kronos-ts/core"
 import {
@@ -278,7 +277,7 @@ async function main(): Promise<void> {
     // a policy for. ONE object, ONE serializer — and without the wrap the
     // `ctx.load` calls in the decisions above would not compile.
     const eventStore = postgresSnapshottingEventStore(
-      postgresEventStore(pg, { tagResolver: descriptorBasedTagResolver() }),
+      postgresEventStore(pg),
       pg,
       { serializer: jsonSerializer() },
     )

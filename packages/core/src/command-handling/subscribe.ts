@@ -1,7 +1,6 @@
 import {
   qualifiedNameToString,
   type CommandMessage,
-  type EventMessage,
 } from "../messaging/messages.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
 import type { CommandBus } from "./bus.js"
@@ -41,8 +40,6 @@ export type CommandInvocationDeps<
    * and whether it has the scheduling verbs at all.
    */
   readonly eventStore?: E
-  /** Tags derived at flush time. */
-  readonly tagResolver?: (event: EventMessage) => Array<{ key: string; value: string }>
 }
 
 /**
@@ -64,7 +61,6 @@ export function commandInvocation<U extends UnitOfWork, E extends EventStore = E
     if (deps.eventStore) {
       registerEventFlush(uow, {
         eventStore: deps.eventStore,
-        ...(deps.tagResolver ? { tagResolver: deps.tagResolver } : {}),
         ...(handler.appendCondition
           ? { appendCondition: (query: EventQuery) => handler.appendCondition!(message, query) }
           : {}),
