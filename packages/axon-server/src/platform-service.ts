@@ -105,7 +105,16 @@ export type PlatformConnection = {
 }
 
 export type PlatformServiceOptions = {
-  /** Heartbeat interval in ms. Default: 10000 */
+  /**
+   * Heartbeat interval in ms. Default: 2500.
+   *
+   * Axon Server's `client-heartbeat-timeout` defaults to 5000 ms and is
+   * refreshed ONLY by heartbeats the client sends (`HeartbeatMonitor`), checked
+   * every second. A 10 s cadence — Axon Framework's own default — survives
+   * there only because the framework also answers every heartbeat the SERVER
+   * sends; this client does both, and beats at half the server's window so a
+   * paused runner still fits.
+   */
   heartbeatIntervalMs?: number
   /** Heartbeat timeout in ms. If no response within this window, reconnect. Default: 7500 */
   heartbeatTimeoutMs?: number
@@ -133,7 +142,7 @@ export function platformConnection(
   connection: AxonServerConnection,
   options?: PlatformServiceOptions,
 ): PlatformConnection {
-  const heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 10000
+  const heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 2500
   const heartbeatTimeoutMs = options?.heartbeatTimeoutMs ?? 7500
   const processorsNotificationRateMs = options?.processorsNotificationRateMs ?? 500
   const processorsNotificationInitialDelayMs = options?.processorsNotificationInitialDelayMs ?? 5000
@@ -160,6 +169,13 @@ export function platformConnection(
   /** Guards against arming the status-report timer twice — see `startProcessorStatusReporting`. */
   let processorStatusArmed = false
   let lastHeartbeatResponse = Date.now()
+  // Whether this server has EVER sent a heartbeat. Axon Server only beats at
+  // clients whose registered framework version it recognises (4.2.1+); a client
+  // it does not beat at cannot be judged by the silence — that judgement fell
+  // every window and tore down a healthy stream, every 10 s, in production.
+  // Dead-channel detection for a server that never beats is gRPC keepalive's
+  // job (see `connection.ts`), not this timer's.
+  let serverBeats = false
   let outbound: ReturnType<typeof outboundStream<PlatformInboundInstruction>> | null = null
   /**
    * Latches once Axon Server sends its first inbound message after
@@ -200,9 +216,15 @@ export function platformConnection(
           }
         }
 
-        // Handle heartbeat response — track last response time for timeout detection
+        // A heartbeat from the server is BOTH the liveness signal this side
+        // tracks and a request: Axon Server measures client inactivity by the
+        // heartbeats it receives, so every one it sends is answered at once
+        // (what Axon Framework's connector does). Without the echo, the only
+        // activity the server ever sees is the periodic beat below.
         if (message.heartbeat) {
+          serverBeats = true
           lastHeartbeatResponse = Date.now()
+          outbound?.send({ heartbeat: { clientId: connection.config.clientId }, instructionId: "" })
         }
       }
     } catch (err) {
@@ -266,10 +288,13 @@ export function platformConnection(
 
     heartbeatTimer = setInterval(() => {
       if (!isConnected || !outbound) return
+      // Not before the server has acknowledged the registration: a heartbeat
+      // from a stream it has not filed yet is an error on its side, not a beat.
+      if (!acked) return
 
-      // Check if last heartbeat response was too long ago
+      // Judge silence only from a server that has beaten before.
       const timeSinceLastResponse = Date.now() - lastHeartbeatResponse
-      if (timeSinceLastResponse > heartbeatTimeoutMs) {
+      if (serverBeats && timeSinceLastResponse > heartbeatTimeoutMs) {
         console.warn(
           `Platform heartbeat timeout: no response in ${timeSinceLastResponse}ms ` +
           `(threshold: ${heartbeatTimeoutMs}ms). Marking connection as lost.`,
@@ -352,6 +377,7 @@ export function platformConnection(
 
     // Re-arm the ack latch so a stop/start cycle correctly re-waits.
     acked = false
+    serverBeats = false
     outbound = outboundStream<PlatformInboundInstruction>()
 
     // Register with Axon Server

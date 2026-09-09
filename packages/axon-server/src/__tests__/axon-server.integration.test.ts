@@ -106,6 +106,19 @@ const handleEnrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd 
 // Axon Server bring-up helpers
 // ============================================================================
 
+async function awaitDcbReady(probe: () => Promise<unknown>, timeoutMs = 60_000): Promise<void> {
+  const start = Date.now()
+  for (;;) {
+    try {
+      await probe()
+      return
+    } catch (err) {
+      if (Date.now() - start > timeoutMs) throw err
+      await new Promise((r) => setTimeout(r, 500))
+    }
+  }
+}
+
 async function initClusterWithDcb(host: string, httpPort: number): Promise<void> {
   await fetch(`http://${host}:${httpPort}/v2/cluster/init?dcb=true`, { method: "POST" })
   const start = Date.now()
@@ -177,17 +190,11 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     // The REST context listing races the DCB gRPC endpoint actually serving
     // the context — on a slow runner the gap is seconds, and a fixed sleep is
     // a coin-flip. Probe the real endpoint until it answers: readiness is the
-    // thing itself working, not a proxy for it.
-    const probeStart = Date.now()
-    for (;;) {
-      try {
-        await eventStore.latestToken()
-        break
-      } catch (err) {
-        if (!/Unknown Context/i.test(String(err)) || Date.now() - probeStart > 60_000) throw err
-        await new Promise((r) => setTimeout(r, 500))
-      }
-    }
+    // thing itself working, not a proxy for it. ANY failure is "not yet": the
+    // server answers "Unknown Context" first and, a beat later, a
+    // NullPointerException from inside its own EventStore.stream while the
+    // context's store is still being wired.
+    await awaitDcbReady(() => eventStore.latestToken())
     // The local segment is a REAL bus: a command Axon Server routes back to us
     // runs under the unit-of-work policy chosen HERE. Interception stays
     // outside, so it covers the message on its way to the wire.
@@ -218,7 +225,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     await app?.stop()
     await axon?.close()
     await container?.stop()
-  })
+  }, 60_000)
 
   it("dispatches a command through Axon Server and sources state", async () => {
     await send(commandBus, CreateCourse, {

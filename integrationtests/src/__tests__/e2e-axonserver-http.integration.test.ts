@@ -339,6 +339,19 @@ function registerCourseHttp(
 // Axon Server helpers
 // ============================================================================
 
+async function awaitDcbReady(probe: () => Promise<unknown>, timeoutMs = 60_000): Promise<void> {
+  const start = Date.now()
+  for (;;) {
+    try {
+      await probe()
+      return
+    } catch (err) {
+      if (Date.now() - start > timeoutMs) throw err
+      await new Promise((r) => setTimeout(r, 500))
+    }
+  }
+}
+
 async function initClusterWithDcb(host: string, httpPort: number): Promise<void> {
   await fetch(`http://${host}:${httpPort}/v2/cluster/init?dcb=true`, { method: "POST" })
   const start = Date.now()
@@ -405,8 +418,6 @@ describe("E2E: Axon Server full stack", () => {
     axonGrpcPort = grpcPort
 
     await initClusterWithDcb(host, httpPort)
-    // Extra delay for DCB event store stream endpoint initialization
-    await new Promise((r) => setTimeout(r, 3000))
 
     // The UoW runner is the LOCAL bus's, and the local bus is what the Axon
     // buses route inbound work into — so a command Axon Server sends back to
@@ -431,6 +442,12 @@ describe("E2E: Axon Server full stack", () => {
       axon,
       "default",
     )
+    // The REST context listing races the DCB gRPC endpoint serving the context;
+    // probe the real thing until it answers. Any failure is "not yet" — the
+    // server first says "Unknown Context", then a beat later throws a
+    // NullPointerException from its own EventStore.stream while wiring the
+    // context's store. A fixed sleep here was a coin-flip on a loaded runner.
+    await awaitDcbReady(() => axonEventStore.latestToken())
 
     // Interception OUTSIDE the transport. `local` already carries `correlation` of
     // its own, so a server-routed command meets it twice — which is a no-op
@@ -485,7 +502,7 @@ describe("E2E: Axon Server full stack", () => {
     await app?.stop()
     await axon?.close()
     await container?.stop()
-  })
+  }, 60_000)
 
   function eventStore(): EventStore {
     return axonEventStore

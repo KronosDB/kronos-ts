@@ -335,7 +335,7 @@ describe("University — Full Application Flow", () => {
   beforeEach(() => { clearCourseViews() })
   afterEach(async () => {
     if (app) { await app.stop(); app = undefined }
-  })
+  }, 60_000)
 
   it("command → event → processor → projection → query", async () => {
     const buses = inMemoryBuses()
