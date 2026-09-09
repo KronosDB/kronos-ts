@@ -124,7 +124,7 @@ export function platformConnection(
   connection: KronosDbConnection,
   options?: PlatformServiceOptions,
 ): PlatformConnection {
-  const heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 10000
+  const heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 5000
   const heartbeatTimeoutMs = options?.heartbeatTimeoutMs ?? 7500
   const processorsNotificationRateMs = options?.processorsNotificationRateMs ?? 500
   const processorsNotificationInitialDelayMs = options?.processorsNotificationInitialDelayMs ?? 5000
@@ -180,8 +180,11 @@ export function platformConnection(
           }
         }
 
+        // The server's heartbeat is a request ("client must respond" — see
+        // platform.proto): answer it at once, and track it as liveness.
         if (message.heartbeat) {
           lastHeartbeatResponse = Date.now()
+          outbound?.send({ heartbeat: {} })
         }
       }
     } catch (err) {
