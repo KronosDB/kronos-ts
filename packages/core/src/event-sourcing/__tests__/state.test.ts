@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn, event } from "../../messaging/messages.js"
-import { tag } from "../../messaging/tag.js"
 import { state } from "../state.js"
 
 // -- Fixtures --
@@ -349,30 +348,11 @@ describe("granular query derivation", () => {
     ).toThrow(/university\.SemesterRolled.*carries no tags/s)
   })
 
-  it("refuses to guess when a folded event never declared its tag keys", () => {
-    const Opaque = event({
-      name: qn("university", "Opaque"),
-      payload: z.object({ courseId: z.string() }),
-      // Function form, no `tagKeys` — the keys are genuinely unknown.
-      tags: (p) => [tag("courseId", p.courseId)],
-    })
-
-    expect(Opaque.tagKeys).toBeUndefined()
-    expect(() =>
-      state({
-        id: { courseId: z.string() },
-        tags: (id) => ({ courseId: id.courseId }),
-        evolve: [() => ({}), [Opaque, (s) => s]],
-      }),
-    ).toThrow(/does not declare its tag keys/)
-  })
-
-  it("an explicit `tagKeys` makes the function form usable again", () => {
+  it("a folded event's keys come off its tags record — no declaration needed", () => {
     const Declared = event({
       name: qn("university", "Declared"),
       payload: z.object({ courseId: z.string() }),
-      tags: (p) => [tag("courseId", p.courseId)],
-      tagKeys: ["courseId"],
+      tags: { courseId: (p) => p.courseId },
     })
 
     const Course = state({

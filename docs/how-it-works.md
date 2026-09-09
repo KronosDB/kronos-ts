@@ -37,24 +37,21 @@ same with the qualified name written out.
 `tags` is a **record of extractors**, and this shape is load-bearing. The
 record's own keys *are* the tag keys, so the framework knows which tags an event
 type carries without running anything — which is what lets a state derive its
-DCB query per event type (below). A function form exists for tag sets a per-key
-extractor cannot express — a variable number of tags, or a key that varies with
-the payload — and then you must declare the keys yourself:
+DCB query per event type (below). An extractor returns the value for its key —
+or several values, when one fact is about several entities, and the event then
+carries one tag per value under that key:
 
 ```ts
-const ItemsRelabelled = event({
-  name: qn("catalog", "ItemsRelabelled"),
-  payload: z.object({ items: z.array(z.string()) }),
-  tags: (p) => p.items.map((id) => tag("itemId", id)),
-  tagKeys: ["itemId"],   // not derivable from a function — say it
+const CopiesRelabelled = event({
+  name: qn("library", "CopiesRelabelled"),
+  payload: z.object({ copyIds: z.array(z.string()), shelf: z.string() }),
+  tags: { copyId: (p) => p.copyIds },   // copyId=a, copyId=b, … — a state for any of them sees it
 })
 ```
 
-Passing `tagKeys` alongside a `tags` record throws at definition time: they
-cannot disagree, so only one of them may exist. An event with no `tags` at all
-has a *known* key set — the empty one. An event with a `tags` function and no
-`tagKeys` has an *unknown* one, and a state that folds it fails at boot rather
-than guessing.
+Returning `undefined` or `[]` carries no tag under that key for that payload.
+An event with no `tags` at all has a known key set — the empty one — so a state
+that folds it is refused at boot for sharing no key with it.
 
 `query` is one exported binding doing two jobs — `query({ name, payload })`
 declares a query type, `query(bus, descriptor, payload)` dispatches one. Arity
@@ -93,12 +90,11 @@ It drives a fixed phase protocol:
 
 ```ts
 export const Phase = {
-  PRE_INVOCATION: -10000,   // transaction begin
-  INVOCATION: 0,            // the handler runs
-  POST_INVOCATION: 10000,
-  PREPARE_COMMIT: 20000,    // event flush, token store write
-  COMMIT: 30000,            // driver transaction commit
-  AFTER_COMMIT: 40000,      // subscription updates, notifications
+  PRE_INVOCATION: "pre-invocation", // transaction begin
+  INVOCATION: "invocation", // the handler runs
+  PREPARE_COMMIT: "prepare-commit", // event flush, token store write
+  COMMIT: "commit", // driver transaction commit
+  AFTER_COMMIT: "after-commit", // subscription updates, notifications
 } as const
 ```
 
@@ -529,10 +525,9 @@ students' subscriptions to the same course. Pinning it to `courseId AND
 studentId` would silently drop them — an under-sourced fold, and an append
 condition too narrow to catch the very conflict it exists to catch.
 
-Two failures are boot errors rather than silent no-ops. A folded event whose tag
-keys are unknown (a `tags` function with no `tagKeys`) fails, because the query
-cannot be scoped to it. A folded event sharing *no* tag key with the state fails,
-because that fold can never fire — it is a modelling mistake.
+One failure is a boot error rather than a silent no-op: a folded event sharing
+*no* tag key with the state, because that fold can never fire — it is a
+modelling mistake.
 
 **Nothing names a state.** There is no `name` field: a state that caches its fold
 says *where* under `snapshot.key`, and diagnostics name a state by its process
@@ -702,7 +697,7 @@ const eventStore = inMemorySnapshottingEventStore(inMemoryEventStore())
 const eventStore = kronosDbSnapshottingEventStore(kronosDbEventStore(kdb, ctx), kdb, ctx)
 const eventStore = axonServerSnapshottingEventStore(axonServerEventStore(axon, ctx), axon, ctx)
 const eventStore = postgresSnapshottingEventStore(
-  postgresEventStore(pool, { tagResolver }), pool, { serializer },
+  postgresEventStore(pool), pool, { serializer },
 )
 ```
 
@@ -825,7 +820,7 @@ The **capability** is a site fact, and it rides on the log:
 
 ```ts
 const eventStore = postgresSnapshottingEventStore(
-  postgresEventStore(pg, { tagResolver }), pg, { serializer },
+  postgresEventStore(pg), pg, { serializer },
 )
 kronos({ commandHandlers: handlers.map((h) => ({ ...h, eventStore })) })
 ```
@@ -889,7 +884,7 @@ Both wrap the log. The documented order is **upcasting outermost**:
 
 ```ts
 upcastingEventStore(
-  postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+  postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
   upcast,
 )
 ```
@@ -942,7 +937,7 @@ Three wrappers, one per family that has one, each **additive**:
 ```ts
 const eventStore = inMemorySchedulingEventStore(inMemoryEventStore())
 const eventStore = postgresSchedulingEventStore(
-  postgresEventStore(pool, { tagResolver }), pool, { unitOfWork: uow, tagResolver },
+  postgresEventStore(pool), pool, { unitOfWork: uow },
 )
 const eventStore = kronosDbSchedulingEventStore(kronosDbEventStore(kdb, ctx), kdb, { serializer })
 ```
@@ -1010,8 +1005,8 @@ The store-tier category has two members now, and they compose:
 ```ts
 const eventStore = upcastingEventStore(
   postgresSchedulingEventStore(
-    postgresSnapshottingEventStore(postgresEventStore(pool, { tagResolver }), pool, { serializer }),
-    pool, { unitOfWork: uow, tagResolver },
+    postgresSnapshottingEventStore(postgresEventStore(pool), pool, { serializer }),
+    pool, { unitOfWork: uow },
   ),
   upcast,
 )

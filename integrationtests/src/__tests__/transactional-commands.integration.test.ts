@@ -33,9 +33,9 @@ import { Pool, type PoolClient } from "pg"
 import { drizzle } from "drizzle-orm/node-postgres"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { qn, send } from "@kronos-ts/core"
-import { command, event, commandHandler, jsonSerializer } from "@kronos-ts/core"
+import { command, event, commandHandler } from "@kronos-ts/core"
 import { state } from "@kronos-ts/core"
-import { type EventStore, descriptorBasedTagResolver } from "@kronos-ts/core"
+import type { EventStore } from "@kronos-ts/core"
 import { kronos, type App } from "@kronos-ts/core"
 import {
   correlation,
@@ -172,10 +172,7 @@ describe("transactional commands — user CRUD atomic with appended events", () 
     // transaction BECAUSE they share the pool.
     pool = postgresPool(pgAdapter({ connectionString }))
     await pool.start()
-    eventStore = postgresEventStore(pool, {
-      serializer: jsonSerializer(),
-      tagResolver: descriptorBasedTagResolver(),
-    })
+    eventStore = postgresEventStore(pool)
 
     // The whole point of this file: the command bus is built around postgres's
     // lazy transactional UoW factory, so a handler's appends and its own CRUD

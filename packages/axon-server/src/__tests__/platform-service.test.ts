@@ -165,11 +165,26 @@ describe("platformConnection — armConnectionMonitoring (data path)", () => {
     // No axonServerControlPlane anywhere: this is a service nobody administers.
     await platform.armConnectionMonitoring()
 
-    // Nothing answers on the inbound stream, so the heartbeat window lapses.
+    // The server beats once — so its silence afterwards MEANS something — and
+    // then nothing answers on the inbound stream, so the heartbeat window lapses.
+    fake.inbound.push({ heartbeat: {} })
     await wait(60)
 
     expect(fake.reconnects).toBeGreaterThan(0)
     expect(platform.connected).toBe(false)
+  })
+
+  it("never reconnects on silence from a server that has never sent a heartbeat", async () => {
+    const fake = fakeConnection()
+    platform = platformConnection(fake.connection, lapsingOptions)
+
+    await platform.armConnectionMonitoring()
+    await wait(60)
+
+    // Axon Server beats only at clients whose framework version it recognises.
+    // A client it never beats at must not read the silence as a dead channel.
+    expect(fake.reconnects).toBe(0)
+    expect(platform.connected).toBe(true)
   })
 
   it("arms NO processor status reporting", async () => {
@@ -179,13 +194,9 @@ describe("platformConnection — armConnectionMonitoring (data path)", () => {
       {
         name: "p",
         running: true,
-        mode: "Tracking",
-        isStreamingProcessor: true,
-        activeThreads: 1,
-        availableThreads: 0,
-        error: false,
-        tokenStoreIdentifier: "",
-        segments: [],
+        caughtUp: true,
+        replaying: false,
+        position: 0n,
       },
     ])
 
@@ -208,13 +219,9 @@ describe("platformConnection — start (control plane) over an already-armed str
       {
         name: "p",
         running: true,
-        mode: "Tracking",
-        isStreamingProcessor: true,
-        activeThreads: 1,
-        availableThreads: 0,
-        error: false,
-        tokenStoreIdentifier: "",
-        segments: [],
+        caughtUp: true,
+        replaying: false,
+        position: 0n,
       },
     ])
     await platform.start()
@@ -234,13 +241,9 @@ describe("platformConnection — start (control plane) over an already-armed str
       {
         name: "p",
         running: true,
-        mode: "Tracking",
-        isStreamingProcessor: true,
-        activeThreads: 1,
-        availableThreads: 0,
-        error: false,
-        tokenStoreIdentifier: "",
-        segments: [],
+        caughtUp: true,
+        replaying: false,
+        position: 0n,
       },
     ])
 

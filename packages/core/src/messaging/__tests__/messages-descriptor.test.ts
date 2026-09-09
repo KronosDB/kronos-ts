@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { is, qn, type Message } from "../messages.js"
-import { tag } from "../tag.js"
+import { emptyMetadata, is, qn, tagKeysOf, tagsOf, type Message } from "../messages.js"
 import { command, event, query } from "../../index.js"
 
 describe("Message Descriptors", () => {
@@ -20,7 +19,7 @@ describe("Message Descriptors", () => {
   })
 
   describe("event()", () => {
-    it("creates an event descriptor with tags function", () => {
+    it("creates an event descriptor with a tags record", () => {
       const CourseCreated = event({
         name: qn("university.courses", "CourseCreated"),
         payload: z.object({ courseId: z.string(), name: z.string() }),
@@ -28,9 +27,9 @@ describe("Message Descriptors", () => {
       })
 
       expect(CourseCreated.kind).toBe("event")
-      expect(CourseCreated.tags).toBeDefined()
+      expect(Object.keys(CourseCreated.tags!)).toEqual(["courseId"])
 
-      const tags = CourseCreated.tags!({ courseId: "cs-101", name: "Intro" })
+      const tags = tagsOf(CourseCreated, { courseId: "cs-101", name: "Intro" }, emptyMetadata())
       expect(tags).toEqual([{ key: "courseId", value: "cs-101" }])
     })
 
@@ -80,67 +79,76 @@ describe("Message Descriptors", () => {
     })
   })
 
-  describe("tagKeys", () => {
-    it("derives them from the record-of-extractors form", () => {
+  describe("tags — a record of lambdas, decided once at birth", () => {
+    const meta = { ...emptyMetadata(), tenantId: "t-9" }
+
+    it("keeps the record as written and derives the keys from it", () => {
       const Subscribed = event({
         name: qn("university", "StudentSubscribedToCourse"),
         payload: z.object({ courseId: z.string(), studentId: z.string() }),
         tags: { courseId: (p) => p.courseId, studentId: (p) => p.studentId },
       })
 
-      expect(Subscribed.tagKeys).toEqual(["courseId", "studentId"])
-      // and the record still compiles to the same Tag[] the stores index on
-      expect(Subscribed.tags?.({ courseId: "cs-101", studentId: "stu-1" })).toEqual([
+      expect(tagKeysOf(Subscribed)).toEqual(["courseId", "studentId"])
+      expect(tagsOf(Subscribed, { courseId: "cs-101", studentId: "stu-1" }, meta)).toEqual([
         { key: "courseId", value: "cs-101" },
         { key: "studentId", value: "stu-1" },
       ])
     })
 
-    it("is UNDEFINED — not guessed — for the opaque function form", () => {
-      const Opaque = event({
-        name: qn("university", "Opaque"),
-        payload: z.object({ courseId: z.string() }),
-        tags: (p) => [tag("courseId", p.courseId)],
+    it("a lambda answers one value, several, or none", () => {
+      const Relabelled = event({
+        name: qn("catalog", "ItemsRelabelled"),
+        payload: z.object({ items: z.array(z.string()), region: z.string().optional() }),
+        tags: {
+          itemId: (p) => p.items,
+          region: (p) => p.region,
+        },
       })
 
-      expect(Opaque.tagKeys).toBeUndefined()
-      expect(Opaque.tags?.({ courseId: "cs-101" })).toEqual([{ key: "courseId", value: "cs-101" }])
-    })
-
-    it("takes an explicit declaration alongside the function form", () => {
-      const Declared = event({
-        name: qn("university", "Declared"),
-        payload: z.object({ items: z.array(z.string()) }),
-        tags: (p) => p.items.map((id) => tag("itemId", id)),
-        tagKeys: ["itemId"],
-      })
-
-      expect(Declared.tagKeys).toEqual(["itemId"])
-      expect(Declared.tags?.({ items: ["a", "b"] })).toEqual([
+      expect(tagKeysOf(Relabelled)).toEqual(["itemId", "region"])
+      expect(tagsOf(Relabelled, { items: ["a", "b"] }, meta)).toEqual([
         { key: "itemId", value: "a" },
         { key: "itemId", value: "b" },
       ])
+      expect(tagsOf(Relabelled, { items: [], region: "eu" }, meta)).toEqual([{ key: "region", value: "eu" }])
     })
 
-    it("an event with NO tags declares the empty key set, not an unknown one", () => {
+    it("sees the metadata the event is born with", () => {
+      const Charged = event({
+        name: qn("billing", "Charged"),
+        payload: z.object({ accountId: z.string() }),
+        tags: { accountId: (p) => p.accountId, tenantId: (_p, m) => m.tenantId as string },
+      })
+
+      expect(tagsOf(Charged, { accountId: "a-1" }, meta)).toEqual([
+        { key: "accountId", value: "a-1" },
+        { key: "tenantId", value: "t-9" },
+      ])
+    })
+
+    it("an event's tags are a set — an identical pair appears once", () => {
+      const Twice = event({
+        name: qn("probe", "Twice"),
+        payload: z.object({ ids: z.array(z.string()) }),
+        tags: { id: (p) => p.ids },
+      })
+
+      expect(tagsOf(Twice, { ids: ["x", "y", "x"] }, meta)).toEqual([
+        { key: "id", value: "x" },
+        { key: "id", value: "y" },
+      ])
+    })
+
+    it("an event with no tags has the empty key set and no tags", () => {
       const Untagged = event({
         name: qn("university", "SemesterRolled"),
         payload: z.object({ semester: z.string() }),
       })
 
-      expect(Untagged.tagKeys).toEqual([])
+      expect(tagKeysOf(Untagged)).toEqual([])
+      expect(tagsOf(Untagged, { semester: "S1" }, meta)).toEqual([])
       expect(Untagged.tags).toBeUndefined()
-    })
-
-    it("rejects `tagKeys` given alongside a tags RECORD — they cannot disagree", () => {
-      expect(() =>
-        event({
-          name: qn("university", "Conflicted"),
-          payload: z.object({ courseId: z.string() }),
-          tags: { courseId: (p) => p.courseId },
-          tagKeys: ["somethingElse"],
-        }),
-      ).toThrow(/cannot disagree|remove `tagKeys`/)
     })
   })
 

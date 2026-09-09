@@ -56,7 +56,7 @@ describe("append", () => {
     expect(capturedError).toBeInstanceOf(WrongUoWPhase)
     const err = capturedError as WrongUoWPhase
     expect(err.currentPhase).toBe(Phase.PREPARE_COMMIT)
-    expect(err.message).toContain("INVOCATION")
+    expect(err.message).toContain('only allowed during "invocation"')
   })
 
   it("buffers an EventMessage onto uow.events.buffered during INVOCATION", async () => {

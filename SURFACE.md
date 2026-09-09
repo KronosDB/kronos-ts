@@ -93,7 +93,7 @@ event-sourcing/     ← NO list. The log AND the folds over it, because state IS
                     key) · structural-fitness · in-memory-snapshotting-event-store
 event-processing/   ← kronos({ eventHandlers })     handler · context ·
                     processor · running-processor · source · tracking-token ·
-                    token-store · segment · sequence · dead-lettering ·
+                    token-store · sequence · dead-lettering ·
                     dead-letter-queue · dead-letter-reprocessor
 event-scheduling/   events that have not happened yet, and the SECOND STORE TIER:
                     scheduler (the capability CONTRACT — ScheduleStoreCapability ·
@@ -182,13 +182,14 @@ type CommandMessage · QueryMessage · EventMessage · SequencedEventMessage
 // the bus fills it from uow.now(), a transport from system time at the wire,
 // ctx.append at birth.
 command({ name, payload, result? }) · query({ name, payload, result? })
-event({ name, payload, tags?, tagKeys?, version? })
+event({ name, payload, tags?, version? })
 is<D extends MessageDescriptor>(message: Message, descriptor: D): message is <the message type for D>
   // ONE guard, all three kinds: kinds equal AND qualified names equal AND — for
   // an EVENT, the only kind carrying a version on the message — versions equal.
   // Narrows the payload via InferOutput off the descriptor's own schema.
   // tags: { key: (p) => string }  — record of extractors; keys ARE the tag keys
-  // tags: (p) => Tag[] needs explicit tagKeys when a state folds it
+  // tags: { key: (payload, metadata) => string | string[] | undefined } — the only form;
+  // keys ARE the tag keys, values fan out, an event's tags are a set
 withNamespace(ns): { command, query, event }
 
 // ── DCB queries: plain data, spec vocabulary ───────────────────────────────
@@ -651,7 +652,6 @@ type TokenStore<U = UnitOfWork>              // members take (processorName, …
 type SequencedDeadLetterQueue<U = UnitOfWork> // members take (processingGroup, …, uow?: U)
   // FUNCTION-TYPED FIELDS, NOT METHOD SHORTHAND. It costs nothing and keeps the
   // parameter positions checked contravariantly, the way a reader expects.
-type TagResolver = (event: EventMessage) => Tag[]
 inMemoryEventStore() · inMemorySnapshottingEventStore(next) · inMemoryTokenStore()
 inMemorySchedulingEventStore(next, { clock? }?)   // clock absent = system time
 
@@ -757,7 +757,7 @@ it needs, not everything a backend offers.
 ## @kronos-ts/postgres — the FULL persistence family, no ORM required
 ```ts
 postgresPool(connectionString | adapter): PostgresResource   // start()/close()
-postgresEventStore(pg, { tagResolver }): EventStore   // no serializer; knows no snapshots
+postgresEventStore(pg): EventStore                    // no serializer, no tag seam; knows no snapshots
 postgresSnapshottingEventStore<E>(next: E, pg, { serializer }): E & SnapshotStoreCapability
 postgresUnitOfWork<U>(next: () => U, pg): () => U     // THING-FIRST; lazy tx — its honest default
 postgresTokenStore(pg): TokenStore                    // joins the SAME tx as your raw-sql writes
@@ -765,7 +765,7 @@ postgresDeadLetterQueue(pg): SequencedDeadLetterQueue
 postgresTransaction(uow) · activePostgresTransaction(uow)
 postgresHandler(handler, pg): handler                 // wraps the FUNCTION; ctx gains sql(): Sql | Tx
 type PostgresCapability = { sql(): Sql | Tx }             // a slice writes `ctx: CommandHandlerContext & PostgresCapability`
-postgresSchedulingEventStore<E>(next: E, pg, { unitOfWork, tagResolver, pollIntervalMs?, batchSize? }):
+postgresSchedulingEventStore<E>(next: E, pg, { unitOfWork, pollIntervalMs?, batchSize? }):
   E & ScheduleStoreCapability & { startScheduling(); stopScheduling() }
 ```
 POSTGRES FUSES THE READ IN ONE ROUND TRIP, and "fused" is not a feature — it is

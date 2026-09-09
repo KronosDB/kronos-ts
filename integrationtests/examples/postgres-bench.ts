@@ -32,7 +32,6 @@ import { GenericContainer, Wait, type StartedTestContainer } from "testcontainer
 import { qn, tag, type Metadata } from "@kronos-ts/core"
 import type { EventMessage } from "@kronos-ts/core"
 import type { EventStore } from "@kronos-ts/core"
-import { descriptorBasedTagResolver } from "@kronos-ts/core"
 import { postgresEventStore, postgresPool } from "@kronos-ts/postgres"
 import type { PostgresAdapter, PostgresResource } from "@kronos-ts/postgres"
 import { DEFAULT_TABLE_NAMES } from "@kronos-ts/postgres"
@@ -88,9 +87,7 @@ async function buildStore(pool: PostgresResource): Promise<EventStore> {
   // The BASE store takes no serializer: it knows nothing about snapshots, and
   // events are stored as JSONB by the engine itself. Encoding belongs to the
   // wrapper that owns a payload — `postgresSnapshottingEventStore`.
-  return postgresEventStore(pool, {
-    tagResolver: descriptorBasedTagResolver(),
-  })
+  return postgresEventStore(pool)
 }
 
 async function truncate(pool: PostgresResource): Promise<void> {

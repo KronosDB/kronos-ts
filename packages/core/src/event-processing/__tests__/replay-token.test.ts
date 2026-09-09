@@ -50,15 +50,6 @@ describe("TrackingToken", () => {
       expect(token.tokenAtReset.position()).toBe(100n)
     })
 
-    it("preserves reset context", () => {
-      const token = replayToken(
-        globalSequenceToken(100n),
-        globalSequenceToken(0n),
-        "schema migration",
-      )
-
-      expect(token.resetContext).toBe("schema migration")
-    })
 
     it("covers based on current token", () => {
       const token = replayToken(

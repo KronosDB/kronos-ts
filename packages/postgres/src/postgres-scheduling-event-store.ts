@@ -82,7 +82,6 @@ import { IsolationLevel } from "./adapter.js"
 import type { PostgresAdapterTransaction } from "./adapter.js"
 import { encodeTag } from "./criteria-sql.js"
 import type { PostgresResource } from "./postgres-pool.js"
-import type { TagResolver } from "./postgres-event-store.js"
 import { sharedPostgresTransaction } from "./postgres-transaction.js"
 
 export type PostgresSchedulingConfig = {
@@ -92,7 +91,6 @@ export type PostgresSchedulingConfig = {
    * work sees the postgres tx.
    */
   readonly unitOfWork: () => UnitOfWork
-  readonly tagResolver: TagResolver
   /**
    * Worker poll interval. Defaults to 1000ms — a compromise between
    * fire-latency and DB chatter. Production users wanting tighter
@@ -136,7 +134,7 @@ export function postgresSchedulingEventStore<E extends EventStore>(
   pg: PostgresResource,
   config: PostgresSchedulingConfig,
 ): E & ScheduleStoreCapability & PostgresSchedulingControl {
-  const { unitOfWork, tagResolver } = config
+  const { unitOfWork } = config
   const tables = pg.tables
   const pollIntervalMs = config.pollIntervalMs ?? 1000
   const batchSize = config.batchSize ?? 50
@@ -147,7 +145,7 @@ export function postgresSchedulingEventStore<E extends EventStore>(
     at: Date,
   ): Promise<string> {
     const scheduleId = event.identifier
-    const encodedTags = tagResolver(event).map((t) => encodeTag(t.key, t.value))
+    const encodedTags = event.tags.map((t) => encodeTag(t.key, t.value))
     await tx.query(
       `INSERT INTO ${tables.scheduled}
          (schedule_id, fire_at, status, type, tags, payload, metadata, version, timestamp)

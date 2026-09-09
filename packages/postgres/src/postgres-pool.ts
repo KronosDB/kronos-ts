@@ -11,7 +11,7 @@
  * const pg = postgresPool(connectionString)
  * await pg.start()
  *
- * const eventStore = postgresEventStore(pg, { tagResolver })
+ * const eventStore = postgresEventStore(pg)
  * const tokenStore = postgresTokenStore(pg)
  * const uow        = postgresUnitOfWork(unitOfWork, pg)
  * // …only the ones this deployment actually needs.

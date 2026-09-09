@@ -4,8 +4,7 @@ import {
   emptyMetadata,
   type Metadata,
   type EventDescriptor,
-  type EventMessage,
-} from "../messaging/messages.js"
+  type EventMessage, tagsOf } from "../messaging/messages.js"
 import { generateIdentifier } from "../messaging/identifier.js"
 import { requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work.js"
 /**
@@ -72,9 +71,8 @@ export function appendFunction(deps: { uow: UnitOfWork }): AppendFunction {
     }
     const eventDescriptor = eventDescriptorOrList as EventDescriptor<any>
     const uow = requireInvocation(deps.uow)
-    const tags = eventDescriptor.tags ? eventDescriptor.tags(eventPayload) : []
-
     const metadata = eventMetadata ?? emptyMetadata()
+    const tags = tagsOf(eventDescriptor, eventPayload, metadata)
 
     const eventMessage: EventMessage = {
       kind: "event",

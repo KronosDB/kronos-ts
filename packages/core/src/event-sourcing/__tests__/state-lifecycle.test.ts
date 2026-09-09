@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { qn, emptyMetadata, event, type EventMessage } from "../../messaging/messages.js"
+import { qn, emptyMetadata, event, type EventMessage, tagsOf } from "../../messaging/messages.js"
 import { generateIdentifier } from "../../messaging/identifier.js"
 import { state } from "../state.js"
 import { inMemoryEventStore } from "../in-memory.js"
@@ -29,7 +29,7 @@ const ItemDeleted = event({
 type ItemState = { created: boolean; name: string; deleted: boolean }
 
 function eventMsg(descriptor: any, payload: any): EventMessage {
-  const tags = descriptor.tags ? descriptor.tags(payload) : []
+  const tags = tagsOf(descriptor, payload, emptyMetadata())
   return {
     identifier: generateIdentifier(),
     name: qn(descriptor.name.namespace, descriptor.name.name),

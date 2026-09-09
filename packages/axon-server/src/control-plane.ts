@@ -6,8 +6,9 @@
  * Axon Server's admin surface needs from a client:
  *
  *   1. inbound — Axon Server pushes processor instructions (pause-processor,
- *      start-processor, release-segment, split-segment, merge-segment) which
- *      have to be routed to the live processor of that name;
+ *      start-processor) which have to be routed to the live processor of that
+ *      name; segment instructions (split, merge, release) are ignored, a kronos
+ *      processor has one lane;
  *   2. outbound — the client periodically reports each processor's status so
  *      the Axon Dashboard can render it.
  *
@@ -39,19 +40,12 @@
  * caller to get wrong.
  */
 import type { AxonServerPlatformSource } from "./connection.js"
-import type { ProcessorStatus, SegmentStatus } from "./event-processor-info.js"
+import type { ProcessorStatus } from "./event-processor-info.js"
 
 /**
- * A processor Axon Server is allowed to observe and control.
- *
- * The container version reached for `app.processors()` and cast the result to
- * `any` before poking at `start` / `stop` / `releaseSegment` / … — this is that
- * cast, written down. Both `TrackingEventProcessor` and
- * `StreamingEventProcessor` satisfy it structurally; anything else that can
- * name itself and answer some of these calls does too. Every member past the
- * name is optional because Axon Server asks for things a given processor kind
- * may not implement (a subscribing processor has no segments), and the
- * instruction handler simply skips what is absent.
+ * A processor Axon Server is allowed to observe and control. `RunningProcessor`
+ * satisfies it structurally; everything past `name` is optional so a foreign
+ * processor-shaped object is skipped rather than crashed on.
  */
 export type ManagedEventProcessor = {
   readonly name: string
@@ -60,19 +54,12 @@ export type ManagedEventProcessor = {
   readonly position?: bigint
   start?(): Promise<void> | void
   stop?(): void
-  supportsReset?(): boolean
-  processingStatus?(): ReadonlyMap<
-    number,
-    {
-      readonly position?: bigint
-      readonly caughtUp?: boolean
-      readonly replaying?: boolean
-      readonly error?: Error
-    }
-  >
-  releaseSegment?(segmentId: number): Promise<unknown> | unknown
-  splitSegment?(segmentId: number): Promise<unknown> | unknown
-  mergeSegment?(segmentId: number): Promise<unknown> | unknown
+  status?(): {
+    readonly caughtUp?: boolean
+    readonly replaying?: boolean
+    readonly position?: bigint
+    readonly error?: Error
+  }
 }
 
 /**
@@ -92,37 +79,14 @@ export type AxonServerControlPlane = {
 /** Map the managed processors into the status shape the platform stream reports. */
 function processorStatuses(processors: Iterable<ManagedEventProcessor>): ProcessorStatus[] {
   return Array.from(processors, (proc) => {
-    const isStreamingProcessor = proc.supportsReset?.() !== false
-    const perSegment = proc.processingStatus?.()
-    const segments: SegmentStatus[] = perSegment
-      ? Array.from(perSegment.entries()).map(([segmentId, status]) => ({
-          segmentId,
-          caughtUp: status.caughtUp ?? false,
-          replaying: status.replaying ?? false,
-          onePartOf: 1,
-          tokenPosition: status.position ?? 0n,
-          errorState: status.error?.message ?? "",
-        }))
-      : [
-          {
-            segmentId: 0,
-            caughtUp: true,
-            replaying: proc.replaying ?? false,
-            onePartOf: 1,
-            tokenPosition: proc.position ?? 0n,
-            errorState: "",
-          },
-        ]
+    const status = proc.status?.()
     return {
       name: proc.name,
       running: proc.running ?? false,
-      mode: isStreamingProcessor ? "Tracking" : "Subscribing",
-      isStreamingProcessor,
-      activeThreads: proc.running ? 1 : 0,
-      availableThreads: 0,
-      error: false,
-      tokenStoreIdentifier: "",
-      segments,
+      caughtUp: status?.caughtUp ?? true,
+      replaying: status?.replaying ?? proc.replaying ?? false,
+      position: status?.position ?? proc.position ?? 0n,
+      error: status?.error?.message,
     }
   })
 }
@@ -167,15 +131,7 @@ export async function axonServerControlPlane(
       case "start-processor":
         await byName.get(instruction.processorName)?.start?.()
         break
-      case "release-segment":
-        await byName.get(instruction.processorName)?.releaseSegment?.(instruction.segmentId)
-        break
-      case "split-segment":
-        await byName.get(instruction.processorName)?.splitSegment?.(instruction.segmentId)
-        break
-      case "merge-segment":
-        await byName.get(instruction.processorName)?.mergeSegment?.(instruction.segmentId)
-        break
+      // release/split/merge-segment: a kronos processor has one lane. Ignored.
     }
   })
 

@@ -11,7 +11,7 @@ import type {
   SequencedEvent,
   StreamingCondition,
 } from "@kronos-ts/core"
-import { messageStream, compileQuery } from "@kronos-ts/core"
+import { compileQuery } from "@kronos-ts/core"
 import type {
   EventStore,
   SourcingResult,
@@ -178,19 +178,6 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
   const { connection, serializer, metadata: createAxonMetadata } = contextView(conn, context)
   const { eventToProto, eventFromProto } = createEventConverters(serializer)
 
-  // Push-based subscriber registry (EventBus.subscribe contract). Axon Server's
-  // own distribution is the server-side Stream RPC (see open()); these in-process
-  // subscribers are notified best-effort on every successful local append.
-  const subscribers = new Set<(events: ReadonlyArray<EventMessage>) => Promise<void>>()
-  async function notifySubscribers(events: ReadonlyArray<EventMessage>): Promise<void> {
-    for (const sub of subscribers) {
-      try {
-        await sub(events)
-      } catch {
-        /* ignore subscriber errors */
-      }
-    }
-  }
 
   return {
     async source(condition: SourcingCondition): Promise<SourcingResult> {
@@ -271,7 +258,6 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
             metadata: createAxonMetadata(),
           })
           responseMarker = response.consistencyMarker
-          await notifySubscribers(newEvents)
         },
         async afterCommit() {
           return markerAt(responseMarker ?? 0n)
@@ -336,7 +322,7 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
 
       startReading()
 
-      return messageStream<SequencedEvent>({
+      return {
         next() {
           return buffer.shift()
         },
@@ -366,7 +352,7 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
           availableCallback = null
           // gRPC stream will be cancelled when the async iterator is abandoned
         },
-      })
+      }
     },
 
     async getHeadPosition(): Promise<bigint> {
@@ -383,17 +369,5 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
       return globalSequenceToken(response.sequence)
     },
 
-    // EventBus contract — publish = append without condition, then notify
-    // in-process subscribers.
-    async publish(events: ReadonlyArray<EventMessage>): Promise<void> {
-      await this.append(events)
-    },
-
-    subscribe(handler: (events: ReadonlyArray<EventMessage>) => Promise<void>): () => void {
-      subscribers.add(handler)
-      return () => {
-        subscribers.delete(handler)
-      }
-    },
   }
 }

@@ -12,8 +12,7 @@ import {
   qualifiedNameToString,
   localCommandBus,
   localQueryBus,
-  unitOfWork,
-} from "@kronos-ts/core"
+  unitOfWork, tagsOf } from "@kronos-ts/core"
 import type {
   CorrelatingUnitOfWork,
   CommandBus,
@@ -638,7 +637,7 @@ export function testFixture<O extends FixtureOptions = FixtureOptions>(
       payload: value.payload,
       metadata: value.metadata ?? emptyMetadata(),
       timestamp: clock(),
-      tags: value.descriptor.tags ? value.descriptor.tags(value.payload) : [],
+      tags: tagsOf(value.descriptor, value.payload, value.metadata ?? emptyMetadata()),
     }
   }
 

@@ -56,8 +56,6 @@ export {
 // The stores.
 export {
   postgresEventStore,
-  type PostgresEventStoreConfig,
-  type TagResolver,
 } from "./postgres-event-store.js"
 
 export {

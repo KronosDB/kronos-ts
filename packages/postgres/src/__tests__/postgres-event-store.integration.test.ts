@@ -24,7 +24,6 @@ const NOOP_SERIALIZER: Serializer = {
   deserialize: <T,>(o: SerializedObject): T => JSON.parse(new TextDecoder().decode(o.data)) as T,
   canConvert: () => true,
 }
-const NOOP_TAG_RESOLVER = (e: EventMessage) => e.tags
 
 function makeEvent(type: string, tags: { key: string; value: string }[], payload: unknown = {}): EventMessage {
   // Note: QualifiedName uses 'name' (not 'localName') per packages/common/src/qualified-name.ts
@@ -47,9 +46,7 @@ beforeAll(async () => {
   // function of it.
   pool = postgresPool(adapter)
   await pool.start()
-  store = postgresEventStore(pool, {
-    tagResolver: NOOP_TAG_RESOLVER,
-  })
+  store = postgresEventStore(pool)
 }, 60_000)
 
 afterAll(async () => {

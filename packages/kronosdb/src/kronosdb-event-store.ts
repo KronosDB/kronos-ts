@@ -12,7 +12,7 @@ import type {
   SequencedEvent,
   StreamingCondition,
 } from "@kronos-ts/core"
-import { messageStream, compileQuery } from "@kronos-ts/core"
+import { compileQuery } from "@kronos-ts/core"
 import type {
   EventStore,
   SourcingResult,
@@ -172,19 +172,6 @@ export function kronosDbEventStore(
     return kronosMetadata(connection.config)
   }
 
-  // Push-based subscriber registry (EventBus.subscribe contract). KronosDB's
-  // own distribution is the server-side stream RPC (see open()); these
-  // in-process subscribers are notified best-effort on every local append.
-  const subscribers = new Set<(events: ReadonlyArray<EventMessage>) => Promise<void>>()
-  async function notifySubscribers(events: ReadonlyArray<EventMessage>): Promise<void> {
-    for (const sub of subscribers) {
-      try {
-        await sub(events)
-      } catch {
-        /* ignore subscriber errors */
-      }
-    }
-  }
 
   return {
     async source(condition: SourcingCondition): Promise<SourcingResult> {
@@ -240,7 +227,6 @@ export function kronosDbEventStore(
         async commit() {
           const response = await connection.eventStore.append(request, { metadata: getMetadata() })
           responseMarker = response.consistencyMarker
-          await notifySubscribers(newEvents)
         },
         async afterCommit() {
           return markerAt(responseMarker ?? 0n)
@@ -364,7 +350,7 @@ export function kronosDbEventStore(
         }
       }
 
-      return messageStream<SequencedEvent>({
+      return {
         next() {
           const item = buffer.shift()
           if (item) onConsumed()
@@ -397,7 +383,7 @@ export function kronosDbEventStore(
           controlResolve?.()
           availableCallback = null
         },
-      })
+      }
     },
 
     async getHeadPosition(): Promise<bigint> {
@@ -414,17 +400,5 @@ export function kronosDbEventStore(
       return globalSequenceToken(response.sequence)
     },
 
-    // EventBus contract — publish = append without condition, then notify
-    // in-process subscribers.
-    async publish(events: ReadonlyArray<EventMessage>): Promise<void> {
-      await this.append(events)
-    },
-
-    subscribe(handler: (events: ReadonlyArray<EventMessage>) => Promise<void>): () => void {
-      subscribers.add(handler)
-      return () => {
-        subscribers.delete(handler)
-      }
-    },
   }
 }

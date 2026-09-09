@@ -27,7 +27,7 @@ const EVENT_NAME = qn("test", "Scheduled")
 const descriptor = {
   name: EVENT_NAME,
   version: "1.0",
-  tags: (p: { id: string }) => [{ key: "id", value: p.id }],
+  tags: { id: (p: { id: string }) => p.id },
 } as any
 
 /**
