@@ -352,6 +352,23 @@ async function awaitDcbReady(probe: () => Promise<unknown>, timeoutMs = 60_000):
   }
 }
 
+/**
+ * Open the DCB stream RPC and hold it for a moment: the context can answer a
+ * one-shot read while its stream endpoint still throws from inside the server
+ * (a NullPointerException in `EventStore.stream` for a beat after the context
+ * appears). Readiness is the thing the processors will actually use, working.
+ */
+async function streamServes(store: { open(c: { position: bigint }): { error(): Error | undefined; close(): void } }): Promise<void> {
+  const stream = store.open({ position: 0n })
+  try {
+    await new Promise((r) => setTimeout(r, 750))
+    const err = stream.error()
+    if (err) throw err
+  } finally {
+    stream.close()
+  }
+}
+
 async function initClusterWithDcb(host: string, httpPort: number): Promise<void> {
   await fetch(`http://${host}:${httpPort}/v2/cluster/init?dcb=true`, { method: "POST" })
   const start = Date.now()
@@ -448,6 +465,7 @@ describe("E2E: Axon Server full stack", () => {
     // NullPointerException from its own EventStore.stream while wiring the
     // context's store. A fixed sleep here was a coin-flip on a loaded runner.
     await awaitDcbReady(() => axonEventStore.latestToken())
+    await awaitDcbReady(() => streamServes(axonEventStore))
 
     // Interception OUTSIDE the transport. `local` already carries `correlation` of
     // its own, so a server-routed command meets it twice — which is a no-op

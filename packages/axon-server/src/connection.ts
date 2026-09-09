@@ -189,6 +189,12 @@ export function connectToAxonServer(config: AxonServerConnectionConfig): AxonSer
     "grpc.keepalive_time_ms": config.keepAliveTimeMs ?? 30000,
     "grpc.keepalive_timeout_ms": config.keepAliveTimeoutMs ?? 10000,
     "grpc.keepalive_permit_without_calls": (config.keepAlivePermitWithoutCalls ?? true) ? 1 : 0,
+    // Own subchannel pool per channel. grpc-js pools subchannels PROCESS-WIDE by
+    // target address by default, so a later connection to the same host:port —
+    // a fresh container on a reused mapped port, in a test process that already
+    // talked to another one — can be handed the previous server's HTTP/2
+    // session, and its unary calls hang until the server-side timeout.
+    "grpc.use_local_subchannel_pool": 1,
   }
 
   // Build server address list for failover

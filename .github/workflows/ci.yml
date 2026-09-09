@@ -32,10 +32,11 @@ jobs:
     # both tsconfig and test:unit, so without this job a broken integration
     # test ships green. Runs real backends via testcontainers.
     #
-    # ONE RUNNER PER SUITE. Five container suites in one 2-core job starved each
-    # other: JVM Axon Server and KronosDB paused past their heartbeat windows and
-    # every run was a coin-flip. A matrix gives each suite its own machine and a
-    # failure a name.
+    # ONE RUNNER PER SUITE. Six container suites in one 2-core job starved each
+    # other, and grpc-js's process-wide subchannel pool handed a later container
+    # on a reused port an earlier one's dead session. Both are fixed at the
+    # source (per-channel pools, heartbeats answered); the matrix keeps each
+    # suite on its own machine and gives a failure a name.
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +45,8 @@ jobs:
           - packages/rabbitmq/src/__tests__
           - packages/kronosdb/src/__tests__
           - packages/axon-server/src/__tests__
-          - integrationtests
+          - integrationtests/src/__tests__
+          - integrationtests/src/axon-e2e
     name: integration (${{ matrix.suite }})
     permissions:
       contents: read
@@ -64,3 +66,4 @@ jobs:
       - name: Container tests
         run: bun test ${{ matrix.suite }}
         timeout-minutes: 20
+
