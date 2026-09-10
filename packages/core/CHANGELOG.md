@@ -1,5 +1,236 @@
 # @kronos-ts/core
 
+## 0.4.0
+
+### Minor Changes
+
+- 2fb9245: Cleans up internal API surfaces that had no callers. BREAKING only for code that imported them; runtime behaviour of stores, processors and buses is unchanged.
+
+  - **Segments are gone.** `Segment`, `ROOT_SEGMENT`, `segment`, `segmentMatches`, `splitSegment`, `mergeSegments`, `isMergeable`, `segmentCount`, `hashOf`, `segments`. Processors are single-lane and `segment` was hard-coded to 0.
+  - **`MessageStream` is the seven members a processor pulls through**: `next`, `peek`, `hasNextAvailable`, `isCompleted`, `error`, `setCallback`, `close`. `map`, `filter`, `reduce`, `concatWith`, `onErrorContinue`, `messageStream`, `emptyMessageStream` and `failedMessageStream` had no caller.
+  - **`EventStore` is one type.** `EventStorageEngine`, `EventBus`, `EventSink` and `SubscribableEventSource` are gone with the `publish` and `subscribe` members on every store. Processors read through `open()` and are woken by the store; nothing subscribed. `AppendTransaction` is exported from `event-store.ts`.
+  - **`Phase.POST_INVOCATION` is gone.** Nothing ever registered on it.
+  - **`resetTokens(position)` takes no `resetContext`.** It was persisted into the replay token and readable by no handler.
+  - **Control planes report what a processor has.** `ManagedEventProcessor` (kronosdb, axon-server) is `name`, `running`, `replaying`, `position`, `start`, `stop`, `status()`. `splitSegment`, `mergeSegment`, `releaseSegment`, `processingStatus` and `supportsReset` are gone; segment instructions from the server are ignored (they were already no-ops). `ProcessorStatus` is `{ name, running, caughtUp, replaying, position, error? }`; the wire's thread counts and segment list are filled in `toEventProcessorInfo`. One observable difference: `caughtUp` and `error` on the status report are now the processor's real values instead of a constant `true` and `false`.
+
+- 0a6a030: A context capability exists only when a handler has something new to call. BREAKING renames and deletions.
+
+  **Snapshotting is a store tier with no context type.** `SnapshotReads`, `SnapshotDemand`, `IfSnapshotCapable`, `FusedSourceFunction` and `SnapshottedSource` are gone. `ctx.source` has one signature everywhere, `ctx.load` accepts any state against any context, and a snapshot-policy state loaded through a bare log throws at runtime on the first load (`capableOrThrow`). Wire `<family>SnapshottingEventStore` underneath and declare `state({ snapshot })`; no handler names the tier.
+
+  **One naming rule.** `<Tier>Capability` is what a handler intersects on its context. `<Tier>StoreCapability` / `<Tier>BusCapability` is what a wrapper adds to a store or bus. `<Tier>Capable<Thing>` aliases for composition roots are unchanged.
+
+  | before                                     | after                                                                 |
+  | ------------------------------------------ | --------------------------------------------------------------------- |
+  | `EmitCapability` (ctx)                     | `SubscriptionCapability`                                              |
+  | `ScheduleFunctions` (ctx)                  | `ScheduleCapability`                                                  |
+  | `SubscriptionCapability` (bus)             | `SubscriptionBusCapability`                                           |
+  | `ScheduleCapability` (store)               | `ScheduleStoreCapability`                                             |
+  | `SnapshotCapability` (store)               | `SnapshotStoreCapability`                                             |
+  | `ScheduleVerbs<E>` / `SubscriptionEmit<Q>` | `SuppliedScheduleCapability<E>` / `SuppliedSubscriptionCapability<Q>` |
+
+  **The per-package `<Pkg>CommandContext` / `<Pkg>EventContext` / `<Pkg>QueryContext` aliases are deleted** (drizzle, knex, kysely, prisma, postgres). A host names its context once:
+
+  ```ts
+  // before
+  commandHandler(Edit, async (m, ctx: CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore> & EmitCapability & DrizzleCapability) => …)
+  commandHandler(Edit, async (m, ctx: DrizzleCommandContext) => …)
+
+  // after — one contexts file, no type parameters in slice code
+  type CmdCtx = CommandHandlerContext & ScheduleCapability & SubscriptionCapability & DrizzleCapability
+  commandHandler(Edit, async (m, ctx: CmdCtx) => …)
+  ```
+
+- 303f268: A handler names what it uses, never its task: `correlatingHandler` demands on
+  its output, the contexts take `E` before `U`, and the command context is
+  `CommandHandlerContext`.
+
+  Three changes to one seam, and all three are BREAKING.
+
+  **`correlatingHandler` demands on its output.** Wrapping used to require the
+  handler to have already claimed a correlating task; now the wrapper claims it on
+  the handler's behalf, and the entry's bus is what must agree.
+
+  ```ts
+  // before — the handler had to say it
+  const enroll = commandHandler(Enroll, async (m, ctx: HandlerContext<CorrelatingUnitOfWork>) => { … })
+  handler: correlatingHandler(enroll.handler, from)
+
+  // after — the handler says nothing; the wrapper's result asks, the bus answers
+  const enroll = commandHandler(Enroll, async (m, ctx) => { … })
+  handler: correlatingHandler(enroll.handler, from)      // (m, ctx: C & { unitOfWork: CorrelatingUnitOfWork }) => R
+  commandBus: localCommandBus(() => unitOfWork())        // ✗ still the same compile error, same place
+  ```
+
+  A handler that reaches for the map itself (`ctx.unitOfWork.attachCorrelationData`)
+  still annotates `ctx`, the way any other demand is written.
+
+  **`E` before `U` on every context.** A handler annotates the log it uses; the
+  task is defaulted and stays out of handler code.
+
+  ```ts
+  // before
+  ctx: HandlerContext<UnitOfWork, SnapshotCapableEventStore>;
+  ctx: EventHandlerContext<UnitOfWork, ScheduleCapableEventStore>;
+
+  // after
+  ctx: CommandHandlerContext<SnapshotCapableEventStore>;
+  ctx: EventHandlerContext<ScheduleCapableEventStore>;
+  ```
+
+  **`HandlerContext` is `CommandHandlerContext`** (and `handlerContext` is
+  `commandHandlerContext`), beside `EventHandlerContext` and
+  `QueryHandlerContext`. One name per kind.
+
+- 6890230: The persistence-family type is gone. The stores enforce the rule themselves,
+  and they catch more of it than the type did. BREAKING: `PersistenceFamily` and
+  the six `XFamily` types are removed.
+
+  ```ts
+  // before — a phantom brand on the task, and a compile error when they disagreed
+  type DrizzleUnitOfWork = PersistenceFamily<"drizzle", "…">
+  drizzleUnitOfWork<U>(next: () => U, db): () => U & DrizzleUnitOfWork
+  drizzleTokenStore(db): TokenStore<UnitOfWork & DrizzleUnitOfWork>
+
+  // after — nothing marks a task, and the store says what it needs when asked
+  drizzleUnitOfWork<U>(next: () => U, db): () => U
+  drizzleTokenStore(db): TokenStore
+  ```
+
+  **Why it went.** The brand existed because mixing families failed SILENTLY: a
+  drizzle token store handed a postgres task asked for its transaction, was told
+  there was none, fell back to its plain handle, and committed the token outside
+  the batch. But that silence was a bug in the fallback, not a fact of life — and
+  the brand never caught the likeliest spelling of the same mistake, because
+  `inMemoryTokenStore()` is assignable into any processor and commits outside the
+  batch just as happily.
+
+  So the fallback is fixed instead: a token store or dead-letter queue handed a
+  unit of work carrying no transaction of its own now THROWS, naming the factory
+  to build the processor's `unitOfWork` with. The failure is loud on the first
+  token write, in any test that runs the processor, whichever store you mixed in.
+
+  A handler's accessor still falls back — `ctx.db()` works whether or not the seam
+  it runs in is transactional, because that is a deployment decision. A token
+  store has no such freedom, which is why absence is an error there and a default
+  here.
+
+  Source-compatible for anyone already following the rule; the six
+  `<pkg>UnitOfWork` type exports are removed, and nothing else changes.
+
+- 796abc6: Unit-of-work phases are names, not numbers. `Phase.PRE_INVOCATION` is `"pre-invocation"`, `Phase.COMMIT` is `"commit"`, and so on; `PhaseValue` is the string union. The numeric values were Axon's ordering keys — spaced so custom phases could be inserted between them — and nothing in kronos-ts ever ordered by them: the phase sequence is the code in `execute`, and the only comparison is equality. `WrongUoWPhase` now prints the phase by name. BREAKING only for code that typed the numbers instead of `Phase.*`.
+- 303f268: Live updates are the third capability tier — the first on a bus. The base
+  `QueryBus` shrinks to two members; the subscription surface moves to
+  `SubscriptionCapability`, and `ctx.emitUpdate` exists only against a bus that
+  claims it. BREAKING.
+
+  ```ts
+  // before — every QueryBus implementer carried seven members
+  type QueryBus<U> = {
+    query;
+    subscribe;
+    subscriptionQuery;
+    subscribeToUpdates;
+    emitUpdate;
+    completeSubscription;
+    completeSubscriptionExceptionally;
+  };
+
+  // after — the seam is two; the tier is claimed, never implied
+  type QueryBus<U> = { query; subscribe };
+  type SubscriptionCapableQueryBus<U> = QueryBus<U> & SubscriptionCapability;
+  ```
+
+  Same construction as the two store tiers: `IfSubscriptionCapable<Q, …, …>` is
+  the anchor, `SubscriptionEmit<Q>` derives the context face, and the contexts
+  take the bus beside the log — `EventHandlerContext<E, Q, U>` /
+  `CommandHandlerContext<E, Q, U>`, each parameter defaulted so plain code never
+  writes any of them.
+
+  ```ts
+  // a projection that pushes live updates says so — and an entry whose bus
+  // cannot serve them refuses it at compile time
+  eventHandler(Enrolled, async (m, ctx) => {
+    ctx.emitUpdate(Watch, …)        // ✗ property does not exist
+  })
+  eventHandler(Enrolled, async (m, ctx: EventHandlerContext & EmitCapability) => {
+    ctx.emitUpdate(Watch, …)        // ✓ and the entry's queryBus must claim the tier
+  })
+  ```
+
+  A handler demands the tier by intersecting `EmitCapability` — one name for the
+  one thing it uses. The type parameters are the SUPPLY side (an entry threads
+  its bus in, and `Q` is inferred from the bus the entry names, so hosts write no
+  type arguments on either side); intersecting is the DEMAND side, exactly as the
+  persistence packages' `DrizzleCapability` / `PostgresCapability` are written.
+
+  The `subscriptionQuery` edge verb demands `SubscriptionCapableQueryBus`.
+  `localQueryBus` offers the tier natively; the kronosdb, axon-server and
+  rabbitmq buses offer it server- or broker-mediated; `interceptingQueryBus`,
+  `otlpQueryBus` and `recordingQueryBus` preserve whatever tier the wrapped bus
+  carried (`B` in, `B` out) instead of naming the members.
+
+  Interception wraps the tier where it exists: `subscriptionQuery` /
+  `subscribeToUpdates` run the same intercept the primary `query` runs, so
+  subscription queries travel correlated across transports — the KNOWN-GAP
+  comments in kronosdb/axon-server described an older core and are retired,
+  pinned by a test.
+
+- ddc8eb6: Tags are decided in ONE place: the event descriptor. BREAKING.
+
+  ```ts
+  // before — three places had a say: the descriptor, a resolver on the entry or the
+  // Postgres store, and the flush that merged them (which stored every tag twice)
+  event({
+    name,
+    payload,
+    tags: (p) => p.items.map((id) => tag("itemId", id)),
+    tagKeys: ["itemId"],
+  });
+  postgresEventStore(pg, { tagResolver: metadataBasedTagResolver("tenantId") });
+
+  // after — a record of lambdas over payload AND metadata; one value, several, or none
+  event({
+    name,
+    payload,
+    tags: {
+      itemId: (p) => p.items, // several under one key
+      region: (p) => (p.export ? p.region : undefined), // no tag this time
+      tenantId: (_p, m) => m.tenantId as string, // from metadata
+    },
+  });
+  postgresEventStore(pg);
+  ```
+
+  - The record is the only form of `tags` and it stays on the descriptor as written. The function form and `tagKeys` are gone; `tagKeysOf(descriptor)` reads the keys off the record and `tagsOf(descriptor, payload, metadata)` computes one event's tags at birth. An event's tags are a set: an identical key/value pair appears once.
+  - `TagResolver`, `descriptorBasedTagResolver`, `metadataBasedTagResolver` and `multiTagResolver` are deleted, with the `tagResolver` field on handler entries, on `postgresEventStore`'s config, and on `postgresSchedulingEventStore`'s config. `postgresEventStore(pg)` takes no second argument. The flush no longer merges anything.
+  - Fixes tags being stored twice: every command site defaulted to the descriptor resolver and the flush appended its output to the tags the event already carried.
+
+### Patch Changes
+
+- 303f268: The examples are compiled by the same gate as the code, and they had drifted.
+
+  `integrationtests/examples` was in no tsconfig, so nothing typechecked it —
+  three renames went past it and it accumulated eight errors while every gate
+  stayed green. It is in the root `tsconfig.json` `include` now, and the drift is
+  fixed: the base `postgresEventStore` takes no `serializer` (encoding belongs to
+  the wrapper that owns a payload), the decisions that load a snapshotting state
+  declare `CommandHandlerContext<SnapshotCapableEventStore>`, and the bus helper
+  is generic in `U` instead of laundering the composed task away.
+
+  The university example is also recomposed the way the surface intends: no
+  `buildProjector(db)` factory, no bus bundle, no `any`-typed `carrying()`
+  wrapper. Handlers are plain top-level values; the composition root names each
+  store, bus, task factory and processor once and writes the five entries out.
+  Projections write through drizzle bound to the task's own transaction
+  (`postgresTransaction(ctx.unitOfWork).unwrap()`), with `postgresTokenStore` in
+  the same family — so a projection write and the token update that records it
+  commit together.
+
+  Both examples also ran to completion and did nothing: `main().catch(…)` leaves
+  a floating promise that does not hold Bun's event loop open across
+  testcontainers' docker calls, so they printed one line and exited 0. Both use
+  top-level await now.
+
 ## 0.3.0
 
 ### Minor Changes
