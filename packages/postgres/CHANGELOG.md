@@ -1,5 +1,145 @@
 # @kronos-ts/postgres
 
+## 0.12.0
+
+### Minor Changes
+
+- 2fb9245: Cleans up internal API surfaces that had no callers. BREAKING only for code that imported them; runtime behaviour of stores, processors and buses is unchanged.
+
+  - **Segments are gone.** `Segment`, `ROOT_SEGMENT`, `segment`, `segmentMatches`, `splitSegment`, `mergeSegments`, `isMergeable`, `segmentCount`, `hashOf`, `segments`. Processors are single-lane and `segment` was hard-coded to 0.
+  - **`MessageStream` is the seven members a processor pulls through**: `next`, `peek`, `hasNextAvailable`, `isCompleted`, `error`, `setCallback`, `close`. `map`, `filter`, `reduce`, `concatWith`, `onErrorContinue`, `messageStream`, `emptyMessageStream` and `failedMessageStream` had no caller.
+  - **`EventStore` is one type.** `EventStorageEngine`, `EventBus`, `EventSink` and `SubscribableEventSource` are gone with the `publish` and `subscribe` members on every store. Processors read through `open()` and are woken by the store; nothing subscribed. `AppendTransaction` is exported from `event-store.ts`.
+  - **`Phase.POST_INVOCATION` is gone.** Nothing ever registered on it.
+  - **`resetTokens(position)` takes no `resetContext`.** It was persisted into the replay token and readable by no handler.
+  - **Control planes report what a processor has.** `ManagedEventProcessor` (kronosdb, axon-server) is `name`, `running`, `replaying`, `position`, `start`, `stop`, `status()`. `splitSegment`, `mergeSegment`, `releaseSegment`, `processingStatus` and `supportsReset` are gone; segment instructions from the server are ignored (they were already no-ops). `ProcessorStatus` is `{ name, running, caughtUp, replaying, position, error? }`; the wire's thread counts and segment list are filled in `toEventProcessorInfo`. One observable difference: `caughtUp` and `error` on the status report are now the processor's real values instead of a constant `true` and `false`.
+
+- 0a6a030: A context capability exists only when a handler has something new to call. BREAKING renames and deletions.
+
+  **Snapshotting is a store tier with no context type.** `SnapshotReads`, `SnapshotDemand`, `IfSnapshotCapable`, `FusedSourceFunction` and `SnapshottedSource` are gone. `ctx.source` has one signature everywhere, `ctx.load` accepts any state against any context, and a snapshot-policy state loaded through a bare log throws at runtime on the first load (`capableOrThrow`). Wire `<family>SnapshottingEventStore` underneath and declare `state({ snapshot })`; no handler names the tier.
+
+  **One naming rule.** `<Tier>Capability` is what a handler intersects on its context. `<Tier>StoreCapability` / `<Tier>BusCapability` is what a wrapper adds to a store or bus. `<Tier>Capable<Thing>` aliases for composition roots are unchanged.
+
+  | before                                     | after                                                                 |
+  | ------------------------------------------ | --------------------------------------------------------------------- |
+  | `EmitCapability` (ctx)                     | `SubscriptionCapability`                                              |
+  | `ScheduleFunctions` (ctx)                  | `ScheduleCapability`                                                  |
+  | `SubscriptionCapability` (bus)             | `SubscriptionBusCapability`                                           |
+  | `ScheduleCapability` (store)               | `ScheduleStoreCapability`                                             |
+  | `SnapshotCapability` (store)               | `SnapshotStoreCapability`                                             |
+  | `ScheduleVerbs<E>` / `SubscriptionEmit<Q>` | `SuppliedScheduleCapability<E>` / `SuppliedSubscriptionCapability<Q>` |
+
+  **The per-package `<Pkg>CommandContext` / `<Pkg>EventContext` / `<Pkg>QueryContext` aliases are deleted** (drizzle, knex, kysely, prisma, postgres). A host names its context once:
+
+  ```ts
+  // before
+  commandHandler(Edit, async (m, ctx: CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore> & EmitCapability & DrizzleCapability) => …)
+  commandHandler(Edit, async (m, ctx: DrizzleCommandContext) => …)
+
+  // after — one contexts file, no type parameters in slice code
+  type CmdCtx = CommandHandlerContext & ScheduleCapability & SubscriptionCapability & DrizzleCapability
+  commandHandler(Edit, async (m, ctx: CmdCtx) => …)
+  ```
+
+- 6890230: The persistence-family type is gone. The stores enforce the rule themselves,
+  and they catch more of it than the type did. BREAKING: `PersistenceFamily` and
+  the six `XFamily` types are removed.
+
+  ```ts
+  // before — a phantom brand on the task, and a compile error when they disagreed
+  type DrizzleUnitOfWork = PersistenceFamily<"drizzle", "…">
+  drizzleUnitOfWork<U>(next: () => U, db): () => U & DrizzleUnitOfWork
+  drizzleTokenStore(db): TokenStore<UnitOfWork & DrizzleUnitOfWork>
+
+  // after — nothing marks a task, and the store says what it needs when asked
+  drizzleUnitOfWork<U>(next: () => U, db): () => U
+  drizzleTokenStore(db): TokenStore
+  ```
+
+  **Why it went.** The brand existed because mixing families failed SILENTLY: a
+  drizzle token store handed a postgres task asked for its transaction, was told
+  there was none, fell back to its plain handle, and committed the token outside
+  the batch. But that silence was a bug in the fallback, not a fact of life — and
+  the brand never caught the likeliest spelling of the same mistake, because
+  `inMemoryTokenStore()` is assignable into any processor and commits outside the
+  batch just as happily.
+
+  So the fallback is fixed instead: a token store or dead-letter queue handed a
+  unit of work carrying no transaction of its own now THROWS, naming the factory
+  to build the processor's `unitOfWork` with. The failure is loud on the first
+  token write, in any test that runs the processor, whichever store you mixed in.
+
+  A handler's accessor still falls back — `ctx.db()` works whether or not the seam
+  it runs in is transactional, because that is a deployment decision. A token
+  store has no such freedom, which is why absence is an error there and a default
+  here.
+
+  Source-compatible for anyone already following the rule; the six
+  `<pkg>UnitOfWork` type exports are removed, and nothing else changes.
+
+- 303f268: `PostgresFamily` is `PostgresUnitOfWork`, and `PostgresContext` is `PostgresCommandContext`. BREAKING for
+  anyone who spelled either.
+
+  ```ts
+  // before
+  type Task = CorrelatingUnitOfWork & PostgresFamily;
+  commandHandler(Edit, async (m, ctx: PostgresContext) => {
+    ctx.sql();
+  });
+
+  // after
+  type Task = CorrelatingUnitOfWork & PostgresUnitOfWork;
+  commandHandler(Edit, async (m, ctx: PostgresCommandContext) => {
+    ctx.sql();
+  });
+  ```
+
+  The brand names what the factory mints — `postgresUnitOfWork(next, …)` returns
+  `() => U & PostgresUnitOfWork` — and the command context sits beside
+  `PostgresEventContext` and `PostgresQueryContext` with a matching name.
+
+- ddc8eb6: Tags are decided in ONE place: the event descriptor. BREAKING.
+
+  ```ts
+  // before — three places had a say: the descriptor, a resolver on the entry or the
+  // Postgres store, and the flush that merged them (which stored every tag twice)
+  event({
+    name,
+    payload,
+    tags: (p) => p.items.map((id) => tag("itemId", id)),
+    tagKeys: ["itemId"],
+  });
+  postgresEventStore(pg, { tagResolver: metadataBasedTagResolver("tenantId") });
+
+  // after — a record of lambdas over payload AND metadata; one value, several, or none
+  event({
+    name,
+    payload,
+    tags: {
+      itemId: (p) => p.items, // several under one key
+      region: (p) => (p.export ? p.region : undefined), // no tag this time
+      tenantId: (_p, m) => m.tenantId as string, // from metadata
+    },
+  });
+  postgresEventStore(pg);
+  ```
+
+  - The record is the only form of `tags` and it stays on the descriptor as written. The function form and `tagKeys` are gone; `tagKeysOf(descriptor)` reads the keys off the record and `tagsOf(descriptor, payload, metadata)` computes one event's tags at birth. An event's tags are a set: an identical key/value pair appears once.
+  - `TagResolver`, `descriptorBasedTagResolver`, `metadataBasedTagResolver` and `multiTagResolver` are deleted, with the `tagResolver` field on handler entries, on `postgresEventStore`'s config, and on `postgresSchedulingEventStore`'s config. `postgresEventStore(pg)` takes no second argument. The flush no longer merges anything.
+  - Fixes tags being stored twice: every command site defaulted to the descriptor resolver and the flush appended its output to the tags the event already carried.
+
+### Patch Changes
+
+- d7d58a6: The Postgres token store and dead-letter queue can be the first writer in a batch. Both observed the unit of work's transaction with `activePostgresTransaction`, but the postgres transaction is lazy and only begins when a writer asks. A projection writing through another client, or an automation that only loads and sends, never began it, so every batch threw "this unit of work carries no postgres transaction" even though the task came from `postgresUnitOfWork`. Both now use `sharedPostgresTransaction`, which opens it when the unit of work is a postgres one and still refuses any other.
+- Updated dependencies [2fb9245]
+- Updated dependencies [0a6a030]
+- Updated dependencies [303f268]
+- Updated dependencies [303f268]
+- Updated dependencies [6890230]
+- Updated dependencies [796abc6]
+- Updated dependencies [303f268]
+- Updated dependencies [ddc8eb6]
+  - @kronos-ts/core@0.4.0
+
 ## 0.11.0
 
 ### Minor Changes
