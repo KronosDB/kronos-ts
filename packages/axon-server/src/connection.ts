@@ -71,6 +71,17 @@ export type AxonServerConnectionConfig = {
    * Default: true.
    */
   keepAlivePermitWithoutCalls?: boolean
+  /**
+   * How long a read (`source`, the snapshot store's `getLast`, `getHead`) may
+   * take before it is cancelled and asked once more. A read whose answer has
+   * fully arrived can still never complete under Bun — its http2 client
+   * intermittently loses the stream's `end` event, and grpc-js releases an OK
+   * status only after it — so without a bound a command handler parks on the
+   * read until Axon Server cancels the command (300 s). Reads are idempotent;
+   * a lost one is simply repeated. Raise this if a single sourcing read of
+   * yours legitimately takes longer. Default: 15000.
+   */
+  readTimeoutMs?: number
 
   /**
    * TLS/SSL configuration. When enabled, the connection uses a secure gRPC channel.
@@ -165,6 +176,7 @@ export function connectToAxonServer(config: AxonServerConnectionConfig): AxonSer
     keepAliveTimeMs: config.keepAliveTimeMs ?? 30000,
     keepAliveTimeoutMs: config.keepAliveTimeoutMs ?? 10000,
     keepAlivePermitWithoutCalls: config.keepAlivePermitWithoutCalls ?? true,
+    readTimeoutMs: config.readTimeoutMs ?? 15000,
     servers: config.servers,
     ssl: config.ssl,
   }
@@ -189,6 +201,12 @@ export function connectToAxonServer(config: AxonServerConnectionConfig): AxonSer
     "grpc.keepalive_time_ms": config.keepAliveTimeMs ?? 30000,
     "grpc.keepalive_timeout_ms": config.keepAliveTimeoutMs ?? 10000,
     "grpc.keepalive_permit_without_calls": (config.keepAlivePermitWithoutCalls ?? true) ? 1 : 0,
+    // Own subchannel pool per channel. grpc-js pools subchannels PROCESS-WIDE by
+    // target address by default, so a later connection to the same host:port —
+    // a fresh container on a reused mapped port, in a test process that already
+    // talked to another one — can be handed the previous server's HTTP/2
+    // session, and its unary calls hang until the server-side timeout.
+    "grpc.use_local_subchannel_pool": 1,
   }
 
   // Build server address list for failover
