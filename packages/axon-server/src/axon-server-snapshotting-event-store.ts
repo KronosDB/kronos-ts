@@ -33,6 +33,7 @@ import type { Serializer } from "@kronos-ts/core"
 import { withoutSnapshotKey } from "@kronos-ts/core"
 import type { AxonServerStoreSource } from "./connection.js"
 import { contextView } from "./context-view.js"
+import { boundedRead } from "./bounded-read.js"
 import type { Snapshot as ProtoSnapshot } from "./generated/dcb.js"
 
 // ---------------------------------------------------------------------------
@@ -118,9 +119,11 @@ export function axonServerSnapshottingEventStore<E extends EventStore>(
   /** The cached fold filed under `key`, or nothing — the first of the two calls. */
   async function loadSnapshot(key: string): Promise<Snapshot | undefined> {
     try {
-      const response = await connection.snapshotStore.getLast(
-        { key: encodeKey(key) },
-        { metadata: createAxonMetadata() },
+      const response = await boundedRead(connection.config.readTimeoutMs, (signal) =>
+        connection.snapshotStore.getLast(
+          { key: encodeKey(key) },
+          { metadata: createAxonMetadata(), signal },
+        ),
       )
 
       if (!response.snapshot) {

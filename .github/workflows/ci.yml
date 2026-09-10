@@ -32,11 +32,13 @@ jobs:
     # both tsconfig and test:unit, so without this job a broken integration
     # test ships green. Runs real backends via testcontainers.
     #
-    # ONE RUNNER PER SUITE. Six container suites in one 2-core job starved each
-    # other, and grpc-js's process-wide subchannel pool handed a later container
-    # on a reused port an earlier one's dead session. Both are fixed at the
-    # source (per-channel pools, heartbeats answered); the matrix keeps each
-    # suite on its own machine and gives a failure a name.
+    # ONE RUNNER PER SUITE. Six container suites in one job starved each other,
+    # grpc-js's process-wide subchannel pool handed a later container on a
+    # reused port an earlier one's dead session, and under Bun a finished gRPC
+    # read could never complete (its http2 client loses the stream's `end`
+    # event; the Axon connector now bounds and repeats reads). All are handled
+    # at the source; the matrix keeps each suite on its own machine and gives a
+    # failure a name.
     strategy:
       fail-fast: false
       matrix:

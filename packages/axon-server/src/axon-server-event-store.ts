@@ -25,6 +25,7 @@ import { globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/core"
 import { markerAt, noMarker } from "@kronos-ts/core"
 import type { AxonServerStoreSource } from "./connection.js"
 import { contextView } from "./context-view.js"
+import { boundedRead } from "./bounded-read.js"
 import type {
   Criterion,
   TagsAndNamesCriterion,
@@ -178,56 +179,59 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
   const { connection, serializer, metadata: createAxonMetadata } = contextView(conn, context)
   const { eventToProto, eventFromProto } = createEventConverters(serializer)
 
+  async function sourceOnce(condition: SourcingCondition, signal: AbortSignal): Promise<SourcingResult> {
+    const criterions = criteriaToCriterions(compileQuery(condition.query))
+    const start = condition.start ?? 0n
 
-  return {
-    async source(condition: SourcingCondition): Promise<SourcingResult> {
-      const criterions = criteriaToCriterions(compileQuery(condition.query))
-      const start = condition.start ?? 0n
+    const request = {
+      fromSequence: start,
+      criterion: criterions,
+    }
 
-      const request = {
-        fromSequence: start,
-        criterion: criterions,
-      }
+    const events: EventMessage[] = []
+    let marker: ConsistencyMarker = noMarker()
 
-      const events: EventMessage[] = []
-      let marker: ConsistencyMarker = noMarker()
-
-      try {
-        const stream = connection.eventStore.source(request, { metadata: createAxonMetadata() })
-        for await (const response of stream) {
-          if (response.event) {
-            const taggedEvent = response.event
-            const protoEvent = taggedEvent.event
-            if (protoEvent) {
-              // DCB source/stream responses carry no tags — the server indexes
-              // them write-side but does not echo them back (SequencedEvent has
-              // only sequence + event). Reconstructed events get empty tags.
-              events.push(eventFromProto(protoEvent, []))
-            }
-          }
-          if (response.consistencyMarker !== undefined) {
-            marker = markerAt(response.consistencyMarker)
+    try {
+      const stream = connection.eventStore.source(request, { metadata: createAxonMetadata(), signal })
+      for await (const response of stream) {
+        if (response.event) {
+          const taggedEvent = response.event
+          const protoEvent = taggedEvent.event
+          if (protoEvent) {
+            // DCB source/stream responses carry no tags — the server indexes
+            // them write-side but does not echo them back (SequencedEvent has
+            // only sequence + event). Reconstructed events get empty tags.
+            events.push(eventFromProto(protoEvent, []))
           }
         }
-      } catch (err) {
-        // READING PAST THE HEAD IS AN EMPTY ANSWER, NOT AN ERROR — and Axon
-        // Server disagrees, so this is where the two vocabularies are
-        // reconciled. `Source` fails OUT_OF_RANGE with "Start sequence cannot
-        // be larger than end sequence" whenever `fromSequence` is beyond the
-        // global head, which is the ORDINARY STEADY STATE of a snapshotted
-        // load: an entry written at the head means the very next read resumes
-        // at head + 1 and legitimately finds nothing.
-        //
-        // The marker is `start - 1`, and it is exact rather than conservative:
-        // the caller has already accounted for everything up to there (that is
-        // what asking to start later MEANS), and nothing can exist after it or
-        // the server would not have refused. So an append conditioned on this
-        // read is checked against precisely the range that was read.
-        if (!isStartPastHead(err)) throw err
-        return { events: [], marker: start > 0n ? markerAt(start - 1n) : noMarker() }
+        if (response.consistencyMarker !== undefined) {
+          marker = markerAt(response.consistencyMarker)
+        }
       }
+    } catch (err) {
+      // READING PAST THE HEAD IS AN EMPTY ANSWER, NOT AN ERROR — and Axon
+      // Server disagrees, so this is where the two vocabularies are
+      // reconciled. `Source` fails OUT_OF_RANGE with "Start sequence cannot
+      // be larger than end sequence" whenever `fromSequence` is beyond the
+      // global head, which is the ORDINARY STEADY STATE of a snapshotted
+      // load: an entry written at the head means the very next read resumes
+      // at head + 1 and legitimately finds nothing.
+      //
+      // The marker is `start - 1`, and it is exact rather than conservative:
+      // the caller has already accounted for everything up to there (that is
+      // what asking to start later MEANS), and nothing can exist after it or
+      // the server would not have refused. So an append conditioned on this
+      // read is checked against precisely the range that was read.
+      if (!isStartPastHead(err)) throw err
+      return { events: [], marker: start > 0n ? markerAt(start - 1n) : noMarker() }
+    }
 
-      return { events, marker }
+    return { events, marker }
+  }
+
+  return {
+    source(condition: SourcingCondition): Promise<SourcingResult> {
+      return boundedRead(connection.config.readTimeoutMs, (signal) => sourceOnce(condition, signal))
     },
 
     async appendEvents(
@@ -285,7 +289,20 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
         criterion: criterions,
       }
 
-      const grpcStream = connection.eventStore.stream(request, { metadata: createAxonMetadata() })
+      // `close()` must reach the server. This is a server-streaming call: the
+      // client sends nothing after the request, so the only way to end it from
+      // this side is to cancel it. Abandoning the async iterator does not do
+      // that — the `for await` below stays parked on the call until the next
+      // event arrives, which at the head of a quiet stream is never, and every
+      // closed stream leaves a live call behind on the server. With enough of
+      // them open, Axon Server stops answering later `source` reads (a 2-CPU
+      // container gets there after a handful): handlers never reply, and
+      // commands die at the server's own timeout.
+      const cancel = new AbortController()
+      const grpcStream = connection.eventStore.stream(request, {
+        metadata: createAxonMetadata(),
+        signal: cancel.signal,
+      })
 
       // Internal buffer for events pulled from the gRPC stream
       const buffer: SequencedEvent[] = []
@@ -314,7 +331,11 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
           completed = true
           availableCallback?.()
         } catch (err) {
-          streamError = err instanceof Error ? err : new Error(String(err))
+          // Our own cancellation surfaces here as an AbortError; that is the
+          // stream closing as asked, not a failure to report.
+          if (!completed) {
+            streamError = err instanceof Error ? err : new Error(String(err))
+          }
           completed = true
           availableCallback?.()
         }
@@ -350,13 +371,15 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
         close() {
           completed = true
           availableCallback = null
-          // gRPC stream will be cancelled when the async iterator is abandoned
+          cancel.abort()
         },
       }
     },
 
     async getHeadPosition(): Promise<bigint> {
-      const response = await connection.eventStore.getHead({}, { metadata: createAxonMetadata() })
+      const response = await boundedRead(connection.config.readTimeoutMs, (signal) =>
+        connection.eventStore.getHead({}, { metadata: createAxonMetadata(), signal }),
+      )
       return response.sequence
     },
 
@@ -365,9 +388,10 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
     },
 
     async latestToken(): Promise<TrackingToken> {
-      const response = await connection.eventStore.getHead({}, { metadata: createAxonMetadata() })
+      const response = await boundedRead(connection.config.readTimeoutMs, (signal) =>
+        connection.eventStore.getHead({}, { metadata: createAxonMetadata(), signal }),
+      )
       return globalSequenceToken(response.sequence)
     },
-
   }
 }
