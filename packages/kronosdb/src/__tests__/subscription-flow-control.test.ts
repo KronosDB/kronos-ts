@@ -119,10 +119,10 @@ describe("kronosDbQueryBus — subscription query flow control", () => {
 
   const flowControls = (outbound: any[]) => outbound.filter((m) => m.flowControl)
 
-  it("grants the buffer size as the initial window", async () => {
+  it("keeps wire headroom independent of a small consumer buffer", async () => {
     const { captured, server, stop } = setup(8)
     await flush()
-    expect(captured.outbound[0]?.subscribe?.numberOfPermits).toBe(8n)
+    expect(captured.outbound[0]?.subscribe?.numberOfPermits).toBe(256n)
     server.close(); stop()
   })
 
@@ -148,30 +148,25 @@ describe("kronosDbQueryBus — subscription query flow control", () => {
     result.close(); server.close(); stop()
   })
 
-  it("asks for at least one credit — zero is not unlimited", async () => {
-    // `clamp(1, 1024)` server-side: a 0 grant becomes exactly 1, so a client
-    // that meant "unlimited" would get one update and stall.
-    const { captured, server, result, stop } = setup(0)
-    await flush()
-    expect(captured.outbound[0]?.subscribe?.numberOfPermits).toBe(256n)
-    result.close(); server.close(); stop()
+  it("rejects a zero-sized consumer buffer", () => {
+    expect(() => setup(0)).toThrow("bufferSize must be a positive integer")
   })
 
   it("refills a quarter-window at a time as updates are consumed", async () => {
-    const { captured, server, result, stop } = setup(8)   // quarter window = 2
+    const { captured, server, result, stop } = setup(256)   // quarter window = 64
     await flush()
 
-    for (let i = 0; i < 2; i++) server.push(updateFrame(i))
+    for (let i = 0; i < 64; i++) server.push(updateFrame(i))
     await flush()
-    expect(flowControls(captured.outbound).map((m) => m.flowControl.numberOfPermits)).toEqual([2n])
+    expect(flowControls(captured.outbound).map((m) => m.flowControl.numberOfPermits)).toEqual([64n])
 
-    for (let i = 0; i < 2; i++) server.push(updateFrame(i))
+    for (let i = 0; i < 64; i++) server.push(updateFrame(i))
     await flush()
-    expect(flowControls(captured.outbound).map((m) => m.flowControl.numberOfPermits)).toEqual([2n, 2n])
+    expect(flowControls(captured.outbound).map((m) => m.flowControl.numberOfPermits)).toEqual([64n, 64n])
 
     // What was granted back equals what was taken — the window never shrinks.
     const refilled = flowControls(captured.outbound).reduce((sum, m) => sum + Number(m.flowControl.numberOfPermits), 0)
-    expect(refilled).toBe(4)
+    expect(refilled).toBe(128)
 
     result.close(); server.close(); stop()
   })
@@ -186,12 +181,12 @@ describe("kronosDbQueryBus — subscription query flow control", () => {
   })
 
   it("addresses every refill to the subscription it belongs to", async () => {
-    const { captured, server, result, stop } = setup(4)   // quarter window = 1
+    const { captured, server, result, stop } = setup(256)   // quarter window = 64
     await flush()
     const subscriptionId = captured.outbound[0]?.subscribe?.subscriptionIdentifier
     expect(subscriptionId).toBeTruthy()
 
-    server.push(updateFrame(1))
+    for (let i = 0; i < 64; i++) server.push(updateFrame(i))
     await flush()
     expect(flowControls(captured.outbound)[0]?.flowControl.subscriptionIdentifier).toBe(subscriptionId)
 

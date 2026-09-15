@@ -11,3 +11,8 @@ dist/
 pnpm-lock.yaml
 package-lock.json
 yarn.lock
+
+# Local release verification artifacts (reports remain in .agents).
+.agents/release-preview/
+.agents/release-artifacts/
+.agents/release-consumer/

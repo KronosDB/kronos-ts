@@ -8,6 +8,7 @@ import {
   type SubscriptionQueryResult,
   type UpdateHandler,
   updateHandler,
+  subscriptionInitialResult,
   runAfterCommitOrImmediately,
 } from "./subscription-query.js"
 import { type SubscriptionFilter, applySubscriptionFilter } from "./subscription-filter.js"
@@ -95,13 +96,16 @@ export function localQueryBus<U extends UnitOfWork = UnitOfWork>(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const handler = updateHandler(message, bufferSize)
+      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
+      let closeInitial = () => {}
+      const handler = updateHandler(message, bufferSize, () => { subscriptions.delete(queryId); closeInitial() })
       subscriptions.set(queryId, handler)
 
-      const initialResult = bus.query(message)
+      const initial = subscriptionInitialResult(bus.query(message), (error) => handler.completeExceptionally(error))
+      closeInitial = initial.close
 
       return {
-        initialResult,
+        initialResult: initial.initialResult,
         updates: handler.iterable,
         close: () => {
           subscriptions.delete(queryId)
@@ -121,7 +125,8 @@ export function localQueryBus<U extends UnitOfWork = UnitOfWork>(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const handler = updateHandler(message, bufferSize)
+      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
+      const handler = updateHandler(message, bufferSize, () => subscriptions.delete(queryId))
       subscriptions.set(queryId, handler)
 
       return {

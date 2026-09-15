@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 /**
  * Axon Server integration test — exercises the `axonServerConnection(...)`
  * family against a real Axon Server container.
@@ -260,13 +261,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
   }, 60_000)
 
   it("enforces business rules from event-sourced state (duplicate course rejected)", async () => {
-    await expect(
-      send(commandBus, CreateCourse, {
-        courseId: "course-1",
-        name: "Duplicate",
-        capacity: 5,
-      }),
-    ).rejects.toThrow()
+    await assert.rejects(send(commandBus, CreateCourse, { courseId: "course-1", name: "Duplicate", capacity: 5 }), /Course already exists/)
   }, 60_000)
 
   it("sources events by tag query", async () => {
@@ -306,12 +301,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     })
 
     // Course is full — sources both events, sees enrolled.length >= capacity.
-    await expect(
-      send(commandBus, EnrollStudent, {
-        courseId: "course-cap",
-        studentId: "student-B",
-      }),
-    ).rejects.toThrow()
+    await assert.rejects(send(commandBus, EnrollStudent, { courseId: "course-cap", studentId: "student-B" }), /Course is full/)
 
     const { events } = await eventStore.source({
       query: { tags: { courseId: "course-cap" } },
@@ -330,12 +320,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       studentId: "student-X",
     })
 
-    await expect(
-      send(commandBus, EnrollStudent, {
-        courseId: "course-dup",
-        studentId: "student-X",
-      }),
-    ).rejects.toThrow()
+    await assert.rejects(send(commandBus, EnrollStudent, { courseId: "course-dup", studentId: "student-X" }), /Already enrolled/)
   }, 60_000)
 
   it("start() arms the data path's platform stream; the control plane layers admin on top", async () => {
@@ -406,4 +391,90 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       await direct.close()
     }
   }, 60_000)
+  for (const kind of ["command", "query"] as const) {
+    it(`${kind}: nested dispatch returns through the same real server connection`, async () => {
+      const trace: Array<{ event: string; depth: number; detail?: string }> = []
+      const options = { flowControl: { permits: 1, refillThreshold: 0 }, timeoutMs: 1000, limits: { maxConcurrentHandlers: 8 } }
+      const bus = kind === "command"
+        ? axonServerCommandBus(localCommandBus(unitOfWork), axon, options)
+        : axonServerQueryBus(localQueryBus(unitOfWork), axon, options)
+      const call = (depth: number): Promise<unknown> => {
+        const message = {
+          identifier: crypto.randomUUID(), name: qn("qa", `Nested${kind}`), payload: depth,
+          metadata: { processingInstructions: { timeoutMs: 1000 } },
+        }
+        trace.push({ event: "call", depth })
+        const result = kind === "command" ? (bus as any).dispatch(message) : (bus as any).query(message)
+        return result.then((value: unknown) => { trace.push({ event: "reply", depth }); return value }, (error: Error) => {
+          trace.push({ event: "error", depth, detail: error.message })
+          throw error
+        })
+      }
+      bus.subscribe(`qa.Nested${kind}`, async (message) => {
+        const depth = message.payload as number
+        trace.push({ event: "handler", depth })
+        try { return depth === 0 ? 0 : 1 + Number(await call(depth - 1)) }
+        finally { trace.push({ event: "handled", depth }) }
+      })
+      // A successful leaf dispatch is the readiness barrier for this handler.
+      const deadline = Date.now() + 5000
+      for (;;) {
+        try { await call(0); break } catch (error) {
+          if (Date.now() > deadline || !/no.?handler|no handler/i.test(String(error))) throw error
+          await new Promise((r) => setTimeout(r, 25))
+        }
+      }
+      expect(await call(4)).toBe(4)
+      for (let round = 0; round < 20; round++) {
+        try { await assert.rejects(call(8), /overloaded/) }
+        catch (error) { console.error("Nested stress trace", JSON.stringify(trace.slice(-80))); throw error }
+        expect(await call(4)).toBe(4)
+      }
+      expect(await call(0)).toBe(0)
+      const oldChannel = axon.connection.channel
+      await axon.platform.armConnectionMonitoring()
+      await axon.connection.reconnect()
+      expect(axon.connection.channel).not.toBe(oldChannel)
+      expect(axon.platform.connected).toBe(true)
+      const recoveredBy = Date.now() + 5000
+      for (;;) {
+        try { expect(await call(2)).toBe(2); break } catch (error) {
+          if (Date.now() > recoveredBy || !/no.?handler|no handler/i.test(String(error))) throw error
+          await new Promise((r) => setTimeout(r, 25))
+        }
+      }
+    }, 15_000)
+  }
+
+  it("subscription queries return an initial result and refill update credits", async () => {
+    const bus = axonServerQueryBus(localQueryBus(unitOfWork), axon, { flowControl: { permits: 1, refillThreshold: 0 }, timeoutMs: 1000 })
+    bus.subscribe("qa.WatchCredits", async () => 0)
+    const makeMessage = () => ({ kind: "query" as const, identifier: crypto.randomUUID(), name: qn("qa", "WatchCredits"), payload: {}, metadata: {} })
+    const deadline = Date.now() + 5000
+    for (;;) {
+      try { await bus.query(makeMessage()); break } catch (error) {
+        if (Date.now() > deadline || !/no.?handler|no handler/i.test(String(error))) throw error
+        await new Promise((r) => setTimeout(r, 25))
+      }
+    }
+    async function within<T>(work: Promise<T>, phase: string): Promise<T> {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        return await Promise.race([work, new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`subscription ${phase} timed out`)), 2000)
+        })])
+      } finally { clearTimeout(timer) }
+    }
+    const sub = bus.subscriptionQuery(makeMessage(), 1)
+    try {
+      expect(await within(sub.initialResult, "initial result")).toBe(0)
+      const updates = sub.updates[Symbol.asyncIterator]()
+      for (let value = 1; value <= 384; value++) {
+        const pending = updates.next()
+        await bus.emitUpdate("qa.WatchCredits", () => true, value)
+        expect((await within(pending, `update ${value}`)).value).toBe(value)
+      }
+    } finally { sub.close() }
+  }, 15_000)
+
 })

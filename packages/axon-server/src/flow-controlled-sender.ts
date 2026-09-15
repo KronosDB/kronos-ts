@@ -33,29 +33,49 @@ export function flowControlledSender<T>(
   onError?: (error: Error) => void,
   maxBufferSize: number = 256,
 ): FlowControlledSender<T> {
+  if (!Number.isSafeInteger(maxBufferSize) || maxBufferSize <= 0) throw new RangeError("maxBufferSize must be a positive integer")
   const buffer: T[] = []
   let permits = 0
   let isActive = true
+  let completionRequested = false
+
+  function fail(error: Error) {
+    if (!isActive) return
+    isActive = false
+    buffer.length = 0
+    onError?.(error)
+  }
+  function sendOne(value: T) {
+    try { send(value) }
+    catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+  function finishIfDrained() {
+    if (isActive && completionRequested && !buffer.length) {
+      isActive = false
+      onComplete?.()
+    }
+  }
+
 
   function drain() {
     while (permits > 0 && buffer.length > 0 && isActive) {
       const value = buffer.shift()!
       permits--
-      try {
-        send(value)
-      } catch (err) {
-        console.warn("FlowControlledSender: send error", err)
-      }
+      sendOne(value)
     }
+    finishIfDrained()
   }
 
   return {
     offer(value: T): boolean {
-      if (!isActive) return false
+      if (!isActive || completionRequested) return false
 
       if (permits > 0) {
         permits--
-        send(value)
+        sendOne(value)
         return true
       }
 
@@ -68,24 +88,23 @@ export function flowControlledSender<T>(
     },
 
     addPermits(count: number) {
+      if (!Number.isSafeInteger(count) || count <= 0 || !Number.isSafeInteger(permits + count)) throw new RangeError("Permits must be positive safe integers")
+      if (!isActive) return
       permits += count
       drain()
     },
 
     complete() {
-      isActive = false
-      buffer.length = 0
-      if (onComplete) onComplete()
+      completionRequested = true
+      finishIfDrained()
     },
 
     completeExceptionally(error: Error) {
-      isActive = false
-      buffer.length = 0
-      if (onError) onError(error)
+      fail(error)
     },
 
     get active() {
-      return isActive
+      return isActive && !completionRequested
     },
   }
 }

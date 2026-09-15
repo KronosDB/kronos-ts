@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 /**
  * Full-stack E2E integration test for KronosDB.
  *
@@ -40,7 +41,9 @@ import {
   localQueryBus,
   type UnitOfWork,
   type CommandBus,
-  type QueryBus,
+  type SubscriptionCapableQueryBus,
+  type EventHandlerContext,
+  type SubscriptionCapability,
 } from "@kronos-ts/core"
 import {
   kronosDbConnection,
@@ -56,7 +59,7 @@ import {
  * named once and handed to `localCommandBus` (which captures it at
  * construction) — writing it on an adjacent line is what makes that checkable.
  */
-function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: QueryBus } {
+function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: SubscriptionCapableQueryBus } {
   return {
     commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
     queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
@@ -83,7 +86,7 @@ type SitedItem =
  * takes them PER ENTRY now, not once for the whole app. */
 type Site = HandlerSite & {
   commandBus: CommandBus
-  queryBus: QueryBus
+  queryBus: SubscriptionCapableQueryBus
   tokenStore?: TokenStore
   unitOfWork?: () => UnitOfWork
   /** Durable name for any bare event-handler entries in this call. */
@@ -119,11 +122,11 @@ function sitedOn(
   let processor: EventProcessor | undefined
 
   for (const item of items) {
-    const kind = (item as { kind?: string }).kind
+    const kind = item.kind
     if (kind === "command-handler") {
-      commandHandlers.push({ ...(item as object), ...handlerSite, commandBus, queryBus } as CommandHandlerEntry)
+      commandHandlers.push({ ...item, ...handlerSite, commandBus, queryBus })
     } else if (kind === "query-handler") {
-      queryHandlers.push({ ...(item as object), ...handlerSite, queryBus } as QueryHandlerEntry)
+      queryHandlers.push({ ...item, ...handlerSite, queryBus })
     } else if (kind === "event-handler") {
       if (!processor) {
         if (!processorName) {
@@ -139,7 +142,7 @@ function sitedOn(
           unitOfWork: uow,
         })
       }
-      eventHandlers.push({ ...(item as object), commandBus, queryBus, processor } as EventHandlerEntry)
+      eventHandlers.push({ ...item, commandBus, queryBus, processor })
     }
   }
   return { commandHandlers, queryHandlers, eventHandlers }
@@ -240,12 +243,12 @@ const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload
 type CourseView = { courseId: string; name: string; capacity: number; enrolledCount: number }
 const courseViews = new Map<string, CourseView>()
 
-const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
+const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
   courseViews.set(e.courseId, { courseId: e.courseId, name: e.name, capacity: e.capacity, enrolledCount: 0 })
   ctx.emitUpdate(GetCourse, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
 })
 
-const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
+const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
   const view = courseViews.get(e.courseId)
   if (view) {
     view.enrolledCount++
@@ -287,7 +290,7 @@ describe("E2E: KronosDB full stack", () => {
   let backendEventStore: EventStore
   let kronosHost: string
   let kronosPort: number
-  let buses: { commandBus: CommandBus; queryBus: QueryBus }
+  let buses: { commandBus: CommandBus; queryBus: SubscriptionCapableQueryBus }
 
   beforeAll(async () => {
     courseViews.clear()
@@ -342,7 +345,6 @@ describe("E2E: KronosDB full stack", () => {
           ...buses,
           processorName: "kronosdb-course-projection",
         },
-        Course,
         createCourse, subscribeStudent,
         getCourse,
         onCourseCreated, onStudentSubscribed,
@@ -401,9 +403,7 @@ describe("E2E: KronosDB full stack", () => {
     const courseId = id("cs-101")
 
     // Duplicate creation should fail
-    await expect(
-      send(buses.commandBus, CreateCourse, { courseId, name: "Duplicate", capacity: 5 }),
-    ).rejects.toThrow()
+    await assert.rejects(send(buses.commandBus, CreateCourse, { courseId, name: "Duplicate", capacity: 5 }), /Course already exists/)
   }, 30_000)
 
   it("capacity enforcement across multiple commands", async () => {
@@ -421,9 +421,7 @@ describe("E2E: KronosDB full stack", () => {
     })
 
     // Course is full
-    await expect(
-      send(buses.commandBus, SubscribeStudent, { courseId, studentId: "stu-2" }),
-    ).rejects.toThrow()
+    await assert.rejects(send(buses.commandBus, SubscribeStudent, { courseId, studentId: "stu-2" }), /Course is full/)
 
     const { events } = await eventStore().source({
       query: { tags: { courseId: courseId } },
@@ -495,7 +493,6 @@ describe("E2E: KronosDB full stack", () => {
           ...autoBuses,
           processorName: "kronosdb-enrollment-automation",
         },
-        Course,
         createCourse, subscribeStudent, closeEnrollment,
         closeEnrollmentWhenFull,
       ),

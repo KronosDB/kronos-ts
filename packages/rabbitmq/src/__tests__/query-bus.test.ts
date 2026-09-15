@@ -517,6 +517,34 @@ function createInProcessRegistryMesh(): InProcessMesh {
   }
 }
 
+it("releases completed and overflowed subscription claims from every registry mirror", async () => {
+  const mesh = createInProcessRegistryMesh()
+  const owner = mesh.join("owner")
+  const peer = mesh.join("peer")
+  const bus = rabbitMqQueryBus(localQueryBus(unitOfWork), {
+    config: rabbitConfig({ url: "amqp://test" }),
+    queryTransport: recordingTransport().transport,
+    subscriberRegistry: owner,
+  })
+  const make = (identifier: string) => bus.subscribeToUpdates({
+    identifier, name: GetThing.name, payload: {}, metadata: {},
+  }, 1)
+  const completed = make("complete")
+  await bus.completeSubscription("test.GetThing")
+  expect([...owner.records()]).toHaveLength(0)
+  expect([...peer.records()]).toHaveLength(0)
+  completed.close()
+  const overflowed = make("overflow")
+  await bus.emitUpdate("test.GetThing", () => true, 1)
+  await bus.emitUpdate("test.GetThing", () => true, 2)
+  expect([...owner.records()]).toHaveLength(0)
+  expect([...peer.records()]).toHaveLength(0)
+  const iterator = overflowed[Symbol.asyncIterator]()
+  expect((await iterator.next()).value).toBe(1)
+  await expect(iterator.next()).rejects.toThrow("overflow")
+  overflowed.close()
+})
+
 async function readN<T>(iter: AsyncIterable<T>, n: number): Promise<T[]> {
   const results: T[] = []
   for await (const v of iter) {

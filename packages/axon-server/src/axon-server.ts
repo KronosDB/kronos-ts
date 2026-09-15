@@ -1,3 +1,5 @@
+import { streamRecovery } from "./stream-recovery.js"
+import { messagingAdmission, messagingDeadline, positiveInteger, type MessagingLimits } from "@kronos-ts/core"
 /**
  * The Axon Server command and query buses.
  *
@@ -15,7 +17,7 @@
  *   axonServerQueryBus(localQueryBus(unitOfWork), axon), correlation)
  * ```
  *
- * Axon-specific protocol invariants are preserved byte-for-byte:
+ * Axon-specific protocol invariants:
  *
  *   - CLIENT_SUPPORTS_STREAMING capability advertised on every dispatched
  *     query via `defaultQueryInstructions(...)`;
@@ -31,7 +33,7 @@ import {
   generateIdentifier,
   type Serializer,
 } from "@kronos-ts/core"
-import { withRetry, type ResilienceConfig } from "./resilience.js"
+import { type ResilienceConfig } from "./resilience.js"
 import type {
   CommandBus,
   CommandMessage,
@@ -51,15 +53,16 @@ import {
 import type { AxonServerBusSource } from "./connection.js"
 import { contextView } from "./context-view.js"
 import { metadataToProto, metadataFromProto } from "./metadata-conversion.js"
-import { outboundStream } from "./outbound-stream.js"
+import { outboundStream, type OutboundStream } from "./outbound-stream.js"
+import type { Command } from "./generated/command.js"
+import type { ShutdownLatch } from "./shutdown-latch.js"
 import { mapErrorCode, AxonServerErrorCode } from "./errors.js"
 
 /** Default flow control settings — aligned with Java's 5000 permits. */
 const DEFAULT_PERMITS = 5000n
-const DEFAULT_THRESHOLD = 2500n
 
 /** Default query dispatch timeout — aligned with Java's one hour. */
-const DEFAULT_QUERY_TIMEOUT_MS = 3_600_000
+const DEFAULT_QUERY_TIMEOUT_MS = 30_000
 
 /** Default command handler load factor — aligned with Java's 100. */
 const DEFAULT_LOAD_FACTOR = 100
@@ -93,6 +96,8 @@ export type ProcessingInstructions = {
  * are positional, and this record is the trailing remainder.
  */
 export type AxonServerCommandBusOptions = {
+  /** Client-side request deadline. Default: 30000ms. */
+  timeoutMs?: number
   /** Axon Server context for this bus's stream. Default: the connection's. */
   context?: string
   /** Flow control for the command stream. */
@@ -105,6 +110,9 @@ export type AxonServerCommandBusOptions = {
   loadFactor?: number
   /** Retry policy for stream re-establishment. Default: the connection's. */
   resilience?: Partial<ResilienceConfig>
+  /** Bounded admission; excess nested work receives an overload error. */
+  limits?: MessagingLimits
+
 }
 
 /**
@@ -126,12 +134,15 @@ export type AxonServerQueryBusOptions = {
    */
   shortcutQueriesToLocalHandlers?: boolean
   /**
-   * Default timeout for query dispatch in ms. Default: 3600000 (1 hour).
+   * Default timeout for query dispatch in ms. Default: 30000ms.
    * Aligned with Java's processing instruction timeout.
    */
   timeoutMs?: number
   /** Retry policy for stream re-establishment. Default: the connection's. */
   resilience?: Partial<ResilienceConfig>
+  /** Bounded admission; excess nested work receives an overload error. */
+  limits?: MessagingLimits
+
 }
 
 // Processing instruction keys — aligned with proto ProcessingKey enum.
@@ -257,11 +268,16 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
     metadata: axonMetadata,
   } = contextView(conn, options.context ?? conn.connection.config.context)
   const shutdownLatch = conn.shutdown
+  const requestTimeoutMs = positiveInteger(options.timeoutMs ?? 30000, "timeoutMs")
+  if (requestTimeoutMs > 2_147_483_647) throw new RangeError("timeoutMs exceeds the timer range")
+  const inboundAdmission = messagingAdmission("inbound handlers", options.limits?.maxConcurrentHandlers ?? 128, options.limits?.observe)
+  const outboundAdmission = messagingAdmission("pending requests", options.limits?.maxPendingRequests ?? 1024, options.limits?.observe)
   const resilience = options.resilience ?? conn.resilience
   const metadata = axonMetadata()
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
-  const PERMITS = BigInt(options.flowControl?.permits ?? Number(DEFAULT_PERMITS))
-  const THRESHOLD = BigInt(options.flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
+  const PERMITS = BigInt(positiveInteger(options.flowControl?.permits ?? Number(DEFAULT_PERMITS), "flowControl.permits"))
+  const THRESHOLD = BigInt(options.flowControl?.refillThreshold ?? Math.floor(Number(PERMITS) / 2))
+  if (THRESHOLD < 0n || THRESHOLD >= PERMITS) throw new RangeError("refillThreshold must be between zero and permits - 1")
   const loadFactor = options.loadFactor ?? DEFAULT_LOAD_FACTOR
 
   /**
@@ -275,6 +291,8 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
   // Bidirectional stream for handler subscription + inbound command handling
   let outbound = outboundStream<any>()
   let streamStarted = false
+  let providerAbort = new AbortController()
+  connection.onDisconnect?.(() => { providerAbort.abort(); outbound.close() })
   let permits = 0n
 
   function ensureStreamStarted() {
@@ -282,8 +300,8 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
     streamStarted = true
 
     // Open stream using connection.commands (always gets current client after reconnect)
-    const inbound = connection.commands.openStream(outbound.iterable, { metadata })
-    processInboundCommands(inbound)
+    const inbound = connection.commands.openStream(outbound.iterable, { metadata, signal: providerAbort.signal })
+    void processInboundCommands(inbound, outbound)
   }
 
   function grantPermits() {
@@ -316,6 +334,8 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
    * trigger a server-side stream error.
    */
   function reestablishStreamBody() {
+    providerAbort.abort()
+    providerAbort = new AbortController()
     outbound.close()
     outbound = outboundStream<any>()
     streamStarted = false
@@ -327,104 +347,106 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
     grantPermits()
   }
 
-  async function reestablishStreamWithRetry() {
-    if (shutdownLatch.shuttingDown) return
-    await withRetry(async () => reestablishStreamBody(), {
-      event: "reconnect",
-      ...resilience,
-    })
-  }
+  const recovery = streamRecovery(reestablishStreamBody,
+    () => !shutdownLatch.shuttingDown && connection.state !== "closed" && connection.state !== "disconnected" && connection.state !== "reconnecting",
+    resilience)
+  shutdownLatch.onShutdown(recovery.stop)
 
   // Auto-reestablish when the connection reconnects (e.g., after heartbeat timeout)
   connection.onReconnect(() => {
     if (!shutdownLatch.shuttingDown && streamStarted) {
-      reestablishStreamWithRetry().catch((err) => {
-        console.error("Axon Server command bus: reconnect retries exhausted", err)
-      })
+      recovery.restart()
     }
   })
 
-  async function processInboundCommands(inbound: AsyncIterable<any>) {
+  async function handleInboundCommand(proto: Command, responses: OutboundStream<any>) {
+    let activity: ReturnType<ShutdownLatch["registerActivity"]> | undefined
+    let admission: ReturnType<typeof inboundAdmission.enter> | undefined
+    let responseSerialized: ReturnType<typeof serializePayload> | undefined
+    let errorCode = ""
+    let errorMsg = ""
+
     try {
-      for await (const message of inbound) {
-        if (!message.command) continue
-
-        permits--
-        const proto = message.command
-        const commandName = proto.name
-
-        let resultPayload: unknown
-        let errorCode = ""
-        let errorMsg = ""
-
-        if (subscribedNames.has(commandName)) {
-          try {
-            const commandMessage: CommandMessage = {
-              kind: "command",
-              identifier: proto.messageIdentifier,
-              name: qualifiedNameFromString(commandName),
-              payload: deserializePayload(proto.payload?.data as Uint8Array | undefined),
-              metadata: metadataFromProto(proto.metaData),
-              timestamp: Number(proto.timestamp),
-            }
-
-            // Through the LOCAL BUS, so the caller's unit-of-work policy runs.
-            // AF parity is preserved: `CommandProcessingTask` runs the next
-            // segment without re-running dispatch interceptors, and a `next`
-            // that happens to carry `correlation` re-applies a pair of `??` seeds
-            // that are already set.
-            resultPayload = await next.dispatch(commandMessage)
-          } catch (err) {
-            errorCode = AxonServerErrorCode.COMMAND_EXECUTION_ERROR
-            errorMsg = err instanceof Error ? err.message : String(err)
+      try {
+        // Remote callers have no outbound dispatch activity on this adapter.
+        // Track the entire handling, including result serialization and enqueue.
+        // Registration also rejects new work once shutdown has begun.
+        activity = shutdownLatch.registerActivity()
+        admission = inboundAdmission.enter()
+        if (subscribedNames.has(proto.name)) {
+          const commandMessage: CommandMessage = {
+            kind: "command",
+            identifier: proto.messageIdentifier,
+            name: qualifiedNameFromString(proto.name),
+            payload: deserializePayload(proto.payload?.data, proto.payload?.type, proto.payload?.revision),
+            metadata: metadataFromProto(proto.metaData ?? {}),
+            timestamp: Number(proto.timestamp),
           }
+
+          // The local bus opens a fresh unit of work for EVERY wire command,
+          // including children of handlers running on this same connection.
+          const result = await next.dispatch(commandMessage)
+          responseSerialized = result !== undefined ? serializePayload("result", result) : undefined
         } else {
           errorCode = AxonServerErrorCode.NO_HANDLER_FOR_COMMAND
-          errorMsg = `No next handler for command "${commandName}"`
+          errorMsg = `No next handler for command "${proto.name}"`
         }
-
-        // Send response back to Axon Server
-        outbound.send({
-          commandResponse: {
-            messageIdentifier: generateIdentifier(),
-            requestIdentifier: proto.messageIdentifier,
-            errorCode,
-            errorMessage: errorCode
-              ? {
-                  message: errorMsg,
-                  location: connection.config.componentName,
-                  details: [],
-                  errorCode,
-                }
-              : undefined,
-            payload:
-              resultPayload !== undefined ? serializePayload("result", resultPayload) : undefined,
-            metaData: {},
-            processingInstructions: [],
-          },
-          instructionId: "",
-        })
-
-        // Refill permits when running low
-        if (permits <= THRESHOLD) {
-          outbound.send({
-            flowControl: { clientId: connection.config.clientId, permits: PERMITS },
-            instructionId: "",
-          })
-          permits += PERMITS
-        }
+      } catch (err) {
+        // Decode, handler, and result-encoding failures belong to this request;
+        // none should terminate the receive loop or reconnect the stream.
+        errorCode = AxonServerErrorCode.COMMAND_EXECUTION_ERROR
+        errorMsg = err instanceof Error ? err.message : String(err)
       }
-    } catch (err) {
-      if (shutdownLatch.shuttingDown) return
-      if (String(err).includes("Connection dropped")) return
 
-      console.error(
-        "Axon Server command bus: inbound stream error, attempting re-establishment via withRetry",
-        err,
-      )
-      await reestablishStreamWithRetry().catch((retryErr) => {
-        console.error("Axon Server command bus: reconnect retries exhausted", retryErr)
+      // Capture the originating stream: a late handler must not send an old
+      // request's response on a replacement stream after reconnect.
+      responses.send({
+        commandResponse: {
+          messageIdentifier: generateIdentifier(),
+          requestIdentifier: proto.messageIdentifier,
+          errorCode,
+          errorMessage: errorCode
+            ? { message: errorMsg, location: connection.config.componentName, details: [], errorCode }
+            : undefined,
+          payload: responseSerialized,
+          metaData: {},
+          processingInstructions: [],
+        },
+        instructionId: "",
       })
+      await responses.flush()
+    } finally {
+      admission?.end()
+      activity?.end()
+    }
+  }
+
+  async function processInboundCommands(inbound: AsyncIterable<any>, responses: OutboundStream<any>) {
+    try {
+      for await (const message of inbound) {
+        if (responses !== outbound) return
+        recovery.received()
+        if (message.instructionId) responses.send({ ack: { instructionId: message.instructionId, success: true }, instructionId: "" })
+        permits--
+        // Credits bound delivery batches, not unfinished handlers. Replenish
+        // on receipt: completion-based credits or a fixed handler semaphore can
+        // deadlock when every admitted parent is waiting for a queued child.
+        if (permits <= THRESHOLD && !shutdownLatch.shuttingDown) grantPermits()
+
+        if (!message.command) continue
+
+        // Each invocation owns its response and shutdown activity. Keep reading
+        // while it awaits work so nested dispatch can return on this connection.
+        void handleInboundCommand(message.command, responses).catch((err) => {
+          console.error("Axon Server command bus: inbound response failed", err)
+        })
+      }
+      if (responses === outbound && !shutdownLatch.shuttingDown) throw new Error("Inbound provider stream ended unexpectedly")
+    } catch (err) {
+      if (responses !== outbound || shutdownLatch.shuttingDown) return
+      if (connection.state === "reconnecting" || connection.state === "closed" || connection.state === "disconnected") return
+
+      recovery.failed(err)
     }
   }
 
@@ -437,7 +459,11 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
       // instead, so the task that handles it supplies the instant.
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const activity = shutdownLatch.registerActivity()
+      let admission: ReturnType<typeof outboundAdmission.enter> | undefined
+      let deadline: ReturnType<typeof messagingDeadline> | undefined
       try {
+        admission = outboundAdmission.enter(unstamped.identifier)
+        deadline = messagingDeadline(requestTimeoutMs)
         const commandName = qualifiedNameToString(message.name)
 
         const response = await connection.commands.dispatch(
@@ -453,15 +479,17 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
             clientId: connection.config.clientId,
             componentName: connection.config.componentName,
           },
-          { metadata },
+          { metadata, signal: deadline.signal },
         )
 
         if (response.errorCode && response.errorCode !== "") {
           throw mapErrorCode(response.errorCode, response.errorMessage?.message ?? "Unknown error")
         }
 
-        return deserializePayload(response.payload?.data as Uint8Array | undefined)
+        return deserializePayload(response.payload?.data, response.payload?.type, response.payload?.revision)
       } finally {
+        deadline?.close()
+        admission?.end()
         activity.end()
       }
     },
@@ -523,10 +551,15 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
     metadata: axonMetadata,
   } = contextView(conn, options.context ?? conn.connection.config.context)
   const shutdownLatch = conn.shutdown
+  const requestTimeoutMs = positiveInteger(options.timeoutMs ?? 30000, "timeoutMs")
+  if (requestTimeoutMs > 2_147_483_647) throw new RangeError("timeoutMs exceeds the timer range")
+  const inboundAdmission = messagingAdmission("inbound handlers", options.limits?.maxConcurrentHandlers ?? 128, options.limits?.observe)
+  const outboundAdmission = messagingAdmission("pending requests", options.limits?.maxPendingRequests ?? 1024, options.limits?.observe)
   const resilience = options.resilience ?? conn.resilience
   const metadata = axonMetadata()
-  const PERMITS = BigInt(options.flowControl?.permits ?? Number(DEFAULT_PERMITS))
-  const THRESHOLD = BigInt(options.flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
+  const PERMITS = BigInt(positiveInteger(options.flowControl?.permits ?? Number(DEFAULT_PERMITS), "flowControl.permits"))
+  const THRESHOLD = BigInt(options.flowControl?.refillThreshold ?? Math.floor(Number(PERMITS) / 2))
+  if (THRESHOLD < 0n || THRESHOLD >= PERMITS) throw new RangeError("refillThreshold must be between zero and permits - 1")
   const shortcutQueriesToLocalHandlers = options.shortcutQueriesToLocalHandlers ?? false
   const queryTimeoutMs = options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
@@ -544,17 +577,46 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
   // to decide which subscriber IDs to target; the server forwards each response to the
   // exact subscriber.
   const handlerSubscriptions = new Map<string, { queryName: string; payload: unknown }>()
+  type ResponseCredit = { ready: Promise<void>; grant(): void; cancel(): void; cancelled: boolean; timer: ReturnType<typeof setTimeout> }
+  const responseCredits = new Map<string, ResponseCredit>()
+  function cancelResponseCredits() {
+    for (const credit of responseCredits.values()) { clearTimeout(credit.timer); credit.cancel() }
+    responseCredits.clear()
+  }
+  function responseCredit(identifier: string): ResponseCredit | undefined {
+    const existing = responseCredits.get(identifier)
+    if (existing) return existing
+    if (responseCredits.size >= (options.limits?.maxPendingRequests ?? 1024)) return undefined
+    let grant!: () => void
+    const ready = new Promise<void>((resolve) => { grant = resolve })
+    const credit: ResponseCredit = {
+      ready, grant, cancelled: false,
+      cancel() { this.cancelled = true; grant() },
+      timer: setTimeout(() => {
+        credit.cancel()
+        if (responseCredits.get(identifier) === credit) responseCredits.delete(identifier)
+      }, requestTimeoutMs),
+    }
+    credit.timer.unref?.()
+    responseCredits.set(identifier, credit)
+    return credit
+  }
+
+
+  shutdownLatch.onShutdown(() => handlerSubscriptions.clear())
 
   let outbound = outboundStream<any>()
   let streamStarted = false
+  let providerAbort = new AbortController()
+  connection.onDisconnect?.(() => { cancelResponseCredits(); providerAbort.abort(); outbound.close() })
   let permits = 0n
 
   function ensureStreamStarted() {
     if (streamStarted) return
     streamStarted = true
 
-    const inbound = connection.queries.openStream(outbound.iterable, { metadata })
-    processInboundQueries(inbound)
+    const inbound = connection.queries.openStream(outbound.iterable, { metadata, signal: providerAbort.signal })
+    void processInboundQueries(inbound, outbound)
   }
 
   function grantQueryPermits() {
@@ -586,6 +648,8 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
    * re-emitted BEFORE the permits frame.
    */
   function reestablishStreamBody() {
+    cancelResponseCredits()
+    handlerSubscriptions.clear()
     outbound.close()
     outbound = outboundStream<any>()
     streamStarted = false
@@ -595,191 +659,179 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
     grantQueryPermits()
   }
 
-  async function reestablishStreamWithRetry() {
-    if (shutdownLatch.shuttingDown) return
-    await withRetry(async () => reestablishStreamBody(), {
-      event: "reconnect",
-      ...resilience,
-    })
-  }
+  const recovery = streamRecovery(reestablishStreamBody,
+    () => !shutdownLatch.shuttingDown && connection.state !== "closed" && connection.state !== "disconnected" && connection.state !== "reconnecting",
+    resilience)
+  shutdownLatch.onShutdown(recovery.stop)
 
   // Auto-reestablish when the connection reconnects (e.g., after heartbeat timeout)
   connection.onReconnect(() => {
     if (!shutdownLatch.shuttingDown && streamStarted) {
-      reestablishStreamWithRetry().catch((err) => {
-        console.error("Axon Server query bus: reconnect retries exhausted", err)
-      })
+      recovery.restart()
     }
   })
 
-  async function handleSubscriptionQueryRequest(req: any): Promise<void> {
-    if (req.subscribe) {
-      const sub = req.subscribe
-      const subId: string = sub.subscriptionIdentifier
-      const proto = sub.queryRequest
-      if (!subId || !proto) return
-
-      const queryName: string = proto.query
-      const payload = deserializePayload(
-        proto.payload?.data as Uint8Array | undefined,
-        proto.payload?.type,
-        proto.payload?.revision,
-      )
-      handlerSubscriptions.set(subId, { queryName, payload })
-
-      let resultPayload: unknown
-      let errorCode = ""
-      let errorMsg = ""
-
-      if (subscribedNames.has(queryName)) {
-        try {
+  async function handleInboundQuery(proto: any, responses: OutboundStream<any>, subId?: string) {
+    let activity: ReturnType<ShutdownLatch["registerActivity"]> | undefined
+    let admission: ReturnType<typeof inboundAdmission.enter> | undefined
+    let payload: ReturnType<typeof serializePayload> | undefined
+    let subscriptionEntry: { queryName: string; payload: unknown } | undefined
+    let credit: ResponseCredit | undefined
+    const supports = (key: number) => proto.processingInstructions?.some((instruction: any) => instruction.key === key && instruction.value?.booleanValue)
+    if (!subId && supports(7) && supports(8)) {
+      // Response credits may precede the query on Axon's provider stream.
+      // Retain those credits by request ID, within the same bounded table.
+      credit = responseCredit(proto.messageIdentifier)
+      if (!credit) { responses.close(); return }
+    }
+    let errorCode = ""
+    let errorMsg = ""
+    try {
+      try {
+        activity = shutdownLatch.registerActivity()
+        admission = inboundAdmission.enter()
+        if (subscribedNames.has(proto.query)) {
           const queryMessage: QueryMessage = {
             kind: "query",
             identifier: proto.messageIdentifier,
-            name: qualifiedNameFromString(queryName),
-            payload,
+            name: qualifiedNameFromString(proto.query),
+            payload: deserializePayload(proto.payload?.data, proto.payload?.type, proto.payload?.revision),
             metadata: metadataFromProto(proto.metaData ?? {}),
             timestamp: Number(proto.timestamp),
           }
-          resultPayload = await next.query(queryMessage)
-        } catch (err) {
-          errorCode = AxonServerErrorCode.QUERY_EXECUTION_ERROR
-          errorMsg = err instanceof Error ? err.message : String(err)
+          if (subId) {
+            subscriptionEntry = handlerSubscriptions.get(subId)
+            if (!subscriptionEntry) return
+          }
+          // Every wire query enters the local bus with a fresh unit of work.
+          const result = await next.query(queryMessage)
+          payload = result !== undefined ? serializePayload("result", result) : undefined
+        } else {
+          errorCode = AxonServerErrorCode.NO_HANDLER_FOR_QUERY
+          errorMsg = `No next handler for query "${proto.query}"`
         }
-      } else {
-        errorCode = AxonServerErrorCode.NO_HANDLER_FOR_QUERY
-        errorMsg = `No next handler for query "${queryName}"`
+      } catch (err) {
+        errorCode = AxonServerErrorCode.QUERY_EXECUTION_ERROR
+        errorMsg = err instanceof Error ? err.message : String(err)
       }
-
-      const responseSerialized =
-        resultPayload !== undefined ? serializePayload("result", resultPayload) : undefined
-
-      outbound.send({
-        subscriptionQueryResponse: {
-          messageIdentifier: generateIdentifier(),
-          subscriptionIdentifier: subId,
-          initialResult: {
-            messageIdentifier: generateIdentifier(),
-            requestIdentifier: proto.messageIdentifier,
-            errorCode,
-            errorMessage: errorCode
-              ? {
-                  message: errorMsg,
-                  location: connection.config.componentName,
-                  details: [],
-                  errorCode,
-                }
-              : undefined,
-            payload: responseSerialized,
-            metaData: {},
-            processingInstructions: [],
+      // An unsubscribe or completion can overtake a slow initial handler.
+      if (subId && subscriptionEntry && handlerSubscriptions.get(subId) !== subscriptionEntry) return
+      if (subId && errorCode) handlerSubscriptions.delete(subId)
+      if (credit) {
+        await credit.ready
+        if (credit.cancelled) return
+      }
+      const response = {
+        messageIdentifier: generateIdentifier(),
+        requestIdentifier: proto.messageIdentifier,
+        errorCode,
+        errorMessage: errorCode
+          ? { message: errorMsg, location: connection.config.componentName, details: [], errorCode }
+          : undefined,
+        payload,
+        metaData: {},
+        processingInstructions: [],
+      }
+      if (subId) {
+        responses.send({
+          subscriptionQueryResponse: {
+            messageIdentifier: generateIdentifier(), subscriptionIdentifier: subId, initialResult: response,
           },
-        },
-        instructionId: "",
-      })
-      return
+          instructionId: "",
+        })
+      } else {
+        responses.send({ queryResponse: response, instructionId: "" })
+        responses.send({
+          queryComplete: { messageId: generateIdentifier(), requestId: proto.messageIdentifier },
+          instructionId: "",
+        })
+      }
+      await responses.flush()
+    } finally {
+      if (credit) clearTimeout(credit.timer)
+      if (credit && responseCredits.get(proto.messageIdentifier) === credit) responseCredits.delete(proto.messageIdentifier)
+      admission?.end()
+      activity?.end()
     }
-    if (req.unsubscribe) {
-      handlerSubscriptions.delete(req.unsubscribe.subscriptionIdentifier)
-    }
-    // flowControl + getInitialResult are not tracked per-sub; ignored for now.
   }
 
-  async function processInboundQueries(inbound: AsyncIterable<any>) {
+  async function processInboundQueries(inbound: AsyncIterable<any>, responses: OutboundStream<any>) {
     try {
       for await (const message of inbound) {
-        if (message.subscriptionQueryRequest) {
-          await handleSubscriptionQueryRequest(message.subscriptionQueryRequest)
+        if (responses !== outbound) return
+        recovery.received()
+        if (message.instructionId) responses.send({ ack: { instructionId: message.instructionId, success: true }, instructionId: "" })
+        // Every Axon query instruction consumes a provider credit, including
+        // acknowledgements. Ignoring a late subscription ack can exhaust a
+        // one-credit window between otherwise successful requests.
+        permits--
+        if (permits <= THRESHOLD && !shutdownLatch.shuttingDown) grantQueryPermits()
+        if (message.queryFlowControl?.permits > 0n) {
+          const identifier = message.queryFlowControl.queryReference?.requestId
+          if (identifier) {
+            const credit = responseCredit(identifier)
+            if (!credit) { responses.close(); return }
+            credit.grant()
+          }
+        }
+        if (message.queryCancel) responseCredits.get(message.queryCancel.requestId)?.cancel()
+        const request = message.subscriptionQueryRequest
+        if (request) {
+          if (request.unsubscribe) handlerSubscriptions.delete(request.unsubscribe.subscriptionIdentifier)
+          const sub = request.subscribe
+          if (sub?.subscriptionIdentifier && sub.queryRequest) {
+            try {
+              if (shutdownLatch.shuttingDown) throw new Error("Shutdown in progress")
+              if (handlerSubscriptions.size >= 1024 && !handlerSubscriptions.has(sub.subscriptionIdentifier)) throw new Error("Provider subscription capacity exhausted")
+              const proto = sub.queryRequest
+              handlerSubscriptions.set(sub.subscriptionIdentifier, {
+                queryName: proto.query,
+                payload: deserializePayload(proto.payload?.data, proto.payload?.type, proto.payload?.revision),
+              })
+            } catch (err) {
+              responses.send({
+                subscriptionQueryResponse: {
+                  messageIdentifier: generateIdentifier(), subscriptionIdentifier: sub.subscriptionIdentifier,
+                  completeExceptionally: {
+                    errorCode: AxonServerErrorCode.QUERY_EXECUTION_ERROR,
+                    errorMessage: { message: err instanceof Error ? err.message : String(err) },
+                  },
+                },
+                instructionId: "",
+              })
+            }
+          }
+          // Axon separates update registration from requesting the initial
+          // result. Running the handler on Subscribe answers the wrong phase.
+          const initial = request.getInitialResult
+          if (initial?.subscriptionIdentifier && initial.queryRequest) {
+            void handleInboundQuery(initial.queryRequest, responses, initial.subscriptionIdentifier).catch((err) => {
+              console.error("Axon Server query bus: inbound subscription response failed", err)
+            })
+          }
           continue
         }
         if (!message.query) continue
-
-        permits--
-        const proto = message.query
-        const queryName = proto.query
-
-        let resultPayload: unknown
-        let errorCode = ""
-        let errorMsg = ""
-
-        if (subscribedNames.has(queryName)) {
-          try {
-            const queryMessage: QueryMessage = {
-              kind: "query",
-              identifier: proto.messageIdentifier,
-              name: qualifiedNameFromString(queryName),
-              payload: deserializePayload(proto.payload?.data as Uint8Array | undefined),
-              metadata: metadataFromProto(proto.metaData),
-              timestamp: Number(proto.timestamp),
-            }
-
-            // Through the LOCAL BUS: no unit of work is handed in, so `next`
-            // opens one under whatever policy the caller gave it.
-            resultPayload = await next.query(queryMessage)
-          } catch (err) {
-            errorCode = AxonServerErrorCode.QUERY_EXECUTION_ERROR
-            errorMsg = err instanceof Error ? err.message : String(err)
-          }
-        } else {
-          errorCode = AxonServerErrorCode.NO_HANDLER_FOR_QUERY
-          errorMsg = `No next handler for query "${queryName}"`
-        }
-
-        outbound.send({
-          queryResponse: {
-            messageIdentifier: generateIdentifier(),
-            requestIdentifier: proto.messageIdentifier,
-            errorCode,
-            errorMessage: errorCode
-              ? {
-                  message: errorMsg,
-                  location: connection.config.componentName,
-                  details: [],
-                  errorCode,
-                }
-              : undefined,
-            payload:
-              resultPayload !== undefined ? serializePayload("result", resultPayload) : undefined,
-            metaData: {},
-            processingInstructions: [],
-          },
-          instructionId: "",
+        void handleInboundQuery(message.query, responses).catch((err) => {
+          console.error("Axon Server query bus: inbound response failed", err)
         })
-
-        outbound.send({
-          queryComplete: {
-            messageId: generateIdentifier(),
-            requestId: proto.messageIdentifier,
-          },
-          instructionId: "",
-        })
-
-        if (permits <= THRESHOLD) {
-          outbound.send({
-            flowControl: { clientId: connection.config.clientId, permits: PERMITS },
-            instructionId: "",
-          })
-          permits += PERMITS
-        }
       }
+      if (responses === outbound && !shutdownLatch.shuttingDown) throw new Error("Inbound provider stream ended unexpectedly")
     } catch (err) {
-      if (shutdownLatch.shuttingDown) return
-      if (String(err).includes("Connection dropped")) return
-
-      console.error(
-        "Axon Server query bus: inbound stream error, attempting re-establishment via withRetry",
-        err,
-      )
-      await reestablishStreamWithRetry().catch((retryErr) => {
-        console.error("Axon Server query bus: reconnect retries exhausted", retryErr)
-      })
+      if (responses !== outbound || shutdownLatch.shuttingDown) return
+      if (connection.state === "reconnecting" || connection.state === "closed" || connection.state === "disconnected") return
+      recovery.failed(err)
     }
   }
 
   const routing: SubscriptionCapableQueryBus<U> = {
     async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
+      let admission: ReturnType<typeof outboundAdmission.enter> | undefined
+      let deadline: ReturnType<typeof messagingDeadline> | undefined
       try {
+        admission = outboundAdmission.enter(unstamped.identifier)
+        deadline = messagingDeadline(requestTimeoutMs)
         const queryName = qualifiedNameToString(unstamped.name)
 
         // Local shortcut — handle locally if a handler is co-located. The
@@ -788,7 +840,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
         // in-process read: a live unit of work handed in by `ctx.query` is
         // reused so the consulting read shares the caller's transaction.
         if (shortcutQueriesToLocalHandlers && subscribedNames.has(queryName)) {
-          return next.query(unstamped, uow)
+          return await next.query(unstamped, uow)
         }
 
       // A transport is not a task: it has no unit of work, so it has no clock.
@@ -809,21 +861,32 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
             clientId: connection.config.clientId,
             componentName: connection.config.componentName,
           },
-          { metadata },
+          { metadata, signal: deadline.signal },
         )
 
+        // NR_OF_RESULTS is one. Drain trailers before returning so transport
+        // failures cannot be mistaken for a successful result. The RPC deadline
+        // also bounds a stream that sends a response but never completes.
+        let received = false
+        let result: unknown
+        let responseError: Error | undefined
         for await (const response of responseStream) {
+          if (received) continue
+          received = true
           if (response.errorCode && response.errorCode !== "") {
-            throw mapErrorCode(
-              response.errorCode,
-              response.errorMessage?.message ?? "Unknown error",
-            )
+            responseError = mapErrorCode(response.errorCode, response.errorMessage?.message ?? "Unknown error")
+          } else {
+            try { result = deserializePayload(response.payload?.data, response.payload?.type, response.payload?.revision) }
+            catch (error) { responseError = error instanceof Error ? error : new Error(String(error)) }
           }
-          return deserializePayload(response.payload?.data as Uint8Array | undefined)
         }
+        if (responseError) throw responseError
+        if (received) return result
 
         throw new Error(`No response for query "${queryName}"`)
       } finally {
+        deadline?.close()
+        admission?.end()
         activity.end()
       }
     },
@@ -845,29 +908,36 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
       unstamped: QueryMessage,
       bufferSize?: number,
     ): SubscriptionQueryResult {
+      if (shutdownLatch.shuttingDown) throw new Error("Messaging shutdown in progress")
+      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const handler = updateHandler(message, bufferSize)
-      subscriptions.set(queryId, handler)
+      const handler = updateHandler(message, bufferSize, () => subscriptions.delete(queryId))
 
       const queryName = qualifiedNameToString(message.name)
+      const serialized = serializePayload(queryName, message.payload)
       const subscriptionId = generateIdentifier()
 
       const outboundSub = outboundStream<any>()
 
+      const window = Math.min(1024, Math.max(256, Math.floor(bufferSize ?? 256)))
+      const refillBatch = Math.max(1, Math.floor(window / 4))
+      let consumedSinceRefill = 0
+      let subscriptionClosed = false
+
       outboundSub.send({
         subscribe: {
           subscriptionIdentifier: subscriptionId,
-          numberOfPermits: BigInt(bufferSize ?? 256),
+          numberOfPermits: BigInt(window),
           queryRequest: {
             messageIdentifier: message.identifier,
             query: queryName,
             timestamp: BigInt(message.timestamp),
-            payload: serializePayload(queryName, message.payload),
+            payload: serialized,
             metaData: metadataToProto(message.metadata),
             processingInstructions: defaultQueryInstructions(queryTimeoutMs),
             clientId: connection.config.clientId,
@@ -875,6 +945,10 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
           },
         },
       })
+
+      // Subscribe does not grant update credits on Axon Server; a separate
+      // FlowControl frame initializes the subscription stream's update window.
+      outboundSub.send({ flowControl: { numberOfPermits: BigInt(window) } })
 
       outboundSub.send({
         getInitialResult: {
@@ -884,7 +958,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
             messageIdentifier: message.identifier,
             query: queryName,
             timestamp: BigInt(message.timestamp),
-            payload: serializePayload(queryName, message.payload),
+            payload: serialized,
             metaData: metadataToProto(message.metadata),
             processingInstructions: defaultQueryInstructions(queryTimeoutMs),
             clientId: connection.config.clientId,
@@ -893,7 +967,9 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
         },
       })
 
-      const responseStream = connection.queries.subscription(outboundSub.iterable, { metadata })
+      const subscriptionController = new AbortController()
+      const responseStream = connection.queries.subscription(outboundSub.iterable, { metadata, signal: subscriptionController.signal })
+      subscriptions.set(queryId, handler)
 
       let resolveInitial!: (value: unknown) => void
       let rejectInitial!: (error: Error) => void
@@ -902,70 +978,89 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
         rejectInitial = reject
       })
       let initialSettled = false
+      let explicitlyCompleted = false
+      const initialTimer = setTimeout(() => closeSubscription(new Error("Subscription initial result timed out")), requestTimeoutMs)
+      const removeShutdown = shutdownLatch.onShutdown(() => closeSubscription(new Error("Messaging shutdown in progress")))
+      // Callers may consume updates without awaiting the initial result. Keep
+      // the original promise rejectable without an unhandled rejection on close.
+      void initialResult.catch(() => {})
 
-      ;(async () => {
+      function closeSubscription(error?: Error) {
+        if (subscriptionClosed) return
+        subscriptionClosed = true
+        clearTimeout(initialTimer)
+        removeShutdown()
+        if (!initialSettled) {
+          rejectInitial(error ?? new Error("Subscription query closed before initial result"))
+          initialSettled = true
+        }
+        if (error) handler.completeExceptionally(error)
+        else handler.complete()
+        try { outboundSub.send({ unsubscribe: { subscriptionIdentifier: subscriptionId } }) } catch { /* Broken stream; local teardown still must finish. */ }
+        outboundSub.close()
+        subscriptionController.abort()
+        subscriptions.delete(queryId)
+      }
+
+      void (async () => {
         try {
           for await (const response of responseStream) {
+            if (subscriptionClosed) break
             if (response.initialResult) {
               const initial = response.initialResult
               if (!initialSettled) {
-                if (initial.errorCode && initial.errorCode !== "") {
-                  rejectInitial(
-                    mapErrorCode(
-                      initial.errorCode,
-                      initial.errorMessage?.message ?? "Unknown error",
-                    ),
-                  )
-                } else {
-                  resolveInitial(
-                    deserializePayload(initial.payload?.data as Uint8Array | undefined),
-                  )
+                if (initial.errorCode) {
+                  throw mapErrorCode(initial.errorCode, initial.errorMessage?.message ?? "Unknown error")
                 }
+                clearTimeout(initialTimer)
+                resolveInitial(deserializePayload(initial.payload?.data, initial.payload?.type, initial.payload?.revision))
                 initialSettled = true
               }
             } else if (response.update) {
-              const update = deserializePayload(
-                response.update.payload?.data as Uint8Array | undefined,
-              )
-              handler.offer(update)
+              const update = deserializePayload(response.update.payload?.data, response.update.payload?.type, response.update.payload?.revision)
+              if (!handler.offer(update)) throw new Error("Subscription query update buffer overflow")
+              consumedSinceRefill++
+              if (consumedSinceRefill >= refillBatch) {
+                outboundSub.send({
+                  flowControl: { subscriptionIdentifier: subscriptionId, numberOfPermits: BigInt(consumedSinceRefill) },
+                })
+                consumedSinceRefill = 0
+              }
             } else if (response.complete) {
-              handler.complete()
+              explicitlyCompleted = true
               break
             } else if (response.completeExceptionally) {
-              handler.completeExceptionally(
-                new Error(
-                  response.completeExceptionally.errorMessage?.message ??
-                    "Subscription query failed",
-                ),
-              )
-              break
+              throw new Error(response.completeExceptionally.errorMessage?.message ?? "Subscription query failed")
             }
           }
         } catch (err) {
-          const error = err instanceof Error ? err : new Error(String(err))
+          closeSubscription(err instanceof Error ? err : new Error(String(err)))
+        } finally {
+          // EOF and completion frames must settle BOTH faces of a subscription.
+          const missingInitial = !initialSettled
           if (!initialSettled) {
-            rejectInitial(error)
+            rejectInitial(new Error("Subscription stream ended before initial result"))
             initialSettled = true
           }
-          handler.completeExceptionally(error)
-        } finally {
-          subscriptions.delete(queryId)
+          closeSubscription(!missingInitial && !explicitlyCompleted && !subscriptionClosed ? new Error("Subscription stream ended unexpectedly") : undefined)
         }
       })()
 
       return {
         initialResult,
-        updates: handler.iterable,
-        close: () => {
-          outboundSub.send({
-            unsubscribe: {
-              subscriptionIdentifier: subscriptionId,
-            },
-          })
-          outboundSub.close()
-          subscriptions.delete(queryId)
-          handler.complete()
+        updates: {
+          [Symbol.asyncIterator]() {
+            const iterator = handler.iterable[Symbol.asyncIterator]()
+            return {
+              next: () => iterator.next(),
+              async return() {
+                closeSubscription()
+                return iterator.return ? iterator.return() : { value: undefined, done: true as const }
+              },
+            }
+          },
         },
+        close: () => closeSubscription(),
       }
     },
 
@@ -973,13 +1068,17 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
       unstamped: QueryMessage,
       bufferSize?: number,
     ): AsyncIterable<unknown> & { close(): void } {
+      if (shutdownLatch.shuttingDown) throw new Error("Messaging shutdown in progress")
+      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const handler = updateHandler(message, bufferSize)
+      let removeShutdown: (() => void) | undefined
+      const handler = updateHandler(message, bufferSize, () => { subscriptions.delete(queryId); removeShutdown?.() })
+      removeShutdown = shutdownLatch.onShutdown(() => handler.completeExceptionally(new Error("Messaging shutdown in progress")))
       subscriptions.set(queryId, handler)
 
       return {
@@ -995,6 +1094,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
       queryName: string,
       filter: SubscriptionFilter,
       update: unknown,
+      uow?: UnitOfWork,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
         for (const [subId, sub] of handlerSubscriptions) {
@@ -1019,10 +1119,10 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
             instructionId: "",
           })
         }
-      })
+      }, uow)
     },
 
-    async completeSubscription(queryName: string, filter?: SubscriptionFilter): Promise<void> {
+    async completeSubscription(queryName: string, filter?: SubscriptionFilter, uow?: UnitOfWork): Promise<void> {
       runAfterCommitOrImmediately(() => {
         for (const [subId, sub] of handlerSubscriptions) {
           if (sub.queryName !== queryName) continue
@@ -1041,13 +1141,14 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
           })
           handlerSubscriptions.delete(subId)
         }
-      })
+      }, uow)
     },
 
     async completeSubscriptionExceptionally(
       queryName: string,
       error: Error,
       filter?: SubscriptionFilter,
+      uow?: UnitOfWork,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
         for (const [subId, sub] of handlerSubscriptions) {
@@ -1074,7 +1175,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
           })
           handlerSubscriptions.delete(subId)
         }
-      })
+      }, uow)
     },
   }
 

@@ -163,8 +163,11 @@ export function platformConnection(
    */
   const pendingInstructions: PlatformInstruction[] = []
   let isConnected = false
+  let monitoringArmed = false
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
   let heartbeatTimeoutTimer: ReturnType<typeof setTimeout> | null = null
+  let processorStatusInitialTimer: ReturnType<typeof setTimeout> | undefined
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
   /** Guards against arming the status-report timer twice — see `startProcessorStatusReporting`. */
   let processorStatusArmed = false
@@ -192,13 +195,37 @@ export function platformConnection(
     grpcMetadata.set("AxonIQ-Access-Token", connection.config.token)
   }
 
-  async function processInboundInstructions(inbound: AsyncIterable<any>) {
+  function scheduleRecovery() {
+    if (!monitoringArmed || recoveryTimer || connection.state === "closed" || connection.state === "reconnecting") return
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = undefined
+      if (!monitoringArmed || connection.state === "closed") return
+      void connection.reconnect().catch((error) => console.error("Platform recovery failed", error))
+    }, connection.config.reconnectIntervalMs ?? 2000)
+  }
+
+  connection.onDisconnect?.(() => {
+    isConnected = false
+    outbound?.close()
+  })
+
+  connection.onReconnect(() => {
+    if (!monitoringArmed) return
+    clearTimeout(recoveryTimer)
+    recoveryTimer = undefined
+    isConnected = false
+    openPlatformStream()
+  })
+
+  async function processInboundInstructions(inbound: AsyncIterable<any>, stream: typeof outbound) {
     try {
       for await (const message of inbound) {
+        if (stream !== outbound || !monitoringArmed) return
         // First inbound message after start() = the platform has accepted our
         // registration and is talking back. Latch the ack flag (mirror of
         // kronosdb Plan 09-03 / D-102 — replaces the legacy 1s sleep).
         acked = true
+        if (message.requestReconnect) scheduleRecovery()
         // Parse instruction type
         const instruction = parseInstruction(message)
         if (instruction) {
@@ -228,9 +255,14 @@ export function platformConnection(
         }
       }
     } catch (err) {
-      if (isConnected) {
+      if (stream === outbound && monitoringArmed && isConnected) {
         console.error("Platform stream error:", err)
         isConnected = false
+      }
+    } finally {
+      if (stream === outbound && monitoringArmed) {
+        isConnected = false
+        scheduleRecovery()
       }
     }
   }
@@ -327,9 +359,9 @@ export function platformConnection(
     if (processorStatusTimer) clearInterval(processorStatusTimer)
 
     // Initial delay before first report
-    setTimeout(() => {
-      if (!isConnected) return
-      reportProcessorStatus()
+    processorStatusInitialTimer = setTimeout(() => {
+      if (!monitoringArmed) return
+      if (isConnected) void reportProcessorStatus()
 
       // Then report at the configured rate
       processorStatusTimer = setInterval(() => {
@@ -401,7 +433,7 @@ export function platformConnection(
     // timeout, which is what the command/query buses hang their stream
     // re-establishment off. It belongs to every service, administered or not.
     startHeartbeat()
-    processInboundInstructions(inbound)
+    void processInboundInstructions(inbound, outbound)
 
     // Axon Server's PlatformService does NOT proactively emit an inbound
     // frame in response to `register` — the stream is held open silently
@@ -425,15 +457,21 @@ export function platformConnection(
 
   return {
     async armConnectionMonitoring() {
+      monitoringArmed = true
       openPlatformStream()
     },
 
     async start() {
+      monitoringArmed = true
       openPlatformStream()
       startProcessorStatusReporting()
     },
 
     stop() {
+      monitoringArmed = false
+      clearTimeout(processorStatusInitialTimer)
+      clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
       isConnected = false
       // A stopped stream's un-routed backlog is stale — do not replay it if a
       // handler registers later.

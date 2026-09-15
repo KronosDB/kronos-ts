@@ -1,3 +1,6 @@
+import { streamRecovery } from "./stream-recovery.js"
+import { withMessagingTimeout } from "@kronos-ts/core"
+import { messagingAdmission, messagingDeadline, positiveInteger, type MessagingLimits } from "@kronos-ts/core"
 /**
  * KronosDB backend for @kronos-ts.
  *
@@ -59,12 +62,12 @@ import type { KronosDbConnectionConfig } from "./connection.js"
 import { busMetadata, connectToKronosDb, type KronosDbConnection } from "./connection.js"
 import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
 import { metadataFromProto, metadataToProto } from "./metadata-conversion.js"
-import { outboundStream } from "./outbound-stream.js"
+import { outboundStream, type OutboundStream } from "./outbound-stream.js"
+import type { Command } from "./generated/command.js"
 import { platformConnection, type PlatformConnection, type PlatformServiceOptions } from "./platform-service.js"
 import { shutdownLatch as shutdownLatchValue, type ShutdownLatch } from "./shutdown-latch.js"
 
 const DEFAULT_PERMITS = 5000n
-const DEFAULT_THRESHOLD = 2500n
 
 export type FlowControlConfig = {
   permits?: number
@@ -108,11 +111,17 @@ function defaultQueryInstructions(timeoutMs: number): any[] {
 
 /** Per-bus routing knobs. Everything shared lives on the connection. */
 export type KronosDbCommandBusOptions = {
+  /** Client-side request deadline. Default: 30000ms. */
+  timeoutMs?: number
+  /** Receive credits, refilled on receipt; these do not cap running handlers. */
   flowControl?: FlowControlConfig
   /** Relative share of routed work this instance advertises. Default: 100. */
   loadFactor?: number
   /** Per-extension resilience config (D-100 / D-101). */
   resilience?: Partial<ResilienceConfig>
+  /** Bounded admission; excess nested work receives an overload error. */
+  limits?: MessagingLimits
+
 }
 
 /** @see KronosDbCommandBusOptions */
@@ -120,10 +129,13 @@ export type KronosDbQueryBusOptions = {
   flowControl?: FlowControlConfig
   /** Answer from a co-located handler instead of going out to the server. */
   shortcutQueriesToLocalHandlers?: boolean
-  /** Server-side query timeout. Default: 3600000. */
+  /** Client and server query timeout. Default: 30000ms. */
   timeoutMs?: number
   /** Per-extension resilience config (D-100 / D-101). */
   resilience?: Partial<ResilienceConfig>
+  /** Bounded admission; excess nested work receives an overload error. */
+  limits?: MessagingLimits
+
 }
 
 /**
@@ -135,6 +147,8 @@ export type KronosDbQueryBusOptions = {
  * store keyed by `(connection, context)` has nowhere honest to put it.
  */
 export type KronosDbConnectionOptions = KronosDbConnectionConfig & {
+  /** Maximum graceful drain time; transport closes even when this expires. Default: 30000ms. */
+  shutdownTimeoutMs?: number
   serializer: Serializer
   platformService?: PlatformServiceOptions
   /** Per-extension resilience config (D-100 / D-101). */
@@ -287,10 +301,12 @@ export async function kronosDbConnection(
       return started
     },
     async close() {
-      // Ordering preserved from D-101.b: drain buses, then platform, then socket.
-      await Promise.all(busLatches.map((l) => l.initiateShutdown()))
-      platform.stop()
-      connection.close()
+      try {
+        await withMessagingTimeout(Promise.all(busLatches.map((l) => l.initiateShutdown())), options.shutdownTimeoutMs ?? 30000, "Messaging shutdown")
+      } finally {
+        platform.stop()
+        connection.close()
+      }
     },
   }
 }
@@ -315,10 +331,7 @@ function createPayloadHelpers(serializer: Serializer) {
 // ---------------------------------------------------------------------------
 // KronosDB Command Bus
 //
-// Bus implementation moved verbatim from the legacy enhancer with TWO
-// behavioural additions per D-97:
-//   1) reestablishStream() body wrapped in withRetry({ event: "reconnect" })
-//   2) inbound-stream backoff replaced by the same withRetry path
+// Provider stream failures use bounded, coalesced asynchronous recovery.
 // ---------------------------------------------------------------------------
 
 /**
@@ -384,40 +397,54 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
   const serializer = kdb.serializer
   const connection = kdb.connection
   const shutdownLatch = shutdownLatchValue()
+  const requestTimeoutMs = positiveInteger(options.timeoutMs ?? 30000, "timeoutMs")
+  if (requestTimeoutMs > 2_147_483_647) throw new RangeError("timeoutMs exceeds the timer range")
+  const inboundAdmission = messagingAdmission("inbound handlers", options.limits?.maxConcurrentHandlers ?? 128, options.limits?.observe)
+  const outboundAdmission = messagingAdmission("pending requests", options.limits?.maxPendingRequests ?? 1024, options.limits?.observe)
   kdb.registerShutdownLatch(shutdownLatch)
 
   const metadata = busMetadata(bus, connection.config)
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
-  const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
-  const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
+  const PERMITS = BigInt(positiveInteger(flowControl?.permits ?? Number(DEFAULT_PERMITS), "flowControl.permits"))
+  const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Math.floor(Number(PERMITS) / 2))
+  if (THRESHOLD < 0n || THRESHOLD >= PERMITS) throw new RangeError("refillThreshold must be between zero and permits - 1")
 
   // Names this instance announced. Kept so a reconnect can re-announce them and
   // so an unroutable inbound command still gets NO_HANDLER_FOR_COMMAND rather
   // than whatever `next.dispatch` happens to throw for an unknown name.
   const localHandlers = new Set<string>()
 
+  // The server indexes provider streams by client ID, across named buses. A
+  // stream incarnation needs its own identity so old cleanup cannot remove a
+  // replacement or a different bus. Outgoing callers keep the logical client ID.
+  let providerClientId = `${connection.config.clientId}:provider:${generateIdentifier()}`
   let outbound = outboundStream<any>()
   let streamStarted = false
+  let providerAbort = new AbortController()
+  connection.onDisconnect?.(() => { providerAbort.abort(); outbound.close() })
   let permits = 0n
 
   function ensureStreamStarted() {
     if (streamStarted) return
     streamStarted = true
 
-    const inbound = connection.commands.openStream(outbound.iterable, { metadata })
-    processInboundCommands(inbound)
+    const inbound = connection.commands.openStream(outbound.iterable, { metadata, signal: providerAbort.signal })
+    void processInboundCommands(inbound, outbound)
   }
 
   function grantPermits() {
     outbound.send({
-      flowControl: { clientId: connection.config.clientId, permits: PERMITS },
+      flowControl: { clientId: providerClientId, permits: PERMITS },
       instructionId: "",
     })
     permits += PERMITS
   }
 
   function reestablishStreamBody() {
+    providerAbort.abort()
+    providerAbort = new AbortController()
     outbound.close()
+    providerClientId = `${connection.config.clientId}:provider:${generateIdentifier()}`
     outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
@@ -428,7 +455,7 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
           messageId: generateIdentifier(),
           command: commandName,
           componentName: connection.config.componentName,
-          clientId: connection.config.clientId,
+          clientId: providerClientId,
           loadFactor: commandLoadFactor ?? 100,
         },
         instructionId: generateIdentifier(),
@@ -437,94 +464,105 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
     grantPermits()
   }
 
-  async function reestablishStreamWithRetry() {
-    if (shutdownLatch.shuttingDown) return
-    await withRetry(async () => reestablishStreamBody(), {
-      event: "reconnect",
-      ...resilience,
-    })
-  }
+  const recovery = streamRecovery(reestablishStreamBody,
+    () => !shutdownLatch.shuttingDown && connection.state !== "closed" && connection.state !== "disconnected" && connection.state !== "reconnecting",
+    resilience)
+  shutdownLatch.onShutdown(recovery.stop)
 
   connection.onReconnect(() => {
     if (!shutdownLatch.shuttingDown && streamStarted) {
-      reestablishStreamWithRetry().catch((err) => {
-        console.error("KronosDB command bus: reconnect retries exhausted", err)
-      })
+      recovery.restart()
     }
   })
 
-  async function processInboundCommands(inbound: AsyncIterable<any>) {
+  async function handleInboundCommand(proto: Command, responses: OutboundStream<any>) {
+    let activity: ReturnType<ShutdownLatch["registerActivity"]> | undefined
+    let admission: ReturnType<typeof inboundAdmission.enter> | undefined
+    let responseSerialized: ReturnType<typeof serializePayload> | undefined
+    let errorCode = ""
+    let errorMsg = ""
+
+    try {
+      try {
+        // Remote callers have no outbound dispatch activity on this adapter.
+        // Track the entire handling, including result serialization and enqueue.
+        // Registration also rejects new work once shutdown has begun.
+        activity = shutdownLatch.registerActivity()
+        admission = inboundAdmission.enter()
+        if (localHandlers.has(proto.name)) {
+          const commandMessage: CommandMessage = {
+            kind: "command",
+            identifier: proto.messageIdentifier,
+            name: qualifiedNameFromString(proto.name),
+            payload: deserializePayload(proto.payload?.data, proto.payload?.type, proto.payload?.revision),
+            metadata: metadataFromProto(proto.metadata ?? {}),
+            timestamp: Number(proto.timestamp),
+          }
+
+          // The local bus opens a fresh unit of work for EVERY wire command,
+          // including children of handlers running on this same connection.
+          const result = await next.dispatch(commandMessage)
+          responseSerialized = result !== undefined ? serializePayload("result", result) : undefined
+        } else {
+          errorCode = KronosDbErrorCode.NO_HANDLER_FOR_COMMAND
+          errorMsg = `No next handler for command "${proto.name}"`
+        }
+      } catch (err) {
+        // Decode, handler, and result-encoding failures belong to this request;
+        // none should terminate the receive loop or reconnect the stream.
+        errorCode = KronosDbErrorCode.COMMAND_EXECUTION_ERROR
+        errorMsg = err instanceof Error ? err.message : String(err)
+      }
+
+      // Capture the originating stream: a late handler must not send an old
+      // request's response on a replacement stream after reconnect.
+      responses.send({
+        commandResponse: {
+          messageIdentifier: generateIdentifier(),
+          requestIdentifier: proto.messageIdentifier,
+          errorCode,
+          errorMessage: errorCode
+            ? { message: errorMsg, location: connection.config.componentName, details: [], errorCode }
+            : undefined,
+          payload: responseSerialized,
+          metadata: {},
+          processingInstructions: [],
+        },
+        instructionId: "",
+      })
+      await responses.flush()
+    } finally {
+      admission?.end()
+      activity?.end()
+    }
+  }
+
+  async function processInboundCommands(inbound: AsyncIterable<any>, responses: OutboundStream<any>) {
     try {
       for await (const message of inbound) {
+        if (responses !== outbound) return
+        recovery.received()
+        if (message.instructionId) responses.send({ ack: { instructionId: message.instructionId, success: true }, instructionId: "" })
         if (!message.command) continue
 
         permits--
-        const proto = message.command
-        const commandName = proto.name
+        // Credits bound delivery batches, not unfinished handlers. Replenish
+        // on receipt: completion-based credits or a fixed handler semaphore can
+        // deadlock when every admitted parent is waiting for a queued child.
+        if (permits <= THRESHOLD && !shutdownLatch.shuttingDown) grantPermits()
 
-        let resultPayload: unknown
-        let errorCode = ""
-        let errorMsg = ""
-
-        if (localHandlers.has(commandName)) {
-          try {
-            const commandMessage: CommandMessage = {
-              kind: "command",
-              identifier: proto.messageIdentifier,
-              name: qualifiedNameFromString(commandName),
-              payload: deserializePayload(proto.payload?.data as Uint8Array | undefined, proto.payload?.type, proto.payload?.revision),
-              metadata: metadataFromProto(proto.metadata ?? {}),
-              timestamp: Number(proto.timestamp),
-            }
-
-            // Into the LOCAL BUS, not a privately-held handler reference: the
-            // unit-of-work policy `next` was built with governs server-routed
-            // work exactly as it governs everything else.
-            resultPayload = await next.dispatch(commandMessage)
-          } catch (err) {
-            errorCode = KronosDbErrorCode.COMMAND_EXECUTION_ERROR
-            errorMsg = err instanceof Error ? err.message : String(err)
-          }
-        } else {
-          errorCode = KronosDbErrorCode.NO_HANDLER_FOR_COMMAND
-          errorMsg = `No next handler for command "${commandName}"`
-        }
-
-        const responseSerialized = resultPayload !== undefined
-          ? serializePayload("result", resultPayload)
-          : undefined
-
-        outbound.send({
-          commandResponse: {
-            messageIdentifier: generateIdentifier(),
-            requestIdentifier: proto.messageIdentifier,
-            errorCode,
-            errorMessage: errorCode
-              ? { message: errorMsg, location: connection.config.componentName, details: [], errorCode }
-              : undefined,
-            payload: responseSerialized,
-            metadata: {},
-            processingInstructions: [],
-          },
-          instructionId: "",
+        // Each invocation owns its response and shutdown activity. Keep reading
+        // while it awaits work so nested dispatch can return on this connection.
+        void handleInboundCommand(message.command, responses).catch((err) => {
+          console.error("KronosDB command bus: inbound response failed", err)
         })
-
-        if (permits <= THRESHOLD) {
-          outbound.send({
-            flowControl: { clientId: connection.config.clientId, permits: PERMITS },
-            instructionId: "",
-          })
-          permits += PERMITS
-        }
       }
+      if (responses === outbound && !shutdownLatch.shuttingDown) throw new Error("Inbound provider stream ended unexpectedly")
     } catch (err) {
-      if (shutdownLatch.shuttingDown) return
-      if (String(err).includes("Connection dropped")) return
+      if (responses !== outbound || shutdownLatch.shuttingDown) return
+      if (connection.state === "reconnecting" || connection.state === "closed" || connection.state === "disconnected") return
 
-      console.error("KronosDB command bus: inbound stream error, attempting re-establishment via withRetry", err)
-      await reestablishStreamWithRetry().catch((retryErr) => {
-        console.error("KronosDB command bus: reconnect retries exhausted", retryErr)
-      })
+      recovery.failed(err)
     }
   }
 
@@ -537,7 +575,11 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
       // instead, so the task that handles it supplies the instant.
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const activity = shutdownLatch.registerActivity()
+      let admission: ReturnType<typeof outboundAdmission.enter> | undefined
+      let deadline: ReturnType<typeof messagingDeadline> | undefined
       try {
+        admission = outboundAdmission.enter(unstamped.identifier)
+        deadline = messagingDeadline(requestTimeoutMs)
         const commandName = qualifiedNameToString(message.name)
         const serialized = serializePayload(commandName, message.payload)
 
@@ -550,7 +592,7 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
           processingInstructions: toProtoProcessingInstructions(message.metadata?.processingInstructions as ProcessingInstructions | undefined),
           clientId: connection.config.clientId,
           componentName: connection.config.componentName,
-        }, { metadata })
+        }, { metadata, signal: deadline.signal })
 
         if (response.errorCode && response.errorCode !== "") {
           throw mapErrorCode(
@@ -561,6 +603,8 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
 
         return deserializePayload(response.payload?.data as Uint8Array | undefined, response.payload?.type, response.payload?.revision)
       } finally {
+        deadline?.close()
+        admission?.end()
         activity.end()
       }
     },
@@ -575,7 +619,7 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
           messageId: generateIdentifier(),
           command: commandName,
           componentName: connection.config.componentName,
-          clientId: connection.config.clientId,
+          clientId: providerClientId,
           loadFactor: commandLoadFactor ?? 100,
         },
         instructionId: generateIdentifier(),
@@ -627,11 +671,16 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
   const serializer = kdb.serializer
   const connection = kdb.connection
   const shutdownLatch = shutdownLatchValue()
+  const requestTimeoutMs = positiveInteger(options.timeoutMs ?? 30000, "timeoutMs")
+  if (requestTimeoutMs > 2_147_483_647) throw new RangeError("timeoutMs exceeds the timer range")
+  const inboundAdmission = messagingAdmission("inbound handlers", options.limits?.maxConcurrentHandlers ?? 128, options.limits?.observe)
+  const outboundAdmission = messagingAdmission("pending requests", options.limits?.maxPendingRequests ?? 1024, options.limits?.observe)
   kdb.registerShutdownLatch(shutdownLatch)
 
   const metadata = busMetadata(bus, connection.config)
-  const PERMITS = BigInt(flowControl?.permits ?? Number(DEFAULT_PERMITS))
-  const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Number(DEFAULT_THRESHOLD))
+  const PERMITS = BigInt(positiveInteger(flowControl?.permits ?? Number(DEFAULT_PERMITS), "flowControl.permits"))
+  const THRESHOLD = BigInt(flowControl?.refillThreshold ?? Math.floor(Number(PERMITS) / 2))
+  if (THRESHOLD < 0n || THRESHOLD >= PERMITS) throw new RangeError("refillThreshold must be between zero and permits - 1")
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
 
   // As on the command side: names announced to the server, kept so a reconnect
@@ -645,29 +694,38 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
   // caller-supplied filter against these to decide which subscriber IDs to
   // target. The server then routes each response back to that exact subscriber.
   const handlerSubscriptions = new Map<string, { queryName: string; payload: unknown }>()
+  shutdownLatch.onShutdown(() => handlerSubscriptions.clear())
 
+  // The server indexes provider streams by client ID, across named buses. A
+  // stream incarnation needs its own identity so old cleanup cannot remove a
+  // replacement or a different bus. Outgoing callers keep the logical client ID.
+  let providerClientId = `${connection.config.clientId}:provider:${generateIdentifier()}`
   let outbound = outboundStream<any>()
   let streamStarted = false
+  let providerAbort = new AbortController()
+  connection.onDisconnect?.(() => { providerAbort.abort(); outbound.close() })
   let permits = 0n
 
   function ensureStreamStarted() {
     if (streamStarted) return
     streamStarted = true
 
-    const inbound = connection.queries.openStream(outbound.iterable, { metadata })
-    processInboundQueries(inbound)
+    const inbound = connection.queries.openStream(outbound.iterable, { metadata, signal: providerAbort.signal })
+    void processInboundQueries(inbound, outbound)
   }
 
   function grantQueryPermits() {
     outbound.send({
-      flowControl: { clientId: connection.config.clientId, permits: PERMITS },
+      flowControl: { clientId: providerClientId, permits: PERMITS },
       instructionId: "",
     })
     permits += PERMITS
   }
 
   function reestablishStreamBody() {
+    handlerSubscriptions.clear()
     outbound.close()
+    providerClientId = `${connection.config.clientId}:provider:${generateIdentifier()}`
     outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
@@ -679,7 +737,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
           query: queryName,
           resultName: "",
           componentName: connection.config.componentName,
-          clientId: connection.config.clientId,
+          clientId: providerClientId,
         },
         instructionId: generateIdentifier(),
       })
@@ -687,188 +745,125 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
     grantQueryPermits()
   }
 
-  async function reestablishStreamWithRetry() {
-    if (shutdownLatch.shuttingDown) return
-    await withRetry(async () => reestablishStreamBody(), {
-      event: "reconnect",
-      ...resilience,
-    })
-  }
+  const recovery = streamRecovery(reestablishStreamBody,
+    () => !shutdownLatch.shuttingDown && connection.state !== "closed" && connection.state !== "disconnected" && connection.state !== "reconnecting",
+    resilience)
+  shutdownLatch.onShutdown(recovery.stop)
 
   connection.onReconnect(() => {
     if (!shutdownLatch.shuttingDown && streamStarted) {
-      reestablishStreamWithRetry().catch((err) => {
-        console.error("KronosDB query bus: reconnect retries exhausted", err)
-      })
+      recovery.restart()
     }
   })
 
-  async function handleSubscriptionQueryRequest(req: any): Promise<void> {
-    if (req.subscribe) {
-      const sub = req.subscribe
-      const subId: string = sub.subscriptionIdentifier
-      const proto = sub.queryRequest
-      if (!subId || !proto) return
-
-      const queryName: string = proto.query
-      const payload = deserializePayload(
-        proto.payload?.data as Uint8Array | undefined,
-        proto.payload?.type,
-        proto.payload?.revision,
-      )
-      handlerSubscriptions.set(subId, { queryName, payload })
-
-      let resultPayload: unknown
-      let errorCode = ""
-      let errorMsg = ""
-
-      if (localHandlers.has(queryName)) {
-        try {
+  async function handleInboundQuery(proto: any, responses: OutboundStream<any>, subId?: string) {
+    let activity: ReturnType<ShutdownLatch["registerActivity"]> | undefined
+    let admission: ReturnType<typeof inboundAdmission.enter> | undefined
+    let payload: ReturnType<typeof serializePayload> | undefined
+    let subscriptionEntry: { queryName: string; payload: unknown } | undefined
+    let errorCode = ""
+    let errorMsg = ""
+    try {
+      try {
+        activity = shutdownLatch.registerActivity()
+        admission = inboundAdmission.enter()
+        if (localHandlers.has(proto.query)) {
           const queryMessage: QueryMessage = {
             kind: "query",
             identifier: proto.messageIdentifier,
-            name: qualifiedNameFromString(queryName),
-            payload,
+            name: qualifiedNameFromString(proto.query),
+            payload: deserializePayload(proto.payload?.data, proto.payload?.type, proto.payload?.revision),
             metadata: metadataFromProto(proto.metadata ?? {}),
             timestamp: Number(proto.timestamp),
           }
-          // Into the LOCAL BUS — see the note on kronosDbCommandBus.
-          resultPayload = await next.query(queryMessage)
-        } catch (err) {
-          errorCode = KronosDbErrorCode.QUERY_EXECUTION_ERROR
-          errorMsg = err instanceof Error ? err.message : String(err)
+          if (subId) {
+            if (handlerSubscriptions.size >= 1024 && !handlerSubscriptions.has(subId)) throw new Error("Provider subscription capacity exhausted")
+            subscriptionEntry = { queryName: proto.query, payload: queryMessage.payload }
+            handlerSubscriptions.set(subId, subscriptionEntry)
+          }
+          // Every wire query enters the local bus with a fresh unit of work.
+          const result = await next.query(queryMessage)
+          payload = result !== undefined ? serializePayload("result", result) : undefined
+        } else {
+          errorCode = KronosDbErrorCode.NO_HANDLER_FOR_QUERY
+          errorMsg = `No next handler for query "${proto.query}"`
         }
-      } else {
-        errorCode = KronosDbErrorCode.NO_HANDLER_FOR_QUERY
-        errorMsg = `No next handler for query "${queryName}"`
+      } catch (err) {
+        errorCode = KronosDbErrorCode.QUERY_EXECUTION_ERROR
+        errorMsg = err instanceof Error ? err.message : String(err)
       }
-
-      const responseSerialized = resultPayload !== undefined
-        ? serializePayload("result", resultPayload)
-        : undefined
-
-      outbound.send({
-        subscriptionQueryResponse: {
-          messageIdentifier: generateIdentifier(),
-          subscriptionIdentifier: subId,
-          initialResult: {
-            messageIdentifier: generateIdentifier(),
-            requestIdentifier: proto.messageIdentifier,
-            errorCode,
-            errorMessage: errorCode
-              ? { message: errorMsg, location: connection.config.componentName, details: [], errorCode }
-              : undefined,
-            payload: responseSerialized,
-            metadata: {},
-            processingInstructions: [],
-          },
-        },
+      // An unsubscribe or completion can overtake a slow initial handler.
+      if (subId && subscriptionEntry && handlerSubscriptions.get(subId) !== subscriptionEntry) return
+      if (subId && errorCode) handlerSubscriptions.delete(subId)
+      const response = {
+        messageIdentifier: generateIdentifier(),
+        requestIdentifier: proto.messageIdentifier,
+        errorCode,
+        errorMessage: errorCode
+          ? { message: errorMsg, location: connection.config.componentName, details: [], errorCode }
+          : undefined,
+        payload,
+        metadata: {},
+        processingInstructions: [],
+      }
+      // KronosDB routes the initial subscription result by requestIdentifier
+      // on QueryResponse; SubscriptionQueryResponse is reserved for updates.
+      responses.send({ queryResponse: response, instructionId: "" })
+      responses.send({
+        queryComplete: { messageId: generateIdentifier(), requestId: proto.messageIdentifier },
         instructionId: "",
       })
-      return
+      await responses.flush()
+    } finally {
+      admission?.end()
+      activity?.end()
     }
-    if (req.unsubscribe) {
-      handlerSubscriptions.delete(req.unsubscribe.subscriptionIdentifier)
-    }
-    // `flowControl` needs nothing from a HANDLER, and that is the server's
-    // design rather than a gap on this side: credit is held and enforced
-    // centrally, on the subscription registry, and an update emitted past a
-    // subscriber's credit is dropped there. A handler that also decremented a
-    // local counter would be double-counting the same window and would
-    // withhold updates the server would have delivered. The subscriber leg is
-    // where the client owes work — see `subscriptionQuery` and
-    // `__tests__/subscription-flow-control.test.ts`.
   }
 
-  async function processInboundQueries(inbound: AsyncIterable<any>) {
+  async function processInboundQueries(inbound: AsyncIterable<any>, responses: OutboundStream<any>) {
     try {
       for await (const message of inbound) {
-        if (message.subscriptionQueryRequest) {
-          await handleSubscriptionQueryRequest(message.subscriptionQueryRequest)
+        if (responses !== outbound) return
+        recovery.received()
+        if (message.instructionId) responses.send({ ack: { instructionId: message.instructionId, success: true }, instructionId: "" })
+        const request = message.subscriptionQueryRequest
+        if (request) {
+          if (request.unsubscribe) handlerSubscriptions.delete(request.unsubscribe.subscriptionIdentifier)
+          const sub = request.subscribe
+          if (sub?.subscriptionIdentifier && sub.queryRequest) {
+            permits--
+            if (permits <= THRESHOLD && !shutdownLatch.shuttingDown) grantQueryPermits()
+            void handleInboundQuery(sub.queryRequest, responses, sub.subscriptionIdentifier).catch((err) => {
+              console.error("KronosDB query bus: inbound subscription response failed", err)
+            })
+          }
           continue
         }
         if (!message.query) continue
-
         permits--
-        const proto = message.query
-        const queryName = proto.query
-
-        let resultPayload: unknown
-        let errorCode = ""
-        let errorMsg = ""
-
-        if (localHandlers.has(queryName)) {
-          try {
-            const queryMessage: QueryMessage = {
-              kind: "query",
-              identifier: proto.messageIdentifier,
-              name: qualifiedNameFromString(queryName),
-              payload: deserializePayload(proto.payload?.data as Uint8Array | undefined, proto.payload?.type, proto.payload?.revision),
-              metadata: metadataFromProto(proto.metadata ?? {}),
-              timestamp: Number(proto.timestamp),
-            }
-
-            // Into the LOCAL BUS — see the note on kronosDbCommandBus.
-            resultPayload = await next.query(queryMessage)
-          } catch (err) {
-            errorCode = KronosDbErrorCode.QUERY_EXECUTION_ERROR
-            errorMsg = err instanceof Error ? err.message : String(err)
-          }
-        } else {
-          errorCode = KronosDbErrorCode.NO_HANDLER_FOR_QUERY
-          errorMsg = `No next handler for query "${queryName}"`
-        }
-
-        const responseSerialized = resultPayload !== undefined
-          ? serializePayload("result", resultPayload)
-          : undefined
-
-        outbound.send({
-          queryResponse: {
-            messageIdentifier: generateIdentifier(),
-            requestIdentifier: proto.messageIdentifier,
-            errorCode,
-            errorMessage: errorCode
-              ? { message: errorMsg, location: connection.config.componentName, details: [], errorCode }
-              : undefined,
-            payload: responseSerialized,
-            metadata: {},
-            processingInstructions: [],
-          },
-          instructionId: "",
+        // Receive credits cannot depend on handler completion: all admitted
+        // parents could be waiting for children on this same stream.
+        if (permits <= THRESHOLD && !shutdownLatch.shuttingDown) grantQueryPermits()
+        void handleInboundQuery(message.query, responses).catch((err) => {
+          console.error("KronosDB query bus: inbound response failed", err)
         })
-
-        outbound.send({
-          queryComplete: {
-            messageId: generateIdentifier(),
-            requestId: proto.messageIdentifier,
-          },
-          instructionId: "",
-        })
-
-        if (permits <= THRESHOLD) {
-          outbound.send({
-            flowControl: { clientId: connection.config.clientId, permits: PERMITS },
-            instructionId: "",
-          })
-          permits += PERMITS
-        }
       }
+      if (responses === outbound && !shutdownLatch.shuttingDown) throw new Error("Inbound provider stream ended unexpectedly")
     } catch (err) {
-      if (shutdownLatch.shuttingDown) return
-      if (String(err).includes("Connection dropped")) return
-
-      console.error("KronosDB query bus: inbound stream error, attempting re-establishment via withRetry", err)
-      await reestablishStreamWithRetry().catch((retryErr) => {
-        console.error("KronosDB query bus: reconnect retries exhausted", retryErr)
-      })
+      if (responses !== outbound || shutdownLatch.shuttingDown) return
+      if (connection.state === "reconnecting" || connection.state === "closed" || connection.state === "disconnected") return
+      recovery.failed(err)
     }
   }
 
   const routing: SubscriptionCapableQueryBus<U> = {
     async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
+      let admission: ReturnType<typeof outboundAdmission.enter> | undefined
+      let deadline: ReturnType<typeof messagingDeadline> | undefined
       try {
+        admission = outboundAdmission.enter(unstamped.identifier)
+        deadline = messagingDeadline(requestTimeoutMs)
         const queryName = qualifiedNameToString(unstamped.name)
 
         if (shortcutQueriesToLocalHandlers && localHandlers.has(queryName)) {
@@ -878,7 +873,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
           // differ. `next` owns the nest-or-open decision now; that used to be
           // duplicated here against a separately-supplied `unitOfWork`, which
           // was one more place for the two to disagree.
-          return next.query(unstamped, uow)
+          return await next.query(unstamped, uow)
         }
 
       // A transport is not a task: it has no unit of work, so it has no clock.
@@ -895,23 +890,34 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
           timestamp: BigInt(message.timestamp),
           payload: serialized,
           metadata: metadataToProto(message.metadata),
-          processingInstructions: defaultQueryInstructions(queryTimeoutMs ?? 3600000),
+          processingInstructions: defaultQueryInstructions(queryTimeoutMs ?? 30000),
           clientId: connection.config.clientId,
           componentName: connection.config.componentName,
-        }, { metadata })
+        }, { metadata, signal: deadline.signal })
 
+        // NR_OF_RESULTS is one. Drain trailers before returning so transport
+        // failures cannot be mistaken for a successful result. The RPC deadline
+        // also bounds a stream that sends a response but never completes.
+        let received = false
+        let result: unknown
+        let responseError: Error | undefined
         for await (const response of responseStream) {
+          if (received) continue
+          received = true
           if (response.errorCode && response.errorCode !== "") {
-            throw mapErrorCode(
-              response.errorCode,
-              response.errorMessage?.message ?? "Unknown error",
-            )
+            responseError = mapErrorCode(response.errorCode, response.errorMessage?.message ?? "Unknown error")
+          } else {
+            try { result = deserializePayload(response.payload?.data, response.payload?.type, response.payload?.revision) }
+            catch (error) { responseError = error instanceof Error ? error : new Error(String(error)) }
           }
-          return deserializePayload(response.payload?.data as Uint8Array | undefined, response.payload?.type, response.payload?.revision)
         }
+        if (responseError) throw responseError
+        if (received) return result
 
         throw new Error(`No response for query "${queryName}"`)
       } finally {
+        deadline?.close()
+        admission?.end()
         activity.end()
       }
     },
@@ -927,7 +933,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
           query: queryName,
           resultName: "",
           componentName: connection.config.componentName,
-          clientId: connection.config.clientId,
+          clientId: providerClientId,
         },
         instructionId: generateIdentifier(),
       })
@@ -938,14 +944,15 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       unstamped: QueryMessage,
       bufferSize?: number,
     ): SubscriptionQueryResult {
+      if (shutdownLatch.shuttingDown) throw new Error("Messaging shutdown in progress")
+      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const handler = updateHandler(message, bufferSize)
-      subscriptions.set(queryId, handler)
+      const handler = updateHandler(message, bufferSize, () => subscriptions.delete(queryId))
 
       const queryName = qualifiedNameToString(message.name)
       const subscriptionId = generateIdentifier()
@@ -973,7 +980,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       // themselves are additive and unbounded, so the window is only ever
       // restored to this size.
       const requested = bufferSize && bufferSize > 0 ? bufferSize : 256
-      const window = Math.min(1024, Math.max(1, requested))
+      const window = Math.min(1024, Math.max(256, requested))
       const refillBatch = Math.max(1, Math.floor(window / 4))
       let consumedSinceRefill = 0
       let subscriptionClosed = false
@@ -988,14 +995,16 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
             timestamp: BigInt(message.timestamp),
             payload: serialized,
             metadata: metadataToProto(message.metadata),
-            processingInstructions: defaultQueryInstructions(queryTimeoutMs ?? 3600000),
+            processingInstructions: defaultQueryInstructions(queryTimeoutMs ?? 30000),
             clientId: connection.config.clientId,
             componentName: connection.config.componentName,
           },
         },
       })
 
-      const responseStream = connection.queries.subscription(outboundSub.iterable, { metadata })
+      const subscriptionController = new AbortController()
+      const responseStream = connection.queries.subscription(outboundSub.iterable, { metadata, signal: subscriptionController.signal })
+      subscriptions.set(queryId, handler)
 
       let resolveInitial!: (value: unknown) => void
       let rejectInitial!: (error: Error) => void
@@ -1004,71 +1013,89 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
         rejectInitial = reject
       })
       let initialSettled = false
+      let explicitlyCompleted = false
+      const initialTimer = setTimeout(() => closeSubscription(new Error("Subscription initial result timed out")), requestTimeoutMs)
+      const removeShutdown = shutdownLatch.onShutdown(() => closeSubscription(new Error("Messaging shutdown in progress")))
+      // Callers may consume updates without awaiting the initial result. Keep
+      // the original promise rejectable without an unhandled rejection on close.
+      void initialResult.catch(() => {})
 
-      ;(async () => {
+      function closeSubscription(error?: Error) {
+        if (subscriptionClosed) return
+        subscriptionClosed = true
+        clearTimeout(initialTimer)
+        removeShutdown()
+        if (!initialSettled) {
+          rejectInitial(error ?? new Error("Subscription query closed before initial result"))
+          initialSettled = true
+        }
+        if (error) handler.completeExceptionally(error)
+        else handler.complete()
+        try { outboundSub.send({ unsubscribe: { subscriptionIdentifier: subscriptionId } }) } catch { /* Broken stream; local teardown still must finish. */ }
+        outboundSub.close()
+        subscriptionController.abort()
+        subscriptions.delete(queryId)
+      }
+
+      void (async () => {
         try {
           for await (const response of responseStream) {
+            if (subscriptionClosed) break
             if (response.initialResult) {
+              const initial = response.initialResult
               if (!initialSettled) {
-                if (response.initialResult.errorCode && response.initialResult.errorCode !== "") {
-                  rejectInitial(mapErrorCode(response.initialResult.errorCode, response.initialResult.errorMessage?.message ?? "Unknown error"))
-                } else {
-                  resolveInitial(deserializePayload(response.initialResult.payload?.data as Uint8Array | undefined, response.initialResult.payload?.type, response.initialResult.payload?.revision))
+                if (initial.errorCode) {
+                  throw mapErrorCode(initial.errorCode, initial.errorMessage?.message ?? "Unknown error")
                 }
+                clearTimeout(initialTimer)
+                resolveInitial(deserializePayload(initial.payload?.data, initial.payload?.type, initial.payload?.revision))
                 initialSettled = true
               }
             } else if (response.update) {
-              const update = deserializePayload(response.update.payload?.data as Uint8Array | undefined, response.update.payload?.type, response.update.payload?.revision)
-              handler.offer(update)
-              // Refill for what we took, once a quarter-window has accrued.
-              // Skipped once closed: the stream is being torn down and a
-              // credit grant racing `unsubscribe` is noise on the wire.
-              consumedSinceRefill += 1
-              if (consumedSinceRefill >= refillBatch && !subscriptionClosed) {
+              const update = deserializePayload(response.update.payload?.data, response.update.payload?.type, response.update.payload?.revision)
+              if (!handler.offer(update)) throw new Error("Subscription query update buffer overflow")
+              consumedSinceRefill++
+              if (consumedSinceRefill >= refillBatch) {
                 outboundSub.send({
-                  flowControl: {
-                    subscriptionIdentifier: subscriptionId,
-                    numberOfPermits: BigInt(consumedSinceRefill),
-                  },
+                  flowControl: { subscriptionIdentifier: subscriptionId, numberOfPermits: BigInt(consumedSinceRefill) },
                 })
                 consumedSinceRefill = 0
               }
             } else if (response.complete) {
-              handler.complete()
+              explicitlyCompleted = true
               break
             } else if (response.completeExceptionally) {
-              handler.completeExceptionally(
-                new Error(response.completeExceptionally.errorMessage?.message ?? "Subscription query failed"),
-              )
-              break
+              throw new Error(response.completeExceptionally.errorMessage?.message ?? "Subscription query failed")
             }
           }
         } catch (err) {
-          const error = err instanceof Error ? err : new Error(String(err))
+          closeSubscription(err instanceof Error ? err : new Error(String(err)))
+        } finally {
+          // EOF and completion frames must settle BOTH faces of a subscription.
+          const missingInitial = !initialSettled
           if (!initialSettled) {
-            rejectInitial(error)
+            rejectInitial(new Error("Subscription stream ended before initial result"))
             initialSettled = true
           }
-          handler.completeExceptionally(error)
-        } finally {
-          subscriptions.delete(queryId)
+          closeSubscription(!missingInitial && !explicitlyCompleted && !subscriptionClosed ? new Error("Subscription stream ended unexpectedly") : undefined)
         }
       })()
 
       return {
         initialResult,
-        updates: handler.iterable,
-        close: () => {
-          subscriptionClosed = true
-          outboundSub.send({
-            unsubscribe: {
-              subscriptionIdentifier: subscriptionId,
-            },
-          })
-          outboundSub.close()
-          subscriptions.delete(queryId)
-          handler.complete()
+        updates: {
+          [Symbol.asyncIterator]() {
+            const iterator = handler.iterable[Symbol.asyncIterator]()
+            return {
+              next: () => iterator.next(),
+              async return() {
+                closeSubscription()
+                return iterator.return ? iterator.return() : { value: undefined, done: true as const }
+              },
+            }
+          },
         },
+        close: () => closeSubscription(),
       }
     },
 
@@ -1076,13 +1103,17 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       unstamped: QueryMessage,
       bufferSize?: number,
     ): AsyncIterable<unknown> & { close(): void } {
+      if (shutdownLatch.shuttingDown) throw new Error("Messaging shutdown in progress")
+      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      const handler = updateHandler(message, bufferSize)
+      let removeShutdown: (() => void) | undefined
+      const handler = updateHandler(message, bufferSize, () => { subscriptions.delete(queryId); removeShutdown?.() })
+      removeShutdown = shutdownLatch.onShutdown(() => handler.completeExceptionally(new Error("Messaging shutdown in progress")))
       subscriptions.set(queryId, handler)
 
       return {
@@ -1098,6 +1129,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       queryName: string,
       filter: SubscriptionFilter,
       update: unknown,
+      uow?: UnitOfWork,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
         for (const [subId, sub] of handlerSubscriptions) {
@@ -1122,12 +1154,13 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
             instructionId: "",
           })
         }
-      })
+      }, uow)
     },
 
     async completeSubscription(
       queryName: string,
       filter?: SubscriptionFilter,
+      uow?: UnitOfWork,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
         for (const [subId, sub] of handlerSubscriptions) {
@@ -1147,13 +1180,14 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
           })
           handlerSubscriptions.delete(subId)
         }
-      })
+      }, uow)
     },
 
     async completeSubscriptionExceptionally(
       queryName: string,
       error: Error,
       filter?: SubscriptionFilter,
+      uow?: UnitOfWork,
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
         for (const [subId, sub] of handlerSubscriptions) {
@@ -1180,7 +1214,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
           })
           handlerSubscriptions.delete(subId)
         }
-      })
+      }, uow)
     },
   }
 

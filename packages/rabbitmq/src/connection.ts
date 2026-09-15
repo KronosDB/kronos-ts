@@ -1,3 +1,4 @@
+import type { MessagingLimits } from "@kronos-ts/core"
 import type { Channel, ChannelModel } from "amqplib"
 import {
   resolveRabbitMqConfig,
@@ -48,16 +49,22 @@ export function amqpChannelSource(
   connect: AmqpConnect = defaultAmqpConnect,
 ): AmqpChannelSource {
   let connection: Promise<ChannelModel> | undefined
+  let closed = false
 
   return {
     async channel() {
-      connection ??= connect(url)
+      if (closed) throw new Error("RabbitMQ connection is closed")
+      connection ??= connect(url).then((socket) => {
+        socket.on?.("error", () => { /* Transports observe channel closure and reject their work. */ })
+        return socket
+      })
       return (await connection).createChannel()
     },
     async close() {
+      closed = true
       const pending = connection
       connection = undefined
-      if (pending) await (await pending).close().catch(() => {})
+      if (pending) await pending.then((socket) => socket.close().catch(() => {}), () => {})
     },
   }
 }
@@ -69,6 +76,8 @@ export type RabbitMqConnectionOptions = {
   /** Unique per running process — reply and gossip queue names are derived from it. */
   readonly instanceId: string
   readonly topology?: RabbitMqTopologyConfig
+  readonly limits?: MessagingLimits
+  readonly shutdownTimeoutMs?: number
   readonly retry?: RabbitMqRetryConfig
   /** Swap the raw AMQP dial-out. Defaults to `amqplib.connect`; fakeable in tests. */
   readonly amqpConnect?: AmqpConnect
@@ -143,11 +152,13 @@ export async function rabbitMqConnection(
   const queryTransport = amqpRabbitMqQueryTransport(config, channels)
   const subscriberRegistry = amqpDistributedSubscriberRegistry(config, channels)
 
-  await Promise.all([
-    commandTransport.connect(),
-    queryTransport.connect(),
-    subscriberRegistry.connect(),
-  ])
+  try {
+    await Promise.all([commandTransport.connect(), queryTransport.connect(), subscriberRegistry.connect()])
+  } catch (error) {
+    await Promise.allSettled([commandTransport.close(), queryTransport.close(), subscriberRegistry.close()])
+    await channels.close()
+    throw error
+  }
 
   return {
     config,
@@ -159,12 +170,13 @@ export async function rabbitMqConnection(
       await Promise.all([commandTransport.ready(), queryTransport.ready()])
     },
     async close() {
-      await Promise.all([
-        commandTransport.close(),
-        queryTransport.close(),
-        subscriberRegistry.close(),
-      ])
-      await channels.close()
+      try {
+        const results = await Promise.allSettled([commandTransport.close(), queryTransport.close(), subscriberRegistry.close()])
+        const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected")
+        if (failures.length) throw new AggregateError(failures.map((r) => r.reason), "RabbitMQ shutdown failed")
+      } finally {
+        await channels.close()
+      }
     },
   }
 }

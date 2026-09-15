@@ -55,6 +55,9 @@ function controllableInbound() {
     iterable,
     push(msg: any) {
       push!(msg)
+      if (msg.subscriptionQueryRequest?.subscribe) {
+        push!({ subscriptionQueryRequest: { getInitialResult: msg.subscriptionQueryRequest.subscribe } })
+      }
     },
     close() {
       close!()

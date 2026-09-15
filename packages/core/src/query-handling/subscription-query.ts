@@ -32,6 +32,34 @@ export type SubscriptionQueryResult = {
   close(): void
 }
 
+/** Settle both failure and caller cancellation even if the initial handler keeps running. */
+export function subscriptionInitialResult(work: Promise<unknown>, onFailure: (error: Error) => void) {
+  let settled = false
+  let resolve!: (value: unknown) => void
+  let reject!: (error: Error) => void
+  const initialResult = new Promise<unknown>((a, b) => { resolve = a; reject = b })
+  void initialResult.catch(() => {})
+  void work.then((value) => {
+    if (settled) return
+    settled = true
+    resolve(value)
+  }, (cause) => {
+    if (settled) return
+    settled = true
+    const error = cause instanceof Error ? cause : new Error(String(cause))
+    reject(error)
+    onFailure(error)
+  })
+  return {
+    initialResult,
+    close() {
+      if (settled) return
+      settled = true
+      reject(new Error("Subscription query closed before initial result"))
+    },
+  }
+}
+
 /**
  * Internal update handler — receives updates from emitUpdate() calls
  * and buffers them for the AsyncIterable consumer.
@@ -91,7 +119,9 @@ export function runAfterCommitOrImmediately(task: () => void, uow?: UnitOfWork):
 export function updateHandler(
   query: QueryMessage,
   bufferSize: number = 256,
+  onClose?: () => void,
 ): UpdateHandler & { iterable: AsyncIterable<unknown> } {
+  if (!Number.isSafeInteger(bufferSize) || bufferSize <= 0) throw new RangeError("bufferSize must be a positive integer")
   const buffer: unknown[] = []
   let completed = false
   let error: Error | undefined
@@ -121,14 +151,18 @@ export function updateHandler(
     },
 
     complete() {
+      if (completed) return
       completed = true
       wake()
+      onClose?.()
     },
 
     completeExceptionally(err: Error) {
+      if (completed) return
       error = err
       completed = true
       wake()
+      onClose?.()
     },
 
     get active() {
@@ -150,6 +184,8 @@ export function updateHandler(
               return Promise.resolve({ value: undefined, done: true })
             }
 
+            if (waiting) return Promise.reject(new Error("Concurrent subscription reads are not supported"))
+
             // Wait for data or completion
             return new Promise((resolve, reject) => {
               waiting = {
@@ -165,8 +201,11 @@ export function updateHandler(
           },
 
           return(): Promise<IteratorResult<unknown>> {
+            const wasActive = !completed
             completed = true
             buffer.length = 0
+            wake()
+            if (wasActive) onClose?.()
             return Promise.resolve({ value: undefined, done: true })
           },
         }

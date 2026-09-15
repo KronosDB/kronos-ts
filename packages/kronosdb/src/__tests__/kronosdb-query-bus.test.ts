@@ -155,11 +155,11 @@ describe("kronosDbQueryBus — subscription queries", () => {
 
     await flush(30)
 
-    const response = captured.outbound.find((o) => o.subscriptionQueryResponse?.initialResult)
+    const response = captured.outbound.find((o) => o.queryResponse)
     expect(response).toBeDefined()
-    expect(response.subscriptionQueryResponse.subscriptionIdentifier).toBe("sub-1")
-    expect(response.subscriptionQueryResponse.initialResult.errorCode).toBe("")
-    expect(jsonSerializer.deserialize(response.subscriptionQueryResponse.initialResult.payload)).toBe("hello")
+    expect(response.queryResponse.requestIdentifier).toBe("msg-1")
+    expect(response.queryResponse.errorCode).toBe("")
+    expect(jsonSerializer.deserialize(response.queryResponse.payload)).toBe("hello")
   })
 
   it("emitUpdate dispatches a SubscriptionQueryResponse.update to each matching tracked subscriber", async () => {

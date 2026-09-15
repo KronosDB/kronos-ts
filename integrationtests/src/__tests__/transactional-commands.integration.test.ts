@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 /**
  * Integration test for transactional command handlers (@kronos-ts/postgres).
  *
@@ -214,9 +215,7 @@ describe("transactional commands — user CRUD atomic with appended events", () 
   it("rollback: a throw after the write undoes BOTH the row and the event", async () => {
     const id = wid("boom")
 
-    await expect(
-      send(buses.commandBus, EditWidget, { id, name: "Nope", boom: true }),
-    ).rejects.toThrow("boom")
+    await assert.rejects(send(buses.commandBus, EditWidget, { id, name: "Nope", boom: true }), /boom/)
 
     // The INSERT ran on the same connection the UoW rolled back — so the row
     // must be gone, proving it was never on a separate autocommit path.

@@ -236,6 +236,7 @@ export {
   type SubscriptionQueryResult,
   type UpdateHandler,
   updateHandler,
+  subscriptionInitialResult,
   runAfterCommitOrImmediately,
   subscriptionQuery,
 } from "./query-handling/subscription-query.js"
@@ -526,3 +527,6 @@ export {
 // Neither is any TRACING vocabulary. There is no span seam, no metrics seam and
 // no tracing or metering handler here — observability is a package of functions
 // over these public shapes, which anybody could have written.
+
+export { messagingAdmission, messagingDeadline, withMessagingTimeout, positiveInteger, MessagingOverloadedError } from "./messaging-reliability.js"
+export type { MessagingLimits, MessagingActivity } from "./messaging-reliability.js"
