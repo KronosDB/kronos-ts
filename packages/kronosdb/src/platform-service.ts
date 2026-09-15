@@ -144,8 +144,12 @@ export function platformConnection(
    */
   const pendingInstructions: PlatformInstruction[] = []
   let isConnected = false
+  let monitoringArmed = false
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  let processorStatusInitialTimer: ReturnType<typeof setTimeout> | undefined
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
+  let processorStatusArmed = false
   let lastHeartbeatResponse = Date.now()
   let outbound: ReturnType<typeof outboundStream<PlatformInbound>> | null = null
   /**
@@ -158,12 +162,36 @@ export function platformConnection(
 
   const grpcMetadata = kronosMetadata(connection.config)
 
-  async function processInboundInstructions(inbound: AsyncIterable<any>) {
+  function scheduleRecovery() {
+    if (!monitoringArmed || recoveryTimer || connection.state === "closed" || connection.state === "reconnecting") return
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = undefined
+      if (!monitoringArmed || connection.state === "closed") return
+      void connection.reconnect().catch((error) => console.error("Platform recovery failed", error))
+    }, connection.config.reconnectIntervalMs ?? 2000)
+  }
+
+  connection.onDisconnect?.(() => {
+    isConnected = false
+    outbound?.close()
+  })
+
+  connection.onReconnect(() => {
+    if (!monitoringArmed) return
+    clearTimeout(recoveryTimer)
+    recoveryTimer = undefined
+    isConnected = false
+    openPlatformStream()
+  })
+
+  async function processInboundInstructions(inbound: AsyncIterable<any>, stream: typeof outbound) {
     try {
       for await (const message of inbound) {
+        if (stream !== outbound || !monitoringArmed) return
         // First inbound message after start() = the platform has accepted our
         // registration and is talking back. Latch the ack flag (D-102).
         acked = true
+        if (message.requestReconnect) scheduleRecovery()
         const instruction = parseInstruction(message)
         if (instruction) {
           if (instructionHandlers.length === 0) {
@@ -188,9 +216,14 @@ export function platformConnection(
         }
       }
     } catch (err) {
-      if (isConnected) {
+      if (stream === outbound && monitoringArmed && isConnected) {
         console.error("Platform stream error:", err)
         isConnected = false
+      }
+    } finally {
+      if (stream === outbound && monitoringArmed) {
+        isConnected = false
+        scheduleRecovery()
       }
     }
   }
@@ -223,11 +256,13 @@ export function platformConnection(
   }
 
   function startProcessorStatusReporting() {
+    if (processorStatusArmed) return
+    processorStatusArmed = true
     if (processorStatusTimer) clearInterval(processorStatusTimer)
 
-    setTimeout(() => {
-      if (!isConnected) return
-      reportProcessorStatus()
+    processorStatusInitialTimer = setTimeout(() => {
+      if (!monitoringArmed) return
+      if (isConnected) void reportProcessorStatus()
 
       processorStatusTimer = setInterval(() => {
         if (!isConnected || !outbound) return
@@ -253,40 +288,51 @@ export function platformConnection(
     }
   }
 
+  function openPlatformStream() {
+    if (isConnected) return
+    outbound?.close()
+
+    // Re-arm the ack latch so a stop/start cycle correctly re-waits.
+    acked = false
+    outbound = outboundStream<PlatformInbound>()
+
+    // Register with KronosDB — first message must be ClientIdentification
+    outbound.send({
+      register: {
+        clientId: connection.config.clientId,
+        componentName: connection.config.componentName,
+        version: "1.0.0",
+        tags: {},
+      },
+    })
+
+    // Open bidirectional platform stream
+    const inbound = connection.platform.openStream(outbound.iterable, {
+      metadata: grpcMetadata,
+    })
+
+    isConnected = true
+    startHeartbeat()
+    void processInboundInstructions(inbound, outbound)
+  }
+
   return {
     async start() {
-      if (isConnected) return
-
-      // Re-arm the ack latch so a stop/start cycle correctly re-waits.
-      acked = false
-      outbound = outboundStream<PlatformInbound>()
-
-      // Register with KronosDB — first message must be ClientIdentification
-      outbound.send({
-        register: {
-          clientId: connection.config.clientId,
-          componentName: connection.config.componentName,
-          version: "1.0.0",
-          tags: {},
-        },
-      })
-
-      // Open bidirectional platform stream
-      const inbound = connection.platform.openStream(outbound.iterable, {
-        metadata: grpcMetadata,
-      })
-
-      isConnected = true
-      startHeartbeat()
+      monitoringArmed = true
+      openPlatformStream()
       startProcessorStatusReporting()
-      processInboundInstructions(inbound)
     },
 
     stop() {
+      monitoringArmed = false
+      clearTimeout(processorStatusInitialTimer)
+      clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
       isConnected = false
       // A stopped stream's un-routed backlog is stale — do not replay it if a
       // handler registers later.
       pendingInstructions.length = 0
+      processorStatusArmed = false
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer)
         heartbeatTimer = null

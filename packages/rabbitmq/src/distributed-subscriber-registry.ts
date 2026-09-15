@@ -138,6 +138,16 @@ export function amqpDistributedSubscriberRegistry(
   let deliverHandler: ((envelope: DeliverEnvelope) => void) | undefined
   const mirror = new Map<string, SubscriberRecord>()
   const locallyOwnedSubIds = new Set<string>()
+  let failure: Error | undefined
+  function terminate(error: Error) {
+    failure ??= error
+    for (const subId of [...locallyOwnedSubIds]) {
+      deliverHandler?.({ kind: "completeExceptionally", subId, error: { name: error.name, message: error.message } })
+    }
+    mirror.clear()
+    locallyOwnedSubIds.clear()
+  }
+
 
   const requireChannel = (): Channel => {
     if (!channel) throw new Error("Distributed subscriber registry is not connected")
@@ -157,7 +167,7 @@ export function amqpDistributedSubscriberRegistry(
   }
 
   const handleGossip = (msg: ConsumeMessage | null): void => {
-    if (!msg) return
+    if (!msg || closed || failure) return
     let envelope: GossipEnvelope
     try {
       envelope = JSON.parse(msg.content.toString("utf8")) as GossipEnvelope
@@ -168,6 +178,10 @@ export function amqpDistributedSubscriberRegistry(
     if (envelope.kind === "claim") {
       // Loopback — local mirror already updated synchronously by claim().
       if (envelope.ownerInstanceId === instanceId) return
+      if (mirror.size >= 16384 && !mirror.has(envelope.subId)) {
+        terminate(new Error("Subscription registry capacity exhausted"))
+        return
+      }
       mirror.set(envelope.subId, {
         subId: envelope.subId,
         queryName: envelope.queryName,
@@ -196,7 +210,7 @@ export function amqpDistributedSubscriberRegistry(
   }
 
   const handleDirect = (msg: ConsumeMessage | null): void => {
-    if (!msg) return
+    if (!msg || closed || failure) return
     if (!deliverHandler) return
     let envelope: DeliverEnvelope
     try {
@@ -210,6 +224,8 @@ export function amqpDistributedSubscriberRegistry(
   const doConnect = async (): Promise<void> => {
     channel = await connection.channel()
     const ch = channel
+    ch.on?.("error", (error: Error) => terminate(error))
+    ch.on?.("close", () => terminate(new Error("Subscription transport disconnected; resubscribe on a new connection")))
 
     await ch.assertExchange(config.topology.subscribersGossipExchange, "fanout", {
       durable: true,
@@ -235,6 +251,8 @@ export function amqpDistributedSubscriberRegistry(
   }
 
   const connect = async (): Promise<void> => {
+    if (closed) throw new Error("Subscription registry is closed")
+    if (failure) throw failure
     if (connectPromise) return connectPromise
     connectPromise = doConnect()
     return connectPromise
@@ -246,11 +264,16 @@ export function amqpDistributedSubscriberRegistry(
     connect,
 
     async close() {
+      if (closed) return
       closed = true
+      terminate(new Error("Subscription registry is closed"))
       await channel?.close().catch(() => {})
     },
 
     async claim(record: ClusterSubscriberRecord): Promise<void> {
+      if (closed) throw new Error("Subscription registry is closed")
+      if (failure) throw failure
+      if (mirror.size >= 16384 && !mirror.has(record.subId)) throw new Error("Subscription registry capacity exhausted")
       const full: SubscriberRecord = { ...record, ownerInstanceId: instanceId }
       mirror.set(full.subId, full)
       locallyOwnedSubIds.add(full.subId)

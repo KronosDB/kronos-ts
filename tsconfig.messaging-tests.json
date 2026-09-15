@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [
+      "node",
+      "bun-types"
+    ]
+  },
+  "include": [
+    "packages/core/src/messaging-reliability.test.ts",
+    "packages/kronosdb/src/__tests__/messaging-contract.test.ts",
+    "packages/kronosdb/src/__tests__/connection-recovery.test.ts",
+    "packages/rabbitmq/src/__tests__/transport-lifecycle.test.ts",
+    "packages/rabbitmq/src/__tests__/nested-messaging.integration.test.ts",
+    "packages/axon-server/src/__tests__/axon-server.integration.test.ts",
+    "integrationtests/src/__tests__/bus-topology-kronosdb.integration.test.ts",
+    "integrationtests/src/__tests__/e2e-kronosdb.integration.test.ts",
+    "integrationtests/src/__tests__/transactional-commands.integration.test.ts",
+    "scripts/run-test-suites.ts",
+    "scripts/test-messaging.ts",
+    "scripts/test-integration.ts"
+  ]
+}

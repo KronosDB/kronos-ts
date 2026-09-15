@@ -1,4 +1,4 @@
-import { createChannel, createClient, type Channel, type Client, type ChannelCredentials } from "nice-grpc"
+import { createChannel, createClient, waitForChannelReady, type Channel, type Client, type ChannelCredentials } from "nice-grpc"
 import { ChannelCredentials as GrpcChannelCredentials } from "@grpc/grpc-js"
 import { Metadata } from "nice-grpc"
 import { readFileSync } from "node:fs"
@@ -181,6 +181,9 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
 
   let channel = createGrpcChannel()
   let state: ConnectionState = "connected"
+  let reconnectPromise: Promise<void> | undefined
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+  let finishRetryDelay: (() => void) | undefined
 
   const reconnectCallbacks: Array<() => void> = []
   const disconnectCallbacks: Array<(error?: Error) => void> = []
@@ -217,51 +220,59 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
     },
 
     close() {
+      if (state === "closed") return
       state = "closed"
+      for (const callback of disconnectCallbacks) {
+        try { callback() } catch { /* Listener failures cannot prevent teardown. */ }
+      }
+      clearTimeout(retryTimer)
+      finishRetryDelay?.()
       channel.close()
     },
 
-    async reconnect() {
-      if (state === "closed") {
-        throw new Error("Connection is permanently closed")
-      }
-      if (state === "connected" || state === "connecting") return
-
-      state = "reconnecting"
-      const maxAttempts = resolvedConfig.maxReconnectAttempts
-      let attempt = 0
-
-      while (state === "reconnecting") {
-        attempt++
-        try {
-          currentServerIndex++
-          channel = createGrpcChannel()
-          clients = createClients()
-          state = "connected"
-
-          for (const cb of reconnectCallbacks) {
-            try { cb() } catch { /* ignore listener errors */ }
-          }
-          return
-        } catch (err) {
-          if (maxAttempts > 0 && attempt >= maxAttempts) {
-            state = "disconnected"
-            throw new Error(
-              `Failed to reconnect after ${attempt} attempts: ${err}`,
-            )
-          }
-
-          const backoff = Math.min(
-            resolvedConfig.reconnectIntervalMs * Math.pow(2, attempt - 1),
-            30000,
-          )
-          // ±25% jitter: after a server restart every instance of a scaled-out
-          // service loses its connection at the same instant, and identical
-          // backoff schedules would reconnect them as one synchronized wave.
-          const delay = backoff * (0.75 + Math.random() * 0.5)
-          await new Promise((r) => setTimeout(r, delay))
+    reconnect() {
+      if (state === "closed") return Promise.reject(new Error("Connection is permanently closed"))
+      if (reconnectPromise) return reconnectPromise
+      reconnectPromise = (async () => {
+        state = "reconnecting"
+        channel.close()
+        for (const callback of disconnectCallbacks) {
+          try { callback() } catch { /* Listener failures cannot prevent recovery. */ }
         }
-      }
+        let attempt = 0
+        while (state === "reconnecting") {
+          attempt++
+          try {
+            currentServerIndex++
+            channel = createGrpcChannel()
+            // Channel construction is lazy. Only report recovery once the new
+            // transport is ready, otherwise a dead server falsely "succeeds".
+            await waitForChannelReady(channel, new Date(Date.now() + resolvedConfig.keepAliveTimeoutMs))
+            if ((state as ConnectionState) === "closed") return
+            clients = createClients()
+            state = "connected"
+            for (const callback of reconnectCallbacks) {
+              try { callback() } catch { /* Listener failures are isolated. */ }
+            }
+            return
+          } catch (error) {
+            channel.close()
+            if ((state as ConnectionState) === "closed") return
+            if (resolvedConfig.maxReconnectAttempts > 0 && attempt >= resolvedConfig.maxReconnectAttempts) {
+              state = "disconnected"
+              throw new Error(`Failed to reconnect after ${attempt} attempts: ${error}`)
+            }
+            const backoff = Math.min(resolvedConfig.reconnectIntervalMs * 2 ** (attempt - 1), 30000)
+            await new Promise<void>((resolve) => {
+              finishRetryDelay = resolve
+              retryTimer = setTimeout(resolve, backoff * (0.75 + Math.random() * 0.5))
+            })
+            finishRetryDelay = undefined
+          }
+        }
+      })().finally(() => { reconnectPromise = undefined })
+      return reconnectPromise
+
     },
   }
 

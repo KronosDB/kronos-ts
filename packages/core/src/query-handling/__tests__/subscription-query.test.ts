@@ -16,6 +16,15 @@ function queryMsg(name: string, payload: unknown = {}): QueryMessage {
 }
 
 describe("UpdateHandler", () => {
+  it("settles a pending read when the iterator is cancelled", async () => {
+    const handler = updateHandler(queryMsg("TestQuery"))
+    const iterator = handler.iterable[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    await iterator.return!()
+    expect(await pending).toEqual({ value: undefined, done: true })
+    expect(handler.active).toBe(false)
+  })
+
   it("buffers updates for async iteration", async () => {
     const handler = updateHandler(queryMsg("TestQuery"))
 

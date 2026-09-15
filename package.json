@@ -17,7 +17,10 @@
     "biome:fix": "biome check --write",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "bun run build && bash scripts/publish.sh"
+    "release": "bun run build && bash scripts/publish.sh",
+    "test:messaging:integration": "bun run scripts/test-messaging.ts",
+    "test:integration": "bun run scripts/test-integration.ts",
+    "typecheck:messaging-tests": "tsc -p tsconfig.messaging-tests.json"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",

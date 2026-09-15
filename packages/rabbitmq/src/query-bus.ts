@@ -3,6 +3,7 @@ import {
   qualifiedNameToString,
   runAfterCommitOrImmediately,
   updateHandler,
+  subscriptionInitialResult,
   type QueryBus,
   type SubscriptionCapableQueryBus,
   type QueryMessage,
@@ -87,13 +88,8 @@ export type RabbitMqQueryBusSource = {
  * Outside, as on the command side —
  * `interceptingQueryBus(rabbitMqQueryBus(next, rabbit), correlation)`.
  *
- * KNOWN GAP, carried over unchanged: `interceptingQueryBus` forwards
- * `subscriptionQuery` / `subscribeToUpdates` to its delegate without running
- * the dispatch chain, so an outer wrapper's transforms never reach them. The
- * initial result below takes the same next-vs-remote fork as a plain `query`,
- * but it enters at `bus.query` — INSIDE any outer wrapper. Closing that needs a
- * seam in `interceptingQueryBus`, not here; the same hole exists on every
- * backend.
+ * The outer interceptor transforms subscription queries and update-only
+ * registrations too, before either reaches this bus.
  */
 export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
   next: QueryBus<U>,
@@ -115,23 +111,23 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
 
     if (delivery.kind === "update") {
       if (!handler.active) {
-        localOwnedHandlers.delete(delivery.subId)
+        unregisterSubscription(handler.query)
         return
       }
       const accepted = handler.offer(delivery.update)
       if (!accepted) {
         handler.completeExceptionally(new Error("Subscription query update buffer overflow"))
-        localOwnedHandlers.delete(delivery.subId)
+        unregisterSubscription(handler.query)
       }
     } else if (delivery.kind === "complete") {
       handler.complete()
-      localOwnedHandlers.delete(delivery.subId)
+      unregisterSubscription(handler.query)
     } else if (delivery.kind === "completeExceptionally") {
       const error = Object.assign(new Error(delivery.error.message), {
         name: delivery.error.name ?? "RemoteSubscriptionError",
       })
       handler.completeExceptionally(error)
-      localOwnedHandlers.delete(delivery.subId)
+      unregisterSubscription(handler.query)
     }
   }
 
@@ -142,12 +138,14 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
   function registerSubscription(
     message: QueryMessage,
     bufferSize?: number,
+    onClose?: () => void,
   ): UpdateHandler & { iterable: AsyncIterable<unknown> } {
     const subId = message.identifier
     if (localOwnedHandlers.has(subId)) {
       throw new Error(`Subscription query already registered for identifier "${subId}"`)
     }
-    const handler = updateHandler(message, bufferSize)
+    if (localOwnedHandlers.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
+    const handler = updateHandler(message, bufferSize, () => { unregisterSubscription(message); onClose?.() })
     localOwnedHandlers.set(subId, handler)
 
     if (registry) {
@@ -157,7 +155,7 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
           queryName: qualifiedNameToString(message.name),
           payload: message.payload,
         })
-        .catch(() => {})
+        .catch((error) => handler.completeExceptionally(error instanceof Error ? error : new Error(String(error))))
     }
     return handler
   }
@@ -221,12 +219,14 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
       bufferSize?: number,
     ): SubscriptionQueryResult {
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
-      const handler = registerSubscription(message, bufferSize)
+      let closeInitial = () => {}
+      const handler = registerSubscription(message, bufferSize, () => closeInitial())
       // Through `bus.query`, so the initial result takes the same routing fork
       // a plain query does.
-      const initialResult = bus.query(message)
+      const initial = subscriptionInitialResult(bus.query(message), (error) => handler.completeExceptionally(error))
+      closeInitial = initial.close
       return {
-        initialResult,
+        initialResult: initial.initialResult,
         updates: handler.iterable,
         close: () => unregisterSubscription(message),
       }

@@ -1,3 +1,4 @@
+import { type MessagingLimits, positiveInteger } from "@kronos-ts/core"
 import {
   rabbitMqTopologyNames,
   type RabbitMqIdentity,
@@ -23,6 +24,8 @@ export type RabbitMqConfig = {
   /** Who this process is on the broker — see {@link RabbitMqIdentity}. */
   readonly identity: RabbitMqIdentity
   readonly topology?: RabbitMqTopologyConfig
+  readonly limits?: MessagingLimits
+  readonly shutdownTimeoutMs?: number
   readonly retry?: RabbitMqRetryConfig
 }
 
@@ -30,11 +33,15 @@ export type RabbitMqResolvedConfig = {
   readonly identity: RabbitMqIdentity
   readonly url: string
   readonly topology: ReturnType<typeof rabbitMqTopologyNames>
+  readonly limits?: MessagingLimits
+  readonly shutdownTimeoutMs?: number
   readonly retry: Required<RabbitMqRetryConfig>
 }
 
 export function resolveRabbitMqConfig(config: RabbitMqConfig): RabbitMqResolvedConfig {
   return {
+    limits: config.limits,
+    shutdownTimeoutMs: positiveInteger(config.shutdownTimeoutMs ?? 30000, "shutdownTimeoutMs"),
     identity: config.identity,
     url: config.url,
     topology: rabbitMqTopologyNames(config.identity, config.topology),
