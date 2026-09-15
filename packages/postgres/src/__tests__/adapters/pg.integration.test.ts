@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { pgAdapter, type PgAdapterConfig } from "../../adapters/pg.js"
 import { IsolationLevel, type PostgresAdapter } from "../../adapter.js"
@@ -35,9 +36,7 @@ describe("pgAdapter — query / queryOne", () => {
   })
 
   it("queryOne() throws when more than one row is returned", async () => {
-    await expect(
-      adapter.queryOne(`SELECT * FROM (VALUES (1),(2)) AS t(n)`),
-    ).rejects.toThrow(/more than one row/i)
+    await assert.rejects(adapter.queryOne(`SELECT * FROM (VALUES (1),(2)) AS t(n)`), /more than one row/i)
   })
 })
 

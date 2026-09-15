@@ -17,6 +17,7 @@
  * relies on `xid8` and `pg_snapshot_xmin(pg_current_snapshot())` for gap-free
  * tailing (D-12.14).
  */
+import assert from "node:assert/strict"
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { z } from "zod"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
@@ -420,9 +421,10 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
 
   it("DCB business rule: duplicate course creation rejected", async () => {
     const courseId = id("cs-101")
-    await expect(
+    await assert.rejects(
       send(buses.commandBus, CreateCourse, { courseId, name: "Dup", capacity: 1 }),
-    ).rejects.toThrow()
+      /Course already exists/,
+    )
   })
 
   it("DCB business rule: capacity enforced across commands", async () => {
@@ -431,9 +433,10 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     await send(buses.commandBus, CreateCourse, { courseId, name: "Tiny", capacity: 1 })
     await send(buses.commandBus, SubscribeStudent, { courseId, studentId: "stu-1" })
 
-    await expect(
+    await assert.rejects(
       send(buses.commandBus, SubscribeStudent, { courseId, studentId: "stu-2" }),
-    ).rejects.toThrow("Course is full")
+      /Course is full/,
+    )
   })
 
   it("tracking processor streams events into the projection (gap-free)", async () => {

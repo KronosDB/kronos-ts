@@ -19,6 +19,7 @@
     "integrationtests/src/__tests__/transactional-commands.integration.test.ts",
     "scripts/run-test-suites.ts",
     "scripts/test-messaging.ts",
-    "scripts/test-integration.ts"
+    "scripts/test-integration.ts",
+    "integrationtests/src/axon-e2e/e2e-axonserver-http.integration.test.ts"
   ]
 }

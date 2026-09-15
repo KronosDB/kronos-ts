@@ -13,7 +13,8 @@
  *
  * Uses testcontainers for Axon Server.
  */
-import { describe, expect, it, beforeAll, afterAll } from "bun:test"
+import assert from "node:assert/strict"
+import { describe, expect, it, beforeAll, afterAll, afterEach, spyOn } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
 import express, { type Express } from "express"
 import type { Server } from "node:http"
@@ -54,7 +55,9 @@ import {
   localQueryBus,
   type UnitOfWork,
   type CommandBus,
-  type QueryBus,
+  type SubscriptionCapableQueryBus,
+  type EventHandlerContext,
+  type SubscriptionCapability,
 } from "@kronos-ts/core"
 
 /**
@@ -64,7 +67,7 @@ import {
  */
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): {
   commandBus: CommandBus
-  queryBus: QueryBus
+  queryBus: SubscriptionCapableQueryBus
 } {
   return {
     commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
@@ -92,7 +95,7 @@ type SitedItem =
  * takes them PER ENTRY now, not once for the whole app. */
 type Site = HandlerSite & {
   commandBus: CommandBus
-  queryBus: QueryBus
+  queryBus: SubscriptionCapableQueryBus
   tokenStore?: TokenStore
   unitOfWork?: () => UnitOfWork
   /** Durable name for any bare event-handler entries in this call. */
@@ -128,16 +131,16 @@ function sitedOn(
   let processor: EventProcessor | undefined
 
   for (const item of items) {
-    const kind = (item as { kind?: string }).kind
+    const kind = item.kind
     if (kind === "command-handler") {
       commandHandlers.push({
-        ...(item as object),
+        ...item,
         ...handlerSite,
         commandBus,
         queryBus,
-      } as CommandHandlerEntry)
+      })
     } else if (kind === "query-handler") {
-      queryHandlers.push({ ...(item as object), ...handlerSite, queryBus } as QueryHandlerEntry)
+      queryHandlers.push({ ...item, ...handlerSite, queryBus })
     } else if (kind === "event-handler") {
       if (!processor) {
         if (!processorName) {
@@ -154,11 +157,11 @@ function sitedOn(
         })
       }
       eventHandlers.push({
-        ...(item as object),
+        ...item,
         commandBus,
         queryBus,
         processor,
-      } as EventHandlerEntry)
+      })
     }
   }
   return { commandHandlers, queryHandlers, eventHandlers }
@@ -284,7 +287,7 @@ const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload
 type CourseView = { courseId: string; name: string; capacity: number; enrolledCount: number }
 const courseViews = new Map<string, CourseView>()
 
-const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
+const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
   courseViews.set(e.courseId, {
     courseId: e.courseId,
     name: e.name,
@@ -294,7 +297,7 @@ const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) 
   ctx.emitUpdate(GetCourse, (q) => q.courseId === e.courseId, courseViews.get(e.courseId))
 })
 
-const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
+const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
   const view = courseViews.get(e.courseId)
   if (view) {
     view.enrolledCount++
@@ -315,7 +318,7 @@ const getCourse = queryHandler(GetCourse, async ({ payload: q }) => {
 // shared Express instance before listen().
 function registerCourseHttp(
   http: Express,
-  buses: { commandBus: CommandBus; queryBus: QueryBus },
+  buses: { commandBus: CommandBus; queryBus: SubscriptionCapableQueryBus },
 ): void {
   http.post("/courses", async (req, res) => {
     try {
@@ -416,10 +419,26 @@ describe("E2E: Axon Server full stack", () => {
   let baseUrl: string
   let axonHost: string
   let axonGrpcPort: number
-  let buses: { commandBus: CommandBus; queryBus: QueryBus }
+  let buses: { commandBus: CommandBus; queryBus: SubscriptionCapableQueryBus }
   let axonEventStore: SnapshotCapableEventStore
 
+  const readTimeoutWarnings: string[] = []
+  let restoreWarnings = () => {}
+  afterEach(() => {
+    // Retrying an idempotent read protects callers, but must not turn a
+    // transport stall into a passing reliability check.
+    expect(readTimeoutWarnings).toEqual([])
+  })
+  afterAll(() => restoreWarnings())
+
   beforeAll(async () => {
+    const warn = console.warn
+    const warningSpy = spyOn(console, "warn").mockImplementation((...args) => {
+      const message = args.map(String).join(" ")
+      if (message.includes("Axon Server read did not complete")) readTimeoutWarnings.push(message)
+      warn(...args)
+    })
+    restoreWarnings = () => warningSpy.mockRestore()
     courseViews.clear()
 
     container = await new GenericContainer("axoniq/axonserver:2025.2.5")
@@ -576,9 +595,10 @@ describe("E2E: Axon Server full stack", () => {
   }, 60_000)
 
   it("business rules enforced through event-sourced state", async () => {
-    await expect(
+    await assert.rejects(
       send(buses.commandBus, CreateCourse, { courseId: "e2e-101", name: "Duplicate", capacity: 5 }),
-    ).rejects.toThrow()
+      /Course already exists/,
+    )
   }, 60_000)
 
   it("the declared snapshot policy writes to Axon's snapshot store", async () => {
@@ -622,9 +642,10 @@ describe("E2E: Axon Server full stack", () => {
     })
 
     // Course is full — state sourced from Axon Server events
-    await expect(
+    await assert.rejects(
       send(buses.commandBus, SubscribeStudent, { courseId: "e2e-cap", studentId: "stu-2" }),
-    ).rejects.toThrow()
+      /Course is full/,
+    )
 
     // Verify events in store
     const { events } = await eventStore().source({
@@ -632,6 +653,27 @@ describe("E2E: Axon Server full stack", () => {
     })
     expect(events.length).toBe(2) // CourseCreated + StudentSubscribed
   }, 60_000)
+
+  it("keeps commands, snapshot reads and projections working across repeated handler failures", async () => {
+    // Exercise the sequence that previously stalled and reset the HTTP/2
+    // connection. Every failure must be the business error, never a timeout.
+    for (let round = 0; round < 20; round++) {
+      const courseId = `rejection-stress-${round}`
+      await send(buses.commandBus, CreateCourse, { courseId, name: "Stress", capacity: 1 })
+      await send(buses.commandBus, SubscribeStudent, { courseId, studentId: "enrolled" })
+      await assert.rejects(
+        send(buses.commandBus, CreateCourse, { courseId, name: "Duplicate", capacity: 1 }),
+        /Course already exists/,
+      )
+      await assert.rejects(
+        send(buses.commandBus, SubscribeStudent, { courseId, studentId: "excess" }),
+        /Course is full/,
+      )
+      const { events } = await eventStore().source({ query: { tags: { courseId } } })
+      expect(events).toHaveLength(2)
+      await waitFor(() => courseViews.get(courseId)?.enrolledCount === 1)
+    }
+  }, 60000)
 
   it("multiple aggregates sourced independently", async () => {
     await send(buses.commandBus, CreateCourse, {
@@ -736,7 +778,6 @@ describe("E2E: Axon Server full stack", () => {
           ...autoBuses,
           processorName: "axonserver-enrollment-automation",
         },
-        Course,
         createCourse,
         subscribeStudent,
         closeEnrollment,

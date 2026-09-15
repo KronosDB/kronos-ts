@@ -3,6 +3,7 @@
  * families' token-store tests run, plus the one thing that is specific to this
  * family: a token update joins the unit of work's transaction.
  */
+import assert from "node:assert/strict"
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test"
 import { globalSequenceToken, unitOfWork, UnableToClaimTokenError } from "@kronos-ts/core"
 import type { TokenStore } from "@kronos-ts/core"
@@ -130,7 +131,7 @@ describe("postgresTokenStore", () => {
     // processor's token while losing the work it accounts for.
     const make = postgresUnitOfWork(unitOfWork, pool)
 
-    await expect(
+    await assert.rejects(
       make().execute(async (uow) => {
         // Force the lazy transaction open, then write the token into it.
         await postgresTransaction(uow)
@@ -139,7 +140,8 @@ describe("postgresTokenStore", () => {
         expect((await store.get("proc", 0, uow))!.position()).toBe(5n)
         throw new Error("boom")
       }),
-    ).rejects.toThrow("boom")
+      /boom/,
+    )
 
     // …and gone outside it.
     expect(await store.get("proc", 0)).toBeUndefined()

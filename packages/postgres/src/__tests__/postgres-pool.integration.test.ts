@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { jsonSerializer } from "@kronos-ts/core"
 import { pgAdapter } from "../adapters/pg.js"
@@ -144,6 +145,6 @@ describe("postgresPool", () => {
 
   it("refuses to serve queries before start() when built from a connection string", async () => {
     const pool = postgresPool(pg.connectionString)
-    await expect(pool.query("SELECT 1")).rejects.toThrow(/await pool\.start\(\)/)
+    await assert.rejects(pool.query("SELECT 1"), /await pool\.start\(\)/)
   })
 })

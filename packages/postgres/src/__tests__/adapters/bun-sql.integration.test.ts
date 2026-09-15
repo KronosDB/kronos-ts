@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { bunSqlAdapter, type BunSqlAdapterConfig } from "../../adapters/bun-sql.js"
 import { IsolationLevel, type PostgresAdapter } from "../../adapter.js"
@@ -46,9 +47,7 @@ describe("bunSqlAdapter — query / queryOne", () => {
   })
 
   it.skipIf(!supported)("queryOne() throws when more than one row is returned", async () => {
-    await expect(
-      adapter.queryOne(`SELECT * FROM (VALUES (1),(2)) AS t(n)`),
-    ).rejects.toThrow(/more than one row/i)
+    await assert.rejects(adapter.queryOne(`SELECT * FROM (VALUES (1),(2)) AS t(n)`), /more than one row/i)
   })
 })
 

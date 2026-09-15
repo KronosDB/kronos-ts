@@ -4,6 +4,7 @@
  * the processing GROUP travels per call (never in the constructor), and a
  * parked letter joins the unit of work's transaction.
  */
+import assert from "node:assert/strict"
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test"
 import {
   DeadLetterQueueOverflowError,
@@ -187,14 +188,15 @@ describe("postgresDeadLetterQueue", () => {
     // skipped past it are one transaction, or neither happened.
     const make = postgresUnitOfWork(unitOfWork, pool)
 
-    await expect(
+    await assert.rejects(
       make().execute(async (uow) => {
         await postgresTransaction(uow)
         await queue.enqueue(GROUP, makeLetter("s1", "a"), uow)
         expect(await queue.size(GROUP, uow)).toBe(1)
         throw new Error("boom")
       }),
-    ).rejects.toThrow("boom")
+      /boom/,
+    )
 
     expect(await queue.size(GROUP)).toBe(0)
 
