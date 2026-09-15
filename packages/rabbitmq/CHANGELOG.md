@@ -1,5 +1,101 @@
 # @kronos-ts/rabbitmq
 
+## 0.7.0
+
+### Minor Changes
+
+- ba218a7: Handle nested commands and queries concurrently over the same adapter connection, with independent response correlation, fresh units of work, bounded admission, and shutdown draining. A handler awaiting another handler on its connection no longer blocks that child's delivery.
+
+  ```ts
+  // Before: the receive loop waits for the current handler.
+  await handleAndReply(request);
+
+  // After: each handler owns its response and drain accounting.
+  void handleAndReply(request);
+  ```
+
+  New defaults limit each wire bus/transport to 128 running handlers and 1024 pending outgoing requests. Configure `limits.maxConcurrentHandlers`, `limits.maxPendingRequests`, and `limits.observe` to tune and observe capacity. Overload rejects immediately instead of queuing a nested child behind its waiting parent. RabbitMQ uses one additional prefetch credit to deliver those overload responses.
+
+  **Compatibility:** gRPC query timeouts now default to 30 seconds, replacing the previous one-hour server timeout. Set the query bus's `timeoutMs: 3_600_000` explicitly to retain that duration. gRPC command callers also have a 30-second default deadline. Connection shutdown has a configurable `shutdownTimeoutMs` (30 seconds by default); expiry rejects close and still tears down the transport. Caller timeout does not release the slot of a handler that is still running.
+
+  Subscription updates and completion respect unit-of-work commit/rollback. Closing an iterator, initial-result failure/cancellation, overflow, EOF, or shutdown settles waiters and releases registrations. Small consumer buffers no longer imply a one-credit wire window. Streams remain transient; this release does not promise durable replay or lossless delivery through server credit exhaustion.
+
+  Fix gRPC reconnect readiness, provider stream backoff, monitoring recovery, and provider RPC cancellation on close. KronosDB provider streams use unique incarnation IDs to prevent collisions across named buses and reconnects. Axon acknowledges and accounts for control frames, retains response credits that arrive before their query, and drains admitted replies during shutdown.
+
+  RabbitMQ now surfaces unroutable returns, isolates failed channels, observes publisher backpressure, cleans partial initialization, and bounds request/handler state. Failed transports require explicit connection replacement; ambiguous commands are not automatically replayed.
+
+  See `docs/messaging-reliability.md` for defaults, migration notes, delivery contracts, and verification boundaries. Validation includes 1083 unit tests, 263 integration tests across 32 suites, package builds, and strict messaging-test type checks.
+
+- 303f268: Live updates are the third capability tier — the first on a bus. The base
+  `QueryBus` shrinks to two members; the subscription surface moves to
+  `SubscriptionCapability`, and `ctx.emitUpdate` exists only against a bus that
+  claims it. BREAKING.
+
+  ```ts
+  // before — every QueryBus implementer carried seven members
+  type QueryBus<U> = {
+    query;
+    subscribe;
+    subscriptionQuery;
+    subscribeToUpdates;
+    emitUpdate;
+    completeSubscription;
+    completeSubscriptionExceptionally;
+  };
+
+  // after — the seam is two; the tier is claimed, never implied
+  type QueryBus<U> = { query; subscribe };
+  type SubscriptionCapableQueryBus<U> = QueryBus<U> & SubscriptionCapability;
+  ```
+
+  Same construction as the two store tiers: `IfSubscriptionCapable<Q, …, …>` is
+  the anchor, `SubscriptionEmit<Q>` derives the context face, and the contexts
+  take the bus beside the log — `EventHandlerContext<E, Q, U>` /
+  `CommandHandlerContext<E, Q, U>`, each parameter defaulted so plain code never
+  writes any of them.
+
+  ```ts
+  // a projection that pushes live updates says so — and an entry whose bus
+  // cannot serve them refuses it at compile time
+  eventHandler(Enrolled, async (m, ctx) => {
+    ctx.emitUpdate(Watch, …)        // ✗ property does not exist
+  })
+  eventHandler(Enrolled, async (m, ctx: EventHandlerContext & EmitCapability) => {
+    ctx.emitUpdate(Watch, …)        // ✓ and the entry's queryBus must claim the tier
+  })
+  ```
+
+  A handler demands the tier by intersecting `EmitCapability` — one name for the
+  one thing it uses. The type parameters are the SUPPLY side (an entry threads
+  its bus in, and `Q` is inferred from the bus the entry names, so hosts write no
+  type arguments on either side); intersecting is the DEMAND side, exactly as the
+  persistence packages' `DrizzleCapability` / `PostgresCapability` are written.
+
+  The `subscriptionQuery` edge verb demands `SubscriptionCapableQueryBus`.
+  `localQueryBus` offers the tier natively; the kronosdb, axon-server and
+  rabbitmq buses offer it server- or broker-mediated; `interceptingQueryBus`,
+  `otlpQueryBus` and `recordingQueryBus` preserve whatever tier the wrapped bus
+  carried (`B` in, `B` out) instead of naming the members.
+
+  Interception wraps the tier where it exists: `subscriptionQuery` /
+  `subscribeToUpdates` run the same intercept the primary `query` runs, so
+  subscription queries travel correlated across transports — the KNOWN-GAP
+  comments in kronosdb/axon-server described an older core and are retired,
+  pinned by a test.
+
+### Patch Changes
+
+- Updated dependencies [2fb9245]
+- Updated dependencies [0a6a030]
+- Updated dependencies [303f268]
+- Updated dependencies [303f268]
+- Updated dependencies [ba218a7]
+- Updated dependencies [6890230]
+- Updated dependencies [796abc6]
+- Updated dependencies [303f268]
+- Updated dependencies [ddc8eb6]
+  - @kronos-ts/core@0.4.0
+
 ## 0.6.0
 
 ### Minor Changes

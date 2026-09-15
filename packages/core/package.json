@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "The Kronos core — task lifecycle, bus and store shapes, reference-following assembly, and the DCB model.",
   "license": "Apache-2.0",
   "type": "module",
