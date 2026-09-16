@@ -15,6 +15,7 @@
  * value the test creates and hands to each entry's own `{ eventStore }`, then
  * asserts against directly.
  */
+import assert from "node:assert/strict"
 import { describe, expect, it, afterEach } from "bun:test"
 import { z } from "zod"
 import { qn } from "@kronos-ts/core"
@@ -449,17 +450,19 @@ describe("E2E: In-memory full CQRS flow", () => {
     await send(buses.commandBus, SubscribeStudent, { courseId: "small-101", studentId: "stu-1" })
 
     // then — duplicate enrollment (before capacity is full)
-    await expect(
+    await assert.rejects(
       send(buses.commandBus, SubscribeStudent, { courseId: "small-101", studentId: "stu-1" }),
-    ).rejects.toThrow("Already enrolled")
+      /Already enrolled/,
+    )
 
     // fill the course
     await send(buses.commandBus, SubscribeStudent, { courseId: "small-101", studentId: "stu-2" })
 
     // then — course is full (capacity 2, 2 enrolled)
-    await expect(
+    await assert.rejects(
       send(buses.commandBus, SubscribeStudent, { courseId: "small-101", studentId: "stu-3" }),
-    ).rejects.toThrow("Course is full")
+      /Course is full/,
+    )
   })
 
   // Per-STATE snapshot config (policy + its own store), declared as a

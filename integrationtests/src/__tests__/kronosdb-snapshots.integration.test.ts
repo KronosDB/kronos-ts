@@ -18,6 +18,7 @@
  *   condition built from one holds exactly as it would from the other. That is
  *   what makes the snapshot an optimisation and not a change of meaning.
  */
+import assert from "node:assert/strict"
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { z } from "zod"
@@ -257,12 +258,13 @@ describe("KronosDB native snapshots — one fused RPC", () => {
     await store.append([fact(StudentSubscribed, { courseId, studentId: "rival" })])
 
     // The condition was built on a view that is now stale — it must fail.
-    await expect(
+    await assert.rejects(
       store.append([fact(StudentSubscribed, { courseId, studentId: "stu-1" })], {
         marker: fused.marker,
         query: courseQuery(courseId),
       }),
-    ).rejects.toThrow()
+      /concurren|condition|conflict/i,
+    )
   }, 60_000)
 
   it("the append condition from a fused read still holds — disjoint succeeds", async () => {

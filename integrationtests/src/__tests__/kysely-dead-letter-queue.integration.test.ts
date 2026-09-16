@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
 import { Kysely, PostgresDialect, sql } from "kysely"
@@ -125,12 +126,13 @@ describe("Kysely SequencedDeadLetterQueue (PostgreSQL)", () => {
     })
     expect(await dlq.size(GROUP)).toBe(1)
 
-    await expect(
+    await assert.rejects(
       runUoW().execute(async (uow) => {
         await dlq.enqueue(GROUP, makeDeadLetter("A", "rolled-back"), uow)
         throw new Error("boom — force rollback")
       }),
-    ).rejects.toThrow("boom — force rollback")
+      /boom — force rollback/,
+    )
 
     expect(await dlq.size(GROUP)).toBe(1)
     expect((await dlq.deadLetterSequence(GROUP, "A")).map(valueOf)).toEqual(["committed"])

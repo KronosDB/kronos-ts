@@ -11,6 +11,7 @@
  * Nothing here uses any client API beyond what a single node uses: the fabric
  * deliberately changed no client contract, and this test is the proof.
  */
+import assert from "node:assert/strict"
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, Network, Wait, type StartedNetwork, type StartedTestContainer } from "testcontainers"
 import { z } from "zod"
@@ -126,6 +127,6 @@ describe("KronosDB messaging fabric — 3-voter cluster (0.9, ADR-0007)", () => 
 
   it("bus isolation holds across the fabric too — another bus name is another world", async () => {
     const isolated = kronosDbCommandBus(localCommandBus(unitOfWork), onNodeThree, "elsewhere")
-    await expect(send(isolated, Ping, { nonce: "lost" })).rejects.toThrow()
+    await assert.rejects(send(isolated, Ping, { nonce: "lost" }), /no handler available/i)
   }, 60_000)
 })

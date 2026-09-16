@@ -2,6 +2,18 @@ import { resolve } from "node:path"
 
 /** Separate processes keep closed HTTP/2 sessions and container ports out of subsequent suites. */
 export async function runTestSuites(suites: readonly string[]): Promise<void> {
+  // Bun's rejects.toThrow matcher can synchronously re-enter live I/O.
+  // Check the entire selection before starting containers, so another suite
+  // cannot silently retain the assertion pattern that reset Axon's streams.
+  for (const suite of suites) {
+    if (!suite.endsWith(".integration.test.ts")) continue
+    const source = await Bun.file(suite).text()
+    if (/\.rejects\s*\.\s*toThrow(?:Error)?\s*\(/.test(source)) {
+      throw new Error(
+        `${suite}: await node:assert/strict rejects with a specific expected error instead of Bun's async throw matcher`,
+      )
+    }
+  }
   const failed: string[] = []
   for (const suite of suites) {
     console.log(`\nRunning ${suite}`)

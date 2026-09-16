@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 import { describe, expect, it, afterEach, beforeEach } from "bun:test"
 import { inMemoryEventStore, send, query } from "@kronos-ts/core"
 import {
@@ -389,9 +390,10 @@ describe("University — Full Application Flow", () => {
     await send(buses.commandBus, SubscribeStudent, { courseId: "cs-101", studentId: "stu-002" })
 
     // Course is now full — third subscription should fail
-    expect(
+    await assert.rejects(
       send(buses.commandBus, SubscribeStudent, { courseId: "cs-101", studentId: "stu-003" }),
-    ).rejects.toThrow("Course is full")
+      /Course is full/,
+    )
   })
 
   // Coverage: token-store position persistence — an injected tokenStore (an

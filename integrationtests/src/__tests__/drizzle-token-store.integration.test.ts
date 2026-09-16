@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
 import { drizzle } from "drizzle-orm/postgres-js"
@@ -143,9 +144,7 @@ describe("Drizzle TokenStore (PostgreSQL)", () => {
     await store.initializeSegments("test-processor", 1)
     await store.claimToken("test-processor", 0, "owner-1")
 
-    expect(store.claimToken("test-processor", 0, "owner-2")).rejects.toThrow(
-      UnableToClaimTokenError,
-    )
+    await assert.rejects(store.claimToken("test-processor", 0, "owner-2"), UnableToClaimTokenError)
   })
 
   it("claimToken succeeds after claim expires", async () => {
