@@ -26,11 +26,6 @@ PACKAGES=(
   packages/kronosdb
   packages/axon-server
   packages/postgres
-  packages/drizzle
-  packages/knex
-  packages/kysely
-  packages/prisma
-  packages/typeorm
   packages/otlp
 )
 

@@ -95,11 +95,6 @@ changes.
 | `@kronos-ts/kronosdb` | Event store plus its snapshotting and scheduling tiers, command/query transport and control plane over KronosDB. Server-side routing. |
 | `@kronos-ts/axon-server` | The same family, over Axon Server. |
 | `@kronos-ts/postgres` | The full persistence family with no ORM: event store plus its snapshotting and scheduling tiers, unit of work, token store, dead-letter queue, handler wrapper, plus the DDL. |
-| `@kronos-ts/drizzle` | Deprecated. Use `@kronos-ts/postgres` with `@kronos-ts/postgres/drizzle`. Still published, no further changes. |
-| `@kronos-ts/knex` | Deprecated. Use `@kronos-ts/postgres`. Still published, no further changes. |
-| `@kronos-ts/kysely` | Deprecated. Use `@kronos-ts/postgres` with `@kronos-ts/postgres/kysely`. Still published, no further changes. |
-| `@kronos-ts/prisma` | Deprecated. Use `@kronos-ts/postgres`. Still published, no further changes. |
-| `@kronos-ts/typeorm` | Deprecated. Use `@kronos-ts/postgres`. Still published, no further changes. |
 | `@kronos-ts/otlp` | Tracing and metrics as OTLP over `fetch`. No `@opentelemetry/*` dependency, no SDK, no global tracer. |
 
 ## Documentation
