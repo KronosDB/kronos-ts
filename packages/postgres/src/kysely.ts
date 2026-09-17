@@ -1,6 +1,9 @@
 import { clientHandler } from "./client-handler.js"
 
-export { type DbCapability } from "./client-handler.js"
+/** What a handler names to reach `ctx.db`: Kysely, typed as your build function types it. */
+export type KyselyCapability<Db> = {
+  readonly db: Db
+}
 
 /**
  * Kysely over the task's transaction.

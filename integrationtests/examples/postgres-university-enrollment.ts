@@ -61,7 +61,7 @@ import {
   postgresHandler,
   postgresUnitOfWork,
 } from "@kronos-ts/postgres"
-import { drizzleHandler, type DbCapability } from "@kronos-ts/postgres/drizzle"
+import { drizzleHandler, type DrizzleCapability } from "@kronos-ts/postgres/drizzle"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
 import { drizzle } from "drizzle-orm/bun-sql"
 import { pgTable, text, integer, timestamp } from "drizzle-orm/pg-core"
@@ -195,7 +195,7 @@ const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx
  * driver handle type is adapter-specific, so the build names it.
  */
 const drizzleOver = (client: string) => drizzle(client)
-type ProjectionContext = EventHandlerContext & DbCapability<ReturnType<typeof drizzleOver>>
+type ProjectionContext = EventHandlerContext & DrizzleCapability<ReturnType<typeof drizzleOver>>
 
 // ── projections ─────────────────────────────────────────────────────────────
 // Plain top-level values. They close over NOTHING: the handle comes from the

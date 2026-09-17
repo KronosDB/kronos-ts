@@ -10,7 +10,8 @@ import type { PostgresCapability } from "./postgres-handler.js"
 // it: call your builder's constructor on the driver client the transaction
 // unwraps to, put the result on `ctx` as `db`, typed exactly as your builder
 // types it. `@kronos-ts/postgres/drizzle` and `@kronos-ts/postgres/kysely` are
-// this function under the name of the builder they are documented for.
+// this function under the builder's name, each with its own capability type;
+// this module is not a public subpath.
 //
 // The handle is built once per `ctx.sql()` handle, so a relational schema is
 // set up once per task, not once per statement. When the pool is `observed`,
@@ -19,8 +20,12 @@ import type { PostgresCapability } from "./postgres-handler.js"
 // builder never knows.
 // ---------------------------------------------------------------------------
 
-/** The capability this step supplies: `ctx.db`, typed as whatever `build` returned. */
-export type DbCapability<Db> = {
+/**
+ * INTERNAL: the shape this step supplies — `ctx.db`, typed as whatever `build`
+ * returned. Each subpath exports its OWN name for it (`DrizzleCapability`,
+ * `KyselyCapability`); nothing shared is public.
+ */
+export type HasDb<Db> = {
   readonly db: Db
 }
 
@@ -39,7 +44,7 @@ export function clientHandler<Name extends string>(name: Name) {
   // The context is INFERRED from the handler and CONSTRAINED to demand what
   // this step supplies (`db`). A handler that does not name it, or that was
   // already wrapped, refuses to fit `C`.
-  return function handler<Db, Client, M, C extends DbCapability<Db>, R>(
+  return function handler<Db, Client, M, C extends HasDb<Db>, R>(
     next: (message: M, context: C) => R,
     build: (client: Client) => Db,
   ): ((message: M, context: Omit<C, "db"> & PostgresCapability) => R) & Described<ClientDescription<Name, M, C, R>> {

@@ -1,6 +1,9 @@
 import { clientHandler } from "./client-handler.js"
 
-export { type DbCapability } from "./client-handler.js"
+/** What a handler names to reach `ctx.db`: Drizzle, typed as your build function types it. */
+export type DrizzleCapability<Db> = {
+  readonly db: Db
+}
 
 /**
  * Drizzle over the task's transaction — the recommended client.
@@ -19,7 +22,7 @@ export { type DbCapability } from "./client-handler.js"
  * const wrap = (h) => postgresHandler(drizzleHandler(h, (client: Sql) => drizzle(client)), pg)
  *
  * // in a slice
- * type Ctx = EventHandlerContext & DbCapability<ReturnType<typeof makeDb>>
+ * type Ctx = EventHandlerContext & DrizzleCapability<ReturnType<typeof makeDb>>
  * eventHandler(OrderCreated, async ({ payload }, ctx: Ctx) => {
  *   await ctx.db.insert(orderViews).values({ … }).onConflictDoUpdate({ … })
  * })
