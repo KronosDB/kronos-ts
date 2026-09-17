@@ -9,7 +9,7 @@
 ### Patch Changes
 
 - Updated dependencies [84a74d9]
-  - @kronos-ts/core@1.0.0
+  - @kronos-ts/core@0.5.0
 
 ## 0.7.0
 

@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/test",
-  "version": "1.0.0",
-  "description": "Testing toolkit for Kronos — given/when/then fixtures for event-sourced slices.",
+  "version": "0.6.0",
+  "description": "Testing toolkit for Kronos \u2014 given/when/then fixtures for event-sourced slices.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",

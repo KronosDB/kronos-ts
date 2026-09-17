@@ -1,6 +1,6 @@
 # @kronos-ts/core
 
-## 1.0.0
+## 0.5.0
 
 ### Major Changes
 
