@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/drizzle",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Deprecated: use @kronos-ts/postgres. Drizzle ORM extension for Kronos, kept published for existing users.",
   "license": "Apache-2.0",
   "type": "module",

@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/typeorm",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Deprecated: use @kronos-ts/postgres. TypeORM extension for Kronos, kept published for existing users.",
   "license": "Apache-2.0",
   "type": "module",

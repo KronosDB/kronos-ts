@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/postgres",
-  "version": "0.12.0",
-  "description": "PostgreSQL extension for Kronos \u2014 event store and snapshot store adapters.",
+  "version": "0.13.0",
+  "description": "PostgreSQL extension for Kronos — event store and snapshot store adapters.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",
