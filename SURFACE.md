@@ -51,7 +51,7 @@ The rules this surface is held to — every export must survive all of them:
 packages/core          ← merge of common + messaging + eventsourcing + modelling + app
 packages/test
 packages/rabbitmq · kronosdb · axon-server            (transports)
-packages/postgres · drizzle · knex · kysely · prisma · typeorm   (persistence)
+packages/postgres      (persistence — the one family; drizzle/kysely ride it via subpaths)
 packages/otlp          ← replaces opentelemetry; zero @opentelemetry deps
 ```
 The `extensions/` directory is gone; the concept is gone.
@@ -783,14 +783,16 @@ client is configuration. Each returns `() => U` for whatever `U` it was handed
 and decorates the SAME handle rather than rebuilding a record, so a composed
 capability survives both the type and the runtime:
 ```ts
-const uow = drizzleUnitOfWork(() => correlating(unitOfWork(clock)), db)
-//    ^ () => CorrelatingUnitOfWork, with its transaction keyed on that very object
+const uow = postgresUnitOfWork(() => unitOfWork(clock), pg)
+//    ^ () => UnitOfWork on that clock, marked transactional, its transaction keyed on that very object
 ```
 
-PRINCIPLE: persistence families are keyed by TRANSACTION IDENTITY — the token
-store/DLQ must write through the same client handle the handlers write through.
-Every persistence package (postgres, drizzle, knex, kysely, prisma, typeorm)
-implements the same seven-function family for its client type.
+PRINCIPLE: persistence is keyed by TRANSACTION IDENTITY — the token store/DLQ
+must write through the same transaction the handlers write through. There is
+ONE family, postgres. A query builder (Drizzle, Kysely) is a CLIENT constructed
+over `ctx.sql().unwrap()` by `@kronos-ts/postgres/drizzle` / `/kysely`; it
+never owns a transaction. The former ORM-owned families are deprecated on npm
+and removed from this repository.
 
 NEVER MIX FAMILIES WITHIN ONE PROCESSOR — AND THE STORES SAY SO THEMSELVES. A
 token store or dead-letter queue handed a unit of work carrying no transaction
@@ -802,7 +804,7 @@ left a read model permanently wrong with nothing to read as the cause.
 
 A HANDLER'S ACCESSOR STILL FALLS BACK, and the asymmetry is the point: whether
 the seam a handler runs in is transactional is a DEPLOYMENT decision, so
-`ctx.db()` works either way. A token store has no such freedom — being in the
+`ctx.sql()` works either way. A token store has no such freedom — being in the
 projection's transaction is the whole reason it exists — so absence is an error
 rather than a default.
 
@@ -818,53 +820,29 @@ catches some of a problem a one-line fix catches all of is a concept to delete.
 
 EACH PACKAGE OWNS ITS TRANSACTION GLUE, PRIVATELY. The registry (a WeakMap keyed
 by unit of work), the factory builder and the open/observe accessors behind
-`<pkg>Transaction` / `active<Pkg>Transaction` are a package-private module in
-every one of the six — `src/transaction-glue.ts`, exported from no barrel. Core
+`postgresTransaction` / `activePostgresTransaction` are a package-private
+module — `src/transaction-glue.ts`, exported from no barrel. Core
 has no `./transaction` subpath and no transaction vocabulary of any kind: that
 glue only ever touched the PUBLIC phase API (`uow.on(Phase.COMMIT, …)`,
 `uow.onError(…)`), which is what makes it a helper rather than a primitive, and
-a helper lives with its users. Owning it is also what lets each family state its
-own binding honestly — eager (drizzle · knex · kysely · prisma · typeorm: a
-PRE_INVOCATION hook forces the transaction open, because the token store and DLQ
-read through the OBSERVING accessor and must not be left outside it) or lazy
-(postgres: claimed at mint, begun only when a writer asks, so read paths pay no
-begin/commit and claim no connection).
+a helper lives with its users. The binding is LAZY: claimed at mint, begun only
+when a writer asks, so read paths pay no begin/commit and claim no connection.
 
-## @kronos-ts/drizzle (knex · kysely · prisma · typeorm: identical family)
+## @kronos-ts/postgres/drizzle · /kysely — your query builder over the task's transaction
 ```ts
-drizzleTokenStore(db): TokenStore          // THROWS on a task carrying no drizzle tx
-drizzleDeadLetterQueue(db): SequencedDeadLetterQueue   // group per call; same refusal
-drizzleUnitOfWork<U>(next: () => U, db): () => U   // eager tx; delegate EXPLICIT; adds no mark
-drizzleTransaction(uow): Promise<Tx>            // opens; REJECTS on a non-drizzle uow
-activeDrizzleTransaction(uow): Tx | undefined   // observes, never opens
-drizzleHandler(handler, db): handler            // ONE generic wrapper: ctx gains db()
-type DrizzleCapability = { db(): Db | Tx }                 // a slice writes `ctx: CommandHandlerContext & DrizzleCapability`
+drizzleHandler(handler, (client) => drizzle(client)): handler   // ctx gains `db`, typed as Drizzle types it
+kyselyHandler(handler, (client) => new Kysely<DB>({ dialect })): handler
+type DbCapability<Db> = { readonly db: Db }                    // a slice writes `ctx: EventHandlerContext & DbCapability<Db>`
 ```
-HANDLER WRAPPERS ARE FUNCTION-LEVEL — `(next, ...config) => (message, ctx) => result`,
-with `<M, C, R>` inferred and no entry type anywhere. The host wraps by spreading
-the entry itself, and anything a wrapper would have read off the entry it reads
-off the MESSAGE instead:
-```ts
-const instrumented = <M extends Message, C extends DrizzleCapability & { unitOfWork: UnitOfWork }, R>(
-  next: (m: M, c: C) => R,
-) => drizzleHandler(otlpMetricsHandler(otlpHandler(next, exporter), exporter), db)
-
-kronos({
-  commandHandlers: slices.flatMap((s) => s.commandHandlers)
-    .map((h) => ({ ...h, handler: instrumented(h.handler) }))
-    .map((h) => ({ ...h, commandBus, queryBus, eventStore })),
-})
-```
-The NAMES are unchanged — `<pkg>Handler` still, because a shared-package export
-must carry its provenance. What changed is the LEVEL: the argument is the handler
-function, not the entry. The erasure is DIRECTIONAL — `db()` in, base ctx out —
-so a wrapper ordered wrong is a compile error. Wrappers that supply nothing
-(tracing, metering) erase nothing and compose on either side. The per-kind names
-(`drizzleCommandHandler` ×3), the entry-constraint types (`DrizzleHandlerEntry`,
-`WithDrizzleSupplied`, `PostgresHandlerDefinition`, `Supplied`, `OtlpHandlerEntry`,
-and the knex · kysely · prisma · typeorm equivalents) are gone, and no wrapper
-reads the entry's `name` field any more — that field stays what it always was, a
-diagnostics label kronos groups by.
+Each is the same minimal step: build your client over `ctx.sql().unwrap()`,
+cache it per task, put it on `ctx.db`, and describe itself for the boot walk.
+Goes INSIDE `postgresHandler`, which supplies the `ctx.sql()` it builds from
+(and, from an `observed(pg)` pool, a trace-bound one — every statement the
+builder issues is then a `db.statement` span under the handler, with no ORM
+internals touched). HANDLER WRAPPERS ARE FUNCTION-LEVEL —
+`(next, ...config) => (message, ctx) => result` — the host wraps by spreading
+the entry, and the erasure is DIRECTIONAL, so a wrapper ordered wrong is a
+compile error and a boot error naming the entry, the chain and the fix.
 
 ## @kronos-ts/otlp — the protocol, not the ecosystem
 ```ts

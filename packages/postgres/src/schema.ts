@@ -29,7 +29,7 @@ export const DEFAULT_TABLE_NAMES: TableNames = {
   snapshots: "kronos_snapshots",
   scheduled: "kronos_scheduled_events",
   // The token + dead-letter tables are the SAME shape every other persistence
-  // family writes (drizzle / knex / kysely / prisma / typeorm), down to the
+  // former ORM-family writes, down to the
   // column types, so a deployment can move between families without a
   // migration. Only the client differs; the rows do not.
   tokens: "kronos_token_entries",
@@ -181,10 +181,10 @@ export function buildScheduledEventsIndexesDDL(tables: TableNames): string {
  *
  * The column set is fixed by the framework's `TokenStore` contract and is
  * IDENTICAL to the one the ORM families declare (see
- * `packages/drizzle/src/drizzle-token-store.ts`'s documented table and the
+ * the former drizzle family's documented table and the
  * shared DDL the ORM integration tests run). Types are matched exactly —
  * `VARCHAR(255)` / `VARCHAR(10000)` / `INTEGER` — so a deployment can swap
- * `postgresTokenStore` for `drizzleTokenStore` over the same rows.
+ * `postgresTokenStore` for the former `drizzleTokenStore` over the same rows.
  *
  * `timestamp` is an ISO-8601 STRING, not a timestamptz: the claim comparison is
  * a lexicographic `<` against `new Date(...).toISOString()`, which is exactly
@@ -208,7 +208,7 @@ export function buildTokensTableDDL(tables: TableNames): string {
  * Dead-letter table — shared across processors, partitioned by
  * `processing_group`.
  *
- * Same column set as `kronosDeadLetters` in the drizzle family. Per-sequence
+ * Same column set as the former drizzle family's `kronosDeadLetters`. Per-sequence
  * FIFO order is held by the monotonic `sequence_index`; `processing_started` is
  * the lease column that makes `process()` safe across nodes.
  */
@@ -234,7 +234,7 @@ export function buildDeadLettersTableDDL(tables: TableNames): string {
  * Every read the queue issues is either "this group + this sequence, in index
  * order" or "the distinct sequences in this group", so one btree on
  * (processing_group, sequence_identifier, sequence_index) serves both — the
- * same `kronos_dl_seq` index the drizzle family declares.
+ * same `kronos_dl_seq` index the former drizzle family declared.
  */
 export function buildDeadLettersIndexesDDL(tables: TableNames): string {
   return `CREATE INDEX IF NOT EXISTS ${tables.deadLetters}_seq_idx

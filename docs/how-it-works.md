@@ -464,7 +464,7 @@ loads sees its own writes.
 
 `ctx.unitOfWork` is how a handler reaches a transaction:
 `activeDrizzleTransaction(ctx.unitOfWork) ?? db` to write inside whatever is
-already open, or `await drizzleTransaction(ctx.unitOfWork)` to open one.
+already open, or `await postgresTransaction(ctx.unitOfWork)` to open one.
 
 ## States and the derived DCB query
 
@@ -1141,8 +1141,9 @@ A repository is the same wrapper returning your own functions over
 the adapter Kronos owns, `observed(pg)` makes every statement — the builder's
 and Kronos's — a span under the handler that issued it, with no ORM internals
 touched. The former ORM-owned families (`@kronos-ts/drizzle`, kysely, knex,
-typeorm, prisma) are deprecated: they existed to let an ORM own the
-transaction, which is no longer something Kronos offers.
+typeorm, prisma) are deprecated on npm and removed from this repository: they
+existed to let an ORM own the transaction, which is no longer something Kronos
+offers.
 
 So the rule, per processor: **ORM family end-to-end** when the handlers only
 project — their atomicity need is projection + token, which the family gives.
