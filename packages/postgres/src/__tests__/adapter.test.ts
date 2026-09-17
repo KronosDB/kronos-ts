@@ -53,6 +53,9 @@ describe("PostgresAdapter interface (structural)", () => {
       },
       async connect(): Promise<void> {},
       async disconnect(): Promise<void> {},
+      unwrap<T = unknown>(): T {
+        return undefined as unknown as T
+      },
     }
     expect(typeof stub.query).toBe("function")
     expect(typeof stub.queryOne).toBe("function")
@@ -60,6 +63,7 @@ describe("PostgresAdapter interface (structural)", () => {
     expect(typeof stub.listen).toBe("function")
     expect(typeof stub.connect).toBe("function")
     expect(typeof stub.disconnect).toBe("function")
+    expect(typeof stub.unwrap).toBe("function")
   })
 
   it("PostgresAdapterTransaction exposes query but NOT transaction (no nested transactions)", () => {

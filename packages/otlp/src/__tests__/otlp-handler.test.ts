@@ -3,7 +3,6 @@ import type {
   CommandBus,
   CommandHandler,
   CommandMessage,
-  Message,
   Metadata,
   SequencedEventMessage,
   StandardSchemaV1,
@@ -11,7 +10,6 @@ import type {
 } from "@kronos-ts/core"
 import {
   command,
-  correlating,
   correlatingHandler,
   emptyMetadata,
   event,
@@ -228,24 +226,33 @@ describe("otlpHandler — mechanics", () => {
     await expect(handler(commandMessage(), undefined)).rejects.toThrow("declined")
     await exporter.close()
 
-    expect(fetchStub.spans()[0].status).toEqual({ code: 2, message: "declined" })
+    // The error's TYPE, never its message — a message can carry user data.
+    expect(fetchStub.spans()[0].status).toEqual({ code: 2, message: "Error" })
   })
 
-  it("passes the message and the ctx straight through", async () => {
+  it("stamps its span onto the message and supplies ctx.trace under it; everything else passes through", async () => {
     fetchStub = stubFetch()
     const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
-    const seen: unknown[] = []
+    const seen: Array<{ message: CommandMessage; ctx: { unitOfWork: string; trace: { traceparent?: string } } }> = []
 
-    const handler = otlpHandler(async (message: CommandMessage, ctx: { unitOfWork: string }) => {
-      seen.push(message, ctx)
-      return "ok"
-    }, exporter)
+    const handler = otlpHandler(
+      async (message: CommandMessage, ctx: { unitOfWork: string; trace: { traceparent?: string } }) => {
+        seen.push({ message, ctx })
+        return "ok"
+      },
+      exporter,
+    )
 
     const ctx = { unitOfWork: "uow" }
     const message = commandMessage()
     expect(await handler(message, ctx)).toBe("ok")
-    expect(seen).toEqual([message, ctx])
     await exporter.close()
+
+    const span = fetchStub.spans()[0]
+    const [{ message: stamped, ctx: supplied }] = seen
+    expect(stamped).toEqual({ ...message, metadata: { ...message.metadata, traceparent: `00-${span.traceId}-${span.spanId}-01` } })
+    expect(supplied.unitOfWork).toBe("uow")
+    expect(supplied.trace.traceparent).toBe(`00-${span.traceId}-${span.spanId}-01`)
   })
 
   it("leaves the ENTRY to the host — the spread carries every other field", async () => {
@@ -312,11 +319,6 @@ const accountPayload: StandardSchemaV1<{ accountId: string }, { accountId: strin
 const OpenAccount = command({ name: qn("billing", "OpenAccount"), payload: accountPayload })
 const AccountOpened = event({ name: qn("billing", "AccountOpened"), payload: accountPayload })
 
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
-
 describe("otlpHandler — composes with core's other handler wrappers", () => {
   it("validates inbound, traces, correlates, and overlays BOTH onto a birth", async () => {
     fetchStub = stubFetch()
@@ -324,7 +326,7 @@ describe("otlpHandler — composes with core's other handler wrappers", () => {
 
     const appended: Array<[unknown, unknown, unknown]> = []
     const ctx = {
-      unitOfWork: correlating(unitOfWork()),
+      unitOfWork: unitOfWork(),
       append: (d: unknown, p: unknown, m?: Metadata) => {
         appended.push([d, p, m])
       },
@@ -336,7 +338,6 @@ describe("otlpHandler — composes with core's other handler wrappers", () => {
           c.append(AccountOpened, { accountId: message.payload.accountId })
           return message.payload.tier
         }, exporter),
-        correlationFrom,
       ),
       OpenAccount,
     )

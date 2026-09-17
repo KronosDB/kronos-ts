@@ -15,10 +15,10 @@ import { requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work
 // THE TWO BIRTHS OF A QUERY, in one file.
 //
 // A query is born either at the EDGE — `query(bus, D, p)`, a read arriving from
-// outside — or INSIDE A HANDLING, as `ctx.query`, where a task is already open
-// and the read NESTS into it. Same message, same bus call, two lifetimes; the
-// only difference between the two functions below is which one of them has a
-// `uow` to stamp from and to join.
+// outside — or INSIDE A HANDLING, as `ctx.query`. Same message, same bus call;
+// the only difference between the two functions below is that the inner one
+// has a task whose clock stamps the message's instant. The read itself runs
+// in a task of its own either way — see `QueryBus.query`.
 // ---------------------------------------------------------------------------
 
 /** `ctx.query` — consult a query handler from inside a handler. */
@@ -36,9 +36,9 @@ export type QueryDispatchFunction = <P extends StandardSchemaV1, R extends Stand
  * as `ctx.query`.
  *
  * AF5-aligned: in Axon you inject the query gateway into any handler and use
- * it; this is the kronos-shaped equivalent. The unit of work itself is handed
- * to `bus.query`, so a consulting read NESTS — it shares the handler's UoW (and
- * its transaction) rather than opening one.
+ * it; this is the kronos-shaped equivalent. The handler's unit of work stamps
+ * the query's instant and nothing more — the read runs in its own task, never
+ * inside the handler's transaction.
  *
  * The metadata is exactly what the caller passed, for the same reason
  * `ctx.send`'s is: carrying is a host policy, and
@@ -60,17 +60,14 @@ export function queryFunction(deps: {
     const uow = requireInvocation(deps.uow)
     const bus = deps.queryBus
     if (!bus) throw new Error("No query bus configured")
-    return bus.query(
-      {
-        kind: "query",
-        identifier: generateIdentifier(),
-        name: descriptor.name,
-        payload,
-        metadata: metadata ?? emptyMetadata(),
-        timestamp: uow.now(),
-      },
-      uow,
-    )
+    return bus.query({
+      kind: "query",
+      identifier: generateIdentifier(),
+      name: descriptor.name,
+      payload,
+      metadata: metadata ?? emptyMetadata(),
+      timestamp: uow.now(),
+    })
   }
   return dispatch as QueryDispatchFunction
 }

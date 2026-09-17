@@ -135,8 +135,8 @@ commandHandler(Reserve, async ({ payload }) => {
 // ---------------------------------------------------------------------------
 // (e) THE DERIVATION MEASUREMENT (mission item 7).
 //
-// `CorrelatingUnitOfWork = ReturnType<typeof correlating>` works because
-// `correlating` is a PLAIN function with an INFERRED return. The descriptor
+// `Traced = ReturnType<typeof tracedUnitOfWork>` works because
+// `tracedUnitOfWork` is a PLAIN function with an INFERRED return. The descriptor
 // constructors are neither: they are OVERLOADED (result-schema present or
 // absent), so an instantiation expression over the overload set resolves to the
 // first overload and can never name the two-parameter form; and their own

@@ -11,7 +11,7 @@
  * there is no `TransactionManager` for a host to implement or pass in.
  */
 
-import type { UnitOfWork } from "@kronos-ts/core"
+import { transactional, type Transactional, type UnitOfWork } from "@kronos-ts/core"
 import {
   activeTransaction,
   adapterUnitOfWork,
@@ -157,17 +157,21 @@ function txHooks(pg: PostgresAdapter, isolationLevel: IsolationLevel) {
  * and the runtime:
  *
  * ```ts
- * const uow = postgresUnitOfWork(() => correlating(unitOfWork(clock)), pg)
- * //    ^ () => CorrelatingUnitOfWork, and its transactions are keyed on that
- * //      very object, which is the one `ctx.unitOfWork` hands back
+ * const traced = () => Object.assign(unitOfWork(clock), { probe: true as const })
+ * const uow = postgresUnitOfWork(traced, pg)
+ * //    ^ () => UnitOfWork & { probe: true }, and its transactions are keyed
+ * //      on that very object, which is the one `ctx.unitOfWork` hands back
  * ```
+  *
+ * What comes back is MARKED transactional: give it to the command bus and to
+ * processors; `localQueryBus` refuses it, because a read needs no transaction.
  */
 export function postgresUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   pg: PostgresAdapter,
   isolationLevel: IsolationLevel = IsolationLevel.READ_COMMITTED,
-): () => U {
-  return adapterUnitOfWork(registry, txHooks(pg, isolationLevel), next) as () => U
+): (() => U) & Transactional {
+  return transactional(adapterUnitOfWork(registry, txHooks(pg, isolationLevel), next) as () => U)
 }
 
 /**

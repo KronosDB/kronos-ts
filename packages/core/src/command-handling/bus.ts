@@ -10,12 +10,11 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
  * hands the result here.
  *
  * `U` is the unit of work this bus MINTS — whatever its factory produces. It
- * defaults to the bare {@link UnitOfWork}, so uncorrelated, unadapted usage
- * reads exactly as it always did. It is threaded because a handler can DEMAND
- * more than the bare handle: `CommandBus<CorrelatingUnitOfWork>` is the type of
- * a bus whose tasks carry a correlation map, and `CommandBus` (bare) is not
- * assignable to it. That is the conditional compile error — the demand exists
- * only for the hosts that composed one.
+ * defaults to the bare {@link UnitOfWork}, so unadapted usage reads exactly
+ * as it always did. It is threaded because a handler can DEMAND more than the
+ * bare handle — an adapter family's unit of work, say — and a bus minting
+ * bare ones is not assignable to that demand. That is the conditional compile
+ * error: it exists only for the hosts that composed something.
  */
 export type CommandBus<U extends UnitOfWork = UnitOfWork> = {
   /**

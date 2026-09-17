@@ -1,16 +1,9 @@
 import { describe, it, expect, mock } from "bun:test"
 import { z } from "zod"
-import { qn, emptyMetadata, event, type Message } from "../../messaging/messages.js"
+import { qn, emptyMetadata, event } from "../../messaging/messages.js"
 import { unitOfWork, NoActiveUnitOfWork, WrongUoWPhase, Phase, type UnitOfWork } from "../../unit-of-work/unit-of-work.js"
-import { correlating } from "../../correlation/correlating.js"
 import { correlatingHandler } from "../../correlation/correlating-handler.js"
 import { appendFunction } from "../append.js"
-// The id-pair cargo, written out as any host writes it: the chain is inherited
-// or seeded; the cause is the parent, unconditionally.
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
 
 // ---------------------------------------------------------------------------
 // Test descriptors
@@ -85,8 +78,8 @@ describe("append", () => {
   })
 
   it("carries the handled command's correlation once the handler is wrapped", async () => {
-    // Same verb, one wrapper: `correlatingHandler(next, correlationFrom)` puts
-    // the pair on the task and overlays it through append's metadata parameter.
+    // Same verb, one wrapper: `correlatingHandler(next)` holds the pair in the
+    // invocation's closure and overlays it through append's metadata parameter.
     const command = {
       kind: "command",
       identifier: "cmd-1",
@@ -96,12 +89,12 @@ describe("append", () => {
       timestamp: 0,
     } as any
 
-    const uow = correlating(unitOfWork())
+    const uow = unitOfWork()
     await uow.execute(async () => {
       const ctx = { append: appendFunction({ uow }), unitOfWork: uow }
       const handler = correlatingHandler((_m: any, c: typeof ctx) => {
         c.append(CourseCreated, { courseId: "c1", name: "Intro" })
-      }, correlationFrom)
+      })
       handler(command, ctx)
 
       const buffered = uow.events.buffered as any[]

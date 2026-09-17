@@ -1,15 +1,25 @@
 import { emptyMetadata, mergeMetadata, type Metadata, type Message } from "../messaging/messages.js"
-import type { CorrelatingUnitOfWork } from "./correlating.js"
+import { describe, type DeclaresInside, type Described } from "../composition/describe.js"
+import { messageOrigin } from "./message-origin.js"
+
+/** Any handler function. The wrapper is generic in the WHOLE function so its type survives intact. */
+type AnyHandler = (message: any, context: any) => any
 
 /**
- * The one thing a context must offer for this wrapper to work: a unit of work
- * that carries a correlation map. Everything else it touches — `send`,
- * `query`, `append`, `schedule`, `scheduleAfter` — is wrapped only if the
- * context actually has it, which is what lets ONE wrapper serve all three
- * handler kinds (a query context has neither `send` nor `append`).
+ * The one order rule this wrapper owns: it READS the handled message's
+ * metadata, so a wrapper that STAMPS the message (a tracing wrapper writing
+ * its span) must sit outside it, or the cargo is computed before the stamp.
+ * Refused in the type with a sentence, and at boot by `kronos()`.
  */
-type CorrelatingCapable = {
-  readonly unitOfWork: CorrelatingUnitOfWork
+type StampedInside<H> = DeclaresInside<H, "stamps", "message.metadata"> extends true
+  ? "a wrapper that stamps message.metadata is inside correlatingHandler: move it outside, so the cargo sees the stamp"
+  : unknown
+
+/** What this wrapper says about itself; see `describe`. */
+type CorrelatingDescription<H> = {
+  readonly name: "correlatingHandler"
+  readonly reads: readonly ["message.metadata"]
+  readonly next: H
 }
 
 /**
@@ -18,68 +28,55 @@ type CorrelatingCapable = {
  * there onto everything THOSE births cause, all the way down the chain.
  *
  * `from` is the CARGO — what jumps. It is a plain function of the handled
- * message, and it is REQUIRED: the mechanism has no opinion about what is worth
- * carrying, and conjuring a default here would decide that for every host in
- * the world. The pair everybody starts from is two lines the host writes —
- * the chain is inherited or seeded, the cause is the parent, unconditionally:
+ * message, and it defaults to {@link messageOrigin}: the chain is inherited or
+ * seeded, the cause is the parent, and a trace context rides along when the
+ * message carries one. A host that carries more spreads the default:
  *
  * ```ts
- * const correlationFrom = (parent: Message): Metadata => ({
- *   correlationId: String(parent.metadata.correlationId ?? parent.identifier),
- *   causationId: String(parent.identifier),
- * })
+ * correlatingHandler(h.handler)
  *
- * correlatingHandler(h.handler, correlationFrom)
- *
- * // the pair plus the host's own per-request facts
+ * // the standard cargo plus the host's own per-request facts
  * correlatingHandler(h.handler, (m) => ({
- *   ...correlationFrom(m),
+ *   ...messageOrigin(m),
  *   actor: String(m.metadata.actor ?? ""),
  * }))
  * ```
  *
- * Two things happen per invocation:
- *
- * 1. `from(message)` is ATTACHED to the unit of work's correlation map.
- * 2. The context's birth verbs are wrapped to OVERLAY that map through their
- *    trailing `metadata` parameter, so everything the handler gives birth to
- *    carries it — and, being on the message, carries it across any transport.
- *
- * The overlay is read PER CALL, not captured at wrap time: a handler that
- * attaches more mid-handling — `ctx.unitOfWork.attachCorrelationData({
- * traceparent })` — has it on the next verb, and a later attach wins over an
- * earlier one. Metadata the CALLER passes to a verb wins over the overlay,
+ * Per invocation, `from(message)` is computed ONCE and held in this
+ * invocation's closure; the context's birth verbs are wrapped to OVERLAY it
+ * through their trailing `metadata` parameter, so everything the handler gives
+ * birth to carries it — and, being on the message, carries it across any
+ * transport. Metadata the CALLER passes to a verb wins over the overlay,
  * because a caller naming a key means it.
  *
- * The demand is the point, and it is made ON THE WRAPPER'S OUTPUT, never on the
- * handler it wraps. `next` asks for whatever context it likes — usually an
- * unannotated one that knows nothing about tasks — and what comes back asks
- * for `C & { unitOfWork: CorrelatingUnitOfWork }`. So a handler wrapped here
- * does not typecheck against a bus or a processor built from a bare
- * `() => unitOfWork()` factory: wrap your handlers, and the compiler makes you
- * wrap your unit of work — and the handler never had to say so, because
- * carrying is something done TO a handling, not something a handling does.
- * A handler that reaches for the map itself (`ctx.unitOfWork.attachCorrelationData`)
- * is the one exception, and it annotates `ctx` the way any other demand does.
- * This is a wrapper you OPT IN to —
- * nothing in core demands it, which is why the previous attempt (a correlation
- * capability hardcoded into `ctx` and the bus signatures) had to be reverted.
- * An unconditional demand propagates contravariantly through every transport; a
- * conditional one propagates exactly as far as somebody asked for it.
+ * THE CARGO BELONGS TO THE INVOCATION, NOT TO THE TASK. It used to be written
+ * into a map on the unit of work and read back per verb call — which meant a
+ * nested handling on the same task (a processor batch delivering several
+ * events) overwrote its caller's cargo, so a message sent after the nested
+ * handling claimed the wrong cause. Held in the closure, two invocations on
+ * one task cannot see each other, and nothing is stored on the unit of work.
+ * (Axon 5 does the same: its correlation interceptor puts the cargo on a
+ * branched processing context, never on the unit of work.)
+ *
+ * Nothing here demands a capability of `C` — `C` in, `C` out, exactly as
+ * `validatingHandler` — so a wrapped handler wires against exactly the buses
+ * the unwrapped one did. This is a wrapper you OPT IN to: nothing in core
+ * carries anything unless a host composes this.
  */
-export function correlatingHandler<M extends Message, C, R>(
-  next: (message: M, context: C) => R,
-  from: (message: Message) => Metadata,
-): (message: M, context: C & CorrelatingCapable) => R {
-  return (message, context) => {
-    const uow = context.unitOfWork
-    uow.attachCorrelationData(stringly(from(message)))
-    return next(message, overlaid(context, uow) as unknown as C)
-  }
+export function correlatingHandler<H extends AnyHandler>(
+  next: H & StampedInside<H>,
+  from: (message: Message) => Metadata = messageOrigin,
+): ((message: Parameters<H>[0], context: Parameters<H>[1]) => ReturnType<H>) & Described<CorrelatingDescription<H>> {
+  // A FRESH function type on the way out — never `H` itself intersected with
+  // this description, which would pile this description onto whatever `H`
+  // carried and leave the next rule reading a merged, meaningless one.
+  const wrapped = (message: Parameters<H>[0], context: Parameters<H>[1]): ReturnType<H> =>
+    next(message, overlaid(context, stringly(from(message))))
+  return describe(wrapped, { name: "correlatingHandler", reads: ["message.metadata"], next } as const)
 }
 
 /**
- * The map is `Record<string, string>` because that is what survives a wire:
+ * The cargo is `Record<string, string>` because that is what survives a wire:
  * every transport's metadata encoding is string-keyed and string-valued, and a
  * cargo function that returned a nested object would carry differently
  * in-process than it does across a broker.
@@ -92,15 +89,15 @@ function stringly(metadata: Metadata): Record<string, string> {
 
 /**
  * The context with its birth verbs overlaid. A fresh record per invocation —
- * the contexts are plain per-invocation literals, so spreading one is honest
- * here in a way that spreading a unit of work (whose `phase`/`closed` are
- * getters) never is.
+ * the contexts are plain per-invocation literals, so spreading one is honest.
+ * Which verbs exist is asked of the context, not assumed: a query context has
+ * neither `send` nor `append`, an event context has no `append`, and one
+ * wrapper serves all three kinds because it wraps only what it finds.
  */
-function overlaid(context: CorrelatingCapable, uow: CorrelatingUnitOfWork): CorrelatingCapable {
-  const overlay = (provided?: Metadata): Metadata =>
-    mergeMetadata(uow.correlationData(), provided ?? emptyMetadata())
+function overlaid<C>(context: C, cargo: Record<string, string>): C {
+  const overlay = (provided?: Metadata): Metadata => mergeMetadata(cargo, provided ?? emptyMetadata())
 
-  const source = context as CorrelatingCapable & Record<string, unknown>
+  const source = context as unknown as Record<string, unknown>
   const wrapped: Record<string, unknown> = { ...source }
 
   const { send, query, append, schedule, scheduleAfter } = source
@@ -143,5 +140,5 @@ function overlaid(context: CorrelatingCapable, uow: CorrelatingUnitOfWork): Corr
     ) => scheduleAfter(descriptor, payload, delayMs, overlay(metadata))
   }
 
-  return wrapped as unknown as CorrelatingCapable
+  return wrapped as unknown as C
 }

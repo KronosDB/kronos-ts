@@ -1,5 +1,9 @@
-import type {
-  UnitOfWork,
+import {
+  describe,
+  transactional,
+  type Described,
+  type Transactional,
+  type UnitOfWork,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -159,17 +163,22 @@ const registry = transactionRegistry<DrizzleTransaction>()
  * and the runtime:
  *
  * ```ts
- * const uow = drizzleUnitOfWork(() => correlating(unitOfWork(clock)), db)
- * //    ^ () => CorrelatingUnitOfWork, and its transactions are keyed on that
- * //      very object, which is the one `ctx.unitOfWork` hands back
+ * const uow = drizzleUnitOfWork(() => unitOfWork(clock), db)
+ * //    ^ () => UnitOfWork on that clock, and its transactions are keyed on
+ * //      the very object `ctx.unitOfWork` hands back
  * ```
+ *
+ * What comes back is MARKED transactional. Give it to the command bus and to
+ * processors; `localQueryBus` refuses it, at compile time and at construction,
+ * because a read needs no transaction and a query always runs in a task of
+ * its own.
  */
 export function drizzleUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   db: DrizzleDb,
   options: DrizzleTransactionOptions = {},
-): () => U {
-  return adapterUnitOfWork(registry, transactionHooks(db, options), next) as () => U
+): (() => U) & Transactional {
+  return transactional(adapterUnitOfWork(registry, transactionHooks(db, options), next) as () => U)
 }
 
 /**
@@ -268,15 +277,17 @@ export type DrizzleCapability = {
  * capability reads this extension's uow-keyed registry, so a handler's writes
  * and the unit of work's transaction are the same transaction and commit
  * together.
+ *
  */
 export function drizzleHandler<M, C extends DrizzleCapability & { readonly unitOfWork: UnitOfWork }, R>(
   next: (message: M, context: C) => R,
   db: DrizzleDb,
-): (message: M, context: Omit<C, "db">) => R {
-  return (message, context) =>
+): ((message: M, context: Omit<C, "db">) => R) &
+  Described<{ readonly name: "drizzleHandler"; readonly supplies: readonly ["db"]; readonly next: (message: M, context: C) => R }> {
+  const wrapped = (message: M, context: Omit<C, "db">): R =>
     next(message, {
       ...context,
-      db: () =>
-        activeDrizzleTransaction((context as { readonly unitOfWork: UnitOfWork }).unitOfWork) ?? db,
+      db: () => activeDrizzleTransaction((context as { readonly unitOfWork: UnitOfWork }).unitOfWork) ?? db,
     } as unknown as C)
+  return describe(wrapped, { name: "drizzleHandler", supplies: ["db"], next })
 }

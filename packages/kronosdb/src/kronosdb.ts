@@ -857,7 +857,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
   }
 
   const routing: SubscriptionCapableQueryBus<U> = {
-    async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
+    async query(unstamped: QueryMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       let admission: ReturnType<typeof outboundAdmission.enter> | undefined
       let deadline: ReturnType<typeof messagingDeadline> | undefined
@@ -867,13 +867,10 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
         const queryName = qualifiedNameToString(unstamped.name)
 
         if (shortcutQueriesToLocalHandlers && localHandlers.has(queryName)) {
-          // Hand the unit of work through, so a `ctx.query` that shortcuts to a
-          // co-located handler still nests in the caller's UoW exactly as the
-          // in-process bus does — otherwise the next and remote branches
-          // differ. `next` owns the nest-or-open decision now; that used to be
-          // duplicated here against a separately-supplied `unitOfWork`, which
-          // was one more place for the two to disagree.
-          return await next.query(unstamped, uow)
+          // A co-located handler answers on a task of its own, exactly as a
+          // remote one would — `next` mints it. The shortcut and the wire
+          // branch therefore behave identically.
+          return await next.query(unstamped)
         }
 
       // A transport is not a task: it has no unit of work, so it has no clock.

@@ -21,7 +21,6 @@ import {
   type Serializer,
 } from "@kronos-ts/core"
 import {
-  correlating,
   correlatingHandler,
   commandHandlerContext,
   interceptingCommandBus,
@@ -39,14 +38,6 @@ import { axonServerCommandBus, axonServerQueryBus } from "../axon-server.js"
 import { metadataFromProto } from "../metadata-conversion.js"
 import { shutdownLatch } from "../shutdown-latch.js"
 import type { AxonServerBusSource, AxonServerConnection } from "../connection.js"
-import type { Message, Metadata } from "@kronos-ts/core"
-
-// The id-pair cargo, written out as any host writes it: the chain is inherited
-// or seeded; the cause is the parent, unconditionally.
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
 
 const jsonSerializer: Serializer = {
   serialize(value, type, revision = ""): SerializedObject {
@@ -153,12 +144,12 @@ function causingCommand(): CommandMessage {
 
 /** One handler invocation that gives birth to a `Finish` command through `bus`. */
 async function sendFinishFrom(bus: CommandBus): Promise<void> {
-  const uow = correlating(unitOfWork())
+  const uow = unitOfWork()
   await uow.execute(async () => {
     const ctx = commandHandlerContext({ uow, commandBus: bus })
     const handler = correlatingHandler(async (_m, c: typeof ctx) => {
       await c.send(Finish, { id: "x" })
-    }, correlationFrom)
+    })
     await handler(causingCommand(), ctx)
   })
 }
@@ -263,12 +254,12 @@ describe("Axon Server command bus — correlation", () => {
 
 /** One handler invocation that gives birth to a `FindThing` query through `bus`. */
 async function askFindThingFrom(bus: QueryBus): Promise<void> {
-  const uow = correlating(unitOfWork())
+  const uow = unitOfWork()
   await uow.execute(async () => {
     const ctx = commandHandlerContext({ uow, queryBus: bus })
     const handler = correlatingHandler(async (_m, c: typeof ctx) => {
       await c.query(FindThing, { id: "x" })
-    }, correlationFrom)
+    })
     await handler(causingCommand(), ctx)
   })
 }

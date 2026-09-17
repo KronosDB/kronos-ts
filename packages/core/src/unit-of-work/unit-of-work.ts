@@ -117,12 +117,12 @@ export type UoWStateCache = {
  * no message metadata — the message belongs to the BINDING, and the
  * per-invocation `ctx` already closes over both the message and this handle.
  *
- * It holds no CORRELATION either. Correlation is not knowledge a task is born
- * with — it is a capability composed onto one: `correlating(unitOfWork())`
- * returns a unit of work that also carries a correlation map, and
- * `correlatingHandler` is what fills it and overlays it onto what a handler
- * emits. A deployment that does not want the concept never mentions it, and
- * nothing here changes shape to accommodate one that does.
+ * It holds no CORRELATION either. What a handling carries onto the messages
+ * it produces belongs to the INVOCATION — `correlatingHandler` keeps it in
+ * the invocation's closure and overlays it onto the context's birth verbs.
+ * A task that delivers several invocations (a processor batch) therefore
+ * cannot cross their cargo, and nothing here changes shape for a deployment
+ * that composes the wrapper.
  *
  * The phase lifecycle, the event buffer and the state cache hang off this one
  * object. A TRANSACTION does NOT: the base has no
@@ -257,8 +257,8 @@ type Status = "not_started" | "started" | "completed" | "error"
  * are accessors precisely because the lifecycle — and only the lifecycle —
  * advances them.
  *
- * What comes back is PURE TASK LIFECYCLE. Correlation is composed on top —
- * `correlating(unitOfWork(clock))` — and nothing here knows the word.
+ * What comes back is PURE TASK LIFECYCLE. Correlation rides on the
+ * invocation, not the task — nothing here knows the word.
  */
 export function unitOfWork(clock?: () => number): UnitOfWork {
   // `clock` stays OPTIONAL rather than defaulted in the parameter list: a

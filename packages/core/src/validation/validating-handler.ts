@@ -1,5 +1,6 @@
 import type { Message, Metadata, MessageDescriptor } from "../messaging/messages.js"
 import { validate, validatedNow } from "./validate.js"
+import { describe, type Described } from "../composition/describe.js"
 
 /**
  * VALIDATION IS THE GATE MECHANISM: nothing crosses a handling boundary
@@ -50,21 +51,23 @@ import { validate, validatedNow } from "./validate.js"
  * composes with the other function-level wrappers in any order:
  *
  * ```ts
- * validatingHandler(correlatingHandler(otlpHandler(h.handler, exporter), correlationFrom), h.descriptor)
+ * validatingHandler(correlatingHandler(otlpHandler(h.handler, exporter)), h.descriptor)
  * ```
  *
  * Nothing here demands a capability of `C` — validation asks the context for no
  * type it did not already have, which is why `C` is unconstrained and a wrapped
  * handler wires against exactly the buses the unwrapped one did.
  */
-export function validatingHandler<M extends Message, C, R>(
-  next: (message: M, context: C) => R,
+export function validatingHandler<H extends (message: any, context: any) => any>(
+  next: H,
   descriptor: MessageDescriptor,
-): (message: M, context: C) => Promise<Awaited<R>> {
-  return async (message, context): Promise<Awaited<R>> => {
+): ((message: Parameters<H>[0], context: Parameters<H>[1]) => Promise<Awaited<ReturnType<H>>>) &
+  Described<{ readonly name: "validatingHandler"; readonly next: H }> {
+  const wrapped = async (message: Message, context: Parameters<H>[1]): Promise<Awaited<ReturnType<H>>> => {
     const payload = await validate(descriptor, message.payload)
-    return await next({ ...message, payload } as M, overlaid(context))
+    return await next({ ...message, payload }, overlaid(context))
   }
+  return describe(wrapped, { name: "validatingHandler", next } as const)
 }
 
 /**

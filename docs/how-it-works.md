@@ -114,9 +114,9 @@ per `ctx.load` — those two together become the DCB append condition),
 `append` evolves the cached state), and `replaying`.
 
 **There is no correlation surface here either.** A unit of work is pure task
-lifecycle; carrying metadata from one message to the next is a capability you
-*compose* — `correlating(unitOfWork())` — and the section below is the whole of
-it.
+lifecycle and never will carry anything: carrying metadata from one message to
+the next lives entirely in the invocation's closure, held by `correlatingHandler`
+— see the section below.
 
 **There is no transaction surface here.** No `uow.transaction()`, no
 `ctx.transaction`. A transaction is a fact about a driver and only the adapter
@@ -124,9 +124,8 @@ that owns the driver can type it, so each persistence package keeps its
 transaction in package-private state keyed by the unit of work and exports a
 typed accessor pair. The registry/factory/accessor glue behind that pair is
 package-private too: it only ever needed the PUBLIC phase API (`uow.on(Phase.
-COMMIT, …)`, `uow.onError(…)`), which made it a helper, and each persistence
-package owns its own copy — tuned to whether that family binds its transaction
-eagerly (drizzle, knex, kysely, prisma, typeorm) or lazily (postgres).
+COMMIT, …)`, `uow.onError(…)`), which made it a helper. The postgres family
+binds its transaction lazily — a pure read never opens one.
 
 The unit of work is **handed down, never ambient**. It reaches infrastructure as
 a trailing parameter (`tokenStore.storeToken(name, token, uow)`), and it reaches
@@ -149,9 +148,15 @@ type CommandBus = {
 `dispatch` takes no unit of work, deliberately: every command — primary, or
 dispatched from inside another handler via `ctx.send` — is handled in its **own
 fresh** unit of work, so there is nothing to hand in. Commands compose by
-independent commit, not by sharing a transaction. `QueryBus.query(message, uow?)`
-*does* take one, because a consulting read legitimately nests inside the
-caller's unit of work and its transaction.
+independent commit, not by sharing a transaction. `QueryBus.query(message)` is
+the same story: a query is **always its own task**, whether it arrived at the
+edge or from `ctx.query` inside a handler — a read never shares the caller's
+transaction, clock or correlation. That is also why a query bus is built from
+the plain `unitOfWork` factory rather than a persistence family's — a read
+needs no transaction to join, so minting one would be pure waste. (An earlier
+design let a co-located read nest into the caller's unit of work; that made a
+co-located read behave differently from a remote one, and let a nested read
+overwrite the caller's correlation.)
 
 `localCommandBus(unitOfWork)` and `localQueryBus(unitOfWork)` are the local
 segments — an in-process handler map, plus the factory that opens a unit of work
@@ -231,22 +236,20 @@ is the *default cargo* of that mechanism, not the mechanism itself.
 
 Core carries nothing. `ctx.send`, `ctx.query`, `ctx.append`, `ctx.schedule` and
 `ctx.scheduleAfter` each take a trailing `metadata?`, and a birth's metadata is
-*exactly* that argument. Two functions turn that into propagation:
+*exactly* that argument. One function turns that into propagation:
 
 ```ts
-// 1. a task that can carry a map
-const uow = () => correlating(unitOfWork(clock))
-
-// 2. a handler that fills it and overlays it onto every birth
-correlatingHandler(h.handler, correlationFrom)
+correlatingHandler(h.handler)
 ```
 
-`correlationFrom` here is not an import — it is YOUR two lines, and writing them is the whole lesson:
+Wrapped, `h.handler` gives birth to messages carrying `messageOrigin(parent)` —
+the default cargo:
 
 ```ts
-const correlationFrom = (parent: Message): Metadata => ({
+export const messageOrigin = (parent: Message): Metadata => ({
   correlationId: String(parent.metadata.correlationId ?? parent.identifier),
   causationId: String(parent.identifier),
+  ...(typeof parent.metadata.traceparent === "string" ? { traceparent: parent.metadata.traceparent } : {}),
 })
 ```
 
@@ -257,42 +260,53 @@ name the grandparent and collapse the chain. So an automation's dispatched
 command is caused by the *event it reacted to*, not by the command that appended
 that event.
 
-`from` is a plain `(message) => Metadata` and it is **required** — the mechanism
-has no opinion about what is worth carrying, and a default would decide that for
-every host. More cargo is more function:
+A host that carries more spreads the default rather than replacing it:
 
 ```ts
 correlatingHandler(h.handler, (m) => ({
-  ...correlationFrom(m),
+  ...messageOrigin(m),
   actor: String(m.metadata.actor ?? ""),
 }))
 ```
 
-### The demand is conditional
+### The cargo lives in the invocation, not the task
 
-Wrapping a handler gives back one that asks for `ctx.unitOfWork:
-CorrelatingUnitOfWork` — the demand is on the wrapper's *output*, so the handler
-itself never names a task. Buses and processors are parametric in what their
-factory mints, and the entry types tie the two together — so wiring a wrapped
-handler against a bus built from a bare `() => unitOfWork()` is a **compile
-error**:
+`from(message)` is computed **once per invocation** and held in that
+invocation's own closure; the context's birth verbs are wrapped to overlay it
+through their trailing `metadata` parameter. Nothing is written onto the unit
+of work — there is no map to compose there any more, and no task type to name:
+
+```ts
+correlatingHandler<M extends Message, C, R>(
+  next: (message: M, context: C) => R,
+  from: (message: Message) => Metadata = messageOrigin,
+): (message: M, context: C) => R
+```
+
+`C` in, `C` out — the wrapper demands nothing of the context and adds nothing
+to what a wrapped handler asks a bus for. A wrapped handler wires against
+exactly the buses and processors the unwrapped one did, bare `unitOfWork`
+included:
 
 ```ts
 kronos({
   commandHandlers: [{
     ...h,
-    handler: correlatingHandler(h.handler, correlationFrom),
-    commandBus: localCommandBus(unitOfWork),   // ← error: mints bare units of work
+    handler: correlatingHandler(h.handler),
+    commandBus: localCommandBus(unitOfWork),   // ← no error: nothing was ever demanded
   }],
 })
 ```
 
-Wrap your handlers and the compiler makes you wrap your unit of work. Wrap
-neither and the word never appears in your types: every generic defaults to the
-bare `UnitOfWork`, and an uncorrelated app reads exactly as it always did. That
-conditionality is the whole design — an *unconditional* demand propagates
-contravariantly through every transport, which is why an earlier attempt to
-hardcode correlation into `ctx` and the bus signatures had to be reverted.
+This used to be a demand on the wrapper's *output* — `ctx.unitOfWork:
+CorrelatingUnitOfWork` — written by composing `correlating(unitOfWork())` into
+the task itself. That map is gone. The reason: it was per-*task*, not
+per-*invocation* — a nested handling on the same task (a processor batch
+delivering several events) overwrote its caller's cargo, so a message sent
+after the nested handling claimed the wrong cause. Held in the closure, two
+invocations on one task cannot see each other's cargo, which is also what
+`ctx.query` and `ctx.send` — each its own fresh task — need: nothing about a
+task's *type* has to change for correlation to reach across that boundary.
 
 ## Validation: the gate
 
@@ -344,9 +358,9 @@ builds its message in the caller's turn, so an async schema *there* throws,
 naming the message type and the verb. Use `validate` yourself at the edge, where
 you can await, and the birth verbs never see the question.
 
-Validation asks the context for nothing, so unlike `correlatingHandler` it adds
-no demand: a validated handler wires against exactly the buses the unvalidated
-one did, and the wrappers compose in any order.
+Validation asks the context for nothing, so — like `correlatingHandler` — it
+adds no demand: a validated handler wires against exactly the buses the
+unvalidated one did, and the wrappers compose in any order.
 
 ## Handlers and the three contexts
 
@@ -1056,9 +1070,9 @@ Total: every event has a lane. Events sharing a lane are processed in order.
 const balances = eventProcessor({
   name: "balances",
   eventStore, tokenStore,
-  unitOfWork: drizzleUnitOfWork(unitOfWork, db),
+  unitOfWork: postgresUnitOfWork(unitOfWork, pg),
   sequence: sequentialPerTag("accountId"),
-  deadLetterQueue: drizzleDeadLetterQueue(db),
+  deadLetterQueue: postgresDeadLetterQueue(pg),
 })
 ```
 
@@ -1092,36 +1106,43 @@ nothing to read as the cause.
 
 A handler's accessor still falls back, and the asymmetry is the point: whether
 the seam a handler runs in is transactional is a deployment decision, so
-`ctx.db()` works either way. A token store has no such freedom — being in the
+`ctx.sql()` works either way. A token store has no such freedom — being in the
 projection's transaction is the entire reason it exists — so absence is an error
 rather than a default.
 
 Absent a queue, a handler failure propagates and the batch retries.
 `batchSize` (default 1) is how many events share one unit of work.
 
-## Transactions: one owner, lenses for the rest
+## Transactions: one owner, and your query builder rides it
 
-Only one persistence family can own a task's transaction — transaction identity
-*is* the client handle. That leaves a
-real question when your application code uses an ORM and your log is
-`postgresEventStore` on the same database: whose transaction does a handler run
-in?
-
-The answer depends on what the processor's handlers do, because the event
-store's append joins the **postgres** family's transaction and no other:
+Only one thing owns a task's transaction, and it is the postgres family:
+`postgresUnitOfWork` opens it, the token store and dead-letter queue write in
+it, the event store appends in it, and `postgresHandler` hands it to the
+handler as `ctx.sql()`. A query builder is a CLIENT over that transaction,
+never the owner of one. Kronos ships the two-line step for the two builders
+it recommends, as subpaths of the postgres package, and they do nothing but
+construct the client over `ctx.sql().unwrap()` and put it on `ctx`:
 
 ```ts
-// ✗ ORM family owns — appends run in their OWN transaction, apart from your ORM writes.
-//   Projection-write + token-write stay atomic (that pair is what the ORM family is for),
-//   but a command handler's ctx.append is NOT atomic with its ctx.db() writes.
-const uow = drizzleUnitOfWork(() => unitOfWork(), db)
+import { drizzleHandler } from "@kronos-ts/postgres/drizzle"
+import { kyselyHandler } from "@kronos-ts/postgres/kysely"
 
-// ✓ postgres owns, and the ORM rides the SAME connection as a lens —
-//   table write + append commit or roll back together.
-const uow = postgresUnitOfWork(() => unitOfWork(), pg)
-const tx  = await postgresTransaction(ctx.unitOfWork)
-const db  = drizzle(tx.unwrap<PoolClient>(), { schema })
+// Drizzle: your driver flavour, Drizzle's own types on ctx.db. The SQL-style
+// builder is typed by the table you pass to each call; `{ schema }` is only
+// for the relational `db.query.*` API.
+wrap = (h) => postgresHandler(drizzleHandler(h, (client) => drizzle(client)), pg)
+
+// Kysely: the wrapper presents the transaction as the pool its dialect expects
+wrap = (h) => postgresHandler(kyselyHandler(h, (pool) => new Kysely<DB>({ dialect: new PostgresDialect({ pool }) })), pg)
 ```
+
+A repository is the same wrapper returning your own functions over
+`ctx.sql()`; nothing in Kronos needs to know. Because everything passes through
+the adapter Kronos owns, `observed(pg)` makes every statement — the builder's
+and Kronos's — a span under the handler that issued it, with no ORM internals
+touched. The former ORM-owned families (`@kronos-ts/drizzle`, kysely, knex,
+typeorm, prisma) are deprecated: they existed to let an ORM own the
+transaction, which is no longer something Kronos offers.
 
 So the rule, per processor: **ORM family end-to-end** when the handlers only
 project — their atomicity need is projection + token, which the family gives.

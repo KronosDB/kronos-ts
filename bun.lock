@@ -8,7 +8,7 @@
         "@biomejs/biome": "2.5.8",
         "@changesets/cli": "2.31.0",
         "@types/node": "^25.9.0",
-        "bun-types": "^1.3.14",
+        "bun-types": "^1.4.2",
         "typescript": "7.0.2",
       },
     },
@@ -43,7 +43,7 @@
     },
     "packages/axon-server": {
       "name": "@kronos-ts/axon-server",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@bufbuild/protobuf": "^2.3",
         "@grpc/grpc-js": "^1.12",
@@ -61,7 +61,7 @@
     },
     "packages/core": {
       "name": "@kronos-ts/core",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "uuid": "^11",
       },
@@ -72,7 +72,7 @@
     },
     "packages/drizzle": {
       "name": "@kronos-ts/drizzle",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -82,7 +82,7 @@
     },
     "packages/knex": {
       "name": "@kronos-ts/knex",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -92,7 +92,7 @@
     },
     "packages/kronosdb": {
       "name": "@kronos-ts/kronosdb",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "dependencies": {
         "@bufbuild/protobuf": "^2.3",
         "@grpc/grpc-js": "^1.12",
@@ -110,7 +110,7 @@
     },
     "packages/kysely": {
       "name": "@kronos-ts/kysely",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -120,14 +120,14 @@
     },
     "packages/otlp": {
       "name": "@kronos-ts/otlp",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
     },
     "packages/postgres": {
       "name": "@kronos-ts/postgres",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -148,7 +148,7 @@
     },
     "packages/prisma": {
       "name": "@kronos-ts/prisma",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -158,7 +158,7 @@
     },
     "packages/rabbitmq": {
       "name": "@kronos-ts/rabbitmq",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -177,7 +177,7 @@
     },
     "packages/test": {
       "name": "@kronos-ts/test",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -187,7 +187,7 @@
     },
     "packages/typeorm": {
       "name": "@kronos-ts/typeorm",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -490,7 +490,7 @@
 
     "buildcheck": ["buildcheck@0.0.7", "", {}, "sha512-lHblz4ahamxpTmnsk+MNTRWsjYKv965MwOrSJyeD588rR3Jcu7swE+0wN5F+PbL5cjgu/9ObkhfzEPuofEMwLA=="],
 
-    "bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
+    "bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
 
     "byline": ["byline@5.0.0", "", {}, "sha512-s6webAy+R4SR8XVuJWt2V2rGvhnrhxN+9S15GNuTK3wKPOXFF6RNc+8ug2XhH+2s4f+uudG4kUVYmYOQWL2g0Q=="],
 

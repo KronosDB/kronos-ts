@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { correlating, correlatingHandler, emptyMetadata, qn, send, unitOfWork } from "@kronos-ts/core"
+import { correlatingHandler, emptyMetadata, qn, send } from "@kronos-ts/core"
 import { kronos } from "@kronos-ts/core"
 import {
   correlation,
@@ -22,21 +22,13 @@ import { rabbitMqConnection } from "../connection.js"
 import { rabbitMqCommandBus } from "../command-bus.js"
 import { rabbitMqQueryBus } from "../query-bus.js"
 import { startRabbitMqContainer, type RunningRabbitMq } from "./testcontainers-setup.js"
-import type { Message, Metadata } from "@kronos-ts/core"
-
-// The id-pair cargo, written out as any host writes it: the chain is inherited
-// or seeded; the cause is the parent, unconditionally.
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
 
 /**
  * The three things `kronos` needs that are not modules. The UoW runner is named
  * once and handed to BOTH `localCommandBus` (which captures it at construction)
  * and `kronos` — writing them on adjacent lines is what makes that checkable.
  */
-function inMemoryBuses(uow = () => correlating(unitOfWork())) {
+function inMemoryBuses(uow = unitOfWork) {
   return {
     commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
     queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
@@ -44,12 +36,12 @@ function inMemoryBuses(uow = () => correlating(unitOfWork())) {
 }
 
 /**
- * What each node composes to make its handlers carry — the same two lines a
+ * What each node composes to make its handlers carry — the same line a
  * deployed service writes, and the reason correlation survives a real broker.
  */
 const carrying = <H extends { handler: any }>(h: H): H => ({
   ...h,
-  handler: correlatingHandler(h.handler, correlationFrom),
+  handler: correlatingHandler(h.handler),
 })
 
 

@@ -7,12 +7,10 @@
  * This proves the chain spans command -> event -> processor -> command.
  *
  * NOTE ON COMPOSITION. Nothing in core carries anything. This host COMPOSES the
- * mechanism, in the two places a host composes it:
- *
- *   - its tasks are `correlating(unitOfWork())`, so they can carry a map;
- *   - every handler is `correlatingHandler(h, correlationFrom)`, so each
- *     invocation attaches its own message's cargo and overlays it onto what it
- *     gives birth to.
+ * mechanism, in the one place a host composes it: every handler is
+ * `correlatingHandler(h)`, so each invocation computes its own message's cargo
+ * (`messageOrigin` by default) and overlays it onto what it gives birth to —
+ * held in the invocation's closure, never on the task.
  *
  * That is the WHOLE mechanism, and it is uniform: the command leg and the event
  * leg are the same wrapper doing the same thing, because an automation reacting
@@ -23,34 +21,27 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { qn, type Metadata } from "../../messaging/messages.js"
-import { command, event, commandHandler, eventHandler, eventProcessor, correlating, correlatingHandler, send, unitOfWork, localCommandBus, localQueryBus, inMemoryTokenStore, type EventMessage } from "../../index.js"
+import { command, event, commandHandler, eventHandler, eventProcessor, correlatingHandler, send, unitOfWork, localCommandBus, localQueryBus, inMemoryTokenStore, type EventMessage } from "../../index.js"
 import { state } from "../../event-sourcing/state.js"
 import { kronos } from "../../kronos.js"
 import { inMemoryEventStore } from "../../event-sourcing/in-memory.js"
-
-// The id-pair cargo, written out as any host writes it: the chain is inherited
-// or seeded; the cause is the parent, unconditionally.
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
 
 /**
  * The two things `kronos` needs that are not handlers. The UoW runner is
  * named once and handed to `localCommandBus` (which captures it at
  * construction) — writing it on an adjacent line is what makes that checkable.
  */
-function inMemoryBuses(uow: () => ReturnType<typeof correlating>) {
+function inMemoryBuses(uow: typeof unitOfWork) {
   return {
     commandBus: localCommandBus(uow),
     queryBus: localQueryBus(uow),
   }
 }
 
-/** What a host does to a handler to make it carry. One line, one cargo choice. */
+/** What a host does to a handler to make it carry. One line, the default cargo. */
 const carrying = <H extends { handler: any }>(h: H): H => ({
   ...h,
-  handler: correlatingHandler(h.handler, correlationFrom),
+  handler: correlatingHandler(h.handler),
 })
 
 const EnrollStudent = command({
@@ -103,7 +94,7 @@ describe("correlation: command -> event -> processor -> command", () => {
       notifyMetadata = metadata
     })
 
-    const uow = () => correlating(unitOfWork())
+    const uow = unitOfWork
     const buses = inMemoryBuses(uow)
     const eventStore = inMemoryEventStore()
     const tokenStore = inMemoryTokenStore()
@@ -146,7 +137,7 @@ describe("correlation: command -> event -> processor -> command", () => {
       // The command dispatched from the event handler inherits the same
       // correlationId (the chain spans the automation boundary) and is caused
       // by the triggering EVENT — not by the command that appended it. That is
-      // the hop rule: `correlationFrom` reads causation off the parent's
+      // the hop rule: `messageOrigin` reads causation off the parent's
       // identifier, unconditionally, so the causal graph is a chain you can
       // walk one link at a time.
       expect(notifyMetadata?.correlationId).toBe("corr-root")

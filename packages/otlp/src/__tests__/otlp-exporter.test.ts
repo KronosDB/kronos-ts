@@ -95,9 +95,25 @@ describe("otlpExporter — trace envelope", () => {
     expect(BigInt(span.endTimeUnixNano)).toBeGreaterThanOrEqual(startNanos)
   })
 
-  it("records a failed span with ERROR status and the error message", async () => {
+  it("records a failed span with ERROR status and the error's TYPE — never its message", async () => {
+    // An error message can carry anything a user typed; the type cannot.
     fetchStub = stubFetch()
     const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
+    class Declined extends Error {
+      override name = "Declined"
+    }
+    exporter.startSpan({ name: "s", kind: SpanKind.INTERNAL }).fail(new Declined("card 4242 declined"))
+    await exporter.close()
+
+    const span = fetchStub.spans()[0]
+    expect(span.status).toEqual({ code: 2, message: "Declined" })
+    expect(attribute(span.attributes, "error.type")).toEqual({ stringValue: "Declined" })
+    expect(JSON.stringify(span)).not.toContain("4242")
+  })
+
+  it("records the error message only when asked to", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc", errors: "message" })
     exporter.startSpan({ name: "s", kind: SpanKind.INTERNAL }).fail(new Error("boom"))
     await exporter.close()
 
@@ -297,5 +313,90 @@ describe("otlpExporter — metric envelope", () => {
       "http://c:4318/v1/traces",
       "http://c:4318/v1/metrics",
     ])
+  })
+})
+
+describe("otlpExporter — bounds and shutdown", () => {
+  it("drops the OLDEST spans past the buffer cap and counts them", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc", maxBufferedSpans: 2 })
+    for (const name of ["a", "b", "c"]) exporter.startSpan({ name, kind: SpanKind.INTERNAL }).end()
+    await exporter.close()
+
+    expect(fetchStub.spans().map((s: any) => s.name)).toEqual(["b", "c"])
+    const dropped = fetchStub.allMetrics().find((m: any) => m.name === "kronos.otlp.dropped")
+    expect(dropped.sum.dataPoints[0].asInt).toBe("1")
+    expect(attribute(dropped.sum.dataPoints[0].attributes, "signal")).toEqual({ stringValue: "traces" })
+  })
+
+  it("records nothing after close(), and close() is idempotent", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
+    await exporter.close()
+    exporter.startSpan({ name: "late", kind: SpanKind.INTERNAL }).end()
+    exporter.emitLog({ time: Date.now(), level: "info", message: "late" })
+    await exporter.close()
+
+    expect(fetchStub.posts).toHaveLength(0)
+  })
+
+  it("bounds a hanging collector by the export deadline", async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = ((_url: unknown, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")))
+      })) as unknown as typeof fetch
+    const seen: unknown[] = []
+    try {
+      const exporter = otlpExporter({
+        endpoint: "http://c:4318",
+        serviceName: "svc",
+        exportTimeoutMs: 20,
+        onExportError: (error) => seen.push(error),
+      })
+      exporter.startSpan({ name: "s", kind: SpanKind.INTERNAL }).end()
+      const started = performance.now()
+      await exporter.close()
+      expect(performance.now() - started).toBeLessThan(1000)
+      expect(seen).toHaveLength(1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  it("reports a rejecting collector to onExportError and keeps serving", async () => {
+    fetchStub = stubFetch({ fail: true })
+    const seen: unknown[] = []
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc", onExportError: (e) => seen.push(e) })
+    exporter.startSpan({ name: "s", kind: SpanKind.INTERNAL }).end()
+    await exporter.close()
+    expect(seen).toHaveLength(1)
+  })
+})
+
+describe("otlpExporter — log envelope", () => {
+  it("POSTs resourceLogs with severity, body, attributes and the span it was written under", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
+    exporter.emitLog({
+      time: 1_700_000_000_000,
+      level: "warn",
+      message: "order placed",
+      attributes: { orderId: "o-1" },
+      trace: { traceId: "0af7651916cd43dd8448eb211c80319c", spanId: "b7ad6b7169203331" },
+    })
+    await exporter.close()
+
+    const post = fetchStub.posts.find((p: any) => p.url.endsWith("/v1/logs"))
+    const record = post.body.resourceLogs[0].scopeLogs[0].logRecords[0]
+    expect(record).toMatchObject({
+      timeUnixNano: "1700000000000000000",
+      severityNumber: 13,
+      severityText: "WARN",
+      body: { stringValue: "order placed" },
+      traceId: "0af7651916cd43dd8448eb211c80319c",
+      spanId: "b7ad6b7169203331",
+    })
+    expect(attribute(record.attributes, "orderId")).toEqual({ stringValue: "o-1" })
   })
 })

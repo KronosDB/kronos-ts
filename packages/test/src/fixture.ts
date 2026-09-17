@@ -1,5 +1,4 @@
 import {
-  correlating,
   correlatingHandler,
   emptyMetadata,
   eventProcessor,
@@ -14,7 +13,6 @@ import {
   localQueryBus,
   unitOfWork, tagsOf } from "@kronos-ts/core"
 import type {
-  CorrelatingUnitOfWork,
   CommandBus,
   CommandHandler,
   CommandHandlerEntry,
@@ -22,8 +20,6 @@ import type {
   EventHandler,
   EventHandlerEntry,
   EventMessage,
-  Message,
-  Metadata,
   EventProcessor,
   EventStore,
   ScheduleStoreCapability,
@@ -98,12 +94,12 @@ export type FixtureEventHandler = Sited<EventHandler<any, any>, FixtureEventStor
 }
 
 /**
- * What the fixture's tasks are: a unit of work that CARRIES. The site composes
- * `correlating(unitOfWork(clock))`, so a scope's partial processor is handed a
- * factory of these and hands back a processor over them — without the scope
- * ever having to name the type.
+ * What the fixture's tasks are: the bare unit of work, on the fixture's clock.
+ * The site composes `unitOfWork(clock)`, and every handler the scope hands it
+ * is wrapped with `correlatingHandler` so causation is still there for `then`
+ * to assert — carried in the invocation's closure, not on the task.
  */
-export type FixtureUnitOfWork = CorrelatingUnitOfWork
+export type FixtureUnitOfWork = UnitOfWork
 
 /**
  * What a scope returns: the three lists `kronos` takes.
@@ -148,7 +144,7 @@ export type FixtureEventStore = SnapshotCapableEventStore & ScheduleStoreCapabil
  * fixture judges.
  */
 export type FixtureResources<
-  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  U extends UnitOfWork = FixtureUnitOfWork,
   E extends EventStore = FixtureEventStore,
 > = {
   readonly eventStore: E & EventRecording
@@ -172,7 +168,7 @@ export type FixtureResources<
  * ```
  */
 export type FixtureScope<
-  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  U extends UnitOfWork = FixtureUnitOfWork,
   E extends EventStore = FixtureEventStore,
 > = (resources: FixtureResources<U, E>) => FixtureLists
 
@@ -207,7 +203,7 @@ export type FixtureScope<
  * persistence family wants and what every existing test gets.
  */
 export type FixtureInfrastructure<
-  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  U extends UnitOfWork = FixtureUnitOfWork,
   E extends EventStore = EventStore,
 > = {
   readonly unitOfWork: () => U
@@ -221,18 +217,19 @@ export type FixtureInfrastructure<
 /**
  * How a host builds its infrastructure — HANDED A TASK FACTORY, NOT A CLOCK.
  *
- * The fixture needs two things of every task: that it reads the fixture's
- * clock, so `wait` can move time, and that it CARRIES, so `then` can assert a
- * causal chain. Both used to be things a host had to know and repeat —
- * `postgresUnitOfWork(() => correlating(unitOfWork(clock)), pg)`, with a
- * dropped `clock` or a missing `correlating` being a quiet way to get a test
- * that cannot move time or cannot see causation.
+ * The fixture needs one thing of every task: that it reads the fixture's
+ * clock, so `wait` can move time. That used to be something a host had to know
+ * and repeat — `postgresUnitOfWork(() => unitOfWork(clock), pg)`, with a
+ * dropped `clock` being a quiet way to get a test that cannot move time.
+ * Causation is a separate concern now: the fixture wraps every handler the
+ * scope hands it with `correlatingHandler` (see `carrying` below), so `then`
+ * can still assert a causal chain, regardless of what the task itself is.
  *
- * So `unitOfWork` arrives already both — `() => correlating(unitOfWork(clock))`.
- * Decorate it the way a deployed root decorates one — every adapter's
- * unit-of-work decorator is `(next, client) => …` and composes onto it — and
- * hand back what you built. Nothing downstream has to be told about time,
- * because everything downstream is built from this.
+ * So `unitOfWork` arrives already reading the fixture's clock —
+ * `() => unitOfWork(clock)`. Decorate it the way a deployed root decorates
+ * one — every adapter's unit-of-work decorator is `(next, client) => …` and
+ * composes onto it — and hand back what you built. Nothing downstream has to
+ * be told about time, because everything downstream is built from this.
  *
  * `clock` is the second argument for the one case that genuinely needs the raw
  * arrow: infrastructure with its own schedule book (`inMemorySchedulingEventStore(next, { clock })`).
@@ -241,7 +238,7 @@ export type FixtureInfrastructure<
  * captured a NUMBER is frozen where it was built.
  */
 export type InfrastructureFactory<
-  U extends CorrelatingUnitOfWork = FixtureUnitOfWork,
+  U extends UnitOfWork = FixtureUnitOfWork,
   E extends EventStore = EventStore,
 > = (unitOfWork: () => FixtureUnitOfWork, clock: () => number) => FixtureInfrastructure<U, E>
 
@@ -376,17 +373,17 @@ export function testFixture<O extends FixtureOptions = FixtureOptions>(
         : undefined
   const clock: () => number = advanceable ?? (supplied_clock as () => number)
   /**
-   * The fixture's tasks CORRELATE.
+   * The fixture's handlers CORRELATE.
    *
    * A fixture is a composition root, so it makes a composition root's choices,
    * and this is one of them: scenarios are about causal chains — a command
    * appends an event, an automation reacts to it and dispatches another command
    * — and a `then` that names `metadata` should be able to see that chain. So
-   * the fixture composes what a host composes: a correlating unit of work here,
-   * `correlatingHandler(handler, correlationFrom)` around every handler the
-   * scope hands it (see `carrying` below), with the id pair as its cargo —
-   * written out below like any host writes it — because the id pair is what a
-   * test can meaningfully assert about.
+   * the fixture composes what a host composes: `correlatingHandler(handler)`
+   * around every handler the scope hands it (see `carrying` below), with the
+   * default cargo — `messageOrigin`, the id pair — because that is what a test
+   * can meaningfully assert about. Nothing is written onto the task; the cargo
+   * lives in each invocation's own closure.
    *
    * A scope that wants different cargo wraps its own handlers before returning
    * them; wrapping is idempotent in effect (the second attach writes the same
@@ -397,11 +394,11 @@ export function testFixture<O extends FixtureOptions = FixtureOptions>(
   // the factory per task would mint a fresh pool, a fresh log and a fresh
   // registry every time, and nothing would share a transaction with anything.
   /**
-   * The unit-of-work factory the fixture guarantees: on ITS clock, and
-   * CARRYING. A host's factory decorates this rather than rebuilding it, so
-   * neither property can be dropped on the way through.
+   * The unit-of-work factory the fixture guarantees: on ITS clock. A host's
+   * factory decorates this rather than rebuilding it, so the clock cannot be
+   * dropped on the way through.
    */
-  const fixtureUnitOfWork = (): FixtureUnitOfWork => correlating(unitOfWork(clock))
+  const fixtureUnitOfWork = (): FixtureUnitOfWork => unitOfWork(clock)
 
   const supplied = opts.infrastructure?.(fixtureUnitOfWork, clock) as
     | FixtureInfrastructure
@@ -513,17 +510,13 @@ export function testFixture<O extends FixtureOptions = FixtureOptions>(
    * message it was handling. The scope wrote a plain handler; the SITE decides
    * what propagates, exactly as a deployed composition root would.
    *
-   * The cargo is the fixture's own two lines — the chain is inherited or seeded,
-   * the cause is the parent, unconditionally, so the causal graph walks one hop
-   * at a time. Any host writes exactly this.
+   * The cargo is `correlatingHandler`'s own default, `messageOrigin` — the
+   * chain is inherited or seeded, the cause is the parent, unconditionally, so
+   * the causal graph walks one hop at a time. Any host gets exactly this for
+   * free.
    */
-  const correlationFrom = (parent: Message): Metadata => ({
-    correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-    causationId: String(parent.identifier),
-  })
-
   function carrying<H extends { readonly handler: any }>(entry: H): H {
-    return { ...entry, handler: correlatingHandler(entry.handler, correlationFrom) }
+    return { ...entry, handler: correlatingHandler(entry.handler) }
   }
 
   const app = kronos<FixtureUnitOfWork, FixtureEventStore>({

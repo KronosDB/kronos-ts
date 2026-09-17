@@ -36,6 +36,9 @@ function fakeAdapter(): PostgresAdapter {
     },
     async connect() {},
     async disconnect() {},
+    unwrap<T = unknown>(): T {
+      return undefined as unknown as T
+    },
   }
 }
 

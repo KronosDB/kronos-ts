@@ -269,22 +269,22 @@ export {
 // handler is handling onto everything that handling gives birth to, and on down
 // the chain. It is three functions and nothing else:
 //
-//   correlating(uow)                 a unit of work that carries a map
-//   correlatingHandler(next, from)   the wrapper that fills it and overlays it
+//   correlatingHandler(next, from?)  the wrapper that overlays the cargo onto
+//                                    every birth verb, per invocation
+//   messageOrigin                    the standard cargo, and the default
 //   correlation                      the EDGE intercept that seeds roots
 //
-// `from` is a plain `(message) => Metadata` the host writes — what jumps is the
-// host's call. The pair everybody starts from is two lines:
+// `from` is a plain `(message) => Metadata`. It defaults to `messageOrigin` —
+// the chain inherited or seeded, the cause the parent, a trace context when
+// present — and a host that carries more spreads that:
 //
-//   const correlationFrom = (parent: Message): Metadata => ({
-//     correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-//     causationId: String(parent.identifier),   // the PARENT — a hop re-stamps
-//   })
+//   correlatingHandler(h.handler, (m) => ({ ...messageOrigin(m), actor: String(m.metadata.actor ?? "") }))
 //
-// Nothing in core demands any of this: compose it and the compiler starts
-// requiring it, ignore it and the word never appears in your build.
-export { correlating, type CorrelatingUnitOfWork } from "./correlation/correlating.js"
+// Nothing rides on the unit of work: the cargo lives in the invocation, so a
+// batch delivering several events on one task cannot cross their causes.
+// Nothing in core demands any of this — compose it or never see the word.
 export { correlatingHandler } from "./correlation/correlating-handler.js"
+export { messageOrigin } from "./correlation/message-origin.js"
 export { correlation } from "./correlation/correlation.js"
 
 // ── validation: the gate, and it needs no registry ─────────────────────────
@@ -530,3 +530,54 @@ export {
 
 export { messagingAdmission, messagingDeadline, withMessagingTimeout, positiveInteger, MessagingOverloadedError } from "./messaging-reliability.js"
 export type { MessagingLimits, MessagingActivity } from "./messaging-reliability.js"
+
+// ── logging: a structural Logger, and the wrapper that supplies one ────────
+// `Logger` is structural, not this package's concept to own — an OTLP-backed
+// implementation (`@kronos-ts/otlp`) satisfies the same shape. `consoleLogger`
+// is the one destination that lives here, and `loggingHandler` is the
+// FUNCTION-LEVEL wrapper (same shape as `drizzleHandler`) that supplies
+// `ctx.log`, already carrying the handled message's identity and trace ids.
+export {
+  type Logger,
+  type LogFields,
+  type LogLevel,
+  type LogRecord,
+} from "./logging/logger.js"
+export { consoleLogger } from "./logging/console-logger.js"
+export {
+  type LogCapability,
+  loggingHandler,
+  messageFields,
+} from "./logging/logging-handler.js"
+
+// ── composition: wrappers that say what they do ────────────────────────────
+// A handler wrapper marks the function it returns with a description — its
+// name, what it supplies to and uses from the context, what it stamps onto and
+// reads off the message. `kronos()` walks the chain at boot and refuses one
+// that cannot work, naming the entry and the fix; the same description is a
+// phantom type, so a typed host gets the identical refusal from the compiler.
+// No registry: the names are the wrapper's own, and an undescribed wrapper is
+// transparent.
+export {
+  describe,
+  DESCRIPTION,
+  type Described,
+  type DescriptionOf,
+  type DeclaresInside,
+  type WrapperDescription,
+  chainError,
+  chainOf,
+  chainProblems,
+} from "./composition/describe.js"
+
+// ── transactional factories: what a query bus refuses ──────────────────────
+// A transaction family marks the factory it returns; `localQueryBus` refuses
+// the mark at compile time and at construction, because a read needs no
+// transaction and a query always runs in a task of its own.
+export {
+  transactional,
+  isTransactional,
+  TRANSACTIONAL,
+  type Transactional,
+  type RefusingTransactional,
+} from "./unit-of-work/transactional.js"

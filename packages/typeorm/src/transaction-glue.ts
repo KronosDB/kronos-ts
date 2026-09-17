@@ -65,8 +65,8 @@ export function transactionRegistry<T>(): TransactionRegistry<T> {
  * It DECORATES the handle it was given — the same object, claimed in the
  * registry and hooked through the public phase API — rather than rebuilding a
  * record from it. That is what makes it capability-preserving: `U` comes out
- * exactly as it went in, so `typeormUnitOfWork(() => correlating(unitOfWork()),
- * manager)` still has `correlationData()` on it at runtime, and the WeakMap
+ * exactly as it went in, so `typeormUnitOfWork(() => Object.assign(unitOfWork(),
+ * { probe: true as const }), manager)` still has `probe` on it at runtime, and the WeakMap
  * that keys this package's transactions is keyed on the very object the handler
  * will later hand back through `ctx.unitOfWork`.
  *

@@ -1,8 +1,10 @@
-import type {
-  EventHandlerContext,
-  CommandHandlerContext,
-  QueryHandlerContext,
-  UnitOfWork,
+import {
+  transactional,
+  type Transactional,
+  type EventHandlerContext,
+  type CommandHandlerContext,
+  type QueryHandlerContext,
+  type UnitOfWork,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -127,16 +129,20 @@ const registry = transactionRegistry<TypeormTransaction>()
  * and the runtime:
  *
  * ```ts
- * const uow = typeormUnitOfWork(() => correlating(unitOfWork(clock)), manager)
- * //    ^ () => CorrelatingUnitOfWork, and its transactions are keyed on that
- * //      very object, which is the one `ctx.unitOfWork` hands back
+ * const traced = () => Object.assign(unitOfWork(clock), { probe: true as const })
+ * const uow = typeormUnitOfWork(traced, manager)
+ * //    ^ () => UnitOfWork & { probe: true }, and its transactions are keyed
+ * //      on that very object, which is the one `ctx.unitOfWork` hands back
  * ```
+  *
+ * What comes back is MARKED transactional: give it to the command bus and to
+ * processors; `localQueryBus` refuses it, because a read needs no transaction.
  */
 export function typeormUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   manager: TypeormManager,
-): () => U {
-  return adapterUnitOfWork(registry, transactionHooks(manager), next) as () => U
+): (() => U) & Transactional {
+  return transactional(adapterUnitOfWork(registry, transactionHooks(manager), next) as () => U)
 }
 
 /**

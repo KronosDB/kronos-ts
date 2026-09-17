@@ -28,7 +28,6 @@ import type {
   SnapshotCapableEventStore,
 } from "@kronos-ts/core"
 import {
-  correlating,
   inMemoryEventStore,
   inMemorySchedulingEventStore,
   inMemorySnapshottingEventStore,
@@ -39,10 +38,10 @@ import {
   localQueryBus,
   unitOfWork,
   upcastingEventStore,
-  type CorrelatingUnitOfWork,
   type Intercept,
   type CommandMessage,
   type QueryMessage,
+  type UnitOfWork,
 } from "@kronos-ts/core"
 import {
   postgresEventStore,
@@ -211,59 +210,65 @@ export const recordedStillRecords: ReadonlyArray<unknown> = recordingEventStore(
 ).appended
 
 // ---------------------------------------------------------------------------
-// (d) THE BUS SIDE — the correlation demand must survive every wrap too.
+// (d) THE BUS SIDE — a composed unit-of-work capability must survive every
+// wrap too.
 //
-// Correlation was the FIRST compile-time demand in this codebase, and it is the
-// one a laundering bus wrapper breaks. A chain that mints correlating units of
-// work still mints them at the far end, however many layers were added.
+// A branded task, `Traced`, stands in for whatever a host composes onto its
+// unit of work — correlation used to be the example; the demand it pinned was
+// never about correlation specifically, but about a laundering bus wrapper
+// erasing whatever capability the chain underneath carried. A chain that mints
+// `Traced` units of work still mints them at the far end, however many layers
+// were added.
 // ---------------------------------------------------------------------------
 
-const correlatingUow = () => correlating(unitOfWork())
+/** A stand-in composed capability — any host-branded task would do. */
+type Traced = UnitOfWork & { readonly probe: true }
+const tracedUow = (): Traced => Object.assign(unitOfWork(), { probe: true as const })
 declare const intercept: Intercept<CommandMessage>
 declare const interceptQuery: Intercept<QueryMessage>
 
-export const interceptingPreservesCorrelation: CommandBus<CorrelatingUnitOfWork> =
-  interceptingCommandBus(localCommandBus(correlatingUow), intercept)
+export const interceptingPreservesTraced: CommandBus<Traced> =
+  interceptingCommandBus(localCommandBus(tracedUow), intercept)
 
-export const interceptingQueryPreservesCorrelation: QueryBus<CorrelatingUnitOfWork> =
-  interceptingQueryBus(localQueryBus(correlatingUow), interceptQuery)
+export const interceptingQueryPreservesTraced: QueryBus<Traced> =
+  interceptingQueryBus(localQueryBus(tracedUow), interceptQuery)
 
-/** And recording keeps BOTH the correlation demand and its own members. */
-export const recordedCorrelatingBus: CommandBus<CorrelatingUnitOfWork> = recordingCommandBus(
-  interceptingCommandBus(localCommandBus(correlatingUow), intercept),
+/** And recording keeps BOTH the demand and its own members. */
+export const recordedTracedBus: CommandBus<Traced> = recordingCommandBus(
+  interceptingCommandBus(localCommandBus(tracedUow), intercept),
 )
 
-export const recordedCorrelatingBusStillRecords: ReadonlyArray<unknown> = recordingCommandBus(
-  interceptingCommandBus(localCommandBus(correlatingUow), intercept),
+export const recordedTracedBusStillRecords: ReadonlyArray<unknown> = recordingCommandBus(
+  interceptingCommandBus(localCommandBus(tracedUow), intercept),
 ).dispatched
 
-export const recordedCorrelatingQueryBus: QueryBus<CorrelatingUnitOfWork> = recordingQueryBus(
-  interceptingQueryBus(localQueryBus(correlatingUow), interceptQuery),
+export const recordedTracedQueryBus: QueryBus<Traced> = recordingQueryBus(
+  interceptingQueryBus(localQueryBus(tracedUow), interceptQuery),
 )
 
 /**
  * TRACING PRESERVES IT TOO — the case that was actually broken. `otlpCommandBus`
  * was typed `(CommandBus) => CommandBus`, which erased `U` outright and rebuilt
- * a two-member record besides, so tracing a correlating chain produced a bus no
- * correlating handler would fit behind. The runtime worked; the build did not.
+ * a two-member record besides, so tracing a `Traced` chain produced a bus no
+ * demand for `Traced` would fit behind. The runtime worked; the build did not.
  */
 declare const exporter: OtlpExporter
 
-export const tracedChainKeepsCorrelation: CommandBus<CorrelatingUnitOfWork> =
-  interceptingCommandBus(otlpCommandBus(localCommandBus(correlatingUow), exporter), intercept)
+export const tracedChainKeepsTraced: CommandBus<Traced> =
+  interceptingCommandBus(otlpCommandBus(localCommandBus(tracedUow), exporter), intercept)
 
-export const tracedQueryChainKeepsCorrelation: QueryBus<CorrelatingUnitOfWork> =
-  interceptingQueryBus(otlpQueryBus(localQueryBus(correlatingUow), exporter), interceptQuery)
+export const tracedQueryChainKeepsTraced: QueryBus<Traced> =
+  interceptingQueryBus(otlpQueryBus(localQueryBus(tracedUow), exporter), interceptQuery)
 
 /** …and the recorder's members survive tracing, in either order. */
 export const tracedRecorderKeepsItsMembers: ReadonlyArray<unknown> = otlpCommandBus(
-  recordingCommandBus(localCommandBus(correlatingUow)),
+  recordingCommandBus(localCommandBus(tracedUow)),
   exporter,
 ).dispatched
 
 /** A BARE chain is still bare, so the probes above are not vacuous. */
 // @ts-expect-error — this chain mints plain units of work
-export const bareChainIsNotCorrelating: CommandBus<CorrelatingUnitOfWork> = interceptingCommandBus(
+export const bareChainIsNotTraced: CommandBus<Traced> = interceptingCommandBus(
   localCommandBus(unitOfWork),
   intercept,
 )

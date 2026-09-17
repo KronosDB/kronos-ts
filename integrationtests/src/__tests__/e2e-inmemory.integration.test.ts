@@ -42,10 +42,9 @@ import {
   type Sited,
 } from "@kronos-ts/core"
 import {
-  correlating,
   correlatingHandler,
+  messageOrigin,
   correlation,
-  type Message,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
@@ -55,14 +54,7 @@ import {
   type CommandBus,
   type QueryBus,
 } from "@kronos-ts/core"
-import type { Message, Metadata } from "@kronos-ts/core"
-
-// The id-pair cargo, written out as any host writes it: the chain is inherited
-// or seeded; the cause is the parent, unconditionally.
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
+import type { Message } from "@kronos-ts/core"
 
 /**
  * The two things `kronos` needs that are not handlers. The UoW runner is
@@ -566,13 +558,13 @@ describe("E2E: In-memory full CQRS flow", () => {
     // metadata it was handed, and this cargo function is the entire policy,
     // written down at the composition root where a reader can find it.
     const eventStore = inMemorySnapshottingEventStore(inMemoryEventStore())
-    const uow = () => correlating(unitOfWork())
+    const uow = unitOfWork
     const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
     const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
 
-    /** The shipped id pair, plus the two per-request facts this host cares about. */
+    /** The default cargo, plus the two per-request facts this host cares about. */
     const carried = (m: Message) => ({
-      ...correlationFrom(m),
+      ...messageOrigin(m),
       tenantId: String(m.metadata.tenantId ?? ""),
       userId: String(m.metadata.userId ?? ""),
     })

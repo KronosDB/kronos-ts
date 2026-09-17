@@ -184,9 +184,9 @@ export function recordingQueryBus<B extends QueryBus<any>>(
       log.length = 0
     },
 
-    async query(message: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
+    async query(message: QueryMessage): Promise<unknown> {
       log.push(message)
-      return bus.query(message, uow)
+      return bus.query(message)
     },
 
     subscribe(queryName: string, handler: unknown): void {

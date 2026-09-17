@@ -12,12 +12,13 @@
  *   query       : drizzle reads course_views for the final dump
  *
  * ONE FAMILY OWNS THE TRANSACTION, AND THE ORM RIDES IT. The postgres family
- * owns each task's transaction; `uowDb(ctx)` binds drizzle to the very
- * connection the event store appends on (`tx.unwrap()`), so a projection write
- * and the processor's token update commit or roll back together. Handing
- * drizzle its own pool would give it its own transaction — silently
- * non-atomic. See "Transactions: one owner, lenses for the rest" in
- * docs/how-it-works.md.
+ * owns each task's transaction; `drizzleHandler` (from
+ * `@kronos-ts/postgres/drizzle`) builds drizzle over the very connection the
+ * event store appends on, so a projection write and the processor's token
+ * update commit or roll back together, and the handler reads it as `ctx.db`
+ * with drizzle's own types. Handing drizzle its own pool would give it its
+ * own transaction — silently non-atomic. See "Transactions: one owner, and
+ * your query builder rides it" in docs/how-it-works.md.
  *
  * WHAT THIS FILE DELIBERATELY DOES NOT DO: no `buildProjector(db)`, no bus
  * bundle, no `carrying()` wrapper. Handlers are plain top-level values that
@@ -40,7 +41,6 @@ import {
 } from "@kronos-ts/core"
 import { kronos } from "@kronos-ts/core"
 import {
-  correlating,
   correlatingHandler,
   correlation,
   interceptingCommandBus,
@@ -48,9 +48,9 @@ import {
   unitOfWork,
   localCommandBus,
   localQueryBus,
-  type UnitOfWork,
   type CommandBus,
   type CommandHandlerContext,
+  type EventHandlerContext,
   type SubscriptionCapableQueryBus,
 } from "@kronos-ts/core"
 import {
@@ -58,21 +58,14 @@ import {
   postgresEventStore,
   postgresSnapshottingEventStore,
   postgresTokenStore,
-  postgresTransaction,
+  postgresHandler,
   postgresUnitOfWork,
 } from "@kronos-ts/postgres"
+import { drizzleHandler, type DbCapability } from "@kronos-ts/postgres/drizzle"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
 import { drizzle } from "drizzle-orm/bun-sql"
 import { pgTable, text, integer, timestamp } from "drizzle-orm/pg-core"
 import { eq, sql } from "drizzle-orm"
-import type { Message, Metadata } from "@kronos-ts/core"
-
-// The id-pair cargo, written out as any host writes it: the chain is inherited
-// or seeded; the cause is the parent, unconditionally.
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
 
 // ============================================================================
 // Read-side schema (drizzle owns this table)
@@ -197,23 +190,20 @@ const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx
 /**
  * Drizzle bound to THE TASK'S transaction — the same connection the event
  * store appends on, so what a projection writes commits with the token update
- * that records it. `postgresTransaction` opens the lazy transaction if this is
- * the first writer in the task; `unwrap()` hands over the live driver handle,
- * and the caller owns the cast because the handle type is adapter-specific.
+ * that records it. The composition root builds it with `drizzleHandler` over
+ * `ctx.sql()`; a projection names the capability and reads `ctx.db`. The
+ * driver handle type is adapter-specific, so the build names it.
  */
-async function uowDb(ctx: { readonly unitOfWork: UnitOfWork }) {
-  const tx = await postgresTransaction(ctx.unitOfWork)
-  return drizzle(tx.unwrap<string>())
-}
+const drizzleOver = (client: string) => drizzle(client)
+type ProjectionContext = EventHandlerContext & DbCapability<ReturnType<typeof drizzleOver>>
 
 // ── projections ─────────────────────────────────────────────────────────────
 // Plain top-level values. They close over NOTHING: the handle comes from the
 // handling, which is what lets them be written here, beside the decisions,
 // instead of inside a builder that has to be handed a database first.
 
-const onCourseOpened = eventHandler(CourseOpened, async ({ payload: e }, ctx) => {
-  const db = await uowDb(ctx)
-  await db
+const onCourseOpened = eventHandler(CourseOpened, async ({ payload: e }, ctx: ProjectionContext) => {
+  await ctx.db
     .insert(courseViews)
     .values({ courseId: e.courseId, title: e.title, capacity: e.capacity, enrolledCount: 0 })
     .onConflictDoUpdate({
@@ -222,9 +212,8 @@ const onCourseOpened = eventHandler(CourseOpened, async ({ payload: e }, ctx) =>
     })
 })
 
-const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }, ctx) => {
-  const db = await uowDb(ctx)
-  await db
+const onStudentEnrolled = eventHandler(StudentEnrolled, async ({ payload: e }, ctx: ProjectionContext) => {
+  await ctx.db
     .update(courseViews)
     .set({ enrolledCount: sql`${courseViews.enrolledCount} + 1`, updatedAt: new Date() })
     .where(eq(courseViews.courseId, e.courseId))
@@ -282,17 +271,18 @@ async function main(): Promise<void> {
       { serializer: jsonSerializer() },
     )
 
-    // THE TASK, named once. `correlating` makes it carry a map; the postgres
-    // decorator gives it a transaction. Everything below is checked against
-    // this one type — a bus built from a bare `unitOfWork` would not fit the
-    // wrapped handlers, and a foreign family's token store would not fit the
-    // processor.
-    const uow = postgresUnitOfWork(() => correlating(unitOfWork()), pg)
+    // THE TASK, named once. The postgres decorator gives it a transaction.
+    // Everything below is checked against this one type — a foreign family's
+    // token store would not fit the processor.
+    const uow = postgresUnitOfWork(unitOfWork, pg)
 
-    // THE BUSES, one line each. Interception sits OUTSIDE, so a command born
+    // THE COMMAND BUS takes the transaction family: a command's decision and
+    // its append commit together. Interception sits OUTSIDE, so a command born
     // anywhere is stamped before anything routes it.
     const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
-    const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
+    // THE QUERY BUS takes the PLAIN factory: a query always runs in its own
+    // task, and a read needs no transaction.
+    const queryBus = interceptingQueryBus(localQueryBus(unitOfWork), correlation)
 
     // THE DELIVERY. `postgresTokenStore` is the SAME family as `uow`, so the
     // token update writes through the transaction the projection wrote in —
@@ -312,17 +302,24 @@ async function main(): Promise<void> {
     //
     // Snapshot POLICY rides on `Course` / `Student` themselves; the CAPABILITY
     // is a site fact riding on the log attached here. `correlatingHandler`
-    // demands a correlating task on its OUTPUT — which is why no handler above
-    // had to mention one.
+    // demands nothing of the context or the task — it holds its cargo
+    // (`messageOrigin` by default) in the invocation's closure — which is why
+    // no handler above had to mention one.
+    //
+    // A projection's stack, innermost first: drizzle over `ctx.sql()`, the
+    // transaction from `postgresHandler`, then correlation. One line per
+    // wrapper, and the boot walk refuses a chain in the wrong order.
+    const projecting = (h: (message: any, context: ProjectionContext) => Promise<void> | void) =>
+      correlatingHandler(postgresHandler(drizzleHandler(h, drizzleOver), pg))
     const app = kronos({
       commandHandlers: [
-        { ...openCourse, handler: correlatingHandler(openCourse.handler, correlationFrom), eventStore, commandBus, queryBus },
-        { ...registerStudent, handler: correlatingHandler(registerStudent.handler, correlationFrom), eventStore, commandBus, queryBus },
-        { ...enrollStudent, handler: correlatingHandler(enrollStudent.handler, correlationFrom), eventStore, commandBus, queryBus },
+        { ...openCourse, handler: correlatingHandler(openCourse.handler), eventStore, commandBus, queryBus },
+        { ...registerStudent, handler: correlatingHandler(registerStudent.handler), eventStore, commandBus, queryBus },
+        { ...enrollStudent, handler: correlatingHandler(enrollStudent.handler), eventStore, commandBus, queryBus },
       ],
       eventHandlers: [
-        { ...onCourseOpened, handler: correlatingHandler(onCourseOpened.handler, correlationFrom), commandBus, queryBus, processor: projection },
-        { ...onStudentEnrolled, handler: correlatingHandler(onStudentEnrolled.handler, correlationFrom), commandBus, queryBus, processor: projection },
+        { ...onCourseOpened, handler: projecting(onCourseOpened.handler), commandBus, queryBus, processor: projection },
+        { ...onStudentEnrolled, handler: projecting(onStudentEnrolled.handler), commandBus, queryBus, processor: projection },
       ],
     })
 

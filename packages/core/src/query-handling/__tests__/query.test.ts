@@ -61,20 +61,24 @@ describe("query — UnitOfWork guards", () => {
     })
   })
 
-  it("hands the caller's unit of work to the bus so the read nests", async () => {
-    const seen: unknown[] = []
+  it("hands the bus the message only — the read runs in a task of its own", async () => {
+    // A query never nests into its caller's task: no unit of work crosses
+    // this seam, so a read cannot share the handler's transaction or clock.
+    const calls: unknown[][] = []
     await unitOfWork().execute(async (uow) => {
       const query = queryFunction({
         uow,
         queryBus: {
-          query: async (_message: unknown, passedUow?: unknown) => {
-            seen.push(passedUow)
+          query: async (...args: unknown[]) => {
+            calls.push(args)
             return null
           },
         } as never,
       })
       await query(GetCourse, { courseId: "c1" })
-      expect(seen).toEqual([uow])
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toHaveLength(1)
+      expect((calls[0]![0] as { timestamp: number }).timestamp).toBe(uow.now())
     })
   })
 })

@@ -12,6 +12,7 @@ import { subscribeCommandHandlers } from "./command-handling/subscribe.js"
 import { subscribeQueryHandlers } from "./query-handling/subscribe.js"
 import type { EventProcessor, RunningProcessor } from "./event-processing/processor.js"
 import { runEventProcessor, type ProcessorHandlerEntry } from "./event-processing/running-processor.js"
+import { chainError } from "./composition/describe.js"
 
 // ---------------------------------------------------------------------------
 // An app is THREE LISTS. That is the whole surface.
@@ -239,6 +240,22 @@ export function kronos<
   /** Handlers delivered to by their own processor. */
   eventHandlers?: ReadonlyArray<EventHandlerEntry<U, E, Q>>
 }): App {
+  // ---- Refuse a wrapper chain that cannot work ---------------------------
+  // Before ANYTHING is subscribed or started. Wrappers that described
+  // themselves (`describe`) are walked outermost-in; a wrapper using a
+  // capability nothing outside it supplies, a capability supplied twice, or a
+  // message stamp inside the wrapper that reads it, is a boot error naming the
+  // entry and the fix. A typed host already got the same refusal from the
+  // compiler; this is for the host that casts, and for JavaScript.
+  for (const entry of [
+    ...(opts.commandHandlers ?? []),
+    ...(opts.queryHandlers ?? []),
+    ...(opts.eventHandlers ?? []),
+  ]) {
+    const problem = chainError(labelOf(entry), entry.handler)
+    if (problem) throw problem
+  }
+
   // ---- Subscribe the two synchronous kinds -------------------------------
   // Plainly-typed loops over flat lists. Each entry brings its OWN buses and
   // its OWN site, so there is nothing to group, nothing to resolve and nothing

@@ -1,5 +1,7 @@
-import type {
-  UnitOfWork,
+import {
+  transactional,
+  type Transactional,
+  type UnitOfWork,
 } from "@kronos-ts/core"
 import {
   activeTransaction,
@@ -123,16 +125,20 @@ const registry = transactionRegistry<KyselyTransaction>()
  * and the runtime:
  *
  * ```ts
- * const uow = kyselyUnitOfWork(() => correlating(unitOfWork(clock)), db)
- * //    ^ () => CorrelatingUnitOfWork, and its transactions are keyed on that
- * //      very object, which is the one `ctx.unitOfWork` hands back
+ * const traced = () => Object.assign(unitOfWork(clock), { probe: true as const })
+ * const uow = kyselyUnitOfWork(traced, db)
+ * //    ^ () => UnitOfWork & { probe: true }, and its transactions are keyed
+ * //      on that very object, which is the one `ctx.unitOfWork` hands back
  * ```
+  *
+ * What comes back is MARKED transactional: give it to the command bus and to
+ * processors; `localQueryBus` refuses it, because a read needs no transaction.
  */
 export function kyselyUnitOfWork<U extends UnitOfWork = UnitOfWork>(
   next: () => U,
   db: KyselyDb,
-): () => U {
-  return adapterUnitOfWork(registry, transactionHooks(db), next) as () => U
+): (() => U) & Transactional {
+  return transactional(adapterUnitOfWork(registry, transactionHooks(db), next) as () => U)
 }
 
 /**

@@ -117,6 +117,10 @@ export function pgAdapter(config: PgAdapterConfig): PostgresAdapter {
       return result.rows[0] ?? null
     },
 
+    unwrap<T = unknown>(): T {
+      return getPool() as unknown as T
+    },
+
     async transaction<T>(
       isolationLevel: IsolationLevel,
       fn: (tx: PostgresAdapterTransaction) => Promise<T>,
