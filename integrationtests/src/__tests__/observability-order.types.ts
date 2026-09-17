@@ -31,7 +31,7 @@ import {
   type LogCapability,
 } from "@kronos-ts/core"
 import { observed, postgresHandler, postgresUnitOfWork, type PostgresAdapter } from "@kronos-ts/postgres"
-import { drizzleHandler, type DbCapability } from "@kronos-ts/postgres/drizzle"
+import { drizzleHandler, type DrizzleCapability } from "@kronos-ts/postgres/drizzle"
 import { otlpExporter, otlpHandler, type TraceCapability } from "@kronos-ts/otlp"
 import { drizzle } from "drizzle-orm/postgres-js"
 
@@ -56,7 +56,7 @@ const queryBus = localQueryBus(unitOfWork)
 const drizzleOver = (client: unknown) => drizzle(client as never)
 type Db = ReturnType<typeof drizzleOver>
 
-type Ctx = CommandHandlerContext & DbCapability<Db> & LogCapability & Partial<TraceCapability>
+type Ctx = CommandHandlerContext & DrizzleCapability<Db> & LogCapability & Partial<TraceCapability>
 const place = commandHandler(Place, async (_m, ctx: Ctx) => {
   ctx.db.select
   ctx.log.info("placed")
