@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/knex",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Deprecated: use @kronos-ts/postgres. Knex extension for Kronos, kept published for existing users.",
   "license": "Apache-2.0",
   "type": "module",
