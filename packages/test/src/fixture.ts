@@ -440,7 +440,7 @@ export function testFixture<O extends FixtureOptions = FixtureOptions>(
   const deadLetterQueue = (supplied?.deadLetterQueue ??
     inMemoryDeadLetterQueue()) as SequencedDeadLetterQueue<FixtureUnitOfWork>
   const commandBus = recordingCommandBus(supplied?.commandBus ?? localCommandBus(uow))
-  const queryBus = recordingQueryBus(supplied?.queryBus ?? localQueryBus(uow))
+  const queryBus = recordingQueryBus(supplied?.queryBus ?? localQueryBus(fixtureUnitOfWork))
 
   // ---- what the scope asked for -------------------------------------------
   const lists = scope({

@@ -62,7 +62,7 @@ import {
 function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): { commandBus: CommandBus; queryBus: SubscriptionCapableQueryBus } {
   return {
     commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
-    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(unitOfWork), correlation),
   }
 }
 
