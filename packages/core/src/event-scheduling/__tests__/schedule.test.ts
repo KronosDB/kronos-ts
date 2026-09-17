@@ -1,15 +1,8 @@
 import { describe, it, expect, mock } from "bun:test"
-import { qn, emptyMetadata, type Message } from "../../messaging/messages.js"
+import { qn, emptyMetadata } from "../../messaging/messages.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
-import { correlating } from "../../correlation/correlating.js"
 import { correlatingHandler } from "../../correlation/correlating-handler.js"
 import { scheduleFunctions } from "../schedule.js"
-// The id-pair cargo, written out as any host writes it: the chain is inherited
-// or seeded; the cause is the parent, unconditionally.
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
 
 /** The message a handler is handling, in the shape the cargo function reads. */
 const causingCommand = {
@@ -82,12 +75,12 @@ describe("schedule helpers", () => {
     // fires there is no originating task left to ask. The verb itself carries
     // nothing — `correlatingHandler` overlays through its `metadata` parameter.
     const sm = mockSchedulingLog()
-    const uow = correlating(unitOfWork())
+    const uow = unitOfWork()
     await uow.execute(async () => {
       const ctx = { ...scheduleFunctions({ uow, eventStore: sm as never }), unitOfWork: uow }
       const handler = correlatingHandler(async (_m: any, c: typeof ctx) => {
         await c.schedule(descriptor, { id: "A" }, new Date(Date.now() + 60_000))
-      }, correlationFrom)
+      })
       await handler(causingCommand, ctx)
     })
 
@@ -99,14 +92,14 @@ describe("schedule helpers", () => {
 
   it("lets explicitly provided metadata ride alongside the carried correlation", async () => {
     const sm = mockSchedulingLog()
-    const uow = correlating(unitOfWork())
+    const uow = unitOfWork()
     await uow.execute(async () => {
       const ctx = { ...scheduleFunctions({ uow, eventStore: sm as never }), unitOfWork: uow }
       const handler = correlatingHandler(async (_m: any, c: typeof ctx) => {
         await c.schedule(descriptor, { id: "A" }, new Date(Date.now() + 60_000), {
           tenant: "acme",
         } as any)
-      }, correlationFrom)
+      })
       await handler(causingCommand, ctx)
     })
 

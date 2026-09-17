@@ -97,6 +97,10 @@ export function postgresAdapter(config: PostgresAdapterConfig): PostgresAdapter 
       return rows[0] ?? null
     },
 
+    unwrap<T = unknown>(): T {
+      return getSql() as unknown as T
+    },
+
     async transaction<T>(
       isolationLevel: IsolationLevel,
       fn: (tx: PostgresAdapterTransaction) => Promise<T>,
@@ -106,6 +110,20 @@ export function postgresAdapter(config: PostgresAdapterConfig): PostgresAdapter 
       // isolation level. The callback receives a scoped `sql` that
       // pins to the underlying connection for the duration.
       return (await c.begin(`ISOLATION LEVEL ${isolationLevel}`, async (txSql) => {
+        // postgres.js's transaction-scoped `sql` (the `txSql` this callback
+        // receives) is a fresh `Sql(handler)` closure that is NEVER given the
+        // `.options` the pool-level `sql` carries (see postgres.js's own
+        // `begin()`/`scope()`) — an internal asymmetry, not a Kronos choice.
+        // `drizzle-orm/postgres-js`'s `drizzle(client)` factory unconditionally
+        // reads `client.options.parsers`/`.serializers` at construction time, so
+        // `drizzle(tx.unwrap())` would throw without this. Alias it onto the
+        // SAME options object the pool's connections already share — that is
+        // exactly the object `drizzle()` mutates when handed the plain pool
+        // client today, so aliasing changes nothing about type-parsing
+        // semantics, only where the reference is visible from.
+        if ((txSql as { options?: unknown }).options === undefined) {
+          Object.defineProperty(txSql, "options", { value: c.options, enumerable: false })
+        }
         const tx: PostgresAdapterTransaction = {
           unwrap<T = unknown>(): T {
             return txSql as unknown as T

@@ -13,13 +13,16 @@ import {
 } from "./subscription-query.js"
 import { type SubscriptionFilter, applySubscriptionFilter } from "./subscription-filter.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
+import { isTransactional, type RefusingTransactional } from "../unit-of-work/transactional.js"
 /**
  * Simple in-process query bus with subscription query support.
  *
- * A direct query opens a fresh UnitOfWork — carrying a transaction when the bus
- * was minted from a transactional `unitOfWork` factory — unless the caller handed one in, in which
- * case it NESTS (see `query` below). Subscription queries receive an initial
- * result plus a stream of incremental updates emitted via `emitUpdate()`.
+ * Every query opens a fresh UnitOfWork — see `QueryBus.query` for why a read
+ * never nests into its caller's. Build this bus from the PLAIN `unitOfWork`
+ * factory: a read needs no transaction, and a transactional factory here would
+ * wrap every `SELECT` in `BEGIN`/`COMMIT` and hold a pooled connection per
+ * in-flight query. Subscription queries receive an initial result plus a
+ * stream of incremental updates emitted via `emitUpdate()`.
  *
  * The factory is captured here, mirroring `localCommandBus`, so
  * the `query(bus, …)` verb needs nothing but the bus.
@@ -27,42 +30,35 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
  * Interceptor support is provided by wrapping with
  * {@link interceptingQueryBus}.
  */
-export function localQueryBus<U extends UnitOfWork = UnitOfWork>(
-  unitOfWork: () => U,
-): SubscriptionCapableQueryBus<U> {
+export function localQueryBus<F extends () => UnitOfWork = () => UnitOfWork>(
+  unitOfWork: F & RefusingTransactional<F>,
+): SubscriptionCapableQueryBus<ReturnType<F>> {
+  type U = ReturnType<F>
+  if (isTransactional(unitOfWork)) {
+    throw new Error(
+      "localQueryBus: a query bus must be built from the plain `unitOfWork` factory, not a " +
+        "transaction family's. A read needs no transaction, and a query always runs in a task " +
+        "of its own — a transactional query bus would wrap every read in BEGIN/COMMIT and hold " +
+        "a pooled connection per in-flight query. Use `localQueryBus(unitOfWork)`.",
+    )
+  }
   const handlers = new Map<string, (message: QueryMessage, uow: U) => Promise<unknown>>()
 
   // Active subscription query handlers, keyed by query identifier
   const subscriptions = new Map<string, UpdateHandler>()
 
   const bus: SubscriptionCapableQueryBus<U> = {
-    async query(message: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
+    async query(message: QueryMessage): Promise<unknown> {
       const key = qualifiedNameToString(message.name)
       const handler = handlers.get(key)
       if (!handler) {
         throw new Error(`No handler registered for query "${key}"`)
       }
 
-      // Mirrors local-command-bus.dispatch, except that a query NESTS. The
-      // decision is made on the HANDLE, not on any runner: `ctx.query` passes
-      // the calling handler's unit of work straight through this parameter, and
-      // a live one is reused so the consulting read shares the caller's
-      // transaction. A primary dispatch passes none and we open a fresh one.
-      //
-      // Either way the unit of work that will handle the query is also the one
-      // whose clock stamps it — a nested read is stamped by the task it joins.
-      //
-      // The nested handle arrives typed as the bare `UnitOfWork` — `query` is
-      // the one seam a FOREIGN task can enter through, so its parameter cannot
-      // promise `U`. It is one in practice: an entry names one command bus and
-      // one query bus, and the entry types tie both to the same `U`, so the
-      // task that nests here was minted by a factory of that same shape.
-      if (uow !== undefined && !uow.closed) {
-        return handler(withInstant(message, () => uow.now()), uow as U)
-      }
-      // A primary query mints its own, and the MINTED handle is what the
-      // handler gets — see the note in `localCommandBus`.
-      const opened = unitOfWork()
+      // Mirrors local-command-bus.dispatch: every query mints its own unit of
+      // work, and the MINTED handle is what the handler gets — see the note in
+      // `localCommandBus`.
+      const opened = unitOfWork() as U
       return opened.execute(() => handler(withInstant(message, () => opened.now()), opened))
     },
 

@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/postgres",
   "version": "0.12.0",
-  "description": "PostgreSQL extension for Kronos — event store and snapshot store adapters.",
+  "description": "PostgreSQL extension for Kronos \u2014 event store and snapshot store adapters.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",
@@ -30,7 +30,9 @@
     ".": "./src/index.ts",
     "./adapters/pg": "./src/adapters/pg.ts",
     "./adapters/postgres": "./src/adapters/postgres.ts",
-    "./adapters/bun-sql": "./src/adapters/bun-sql.ts"
+    "./adapters/bun-sql": "./src/adapters/bun-sql.ts",
+    "./drizzle": "./src/drizzle.ts",
+    "./kysely": "./src/kysely.ts"
   },
   "files": [
     "dist",
@@ -63,6 +65,14 @@
       "./adapters/bun-sql": {
         "types": "./dist/adapters/bun-sql.d.ts",
         "default": "./dist/adapters/bun-sql.js"
+      },
+      "./drizzle": {
+        "types": "./dist/drizzle.d.ts",
+        "default": "./dist/drizzle.js"
+      },
+      "./kysely": {
+        "types": "./dist/kysely.d.ts",
+        "default": "./dist/kysely.js"
       }
     }
   },

@@ -61,7 +61,7 @@ describe("the clock seam", () => {
     expect(seen?.timestamp).toBe(FROZEN)
   })
 
-  it("stamps a query the same way, and a NESTED query from the task it joins", async () => {
+  it("stamps a query from the task it mints — its OWN, never a caller's", async () => {
     const GetTicket = queryVerb({
       name: qn("clock", "GetTicket"),
       payload: z.object({ ticketId: z.string() }),
@@ -77,20 +77,23 @@ describe("the clock seam", () => {
     await queryVerb(bus, GetTicket, { ticketId: "t-1" })
     expect(seen?.timestamp).toBe(FROZEN)
 
-    // Nested: the caller's unit of work is handed in, so ITS clock stamps.
-    await unitOfWork(() => 42).execute(async (uow) =>
-      bus.query(
-        {
-          kind: "query",
-          identifier: "q-2",
-          name: GetTicket.name,
-          payload: { ticketId: "t-1" },
-          metadata: {},
-        },
-        uow,
-      ),
-    )
-    expect(seen?.timestamp).toBe(42)
+    // A query is ALWAYS its own task — even dispatched from inside another
+    // task's execution, it mints one off the bus's own factory rather than
+    // joining the caller's. Nesting is gone: a co-located read used to run in
+    // whatever task called it, which made it behave differently from a remote
+    // one and let it clobber the caller's correlation.
+    let sawWhileInsideAnotherTask: number | undefined
+    await unitOfWork(() => 42).execute(async () => {
+      await bus.query({
+        kind: "query",
+        identifier: "q-2",
+        name: GetTicket.name,
+        payload: { ticketId: "t-1" },
+        metadata: {},
+      })
+      sawWhileInsideAnotherTask = seen?.timestamp
+    })
+    expect(sawWhileInsideAnotherTask).toBe(FROZEN)
   })
 
   it("stamps the events a handler appends from the same task instant", async () => {

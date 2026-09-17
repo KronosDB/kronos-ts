@@ -825,7 +825,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
   }
 
   const routing: SubscriptionCapableQueryBus<U> = {
-    async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
+    async query(unstamped: QueryMessage): Promise<unknown> {
       const activity = shutdownLatch.registerActivity()
       let admission: ReturnType<typeof outboundAdmission.enter> | undefined
       let deadline: ReturnType<typeof messagingDeadline> | undefined
@@ -835,12 +835,10 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
         const queryName = qualifiedNameToString(unstamped.name)
 
         // Local shortcut — handle locally if a handler is co-located. The
-        // caller's unit of work is passed straight through, so `next` makes the
-        // nest-or-open decision on the HANDLE exactly as it does for an
-        // in-process read: a live unit of work handed in by `ctx.query` is
-        // reused so the consulting read shares the caller's transaction.
+        // co-located handler answers on a task of its own, exactly as a remote
+        // one would — `next` mints it.
         if (shortcutQueriesToLocalHandlers && subscribedNames.has(queryName)) {
-          return await next.query(unstamped, uow)
+          return await next.query(unstamped)
         }
 
       // A transport is not a task: it has no unit of work, so it has no clock.

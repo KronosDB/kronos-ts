@@ -1,21 +1,20 @@
 /**
- * THE STACKING PROBE — correlating AND drizzle on one handler, both orders,
- * with a handler that names NO task.
+ * THE STACKING PROBE — correlatingHandler AND drizzleHandler on one handler,
+ * both orders, with a handler that names its own capability demand.
  *
- * Two wrappers, two different demand shapes, and the point is that they stack
- * without the handler knowing either exists:
+ * `correlatingHandler` is `C` IN, `C` OUT — it demands nothing of the context
+ * and adds nothing to what a wrapped handler asks a bus for (see
+ * `correlation-demand.types.ts`). `drizzleHandler` demands on its INPUT
+ * (`ctx.db()` is something the handler USES, so the handler says so:
+ * `ctx: CommandHandlerContext & DrizzleCapability`) and ERASES it on the way
+ * out — the entry never sees `db`.
  *
- *   - `drizzleHandler` demands on its INPUT (`ctx.db()` is something the
- *     handler USES, so the handler says so: `ctx: CommandHandlerContext & DrizzleCapability`) and
- *     ERASES it on the way out — the entry never sees `db`.
- *   - `correlatingHandler` demands on its OUTPUT (carrying is something done
- *     TO a handling, so the handler never mentions it) — what comes out asks
- *     for a correlating task, and the ENTRY's bus must mint one.
- *
- * So the only thing a handler ever writes is the capability it reaches for.
- * The task — `CorrelatingUnitOfWork & DrizzleUnitOfWork` — appears exactly
- * once, on the factory, and the compiler carries it to the bus, the processor
- * and the entry from there.
+ * So stacking the two, in either order, changes NOTHING about what the entry
+ * must supply: the wrapped handler still asks for exactly what
+ * `drizzleHandler` alone would ask for, because correlating's wrapper is
+ * invisible to the type. The task stays the bare {@link UnitOfWork} the
+ * factory mints — no richer capability rides on it, because nothing here
+ * demands one of it any more.
  *
  * Nothing here runs; it is judged by `bunx tsc --noEmit` through the root
  * `tsconfig.json` `files` array.
@@ -23,7 +22,6 @@
 import {
   command,
   commandHandler,
-  correlating,
   correlatingHandler,
   inMemoryEventStore,
   localCommandBus,
@@ -32,9 +30,6 @@ import {
   unitOfWork,
   type CommandHandlerContext,
   type CommandHandlerEntry,
-  type CorrelatingUnitOfWork,
-  type Message,
-  type Metadata,
   type StandardSchemaV1,
 } from "@kronos-ts/core"
 import {
@@ -45,11 +40,6 @@ import {
 } from "../drizzle-transaction.js"
 
 declare const db: DrizzleDb
-
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
 
 declare const enrollPayload: StandardSchemaV1<{ studentId: string }>
 const Enroll = command({ name: qn("probe", "Enroll"), payload: enrollPayload })
@@ -63,80 +53,57 @@ const enroll = commandHandler(Enroll, async ({ payload }, ctx: CommandHandlerCon
 // The task is named ONCE, here, by composing the factory. Everything below
 // reads it off this value. `drizzleUnitOfWork` decorates what it is given and
 // adds no mark of its own: what a unit of work IS, is what it can do.
-const uow = drizzleUnitOfWork(() => correlating(unitOfWork()), db)
-type Task = CorrelatingUnitOfWork
-export const mints: () => Task = uow
+const uow = drizzleUnitOfWork(unitOfWork, db)
 
 const commandBus = localCommandBus(uow)
-const queryBus = localQueryBus(uow)
+// The query bus takes the PLAIN factory — a query is always its own task and
+// needs no transaction, and `localQueryBus` refuses a transactional one at
+// compile time.
+const queryBus = localQueryBus(unitOfWork)
 const eventStore = inMemoryEventStore()
 
 // ---------------------------------------------------------------------------
-// (a) BOTH ORDERS STACK. Drizzle outside erases `db` from a handler that
-// correlation already made ask for a correlating task; drizzle inside erases
-// `db` first and correlation adds its demand on top. Either way the entry
-// sees a handler that asks for a correlating task and nothing else.
+// (a) BOTH ORDERS STACK, AND NEITHER CHANGES THE DEMAND. Drizzle outside
+// erases `db` from a handler correlating already passed through unchanged;
+// drizzle inside erases `db` first and correlating adds nothing on top.
+// Either way the entry sees a handler that asks for nothing beyond the bare
+// task and wires against the bare buses below.
 // ---------------------------------------------------------------------------
 
-export const drizzleOutside: CommandHandlerEntry<Task> = {
+export const drizzleOutside: CommandHandlerEntry = {
   ...enroll,
-  handler: drizzleHandler(correlatingHandler(enroll.handler, correlationFrom), db),
+  handler: drizzleHandler(correlatingHandler(enroll.handler), db),
   commandBus,
   queryBus,
   eventStore,
 }
 
-export const drizzleInside: CommandHandlerEntry<Task> = {
+export const drizzleInside: CommandHandlerEntry = {
   ...enroll,
-  handler: correlatingHandler(drizzleHandler(enroll.handler, db), correlationFrom),
+  handler: correlatingHandler(drizzleHandler(enroll.handler, db)),
   commandBus,
   queryBus,
   eventStore,
 }
 
 // ---------------------------------------------------------------------------
-// (b) DROP CORRELATION FROM THE FACTORY — the bus is what disagrees, and the
-// error lands on the bus, in both orders. The handler file is untouched.
+// (b) FORGET `drizzleHandler` — the handler still asks for `db()`, and the
+// entry refuses a handler it cannot supply. Correlating does not change this
+// either way, because it never touched the demand.
 // ---------------------------------------------------------------------------
 
-const drizzleOnly = drizzleUnitOfWork(() => unitOfWork(), db)
-const plainCommandBus = localCommandBus(drizzleOnly)
-
-export const busForgotCorrelation: CommandHandlerEntry<Task> = {
-  ...enroll,
-  handler: correlatingHandler(drizzleHandler(enroll.handler, db), correlationFrom),
-  // @ts-expect-error — this bus mints a bare task; the wrapped handler asks for a correlating one
-  commandBus: plainCommandBus,
-  queryBus,
-  eventStore,
-}
-
-export const busForgotCorrelationOtherOrder: CommandHandlerEntry<Task> = {
-  ...enroll,
-  handler: drizzleHandler(correlatingHandler(enroll.handler, correlationFrom), db),
-  // @ts-expect-error — same refusal, same place, regardless of wrap order
-  commandBus: plainCommandBus,
-  queryBus,
-  eventStore,
-}
-
-// ---------------------------------------------------------------------------
-// (c) FORGET `drizzleHandler` — the handler still asks for `db()`, and the
-// entry refuses a handler it cannot supply.
-// ---------------------------------------------------------------------------
-
-export const forgotDrizzle: CommandHandlerEntry<Task> = {
+export const forgotDrizzle: CommandHandlerEntry = {
   ...enroll,
   // @ts-expect-error — `db()` was asked for and nothing supplied it
-  handler: correlatingHandler(enroll.handler, correlationFrom),
+  handler: correlatingHandler(enroll.handler),
   commandBus,
   queryBus,
   eventStore,
 }
 
 // ---------------------------------------------------------------------------
-// (d) THE PLAIN PATH — a handler that asked for nothing, wired to the composed
-// factory. A richer task satisfies a bare slot; the demand runs one way.
+// (c) THE PLAIN PATH — a handler that asked for nothing, wired to the same
+// factory. A handler naming no capability is satisfied by any task.
 // ---------------------------------------------------------------------------
 
 const plain = commandHandler(Enroll, async ({ payload }) => {

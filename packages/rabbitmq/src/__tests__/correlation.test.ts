@@ -32,8 +32,8 @@ import { inMemoryEventStore } from "@kronos-ts/core"
 import {
   command,
   commandHandler,
-  correlating,
   correlatingHandler,
+  messageOrigin,
   commandHandlerContext,
   correlation,
   interceptingCommandBus,
@@ -51,21 +51,13 @@ import {
   type RabbitMqCommandTransport,
 } from "../command-bus.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
-import type { Message, Metadata } from "@kronos-ts/core"
-
-// The id-pair cargo, written out as any host writes it: the chain is inherited
-// or seeded; the cause is the parent, unconditionally.
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
 
 /**
  * The three things `kronos` needs that are not modules. The UoW runner is named
  * once and handed to BOTH `localCommandBus` (which captures it at construction)
  * and `kronos` — writing them on adjacent lines is what makes that checkable.
  */
-function inMemoryBuses(uow = () => correlating(unitOfWork())) {
+function inMemoryBuses(uow = unitOfWork) {
   return {
     commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
     queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
@@ -189,19 +181,19 @@ function causingCommand(): CommandMessage {
 
 /**
  * One handler invocation that gives birth to a `Finish` command through `bus`.
- * `attach` is the mid-handling hook the precedence test uses.
+ * `cargo`, when given, replaces the wrapper's default cargo function — the
+ * host-cargo hook the precedence test uses.
  */
 async function sendFinishFrom(
   bus: CommandBus,
-  attach?: (uow: { attachCorrelationData(p: Record<string, string>): void }) => void,
+  cargo?: (parent: CommandMessage) => Metadata,
 ): Promise<void> {
-  const uow = correlating(unitOfWork())
+  const uow = unitOfWork()
   await uow.execute(async () => {
     const ctx = commandHandlerContext({ uow, commandBus: bus })
     const handler = correlatingHandler(async (_m, c: typeof ctx) => {
-      attach?.(c.unitOfWork)
       await c.send(Finish, { id: "x" })
-    }, correlationFrom)
+    }, cargo)
     await handler(causingCommand(), ctx)
   })
 }
@@ -240,19 +232,18 @@ describe("RabbitMQ command bus — correlation reaches the transport", () => {
     expect(transport.metadataAt(0).causationId).toBe(message.identifier)
   })
 
-  it("lets a LATER attach win over the cargo the wrapper put on the task", async () => {
+  it("lets a host cargo function override part of the default cargo", async () => {
     const transport = recordingLoopbackTransport()
     const bus = busOver(transport, defaultLocalBus())
 
-    // The map is read PER CALL, not captured at wrap time, so a handler that
-    // attaches mid-handling — a `traceparent`, a corrected chain id — has it on
-    // the next birth. Later keys win over earlier ones.
-    await sendFinishFrom(bus, (uow) => {
-      uow.attachCorrelationData({ correlationId: "from-uow" })
-    })
+    // The cargo is a plain function of the handled message, computed once for
+    // the invocation — a host that wants extra or overridden fields (a
+    // corrected chain id, an actor) spreads `messageOrigin` and overlays its
+    // own on top, rather than reaching for anything on the task.
+    await sendFinishFrom(bus, (parent) => ({ ...messageOrigin(parent), correlationId: "from-host" }))
 
-    expect(transport.metadataAt(0).correlationId).toBe("from-uow")
-    // …and what it did not override is still the wrapper's cargo.
+    expect(transport.metadataAt(0).correlationId).toBe("from-host")
+    // …and what it did not override is still the default cargo.
     expect(transport.metadataAt(0).causationId).toBe("cause-1")
   })
 
@@ -324,8 +315,8 @@ describe("RabbitMQ command bus — correlation survives a nested send over the w
     let finishMetadata: Metadata | undefined
 
     // `correlatingHandler` is what makes `ctx.send` carry: it reads the command
-    // this invocation is handling, attaches `correlationFrom(it)` to the task,
-    // and overlays that onto the nested command.
+    // this invocation is handling, computes `messageOrigin(it)` once, and
+    // overlays that onto the nested command from its invocation closure.
     const start = commandHandler(Start, async (message, ctx) => {
       outerIdentifier = message.identifier
       await ctx.send(Finish, { id: message.payload.id })
@@ -337,7 +328,7 @@ describe("RabbitMQ command bus — correlation survives a nested send over the w
 
     const carrying = <H extends { handler: any }>(h: H): H => ({
       ...h,
-      handler: correlatingHandler(h.handler, correlationFrom),
+      handler: correlatingHandler(h.handler),
     })
 
     const buses = inMemoryBuses()

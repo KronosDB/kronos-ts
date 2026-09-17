@@ -85,8 +85,8 @@ export function interceptingQueryBus<B extends QueryBus<any>>(
   return {
     ...next,
 
-    async query(message: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
-      return next.query(intercept(message), uow)
+    async query(message: QueryMessage): Promise<unknown> {
+      return next.query(intercept(message))
     },
     subscribe(queryName: string, handler: unknown) {
       next.subscribe(queryName, handler as never)

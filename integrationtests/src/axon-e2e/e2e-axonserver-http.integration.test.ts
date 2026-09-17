@@ -71,7 +71,7 @@ function inMemoryBuses(uow: () => UnitOfWork = unitOfWork): {
 } {
   return {
     commandBus: interceptingCommandBus(localCommandBus(uow), correlation),
-    queryBus: interceptingQueryBus(localQueryBus(uow), correlation),
+    queryBus: interceptingQueryBus(localQueryBus(unitOfWork), correlation),
   }
 }
 

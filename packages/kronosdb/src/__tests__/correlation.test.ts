@@ -21,7 +21,6 @@ import {
   type Serializer,
 } from "@kronos-ts/core"
 import {
-  correlating,
   correlatingHandler,
   commandHandlerContext,
   localCommandBus,
@@ -33,14 +32,6 @@ import {
 import { kronosDbCommandBus, kronosDbQueryBus } from "../kronosdb.js"
 import { metadataFromProto } from "../metadata-conversion.js"
 import type { KronosDbConnection } from "../connection.js"
-import type { Message, Metadata } from "@kronos-ts/core"
-
-// The id-pair cargo, written out as any host writes it: the chain is inherited
-// or seeded; the cause is the parent, unconditionally.
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
 
 const jsonSerializer: Serializer = {
   serialize(value, type, revision = ""): SerializedObject {
@@ -137,8 +128,9 @@ const FindThing = { name: qn("correlation", "FindThing") } as never
 
 /**
  * The command a handler is handling — the PARENT of whatever it gives birth to.
- * `correlationFrom` reads its `correlationId` as the chain and its identifier
- * as the cause, which is what the assertions below name.
+ * `messageOrigin`, the default cargo `correlatingHandler` uses, reads its
+ * `correlationId` as the chain and its identifier as the cause, which is what
+ * the assertions below name.
  */
 function causingCommand(): CommandMessage {
   return {
@@ -168,12 +160,12 @@ describe("KronosDB distributed command bus — correlation", () => {
     const bus = kronosDbCommandBus(localCommandBus(unitOfWork), handleOf(connection))
 
     const parent = causingCommand()
-    const uow = correlating(unitOfWork())
+    const uow = unitOfWork()
     await uow.execute(async () => {
       const ctx = commandHandlerContext({ uow, commandBus: bus })
       const handler = correlatingHandler(async (_m, c: typeof ctx) => {
         await c.send(Finish, { id: "x" })
-      }, correlationFrom)
+      })
       await handler(parent, ctx)
     })
 
@@ -201,12 +193,12 @@ describe("KronosDB distributed query bus — correlation", () => {
     const bus = kronosDbQueryBus(localQueryBus(unitOfWork), handleOf(connection))
 
     const parent = causingCommand()
-    const uow = correlating(unitOfWork())
+    const uow = unitOfWork()
     await uow.execute(async () => {
       const ctx = commandHandlerContext({ uow, queryBus: bus })
       const handler = correlatingHandler(async (_m, c: typeof ctx) => {
         await c.query(FindThing, { id: "x" })
-      }, correlationFrom)
+      })
       await handler(parent, ctx)
     })
 

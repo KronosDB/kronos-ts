@@ -94,9 +94,8 @@ export type EventStore = StreamableEventSource & {
  * is therefore already in `EventStore`'s shape; only the write needed a name.
  *
  * IT IS AN INTERSECTION, spelled by hand rather than derived from one wrapper
- * with `ReturnType` (the way `CorrelatingUnitOfWork` is derived from
- * `correlating`). Correlation has ONE composer, so the function can be the
- * source of truth. This capability has FOUR, one per storage family, in four
+ * with `ReturnType`. A capability with ONE composer can let the function be
+ * the source of truth. This capability has FOUR, one per storage family, in four
  * packages — `inMemorySnapshottingEventStore`, `postgresSnapshottingEventStore`,
  * `kronosDbSnapshottingEventStore`, `axonServerSnapshottingEventStore` — and
  * deriving the contract from any one of them would make three packages

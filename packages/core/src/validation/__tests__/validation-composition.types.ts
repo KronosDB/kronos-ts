@@ -14,11 +14,10 @@
  * the descriptor's exact parsed payload type rather than `unknown`.
  */
 import { z } from "zod"
-import { qn, command, event, queryDescriptor, type Message, type Metadata } from "../../messaging/messages.js"
+import { qn, command, event, queryDescriptor } from "../../messaging/messages.js"
 import { commandHandler } from "../../command-handling/handler.js"
 import { eventHandler } from "../../event-processing/handler.js"
 import { queryHandler } from "../../query-handling/handler.js"
-import { correlating, type CorrelatingUnitOfWork } from "../../correlation/correlating.js"
 import { correlatingHandler } from "../../correlation/correlating-handler.js"
 import { kronos } from "../../kronos.js"
 import type { CommandHandlerContext } from "../../command-handling/context.js"
@@ -27,6 +26,7 @@ import type { CommandBus } from "../../command-handling/bus.js"
 import type { QueryBus } from "../../query-handling/bus.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import type { EventProcessor } from "../../event-processing/processor.js"
+import type { UnitOfWork } from "../../unit-of-work/unit-of-work.js"
 import { validate } from "../validate.js"
 import { validatingHandler } from "../validating-handler.js"
 
@@ -60,10 +60,10 @@ const onCharged = eventHandler(Charged, ({ payload }) => {
 const getBalance = queryHandler(GetBalance, async ({ payload }) => payload.accountId.length)
 
 /**
- * The same two, unannotated — a slice never names its task. The correlation
- * demand belongs to `correlatingHandler` (on its OUTPUT) and is unchanged by
- * validation: `validatingHandler` asks the context for nothing, so it neither
- * adds a demand nor satisfies one.
+ * The same two, unannotated — a slice never names its task. `correlatingHandler`
+ * demands nothing of the context — it is `C` in, `C` out — and neither does
+ * `validatingHandler`: validation asks the context for nothing, so stacking the
+ * two adds no demand and satisfies none.
  */
 const openAccountCorrelating = commandHandler(OpenAccount, async ({ payload }) => ({
   accountId: payload.accountId,
@@ -102,18 +102,10 @@ export const wrongParse: { nope: string } | Promise<{ nope: string }> = validate
 // (c) THE COMPOSITION SITE — `.map((h) => ({ ...h, handler: validatingHandler(h.handler, h.descriptor) }))`
 // ---------------------------------------------------------------------------
 
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
-
-declare const commandBus: CommandBus<CorrelatingUnitOfWork>
-declare const queryBus: QueryBus<CorrelatingUnitOfWork>
+declare const commandBus: CommandBus<UnitOfWork>
+declare const queryBus: QueryBus<UnitOfWork>
 declare const eventStore: EventStore
-declare const processor: EventProcessor<CorrelatingUnitOfWork>
-declare const uow: () => CorrelatingUnitOfWork
-void correlating
-void uow
+declare const processor: EventProcessor<UnitOfWork>
 
 /** Validation ALONE — it demands nothing of the context, so the bare wiring compiles. */
 export const validated = kronos({
@@ -133,7 +125,7 @@ export const validatedAndCorrelating = kronos({
   commandHandlers: [openAccountCorrelating]
     .map((h) => ({
       ...h,
-      handler: validatingHandler(correlatingHandler(h.handler, correlationFrom), h.descriptor),
+      handler: validatingHandler(correlatingHandler(h.handler), h.descriptor),
     }))
     .map((h) => ({ ...h, commandBus, queryBus, eventStore })),
   eventHandlers: [onChargedCorrelating]
@@ -141,7 +133,7 @@ export const validatedAndCorrelating = kronos({
       ...h,
       // The other order composes too — a wrapper that supplies nothing to the
       // context erases nothing, so neither of these is the "right" one.
-      handler: correlatingHandler(validatingHandler(h.handler, h.descriptor), correlationFrom),
+      handler: correlatingHandler(validatingHandler(h.handler, h.descriptor)),
     }))
     .map((h) => ({ ...h, commandBus, queryBus, processor })),
 })

@@ -131,7 +131,7 @@ describe("otlpCommandBus", () => {
     )
     await exporter.close()
 
-    expect(fetchStub.spans()[0].status).toEqual({ code: 2, message: "no handler" })
+    expect(fetchStub.spans()[0].status).toEqual({ code: 2, message: "Error" })
   })
 
   it("passes subscribe through untouched — the handler span has one author", () => {
@@ -169,22 +169,23 @@ describe("otlpQueryBus", () => {
     expect(seen[0]!.metadata.traceparent).toBe(`00-${span.traceId}-${span.spanId}-01`)
   })
 
-  it("forwards the unit of work it was given", async () => {
+  it("hands the message on with the span stamped, and nothing else — a query is its own task", async () => {
     fetchStub = stubFetch()
     const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
-    const uows: unknown[] = []
+    const calls: unknown[][] = []
     const bus = {
-      async query(_message: QueryMessage, uow?: unknown) {
-        uows.push(uow)
+      async query(...args: unknown[]) {
+        calls.push(args)
         return "ok"
       },
     } as unknown as QueryBus
-    const marker = { marker: true } as any
 
-    await otlpQueryBus(bus, exporter).query(queryMessage(), marker)
+    await otlpQueryBus(bus, exporter).query(queryMessage())
     await exporter.close()
 
-    expect(uows).toEqual([marker])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toHaveLength(1)
+    expect((calls[0]![0] as QueryMessage).metadata.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/)
   })
 
   it("records a failed query on the span and rethrows", async () => {
@@ -197,7 +198,7 @@ describe("otlpQueryBus", () => {
     await expect(otlpQueryBus(bus, exporter).query(queryMessage())).rejects.toThrow("not found")
     await exporter.close()
 
-    expect(fetchStub.spans()[0].status).toEqual({ code: 2, message: "not found" })
+    expect(fetchStub.spans()[0].status).toEqual({ code: 2, message: "Error" })
   })
 
   it("delegates the rest of the bus surface unchanged", async () => {

@@ -93,11 +93,10 @@ type EventHandlerContextBase<U extends UnitOfWork = UnitOfWork> = {
    *
    * It is TYPED as whatever the seam's unit-of-work factory mints — `U`, which
    * defaults to the bare {@link UnitOfWork} and is threaded here by the bus or
-   * processor that opened the task. That is what lets a WRAPPER demand a
-   * composed capability on a handler's behalf: what `correlatingHandler`
-   * produces asks for `unitOfWork: CorrelatingUnitOfWork`, and does not
-   * typecheck against a bus built from a bare `() => unitOfWork()`. A handler
-   * itself writes `U` only when it reaches for the task directly.
+   * processor that opened the task. That is what lets a WRAPPER or an entry
+   * demand a composed unit of work on a handler's behalf — an adapter
+   * family's, say — and refuse a bus built from a bare `() => unitOfWork()`.
+   * A handler itself writes `U` only when it reaches for the task directly.
    */
   readonly unitOfWork: U
 }

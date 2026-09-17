@@ -1,19 +1,40 @@
-import type { Message, MessageKind } from "@kronos-ts/core"
-import { qualifiedNameToString } from "@kronos-ts/core"
+import type { Message, MessageKind, UnitOfWork } from "@kronos-ts/core"
+import { describe, qualifiedNameToString, type Described } from "@kronos-ts/core"
 import { SpanKind, type Attributes, type OtlpExporter, type SpanKindValue } from "./otlp-exporter.js"
-import { traceparentOf } from "./traceparent.js"
+import { trace, type Trace } from "./trace.js"
+import { traceparentOf, withTraceparent } from "./traceparent.js"
 
 // ---------------------------------------------------------------------------
 // The CONSUMER side.
 //
 // A wrapper over the handler FUNCTION, in the shape the persistence packages
-// use (`postgresHandler(handler, pg)`): take a handler, return a handler of the
+// use (`drizzleHandler(handler, db)`): take a handler, return a handler of the
 // same shape. It reads NOTHING from the entry it was taken off — the span's name,
 // its kind and whether it parents or links all come from the message being
-// handled, which is where they honestly live. That is what makes it
-// pre-appliable: `otlpHandler(h.handler, exporter)` needs no arrow reaching back
-// into `h`.
+// handled, which is where they honestly live.
+//
+// Three things happen per invocation, and they are how trace identity reaches
+// everything else without an ambient context:
+//
+//   1. A span is opened for the handling.
+//   2. The span is STAMPED onto the handled message's metadata as
+//      `traceparent`, so `correlatingHandler`'s cargo carries it onto every
+//      message the handler produces and onto every event it appends — the
+//      same key that crosses transports and persists in the log.
+//   3. A `Trace` scope under the span is SUPPLIED as `ctx.trace`, for child
+//      spans, bound loggers and outbound clients.
+//
+// A fourth, per task: when the handler returns, a `commit` span is opened
+// under the handler span and ended when the task completes or fails — the
+// time from this handler's end to durability (event flush, adapter commit,
+// after-commit work). A batch's handlers each get one; for a command it is
+// exactly the post-handler work.
 // ---------------------------------------------------------------------------
+
+/** The capability this wrapper supplies. A handler names it to reach `ctx.trace`. */
+export type TraceCapability = {
+  readonly trace: Trace
+}
 
 /** The attributes a span over a message carries. Shared with the bus wrappers. */
 export function messageAttributes(message: Message): Attributes {
@@ -40,12 +61,20 @@ function handlerSpanKind(kind: MessageKind): SpanKindValue {
   return kind === "query" ? SpanKind.SERVER : SpanKind.CONSUMER
 }
 
+type OtlpDescription<H> = {
+  readonly name: "otlpHandler"
+  readonly supplies: readonly ["trace"]
+  readonly stamps: readonly ["message.metadata"]
+  readonly next: H
+}
+
 /**
  * Wrap a handler function so each invocation is a span, joined to the trace the
- * handled message arrived carrying.
+ * handled message arrived carrying, stamped onto the message and supplied as
+ * `ctx.trace`.
  *
- * How it joins is the whole point, and it differs by leg — read off
- * `message.kind`, because the message knows what it is:
+ * How it joins differs by leg — read off `message.kind`, because the message
+ * knows what it is:
  *
  * - COMMAND and QUERY messages PARENT onto the remote context. The dispatcher
  *   is still on the stack waiting for the result, so nesting is honest: the
@@ -61,19 +90,20 @@ function handlerSpanKind(kind: MessageKind): SpanKindValue {
  * name it otherwise; it is a function OF THE MESSAGE, never a per-handler
  * string closed over at wiring time.
  *
+ * ORDER: this wrapper goes OUTSIDE `correlatingHandler` and `loggingHandler`,
+ * which read the message it stamps. Inside them, the compiler refuses with a
+ * sentence and `kronos()` refuses at boot.
+ *
  * ```ts
- * kronos({
- *   commandHandlers: commands.map((h) => ({ ...h, handler: otlpHandler(h.handler, exporter) })),
- *   eventHandlers: projections.map((h) => ({ ...h, handler: otlpHandler(h.handler, exporter) })),
- * })
+ * const wrap = (h) => otlpHandler(loggingHandler(correlatingHandler(drizzleHandler(h, db)), log), exporter)
  * ```
  */
 export function otlpHandler<M extends Message, C, R>(
   next: (message: M, context: C) => R,
   exporter: OtlpExporter,
   label?: (message: Message) => string,
-): (message: M, context: C) => Promise<Awaited<R>> {
-  return async (message, context): Promise<Awaited<R>> => {
+): ((message: M, context: Omit<C, "trace">) => Promise<Awaited<R>>) & Described<OtlpDescription<(message: M, context: C) => R>> {
+  const wrapped = async (message: M, context: Omit<C, "trace">): Promise<Awaited<R>> => {
     const remote = traceparentOf(message.metadata)
     const linked = message.kind === "event"
     const span = exporter.startSpan({
@@ -84,13 +114,33 @@ export function otlpHandler<M extends Message, C, R>(
       attributes: messageAttributes(message),
     })
 
+    const stamped = { ...message, metadata: withTraceparent(message.metadata, span) } as M
+    const supplied = { ...context, trace: trace(exporter, span) } as unknown as C
+
     try {
-      const result = await next(message, context)
+      const result = await next(stamped, supplied)
       span.end()
+      timeToDurability(context, span, message)
       return result
     } catch (error) {
       span.fail(error)
       throw error
     }
+  }
+  return describe(wrapped, { name: "otlpHandler", supplies: ["trace"], stamps: ["message.metadata"], next } as const)
+
+  /** The `commit` span: from this handler's end until its task completes or fails. */
+  function timeToDurability(context: unknown, parent: { traceId: string; spanId: string }, message: Message): void {
+    const uow = (context as { readonly unitOfWork?: UnitOfWork } | undefined)?.unitOfWork
+    // A real task, still open. (A test's stand-in context may carry anything here.)
+    if (uow === undefined || typeof uow.whenComplete !== "function" || uow.closed) return
+    const commit = exporter.startSpan({
+      name: "commit",
+      kind: SpanKind.INTERNAL,
+      parent,
+      attributes: messageAttributes(message),
+    })
+    uow.whenComplete(() => commit.end())
+    uow.onError((error) => commit.fail(error))
   }
 }

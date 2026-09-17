@@ -180,6 +180,10 @@ export function postgresPool(
       return handle().listen(channel, onNotification)
     },
 
+    unwrap<T = unknown>(): T {
+      return handle().unwrap<T>()
+    },
+
     // connect/disconnect are the adapter contract's half of the lifecycle, kept
     // so a pool is substitutable for the adapter it wraps. start()/close() are
     // what a host calls: they add the schema bootstrap and the idempotency.

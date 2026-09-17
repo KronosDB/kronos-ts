@@ -39,9 +39,11 @@ export type ResilienceConfig = {
   log?: (msg: string) => void
   /** Per-attempt classification: returns false to short-circuit (terminal error). */
   isRetryable?: (err: unknown) => boolean
+  /** How a retry waits. Defaults to `setTimeout`; a test injects one to observe delays without touching globals. */
+  sleep?: (ms: number) => Promise<void>
 }
 
-const DEFAULTS: Omit<ResilienceConfig, "log" | "isRetryable"> = {
+const DEFAULTS: Omit<ResilienceConfig, "log" | "isRetryable" | "sleep"> = {
   initialDelayMs: 100,
   maxDelayMs: 30_000,
   maxAttempts: 10,
@@ -105,11 +107,13 @@ export async function withRetry<T>(
             (err as Error)?.message ?? String(err)
           }`,
       )
-      await new Promise((r) => setTimeout(r, delay))
+      await (cfg.sleep ?? defaultSleep)(delay)
     }
   }
   throw lastErr
 }
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /**
  * Run a health-check probe with warn-then-continue semantics (D-100).

@@ -14,12 +14,9 @@ import { qn, command, event, queryDescriptor } from "../../messaging/messages.js
 import type {
   CommandMessage,
   EventMessage,
-  Message,
-  Metadata,
   StandardSchemaV1,
 } from "../../index.js"
 import {
-  correlating,
   correlatingHandler,
   commandHandler,
   inMemoryEventStore,
@@ -377,19 +374,14 @@ describe("validatingHandler — the log never accepts a lie", () => {
 // ---------------------------------------------------------------------------
 
 describe("validatingHandler — composes with the other mechanisms", () => {
-  const correlationFrom = (parent: Message): Metadata => ({
-    correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-    causationId: String(parent.identifier),
-  })
-
   it("inbound validation runs, correlation still attaches, and a birth overlays BOTH", async () => {
     const { ctx: base, calls } = recordingContext()
-    const ctx = { ...base, unitOfWork: correlating(unitOfWork()) }
+    const ctx = { ...base, unitOfWork: unitOfWork() }
 
     const handler = validatingHandler(
       correlatingHandler(async (message: CommandMessage<{ accountId: string }>, c: typeof ctx) => {
         c.append(Charged, { accountId: message.payload.accountId, amount: 10 } as never)
-      }, correlationFrom),
+      }),
       RecordCharge,
     )
 
@@ -408,13 +400,13 @@ describe("validatingHandler — composes with the other mechanisms", () => {
 
   it("still refuses an invalid inbound message when a correlating handler is underneath", async () => {
     const { ctx: base } = recordingContext()
-    const ctx = { ...base, unitOfWork: correlating(unitOfWork()) }
+    const ctx = { ...base, unitOfWork: unitOfWork() }
     let ran = false
 
     const handler = validatingHandler(
       correlatingHandler(async () => {
         ran = true
-      }, correlationFrom),
+      }),
       RecordCharge,
     )
 

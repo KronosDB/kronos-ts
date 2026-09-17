@@ -168,6 +168,10 @@ export function bunSqlAdapter(config: BunSqlAdapterConfig): PostgresAdapter {
       return rows[0] ?? null
     },
 
+    unwrap<T = unknown>(): T {
+      return getInstance() as unknown as T
+    },
+
     async transaction<T>(
       isolationLevel: IsolationLevel,
       fn: (tx: PostgresAdapterTransaction) => Promise<T>,

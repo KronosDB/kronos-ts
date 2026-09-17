@@ -50,20 +50,16 @@ describe("withRetry", () => {
 
   it("Test 2: success after N retries (exponential delays observed)", async () => {
     const observed: number[] = []
-    const realSetTimeout = globalThis.setTimeout
-    const stSpy = spyOn(globalThis, "setTimeout").mockImplementation(((
-      cb: (...args: any[]) => void,
-      ms?: number,
-    ) => {
-      observed.push(ms ?? 0)
-      return realSetTimeout(cb, 0)
-    }) as any)
+    // Delays are OBSERVED through the injected sleep, never through a global
+    // timer spy: another suite's reconnect loop scheduling a timer in the same
+    // process must not land in this list.
+    const sleep = async (ms: number) => { observed.push(ms) }
     try {
       // Random=1 => delay = 1.0 * exponential cap (deterministic).
       const rndSpy = spyOn(Math, "random").mockImplementation(() => 1)
       try {
         const fn = failsThenSucceeds(2, 42)
-        const result = await withRetry(fn, { event: "per-operation", ...FAST })
+        const result = await withRetry(fn, { event: "per-operation", ...FAST, sleep })
         expect(result).toBe(42)
         // Two retries => two timer scheduling calls; growth: base*2^0, base*2^1.
         // initialDelayMs=1, multiplier=2 => observed[0]≈1, observed[1]≈2.
@@ -74,26 +70,22 @@ describe("withRetry", () => {
         rndSpy.mockRestore()
       }
     } finally {
-      stSpy.mockRestore()
+      // nothing global to restore
     }
   })
 
   it("Test 3: full-jitter range [0, base * mult^attempt]", async () => {
     const observed: number[] = []
-    const realSetTimeout = globalThis.setTimeout
-    const stSpy = spyOn(globalThis, "setTimeout").mockImplementation(((
-      cb: (...args: any[]) => void,
-      ms?: number,
-    ) => {
-      observed.push(ms ?? 0)
-      return realSetTimeout(cb, 0)
-    }) as any)
+    // Delays are OBSERVED through the injected sleep, never through a global
+    // timer spy: another suite's reconnect loop scheduling a timer in the same
+    // process must not land in this list.
+    const sleep = async (ms: number) => { observed.push(ms) }
     try {
       // random=0 => delay 0 (lower bound). random=1 => upper bound.
       const rndSpy = spyOn(Math, "random").mockImplementation(deferredRandom([0, 1]))
       try {
         const fn = failsThenSucceeds(2, "ok")
-        await withRetry(fn, { event: "per-operation", ...FAST })
+        await withRetry(fn, { event: "per-operation", ...FAST, sleep })
         expect(observed[0]).toBe(0) // attempt 0 with random=0
         // attempt 1 with random=1: delay = min(1*2^1, 50) = 2
         expect(observed[1]).toBe(2)
@@ -101,20 +93,16 @@ describe("withRetry", () => {
         rndSpy.mockRestore()
       }
     } finally {
-      stSpy.mockRestore()
+      // nothing global to restore
     }
   })
 
   it("Test 4: maxDelayMs cap enforced once exponential exceeds it", async () => {
     const observed: number[] = []
-    const realSetTimeout = globalThis.setTimeout
-    const stSpy = spyOn(globalThis, "setTimeout").mockImplementation(((
-      cb: (...args: any[]) => void,
-      ms?: number,
-    ) => {
-      observed.push(ms ?? 0)
-      return realSetTimeout(cb, 0)
-    }) as any)
+    // Delays are OBSERVED through the injected sleep, never through a global
+    // timer spy: another suite's reconnect loop scheduling a timer in the same
+    // process must not land in this list.
+    const sleep = async (ms: number) => { observed.push(ms) }
     try {
       const rndSpy = spyOn(Math, "random").mockImplementation(() => 1)
       try {
@@ -130,6 +118,7 @@ describe("withRetry", () => {
           initialDelayMs: 10,
           multiplier: 2,
           maxDelayMs: 15,
+          sleep,
         })
         expect(observed[0]).toBe(10)
         expect(observed[1]).toBe(15)
@@ -139,7 +128,7 @@ describe("withRetry", () => {
         rndSpy.mockRestore()
       }
     } finally {
-      stSpy.mockRestore()
+      // nothing global to restore
     }
   })
 

@@ -16,6 +16,7 @@ export {
   SpanKind,
   type Attributes,
   type AttributeValue,
+  type LogExport,
   type Measurement,
   type OtlpExporter,
   type OtlpExporterOptions,
@@ -27,7 +28,16 @@ export {
 
 export { otlpCommandBus, otlpQueryBus } from "./otlp-bus.js"
 
-export { otlpHandler } from "./otlp-handler.js"
+export { otlpHandler, type TraceCapability } from "./otlp-handler.js"
+
+// The trace SCOPE — the value that says "you are here". `otlpHandler` supplies
+// one as `ctx.trace`; an edge builds one with `trace(exporter, parent)`; a
+// client that takes an optional one falls back to `inertTrace`.
+export { trace, inertTrace, type Trace, type SpanOptions } from "./trace.js"
+
+// The core `Logger` contract over `/v1/logs`. Pair it with core's
+// `loggingHandler`; `consoleLogger` is the no-exporter alternative.
+export { otlpLogger, type OtlpLoggerOptions } from "./otlp-logger.js"
 
 export { otlpMetricsHandler } from "./otlp-metrics-handler.js"
 

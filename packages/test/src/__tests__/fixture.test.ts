@@ -5,10 +5,10 @@ import {
   inMemoryTokenStore,
   eventProcessor,
   unitOfWork,
-  correlating,
   inMemorySnapshottingEventStore,
   localCommandBus,
   localQueryBus,
+  type UnitOfWork,
 } from "@kronos-ts/core"
 import {
   any,
@@ -836,7 +836,8 @@ describe("the scope", () => {
 //
 // A test should be able to run against the arrangement it is going to ship on.
 // The fixture wraps what it is handed for recording and owns nothing else; the
-// task it hands over is already on its clock and already correlating, so
+// task it hands over is already on its clock, and every handler the scope
+// hands the fixture is wrapped so `then` can still assert a causal chain —
 // neither property can be dropped on the way through.
 // ---------------------------------------------------------------------------
 
@@ -867,8 +868,8 @@ describe("infrastructure", () => {
     expect(builtWith).toBeDefined()
   })
 
-  it("hands over a task that is already on the fixture clock and already carrying", async () => {
-    let minted: ReturnType<typeof correlating> | undefined
+  it("hands over a task that is already on the fixture clock, and still carries", async () => {
+    let minted: UnitOfWork | undefined
 
     await testFixture(({ eventStore }) => decisions({ eventStore } as never), {
       clock: () => 1_700_000_000_000,
@@ -887,13 +888,20 @@ describe("infrastructure", () => {
     }).run(
       scenario()
         .when(command(CreateCourse, { courseId: "cs-1", name: "N", capacity: 1 }))
-        .then(event(CourseCreated, { courseId: "cs-1", name: "N", capacity: 1 })),
+        .then(
+          event(
+            CourseCreated,
+            { courseId: "cs-1", name: "N", capacity: 1 },
+            // Carrying is not a property of the task any more — it is
+            // `correlatingHandler` wrapping the scope's handlers, which the
+            // fixture does regardless of what infrastructure a host supplies.
+            { correlationId: any(), causationId: any() },
+          ),
+        ),
     )
 
-    // On the fixture's clock — the host never mentioned one…
+    // On the fixture's clock — the host never mentioned one.
     expect(minted!.now()).toBe(1_700_000_000_000)
-    // …and carrying, so `then` can still assert a causal chain.
-    expect(typeof minted!.correlationData).toBe("function")
   })
 
   it("stamps the events it appends from the supplied task's clock", async () => {

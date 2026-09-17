@@ -1,3 +1,4 @@
+import { describe, type Described } from "@kronos-ts/core"
 import type { Message } from "@kronos-ts/core"
 import type { Attributes, OtlpExporter } from "./otlp-exporter.js"
 import { messageName } from "./otlp-handler.js"
@@ -42,8 +43,9 @@ export function otlpMetricsHandler<M extends Message, C, R>(
   next: (message: M, context: C) => R,
   exporter: OtlpExporter,
   label?: (message: Message) => string,
-): (message: M, context: C) => Promise<Awaited<R>> {
-  return async (message, context): Promise<Awaited<R>> => {
+): ((message: M, context: C) => Promise<Awaited<R>>) &
+  Described<{ readonly name: "otlpMetricsHandler"; readonly next: (message: M, context: C) => R }> {
+  const wrapped = async (message: M, context: C): Promise<Awaited<R>> => {
     const attributes: Attributes = {
       message_type: message.kind,
       message_name: label ? label(message) : messageName(message),
@@ -85,4 +87,5 @@ export function otlpMetricsHandler<M extends Message, C, R>(
       })
     }
   }
+  return describe(wrapped, { name: "otlpMetricsHandler", next } as const)
 }

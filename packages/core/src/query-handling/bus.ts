@@ -14,19 +14,23 @@ export type QueryBus<U extends UnitOfWork = UnitOfWork> = {
   /**
    * Dispatch a query message to its handler(s).
    *
-   * Pass `uow` to NEST: the query runs inside that unit of work (and its
-   * transaction) instead of opening its own. `ctx.query` passes the handler's
-   * unit of work; a gateway dispatch passes nothing and the bus opens one.
+   * A QUERY IS ALWAYS ITS OWN TASK. The bus mints a fresh unit of work for
+   * every query, whether it arrived at the edge or from `ctx.query` inside a
+   * handler — a read never shares the caller's transaction, clock or
+   * correlation, and behaves the same whether the handler is co-located or
+   * reached over a transport. (It used to take an optional unit of work to
+   * NEST into; that made a co-located read run inside the command's
+   * transaction while a remote one did not, and let a nested read overwrite
+   * the caller's correlation. AF5's `SimpleQueryBus` mints per query too.)
    *
-   * The message may arrive with NO `timestamp` — the `query` verb cannot know
-   * the task's instant, so the bus fills it from the unit of work it nests in
-   * or mints.
+   * The message may arrive with NO `timestamp` — the bus fills it from the
+   * unit of work it mints.
    */
-  query(message: QueryMessage, uow?: UnitOfWork): Promise<unknown>
+  query(message: QueryMessage): Promise<unknown>
 
   /**
    * Subscribe a handler for the given query name. The bus hands the unit of
-   * work — nested or freshly opened — to the handler.
+   * work it minted for the query to the handler.
    */
   subscribe(
     queryName: string,

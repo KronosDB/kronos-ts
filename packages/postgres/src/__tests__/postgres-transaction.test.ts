@@ -54,6 +54,9 @@ function createRecordingAdapter() {
     },
     async connect() {},
     async disconnect() {},
+    unwrap<T = unknown>(): T {
+      return undefined as unknown as T
+    },
   }
   return { adapter, log }
 }
@@ -154,6 +157,9 @@ describe("postgresUnitOfWork", () => {
       },
       async connect() {},
       async disconnect() {},
+      unwrap<T = unknown>(): T {
+        return undefined as unknown as T
+      },
     }
     const make = postgresUnitOfWork(unitOfWork, adapter)
     const uow = make()

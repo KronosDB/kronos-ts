@@ -149,6 +149,9 @@ function createFakeAdapter() {
     async listen(): Promise<ListenSubscription> { return { async unlisten() {} } },
     async connect() {},
     async disconnect() {},
+    unwrap<T = unknown>(): T {
+      return undefined as unknown as T
+    },
   }
 
   return {

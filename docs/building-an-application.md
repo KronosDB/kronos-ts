@@ -136,17 +136,26 @@ and contributes through plain `flatMap`/`map` chains.
 
 ```ts
 export function billingModule(eventStore: EventStore): ModuleLists {
-  const db = drizzle(postgres(process.env.DATABASE_URL!))
-  const tokenStore = drizzleTokenStore(db)
-  const deadLetterQueue = drizzleDeadLetterQueue(db)
-  const uow = drizzleUnitOfWork(unitOfWork, db)
+  const pg = postgresPool(postgresAdapter({ connectionString: process.env.DATABASE_URL! }))
+  const tokenStore = postgresTokenStore(pg)
+  const deadLetterQueue = postgresDeadLetterQueue(pg)
+  const uow = postgresUnitOfWork(unitOfWork, pg)
   const slices = [billingSlice, settlementSlice]
 
+  // The one persistence step a slice takes: its query builder over the
+  // task's transaction. Drizzle here; `@kronos-ts/postgres/kysely` is the
+  // same shape. Handlers then read `ctx.db` with Drizzle's own types — the
+  // SQL-style builder is typed by the `pgTable` you pass to each call, so no
+  // schema is needed; pass `{ schema }` only for Drizzle's relational
+  // `db.query.*` API.
+  const wrap = (h) => postgresHandler(drizzleHandler(h, (client) => drizzle(client)), pg)
+
   return {
-    commandHandlers: slices.flatMap((s) => s.commandHandlers).map((h) => ({ ...h, eventStore })),
-    queryHandlers: slices.flatMap((s) => s.queryHandlers).map((h) => ({ ...h, eventStore })),
+    commandHandlers: slices.flatMap((s) => s.commandHandlers).map((h) => ({ ...h, handler: wrap(h.handler), eventStore })),
+    queryHandlers: slices.flatMap((s) => s.queryHandlers).map((h) => ({ ...h, handler: wrap(h.handler), eventStore })),
     eventHandlers: slices.flatMap((s) => s.eventHandlers).map((e) => ({
       ...e.handler,
+      handler: wrap(e.handler.handler),
       processor: e.processor(eventStore, tokenStore, uow, deadLetterQueue),
     })),
   }
@@ -154,10 +163,11 @@ export function billingModule(eventStore: EventStore): ModuleLists {
 ```
 
 Note the transaction identity: `tokenStore`, `deadLetterQueue` and the unit-of-work
-factory all come off the **same** `db` handle, which is also the handle the
-projections write their read models through. That is not a convention — it is the
-rule that makes a projection write and its cursor update one transaction. See
-[the persistence packages](packages/drizzle.md).
+factory all come off the **same** `pg` pool, and `ctx.db` is Drizzle over that
+task's transaction. That is not a convention — it is the rule that makes a
+projection write and its cursor update one transaction. Kronos ships one
+persistence family, postgres; a query builder is a client you construct over
+its transaction, never the owner of one.
 
 The module attaches storage but **not buses**. Which bus stack a process runs is
 a property of the process, not of the module.
@@ -181,33 +191,40 @@ export const app = kronos({
 })
 ```
 
-### Making metadata propagate
-
-Nothing rides from one message to the next unless you compose it. Two lines
-turn the root above into one where it does — a unit of work that can carry a
-map, and a wrapper that fills it per invocation:
+**The command bus and processors take the transaction family; the query bus
+takes the plain `unitOfWork`.** A command's decision and its append have to
+commit together, and a processor's projection write and its cursor update have
+to as well — that is what `postgresUnitOfWork` is for. A query is different: it is always its own task (see
+[how it works](how-it-works.md#a-query-is-always-its-own-task)), so it needs no
+transaction to join, and building `localQueryBus` from the persistence
+family's factory would only mint transactions a read never uses:
 
 ```ts
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
-
-const uow = () => correlating(unitOfWork)                     // ← a task that carries
+const uow = postgresUnitOfWork(unitOfWork, pg)  // the command bus and processors want this
 const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
-const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
+const queryBus = interceptingQueryBus(localQueryBus(unitOfWork), correlation)   // a read needs no transaction
+```
 
+### Making metadata propagate
+
+Nothing rides from one message to the next unless you compose it. One wrapper,
+around every handler, does it — no change to the task at all:
+
+```ts
 export const app = kronos({
   commandHandlers: modules.flatMap((m) => m.commandHandlers)
-    .map((h) => ({ ...h, handler: correlatingHandler(h.handler, correlationFrom) }))
+    .map((h) => ({ ...h, handler: correlatingHandler(h.handler) }))
     .map((h) => ({ ...h, commandBus, queryBus })),
   // …the same wrap on queryHandlers and eventHandlers
 })
 ```
 
-Wrap the handlers and forget the `correlating` — the compiler will not let you.
-A wrapped handler asks for a correlating unit of work, and a bus built from the
-bare `unitOfWork` cannot give it one. See
+`correlatingHandler(h.handler)` gives back a handler that carries `messageOrigin`
+— the default cargo: the chain is inherited or seeded, the cause is the parent,
+unconditionally — onto everything it gives birth to. The cargo lives in the
+invocation's own closure, not on the unit of work, so wrapping the handlers
+changes nothing about what they wire against: `commandBus: localCommandBus(unitOfWork)`
+still typechecks, wrapped or not. See
 [how it works](how-it-works.md#correlation-the-functions-you-wrap-in).
 
 ### Bus stacks are nesting, not configuration
@@ -290,21 +307,15 @@ From there it rides forward only if you say so. `ctx.send`, `ctx.query`,
 `ctx.append` and `ctx.schedule` give a message exactly the metadata they were
 handed — nothing is carried behind your back. What makes metadata JUMP from the
 message a handler is handling onto everything that handling births is
-`correlatingHandler(next, from)`, and `from` is the function that names the
-cargo:
+`correlatingHandler(next, from?)`, and `from` — a function of the handled
+message — defaults to `messageOrigin`:
 
 ```ts
-// the pair, written where it is used — two lines, yours
-const correlationFrom = (parent: Message): Metadata => ({
-  correlationId: String(parent.metadata.correlationId ?? parent.identifier),
-  causationId: String(parent.identifier),
-})
-
-correlatingHandler(h.handler, correlationFrom)
+correlatingHandler(h.handler)   // messageOrigin: correlationId/causationId, traceparent when present
 
 // the same, plus this host's own per-request facts
 correlatingHandler(h.handler, (m) => ({
-  ...correlationFrom(m),
+  ...messageOrigin(m),
   actor: String(m.metadata.actor ?? ""),
 }))
 ```

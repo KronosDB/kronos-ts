@@ -1,3 +1,5 @@
+import type { LogLevel } from "@kronos-ts/core"
+
 // ---------------------------------------------------------------------------
 // The OTLP wire, hand-rolled.
 //
@@ -10,7 +12,7 @@
 /** The attribute value types OTLP/JSON can carry without a schema. */
 export type AttributeValue = string | number | boolean
 
-/** A set of attributes attached to a span or a metric data point. */
+/** A set of attributes attached to a span, a log record or a metric data point. */
 export type Attributes = Readonly<Record<string, AttributeValue>>
 
 /**
@@ -63,7 +65,11 @@ export type StartSpanOptions = {
 export type OtlpSpan = TraceContext & {
   /** End with status OK. */
   end(): void
-  /** End with status ERROR, recording `error`'s message. */
+  /**
+   * End with status ERROR. Records the error's TYPE (its constructor name) —
+   * not its message, which may carry user data — unless the exporter was
+   * built with `errors: "message"`.
+   */
   fail(error: unknown): void
 }
 
@@ -77,29 +83,61 @@ export type Measurement = {
   readonly attributes?: Attributes
 }
 
+/** One log record handed to the exporter. What `otlpLogger` builds; hosts rarely call this directly. */
+export type LogExport = {
+  /** Epoch milliseconds. */
+  readonly time: number
+  readonly level: LogLevel
+  readonly message: string
+  readonly attributes?: Attributes
+  /** The span the record was written under, when known. */
+  readonly trace?: TraceContext
+}
+
 export type OtlpExporterOptions = {
-  /** Collector base URL — `/v1/traces` and `/v1/metrics` are appended. */
+  /** Collector base URL — `/v1/traces`, `/v1/metrics` and `/v1/logs` are appended. */
   readonly endpoint: string
   /** Value of the `service.name` resource attribute. */
   readonly serviceName: string
   /** How often the batch is POSTed. Default 5000ms. */
   readonly flushIntervalMs?: number
+  /** Deadline for one POST. A collector that hangs cannot hold `close()` past this. Default 10000ms. */
+  readonly exportTimeoutMs?: number
+  /** Spans kept between flushes; beyond it the OLDEST are dropped and counted. Default 10000. */
+  readonly maxBufferedSpans?: number
+  /** Log records kept between flushes; same policy. Default 10000. */
+  readonly maxBufferedLogs?: number
+  /**
+   * What `span.fail(error)` records. `"type"` (default) records only the
+   * error's constructor name; `"message"` also records `error.message`. The
+   * default is the privacy-safe one: an error message can carry anything.
+   */
+  readonly errors?: "type" | "message"
+  /**
+   * Told when a POST fails or is rejected. Telemetry never throws into the
+   * host; this is the one place a host can learn its collector is unhappy.
+   */
+  readonly onExportError?: (error: unknown, signal: "traces" | "metrics" | "logs") => void
 }
 
 /**
  * The RESOURCE: it owns a buffer, a timer and a socket's worth of work.
- * Build one per process, hand it to the wrappers, `close()` it on shutdown.
+ * Build one per process, hand it to the wrappers, `close()` it LAST on
+ * shutdown — after the app stopped and every transport drained, so nothing
+ * still running records into a closed exporter.
  */
 export type OtlpExporter = {
-  /** Start a span. It enters the batch when it ends. */
+  /** Start a span. It enters the batch when it ends. After `close()`, an inert span that records nothing. */
   startSpan(options: StartSpanOptions): OtlpSpan
   /** Add to a monotonic sum, keyed by name + unit + attributes. */
   addCount(measurement: Measurement): void
   /** Record into an explicit-bucket histogram, keyed the same way. */
   recordHistogram(measurement: Measurement): void
+  /** Buffer a log record. Ignored after `close()`. */
+  emitLog(record: LogExport): void
   /** POST whatever is buffered. Never rejects — telemetry must not break a host. */
   flush(): Promise<void>
-  /** Stop the flush loop, then flush what is left. */
+  /** Stop intake, stop the flush loop, then flush what is left within the export deadline. */
   close(): Promise<void>
 }
 
@@ -171,6 +209,17 @@ function seriesKey(name: string, unit: string, attributes: Attributes | undefine
   return JSON.stringify([name, unit, entries])
 }
 
+/** OTLP severity numbers for the four levels. */
+const SEVERITY: Record<LogLevel, { number: number; text: string }> = {
+  debug: { number: 5, text: "DEBUG" },
+  info: { number: 9, text: "INFO" },
+  warn: { number: 13, text: "WARN" },
+  error: { number: 17, text: "ERROR" },
+}
+
+/** The series every dropped record is counted into, by signal. */
+const DROPPED = "kronos.otlp.dropped"
+
 // ---------------------------------------------------------------------------
 // Buffered records
 // ---------------------------------------------------------------------------
@@ -186,6 +235,16 @@ type SpanRecord = {
   attributes: KeyValue[]
   links: { traceId: string; spanId: string }[]
   status: { code: number; message?: string }
+}
+
+type LogRecordWire = {
+  timeUnixNano: string
+  severityNumber: number
+  severityText: string
+  body: { stringValue: string }
+  attributes: KeyValue[]
+  traceId?: string
+  spanId?: string
 }
 
 type SumSeries = {
@@ -208,8 +267,24 @@ type HistogramSeries = {
   buckets: number[]
 }
 
+/** The error's TYPE — a constructor name, never its message. */
+function errorType(error: unknown): string {
+  if (error instanceof Error) return error.name || error.constructor.name || "Error"
+  return typeof error
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** A span that records nothing — what `startSpan` answers after `close()`. */
+function inertSpan(parent: TraceContext | undefined): OtlpSpan {
+  return {
+    traceId: parent?.traceId ?? traceId(),
+    spanId: spanId(),
+    end: () => {},
+    fail: () => {},
+  }
 }
 
 /**
@@ -219,21 +294,32 @@ function errorMessage(error: unknown): string {
  * const exporter = otlpExporter({ endpoint: "http://localhost:4318", serviceName: "billing" })
  * const commandBus = otlpCommandBus(interceptingCommandBus(localCommandBus(uow), correlation), exporter)
  * // …
+ * await app.stop()
  * await exporter.close()
  * ```
  *
- * Export failures are SWALLOWED. A collector that is down, slow or wrong must
- * not turn into a failed command: the batch is dropped and the process keeps
- * serving. That is the one asymmetry this package insists on.
+ * Export failures are SWALLOWED (and reported to `onExportError` when given).
+ * A collector that is down, slow or wrong must not turn into a failed
+ * command: the batch is dropped and the process keeps serving. Buffers are
+ * BOUNDED: past `maxBufferedSpans`/`maxBufferedLogs` the oldest records are
+ * dropped and counted into the `kronos.otlp.dropped` sum, so a collector
+ * outage costs memory up to a ceiling, not without limit. Every POST has a
+ * deadline, so `close()` returns within it even against a hanging collector.
  */
 export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
   const { endpoint, serviceName } = options
   const flushIntervalMs = options.flushIntervalMs ?? 5000
+  const exportTimeoutMs = options.exportTimeoutMs ?? 10_000
+  const maxBufferedSpans = options.maxBufferedSpans ?? 10_000
+  const maxBufferedLogs = options.maxBufferedLogs ?? 10_000
+  const recordMessages = options.errors === "message"
   const base = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint
 
   let spans: SpanRecord[] = []
+  let logs: LogRecordWire[] = []
   let sums = new Map<string, SumSeries>()
   let histograms = new Map<string, HistogramSeries>()
+  const dropped = { traces: 0, logs: 0 }
   let windowStartMs = Date.now()
   let closed = false
   /** Serializes flushes so two POSTs of the same batch can never overlap. */
@@ -242,15 +328,35 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
   const resource = { attributes: keyValues({ "service.name": serviceName }) }
   const scope = { name: "@kronos-ts/otlp" }
 
-  async function post(path: string, body: unknown): Promise<void> {
+  async function post(path: string, body: unknown, signal: "traces" | "metrics" | "logs"): Promise<void> {
     try {
-      await globalThis.fetch(`${base}${path}`, {
+      const response = await globalThis.fetch(`${base}${path}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(exportTimeoutMs),
       })
-    } catch {
+      if (!response.ok) {
+        options.onExportError?.(new Error(`OTLP ${signal} export rejected: HTTP ${response.status}`), signal)
+      }
+    } catch (error) {
       // Dropped on purpose — see the note on otlpExporter.
+      options.onExportError?.(error, signal)
+    }
+  }
+
+  /** Count what was dropped since the last flush into the metrics batch, then forget it. */
+  function accountDropped(): void {
+    for (const signal of ["traces", "logs"] as const) {
+      if (dropped[signal] === 0) continue
+      addCount({
+        name: DROPPED,
+        value: dropped[signal],
+        unit: "1",
+        description: "Records dropped because the exporter's buffer was full",
+        attributes: { signal },
+      })
+      dropped[signal] = 0
     }
   }
 
@@ -259,6 +365,13 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
     const batch = spans
     spans = []
     return { resourceSpans: [{ resource, scopeSpans: [{ scope, spans: batch }] }] }
+  }
+
+  function drainLogs(): unknown | undefined {
+    if (logs.length === 0) return undefined
+    const batch = logs
+    logs = []
+    return { resourceLogs: [{ resource, scopeLogs: [{ scope, logRecords: batch }] }] }
   }
 
   function drainMetrics(): unknown | undefined {
@@ -318,15 +431,35 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
   }
 
   async function doFlush(): Promise<void> {
+    accountDropped()
     const traces = drainSpans()
+    const logBatch = drainLogs()
     const metrics = drainMetrics()
-    if (traces) await post("/v1/traces", traces)
-    if (metrics) await post("/v1/metrics", metrics)
+    if (traces) await post("/v1/traces", traces, "traces")
+    if (logBatch) await post("/v1/logs", logBatch, "logs")
+    if (metrics) await post("/v1/metrics", metrics, "metrics")
   }
 
   function flush(): Promise<void> {
     pending = pending.then(doFlush)
     return pending
+  }
+
+  function addCount(measurement: Measurement): void {
+    const unit = measurement.unit ?? "1"
+    const key = seriesKey(measurement.name, unit, measurement.attributes)
+    const existing = sums.get(key)
+    if (existing) {
+      existing.value += measurement.value
+      return
+    }
+    sums.set(key, {
+      name: measurement.name,
+      unit,
+      ...(measurement.description ? { description: measurement.description } : {}),
+      attributes: measurement.attributes,
+      value: measurement.value,
+    })
   }
 
   const timer = setInterval(() => {
@@ -337,15 +470,21 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
 
   return {
     startSpan(spanOptions: StartSpanOptions): OtlpSpan {
+      if (closed) return inertSpan(spanOptions.parent)
       const id = spanId()
       const trace = spanOptions.parent?.traceId ?? traceId()
       const startEpochMs = Date.now()
       const startPerf = performance.now()
       let ended = false
 
-      const finish = (status: { code: number; message?: string }) => {
+      const finish = (status: { code: number; message?: string }, extra?: Attributes) => {
         if (ended) return
         ended = true
+        if (closed) return
+        if (spans.length >= maxBufferedSpans) {
+          spans.shift()
+          dropped.traces += 1
+        }
         spans.push({
           traceId: trace,
           spanId: id,
@@ -354,7 +493,7 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
           kind: spanOptions.kind,
           startTimeUnixNano: unixNano(startEpochMs),
           endTimeUnixNano: unixNano(startEpochMs + (performance.now() - startPerf)),
-          attributes: keyValues(spanOptions.attributes),
+          attributes: keyValues(extra ? { ...spanOptions.attributes, ...extra } : spanOptions.attributes),
           links: (spanOptions.links ?? []).map((link) => ({
             traceId: link.traceId,
             spanId: link.spanId,
@@ -367,26 +506,15 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
         traceId: trace,
         spanId: id,
         end: () => finish({ code: StatusCode.OK }),
-        fail: (error: unknown) => finish({ code: StatusCode.ERROR, message: errorMessage(error) }),
+        fail: (error: unknown) =>
+          finish(
+            { code: StatusCode.ERROR, message: recordMessages ? errorMessage(error) : errorType(error) },
+            { "error.type": errorType(error) },
+          ),
       }
     },
 
-    addCount(measurement: Measurement): void {
-      const unit = measurement.unit ?? "1"
-      const key = seriesKey(measurement.name, unit, measurement.attributes)
-      const existing = sums.get(key)
-      if (existing) {
-        existing.value += measurement.value
-        return
-      }
-      sums.set(key, {
-        name: measurement.name,
-        unit,
-        ...(measurement.description ? { description: measurement.description } : {}),
-        attributes: measurement.attributes,
-        value: measurement.value,
-      })
-    },
+    addCount,
 
     recordHistogram(measurement: Measurement): void {
       const unit = measurement.unit ?? "1"
@@ -413,6 +541,23 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
       let bucket = DEFAULT_BOUNDS.findIndex((bound) => measurement.value <= bound)
       if (bucket === -1) bucket = DEFAULT_BOUNDS.length
       series.buckets[bucket] = (series.buckets[bucket] ?? 0) + 1
+    },
+
+    emitLog(record: LogExport): void {
+      if (closed) return
+      if (logs.length >= maxBufferedLogs) {
+        logs.shift()
+        dropped.logs += 1
+      }
+      const severity = SEVERITY[record.level]
+      logs.push({
+        timeUnixNano: unixNano(record.time),
+        severityNumber: severity.number,
+        severityText: severity.text,
+        body: { stringValue: record.message },
+        attributes: keyValues(record.attributes),
+        ...(record.trace ? { traceId: record.trace.traceId, spanId: record.trace.spanId } : {}),
+      })
     },
 
     flush,

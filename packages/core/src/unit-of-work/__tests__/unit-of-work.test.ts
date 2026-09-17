@@ -9,7 +9,8 @@ import { Phase, unitOfWork, requireInvocation, requireLive, NoActiveUnitOfWork, 
  *   - phase ordering around the action, and late-registration draining
  *   - lifecycle hooks fire in their phase; onError/whenComplete are exclusive
  *   - the handle's own state: buffers, closed flag — and NOT correlation,
- *     which is composed on top by `correlating(unitOfWork())` and tested there
+ *     which `correlatingHandler` holds in the invocation's closure and never
+ *     writes onto the task at all
  *   - every `unitOfWork()` call mints a fresh one; each executes exactly once
  */
 describe("unitOfWork — the () => UnitOfWork primitive", () => {
@@ -178,12 +179,10 @@ describe("unitOfWork — the () => UnitOfWork primitive", () => {
       expect(seenAtPrepare).toBe(1)
     })
 
-    it("has no correlation vocabulary at all — that is composed on top", async () => {
-      // PURE TASK LIFECYCLE. Correlation is a carrying policy, and a policy is
-      // not something a primitive is born knowing: `correlating(unitOfWork())`
-      // is what adds the map, and `correlatingHandler(next, from)` is what
-      // decides what goes in it. A host that never composes either has no way
-      // to observe from here that the concept exists.
+    it("has no correlation vocabulary at all — the task never carries any", async () => {
+      // PURE TASK LIFECYCLE. Correlation is a carrying policy that lives
+      // entirely in `correlatingHandler`'s invocation closure now — there is no
+      // map on the task to compose in, and no host arrangement puts one there.
       await unitOfWork().execute(async (uow) => {
         expect("correlationData" in uow).toBe(false)
         expect("contributeCorrelationData" in uow).toBe(false)

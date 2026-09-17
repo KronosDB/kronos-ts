@@ -70,7 +70,7 @@ export function otlpQueryBus<B extends QueryBus<any>>(next: B, exporter: OtlpExp
   return {
     ...next,
 
-    async query(message: QueryMessage, uow?): Promise<unknown> {
+    async query(message: QueryMessage): Promise<unknown> {
       const span = exporter.startSpan({
         name: `query(${qualifiedNameToString(message.name)})`,
         kind: SpanKind.CLIENT,
@@ -82,7 +82,7 @@ export function otlpQueryBus<B extends QueryBus<any>>(next: B, exporter: OtlpExp
         metadata: withTraceparent(message.metadata, span),
       }
       try {
-        const result = await next.query(propagated, uow)
+        const result = await next.query(propagated)
         span.end()
         return result
       } catch (error) {

@@ -172,12 +172,12 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
   }
 
   const bus: SubscriptionCapableQueryBus<U> = {
-    async query(unstamped: QueryMessage, uow?: UnitOfWork): Promise<unknown> {
+    async query(unstamped: QueryMessage): Promise<unknown> {
       const queryName = qualifiedNameToString(unstamped.name)
       if (preferLocal && localHandlers.has(queryName)) {
-        // Hand the unit of work through so a `ctx.query` that prefers a next
-        // handler still nests in the caller's UoW, as the in-process bus does.
-        return next.query(unstamped, uow)
+        // A co-located handler answers on a task of its own, exactly as a
+        // remote one would — `next` mints it.
+        return next.query(unstamped)
       }
 
       // A transport is not a task: it has no unit of work, so it has no clock.
