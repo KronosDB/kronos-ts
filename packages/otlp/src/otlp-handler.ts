@@ -1,4 +1,4 @@
-import type { Message, MessageKind, UnitOfWork } from "@kronos-ts/core"
+import type { Message, MessageKind, Metadata, UnitOfWork } from "@kronos-ts/core"
 import { describe, qualifiedNameToString, type Described } from "@kronos-ts/core"
 import { SpanKind, type Attributes, type OtlpExporter, type SpanKindValue } from "./otlp-exporter.js"
 import { metrics, type Metrics } from "./metrics.js"
@@ -94,6 +94,9 @@ type OtlpDescription<H> = {
  * Wrap a handler function so each invocation is a span, joined to the trace the
  * handled message arrived carrying, stamped onto the message and supplied as
  * `ctx.trace`.
+ * Existing `ctx.load`, `ctx.source`, `ctx.send`, and `ctx.query` calls also
+ * get child spans. Sends and queries carry their operation's traceparent to
+ * the receiving handler; arguments and results are never recorded.
  *
  * How it joins differs by leg — read off `message.kind`, because the message
  * knows what it is:
@@ -142,7 +145,12 @@ export function otlpHandler<M extends Message, C, R>(
     // three and anything the handler records through `ctx.metrics`.
     const series: Attributes = { message_type: message.kind, message_name: name }
     const stamped = { ...message, metadata: withTraceparent(message.metadata, span) } as M
-    const supplied = { ...context, trace: trace(exporter, span), metrics: metrics(exporter, series) } as unknown as C
+    const scope = trace(exporter, span)
+    const supplied = {
+      ...instrumented(context, scope, exporter),
+      trace: scope,
+      metrics: metrics(exporter, series),
+    } as unknown as C
 
     const started = performance.now()
     try {
@@ -201,4 +209,38 @@ export function otlpHandler<M extends Message, C, R>(
     uow.whenComplete(() => commit.end())
     uow.onError((error) => commit.fail(error))
   }
+}
+
+/**
+ * The context with its Kronos operations as child spans of `scope`. Which
+ * operations exist is asked of the context, not assumed — a query context has
+ * no `send` — and no argument or result is ever recorded.
+ */
+function instrumented<C>(context: C, scope: Trace, exporter: OtlpExporter): C {
+  const source = context as Record<string, unknown> | undefined
+  const wrapped: Record<string, unknown> = { ...source }
+
+  for (const name of ["load", "source"] as const) {
+    const operation = source?.[name]
+    if (typeof operation !== "function") continue
+    wrapped[name] = scope.span((...args: unknown[]) => operation.apply(context, args), {
+      name: `ctx.${name}`,
+    })
+  }
+
+  for (const name of ["send", "query"] as const) {
+    const operation = source?.[name]
+    if (typeof operation !== "function") continue
+    wrapped[name] = (descriptor: unknown, payload: unknown, metadata: Metadata = {}) => {
+      // Correlation may already have carried the handler's traceparent here.
+      // An explicit parent (for example from trace.run) wins, just as it does
+      // at the bus boundary. The outgoing message then carries THIS operation.
+      const parent = traceparentOf(metadata) ?? scope.context
+      return trace(exporter, parent).run(`ctx.${name}`, (child) =>
+        operation.call(context, descriptor, payload, withTraceparent(metadata, child.context!)),
+      )
+    }
+  }
+
+  return wrapped as C
 }
