@@ -9,9 +9,9 @@
  *   correlation and logging, `otlpHandler` outermost.
  * - `otlpHandler` inside `correlatingHandler` or `loggingHandler` is refused
  *   with a sentence.
- * - An OBSERVED pool makes `postgresHandler` demand `trace`, so the entry
- *   refuses to wire until `otlpHandler` sits outside it; a plain pool demands
- *   nothing.
+ * - `otlpHandler` inside `postgresHandler` is refused with a sentence: the
+ *   trace would arrive too late to span a statement. With no tracer at all,
+ *   `postgresHandler` demands nothing.
  * - A transactional factory is refused by `localQueryBus`.
  */
 import { z } from "zod"
@@ -30,7 +30,7 @@ import {
   type CommandHandlerEntry,
   type LogCapability,
 } from "@kronos-ts/core"
-import { observed, postgresHandler, postgresUnitOfWork, type PostgresAdapter } from "@kronos-ts/postgres"
+import { postgresHandler, postgresUnitOfWork, type PostgresAdapter } from "@kronos-ts/postgres"
 import { drizzleHandler, type DrizzleCapability } from "@kronos-ts/postgres/drizzle"
 import { otlpExporter, otlpHandler, type TraceCapability } from "@kronos-ts/otlp"
 import { drizzle } from "drizzle-orm/postgres-js"
@@ -43,7 +43,6 @@ declare function pipe<A, B, C, D, E, F>(a: A, ab: (a: A) => B, bc: (b: B) => C, 
 
 const Place = command({ name: qn("orders", "Place"), payload: z.object({ id: z.string() }) })
 declare const pg: PostgresAdapter
-const observedPg = observed(pg)
 const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "probe" })
 const log = consoleLogger()
 const eventStore = inMemoryEventStore()
@@ -52,11 +51,11 @@ const commandBus = localCommandBus(uow)
 const queryBus = localQueryBus(unitOfWork)
 
 // The one persistence step a slice takes: Drizzle over the task's
-// transaction, from the postgres package's subpath, typed as Drizzle types it.
+// transaction, from the postgres package's subpath. The handler names the
+// capability bare — no driver, no build function's return type.
 const drizzleOver = (client: unknown) => drizzle(client as never)
-type Db = ReturnType<typeof drizzleOver>
 
-type Ctx = CommandHandlerContext & DrizzleCapability<Db> & LogCapability & Partial<TraceCapability>
+type Ctx = CommandHandlerContext & DrizzleCapability & LogCapability & Partial<TraceCapability>
 const place = commandHandler(Place, async (_m, ctx: Ctx) => {
   ctx.db.select
   ctx.log.info("placed")
@@ -71,7 +70,7 @@ export const documented: CommandHandlerEntry = {
   handler: pipe(
     place.handler,
     (h) => drizzleHandler(h, drizzleOver),
-    (h) => postgresHandler(h, observedPg),
+    (h) => postgresHandler(h, pg),
     (h) => correlatingHandler(h),
     (h) => loggingHandler(h, log),
     (h) => otlpHandler(h, exporter),
@@ -104,24 +103,17 @@ export const tracingInsideLogging = pipe(
 )
 
 // ---------------------------------------------------------------------------
-// (c) AN OBSERVED POOL DEMANDS TRACING — the entry refuses until a tracer sits
-// outside postgresHandler. A plain pool demands nothing.
+// (c) STATEMENT SPANS NEED THE TRACER OUTSIDE — inside `postgresHandler` it is
+// a sentence. With no tracer at all, postgresHandler demands nothing.
 // ---------------------------------------------------------------------------
 
-export const observedWithoutTracer: CommandHandlerEntry = {
-  ...place,
-  // @ts-expect-error — `trace` is demanded by postgresHandler(observed) and nothing supplies it
-  handler: pipe(
-    place.handler,
-    (h) => drizzleHandler(h, drizzleOver),
-    (h) => postgresHandler(h, observedPg),
-    (h) => correlatingHandler(h),
-    (h) => loggingHandler(h, log),
-  ),
-  commandBus,
-  queryBus,
-  eventStore,
-}
+export const tracingInsidePostgres = pipe(
+  place.handler,
+  (h) => drizzleHandler(h, drizzleOver),
+  (h) => otlpHandler(h, exporter),
+  // @ts-expect-error — "a wrapper that supplies ctx.trace is inside postgresHandler: move it outside…"
+  (h) => postgresHandler(h, pg),
+)
 
 export const plainWithoutTracer: CommandHandlerEntry = {
   ...place,

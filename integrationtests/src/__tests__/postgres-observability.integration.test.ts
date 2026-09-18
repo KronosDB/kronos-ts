@@ -1,6 +1,6 @@
 /**
  * Integration coverage for @kronos-ts/postgres's per-statement observability
- * (`observed(pg)` + `postgresHandler`), proving it against a REAL Postgres and
+ * (`postgresHandler` under a traced context), proving it against a REAL Postgres and
  * a REAL query builder — Drizzle over `drizzle-orm/postgres-js` — rather than
  * a fake transaction.
  *
@@ -25,10 +25,8 @@ import {
   postgresUnitOfWork,
   postgresTransaction,
   postgresHandler,
-  observed,
   type PostgresCapability,
   type PostgresResource,
-  type ObservedPostgres,
   type SpanningTrace,
 } from "@kronos-ts/postgres"
 import { postgresAdapter } from "@kronos-ts/postgres/adapters/postgres"
@@ -59,7 +57,7 @@ type HandlerCtx = PostgresCapability & { readonly unitOfWork: UnitOfWork; readon
 describe("postgres observability + drizzle over the task's transaction", () => {
   let container: StartedTestContainer
   let connectionString: string
-  let pool: PostgresResource & ObservedPostgres
+  let pool: PostgresResource
 
   beforeAll(async () => {
     container = await new GenericContainer("postgres:16-alpine")
@@ -71,7 +69,7 @@ describe("postgres observability + drizzle over the task's transaction", () => {
     const host = container.getHost()
     connectionString = `postgresql://test:test@${host}:${port}/test`
 
-    pool = observed(postgresPool(postgresAdapter({ connectionString }), { bootstrap: false }))
+    pool = postgresPool(postgresAdapter({ connectionString }), { bootstrap: false })
     await pool.start()
     await pool.query(`CREATE TABLE IF NOT EXISTS obs_widgets (id text primary key, name text not null)`)
     await pool.query(`CREATE TABLE IF NOT EXISTS obs_markers (id text primary key)`)
@@ -150,10 +148,10 @@ describe("postgres observability + drizzle over the task's transaction", () => {
     expect(spans.length).toBe(2)
   })
 
-  it("un-observed pool: postgresHandler is unaffected — no trace needed, sql() is the plain transaction", async () => {
-    // A SEPARATE pool over the same database, deliberately never passed to
-    // `observed()` — proves the plain overload needs no trace at all, and
-    // that observability is opt-in per pool, not a global mode.
+  it("no trace on the context: postgresHandler is unaffected — sql() is the plain transaction", async () => {
+    // A SEPARATE pool over the same database, handled with NO trace on the
+    // context — proves statement spans follow the context, and that a host
+    // without tracing gets the real handle, not a view.
     const plainPool = postgresPool(postgresAdapter({ connectionString }), { bootstrap: false })
     await plainPool.start()
     try {
@@ -172,7 +170,7 @@ describe("postgres observability + drizzle over the task's transaction", () => {
         await handler({}, { unitOfWork: uow } as never)
       })
 
-      // The plain overload's sql() answers the REAL transaction handle
+      // With no trace, sql() answers the REAL transaction handle
       // directly — no observability view sits in front of it.
       expect(sawSql).toBe(opened)
     } finally {

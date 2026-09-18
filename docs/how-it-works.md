@@ -1138,9 +1138,10 @@ wrap = (h) => postgresHandler(kyselyHandler(h, (pool) => new Kysely<DB>({ dialec
 
 A repository is the same wrapper returning your own functions over
 `ctx.sql()`; nothing in Kronos needs to know. Because everything passes through
-the adapter Kronos owns, `observed(pg)` makes every statement — the builder's
-and Kronos's — a span under the handler that issued it, with no ORM internals
-touched. The former ORM-owned families (`@kronos-ts/drizzle`, kysely, knex,
+the adapter Kronos owns, a traced handling — `otlpHandler` outside
+`postgresHandler` — gets every statement it issues, `ctx.sql()`'s and the
+builder's, as a span under the handler that issued it, with nothing to switch on
+and no ORM internals touched. The former ORM-owned families (`@kronos-ts/drizzle`, kysely, knex,
 typeorm, prisma) are deprecated on npm and removed from this repository: they
 existed to let an ORM own the transaction, which is no longer something Kronos
 offers.

@@ -23,18 +23,30 @@
 
 import {
   describe,
+  type DeclaresInside,
   type Described,
   type UnitOfWork,
 } from "@kronos-ts/core"
 import type { PostgresAdapter, PostgresAdapterTransaction } from "./adapter.js"
 import { activePostgresTransaction } from "./postgres-transaction.js"
-import {
-  isObservedPostgres,
-  observedPoolView,
-  observedTransactionView,
-  type ObservedPostgres,
-  type SpanningTrace,
-} from "./postgres-observability.js"
+import { observedPoolView, observedTransactionView, type SpanningTrace } from "./postgres-observability.js"
+
+/**
+ * The one order rule this wrapper owns: statements are spanned onto the
+ * `ctx.trace` it RECEIVES, so a wrapper that supplies `trace` must sit outside
+ * it. Inside, the trace arrives too late and no statement is ever spanned —
+ * silently — so it is refused in the type with a sentence.
+ */
+/** The handler must DEMAND `ctx.sql()`; wrapping one that does not (or wrapping twice) is refused with a sentence. */
+type DemandsSql<H> = H extends (message: any, context: infer C) => any
+  ? C extends PostgresCapability & { readonly unitOfWork: UnitOfWork }
+    ? unknown
+    : "postgresHandler supplies ctx.sql(), but the handler it wraps does not demand it — wrap the handler that names PostgresCapability, and only once"
+  : never
+
+type TraceInside<H> = DeclaresInside<H, "supplies", "trace"> extends true
+  ? "a wrapper that supplies ctx.trace is inside postgresHandler: move it outside, so statements are spanned"
+  : unknown
 
 /** The pool-level handle — what `sql()` returns outside a transaction. */
 export type Sql = PostgresAdapter
@@ -95,66 +107,38 @@ export type PostgresCapability = {
  * capability reads this family's uow-keyed registry, so a handler's writes and
  * the unit of work's transaction are the same transaction and commit together.
  *
- * Building it from an {@link observed} pool is the OBSERVABILITY overload: the
- * handler's context must then also carry `trace` (supplied by a wrapper
- * OUTSIDE this one — see `@kronos-ts/otlp`'s `otlpHandler`), and every
- * statement `ctx.sql()` runs becomes one `"db.statement"` span on it:
- *
- * ```ts
- * const handler = postgresHandler(myHandler, observed(pg))
- * //    ^ (message, ctx: Omit<C, "sql"> & { trace }) => R
- * ```
+ * STATEMENTS ARE SPANNED WHEN THERE IS A TRACE. If the context this wrapper
+ * receives carries `trace` (supplied by a wrapper OUTSIDE this one — see
+ * `@kronos-ts/otlp`'s `otlpHandler`), every statement `ctx.sql()` runs becomes
+ * one `"db.statement"` span on it, including statements a query builder issues
+ * through `unwrap()`. Nothing to switch on, and no SQL text or parameter is
+ * ever recorded. With no `trace`, the handle is the plain pool or transaction.
  */
-export function postgresHandler<M, C extends PostgresCapability & { readonly unitOfWork: UnitOfWork }, R>(
-  next: (message: M, context: C) => R,
-  pg: PostgresAdapter & ObservedPostgres,
-): ((message: M, context: Omit<C, "sql"> & { readonly trace: SpanningTrace }) => R) &
-  Described<{
-    readonly name: "postgresHandler"
-    readonly supplies: readonly ["sql"]
-    readonly uses: readonly ["trace"]
-    readonly next: (message: M, context: C) => R
-    readonly hints: Readonly<{ trace: string }>
-  }>
-export function postgresHandler<M, C extends PostgresCapability & { readonly unitOfWork: UnitOfWork }, R>(
-  next: (message: M, context: C) => R,
+export function postgresHandler<H extends (message: any, context: any) => any>(
+  next: H & DemandsSql<H> & TraceInside<H>,
   pg: PostgresAdapter,
-): ((message: M, context: Omit<C, "sql">) => R) &
+): ((message: Parameters<H>[0], context: Omit<Parameters<H>[1], "sql">) => ReturnType<H>) &
   Described<{
     readonly name: "postgresHandler"
     readonly supplies: readonly ["sql"]
-    readonly next: (message: M, context: C) => R
+    readonly next: H
   }>
 export function postgresHandler(
   next: (message: unknown, context: any) => unknown,
   pg: PostgresAdapter,
 ): unknown {
-  const observedPg = isObservedPostgres(pg) ? pg : undefined
-
   const wrapped = (message: unknown, context: any) => {
     const unitOfWork = (context as { readonly unitOfWork: UnitOfWork }).unitOfWork
     return next(message, {
       ...context,
       sql: () => {
         const active = activePostgresTransaction(unitOfWork)
-        if (observedPg === undefined) return active ?? pg
         const trace = (context as { readonly trace?: SpanningTrace }).trace
         if (trace === undefined) return active ?? pg
-        return active !== undefined ? observedTransactionView(active, trace) : observedPoolView(observedPg, trace)
+        return active !== undefined ? observedTransactionView(active, trace) : observedPoolView(pg, trace)
       },
     })
   }
 
-  return observedPg === undefined
-    ? describe(wrapped, { name: "postgresHandler", supplies: ["sql"], next })
-    : describe(wrapped, {
-        name: "postgresHandler",
-        supplies: ["sql"],
-        uses: ["trace"],
-        next,
-        hints: {
-          trace:
-            "Put the tracing wrapper (otlpHandler) outside postgresHandler, or build postgresHandler from a plain pool instead of observed(pg) if statement spans are not wanted.",
-        },
-      })
+  return describe(wrapped, { name: "postgresHandler", supplies: ["sql"], next })
 }
