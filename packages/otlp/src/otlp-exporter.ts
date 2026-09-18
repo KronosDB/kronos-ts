@@ -22,6 +22,11 @@ export type Attributes = Readonly<Record<string, AttributeValue>>
 export type TraceContext = {
   readonly traceId: string
   readonly spanId: string
+  /**
+   * The W3C sampled flag. `false` means the trace was decided NOT to be
+   * recorded at its root; every span under it follows. Absent means sampled.
+   */
+  readonly sampled?: boolean
 }
 
 /**
@@ -77,6 +82,12 @@ export type OtlpSpan = TraceContext & {
 export type Measurement = {
   readonly name: string
   readonly value: number
+  /**
+   * Histogram bucket boundaries, in the instrument's unit. The defaults fit
+   * millisecond durations; an amount or a size wants its own. Fixed by the
+   * first record of a series.
+   */
+  readonly bounds?: readonly number[]
   /** UCUM unit, e.g. `"ms"` or `"1"`. */
   readonly unit?: string
   readonly description?: string
@@ -99,6 +110,17 @@ export type OtlpExporterOptions = {
   readonly endpoint: string
   /** Value of the `service.name` resource attribute. */
   readonly serviceName: string
+  /**
+   * Extra RESOURCE attributes, sent once per batch beside `service.name` —
+   * `service.version`, `deployment.environment.name`, `service.instance.id`.
+   * What identifies the process, never anything per request.
+   */
+  readonly resource?: Attributes
+  /**
+   * Extra HTTP headers on every POST — how a hosted backend authenticates
+   * (`authorization`, `x-honeycomb-team`, …). `content-type` is always JSON.
+   */
+  readonly headers?: Readonly<Record<string, string>>
   /** How often the batch is POSTed. Default 5000ms. */
   readonly flushIntervalMs?: number
   /** Deadline for one POST. A collector that hangs cannot hold `close()` past this. Default 10000ms. */
@@ -113,6 +135,34 @@ export type OtlpExporterOptions = {
    * default is the privacy-safe one: an error message can carry anything.
    */
   readonly errors?: "type" | "message"
+  /**
+   * Full URLs per signal, for a backend that takes them at different places.
+   * A signal not named here goes to `endpoint` + `/v1/<signal>`.
+   */
+  readonly endpoints?: { readonly traces?: string; readonly metrics?: string; readonly logs?: string }
+  /** `"gzip"` compresses every POST body. Default: none. */
+  readonly compression?: "gzip"
+  /**
+   * Head sampling, decided ONCE at the root of a trace and followed by every
+   * span under it (parent-based): a ratio in `[0, 1]`, deterministic in the
+   * trace id so every process agrees, or your own `(traceId) => boolean`. An
+   * unsampled span records nothing but still carries its ids and an unsampled
+   * `traceparent`, so downstream services skip the trace too. Metrics and
+   * logs are NOT sampled — counters stay exact. Default: record everything.
+   */
+  readonly sample?: number | ((traceId: string) => boolean)
+  /**
+   * `false` records and exports NO metrics — for a deployment with no metrics
+   * backend. Spans and logs are unaffected. Default `true`.
+   */
+  readonly metrics?: boolean
+  /**
+   * Distinct attribute combinations one metric name may have between flushes.
+   * Past it, new combinations are dropped, counted into `kronos.otlp.dropped`
+   * and reported once to `onExportError` — an id in an attribute is the usual
+   * cause. Default 1000.
+   */
+  readonly maxSeriesPerMetric?: number
   /**
    * Told when a POST fails or is rejected. Telemetry never throws into the
    * host; this is the one place a host can learn its collector is unhappy.
@@ -264,6 +314,7 @@ type HistogramSeries = {
   sum: number
   min: number
   max: number
+  bounds: readonly number[]
   buckets: number[]
 }
 
@@ -277,14 +328,27 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** A span that records nothing — what `startSpan` answers after `close()`. */
-function inertSpan(parent: TraceContext | undefined): OtlpSpan {
+/** A span that records nothing — after `close()`, or under an unsampled trace. It still has ids to propagate. */
+function inertSpan(trace: string): OtlpSpan {
   return {
-    traceId: parent?.traceId ?? traceId(),
+    traceId: trace,
     spanId: spanId(),
+    sampled: false,
     end: () => {},
     fail: () => {},
   }
+}
+
+/** The ratio decision, deterministic in the trace id: the top 32 bits as a fraction of 2^32. */
+function ratioSampled(trace: string, ratio: number): boolean {
+  if (ratio >= 1) return true
+  if (ratio <= 0) return false
+  return Number.parseInt(trace.slice(0, 8), 16) / 0x1_0000_0000 < ratio
+}
+
+async function gzip(text: string): Promise<ArrayBuffer> {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"))
+  return new Response(stream).arrayBuffer()
 }
 
 /**
@@ -313,27 +377,61 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
   const maxBufferedSpans = options.maxBufferedSpans ?? 10_000
   const maxBufferedLogs = options.maxBufferedLogs ?? 10_000
   const recordMessages = options.errors === "message"
+  const metricsEnabled = options.metrics !== false
+  const maxSeriesPerMetric = options.maxSeriesPerMetric ?? 1000
   const base = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint
 
   let spans: SpanRecord[] = []
   let logs: LogRecordWire[] = []
   let sums = new Map<string, SumSeries>()
   let histograms = new Map<string, HistogramSeries>()
-  const dropped = { traces: 0, logs: 0 }
+  const dropped = { traces: 0, logs: 0, metrics: 0 }
+  /** Distinct series seen per metric name this window — the cardinality guard. */
+  let seriesPerMetric = new Map<string, number>()
+  const reportedUnbounded = new Set<string>()
+
+  /** May a NEW series be opened for `name`? Counts it if so; drops and reports if not. */
+  function admitSeries(name: string): boolean {
+    if (name === DROPPED) return true
+    const seen = seriesPerMetric.get(name) ?? 0
+    if (seen >= maxSeriesPerMetric) {
+      dropped.metrics += 1
+      if (!reportedUnbounded.has(name)) {
+        reportedUnbounded.add(name)
+        options.onExportError?.(
+          new Error(
+            `metric "${name}" exceeded ${maxSeriesPerMetric} distinct attribute combinations in one flush window; ` +
+              `further combinations are dropped. An attribute is probably unbounded (an id?) — metrics take ` +
+              `outcomes and reasons, logs and spans take ids.`,
+          ),
+          "metrics",
+        )
+      }
+      return false
+    }
+    seriesPerMetric.set(name, seen + 1)
+    return true
+  }
   let windowStartMs = Date.now()
   let closed = false
   /** Serializes flushes so two POSTs of the same batch can never overlap. */
   let pending: Promise<void> = Promise.resolve()
 
-  const resource = { attributes: keyValues({ "service.name": serviceName }) }
+  const resource = { attributes: keyValues({ ...options.resource, "service.name": serviceName }) }
   const scope = { name: "@kronos-ts/otlp" }
 
   async function post(path: string, body: unknown, signal: "traces" | "metrics" | "logs"): Promise<void> {
     try {
-      const response = await globalThis.fetch(`${base}${path}`, {
+      const json = JSON.stringify(body)
+      const compressed = options.compression === "gzip"
+      const response = await globalThis.fetch(options.endpoints?.[signal] ?? `${base}${path}`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        headers: {
+          ...options.headers,
+          "content-type": "application/json",
+          ...(compressed ? { "content-encoding": "gzip" } : {}),
+        },
+        body: compressed ? await gzip(json) : json,
         signal: AbortSignal.timeout(exportTimeoutMs),
       })
       if (!response.ok) {
@@ -347,7 +445,7 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
 
   /** Count what was dropped since the last flush into the metrics batch, then forget it. */
   function accountDropped(): void {
-    for (const signal of ["traces", "logs"] as const) {
+    for (const signal of ["traces", "logs", "metrics"] as const) {
       if (dropped[signal] === 0) continue
       addCount({
         name: DROPPED,
@@ -418,7 +516,7 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
               min: series.min,
               max: series.max,
               bucketCounts: series.buckets.map(String),
-              explicitBounds: DEFAULT_BOUNDS,
+              explicitBounds: series.bounds,
             },
           ],
           aggregationTemporality: 1,
@@ -427,6 +525,7 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
     }
     sums = new Map()
     histograms = new Map()
+    seriesPerMetric = new Map()
     return { resourceMetrics: [{ resource, scopeMetrics: [{ scope, metrics }] }] }
   }
 
@@ -446,6 +545,7 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
   }
 
   function addCount(measurement: Measurement): void {
+    if (!metricsEnabled) return
     const unit = measurement.unit ?? "1"
     const key = seriesKey(measurement.name, unit, measurement.attributes)
     const existing = sums.get(key)
@@ -453,6 +553,7 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
       existing.value += measurement.value
       return
     }
+    if (!admitSeries(measurement.name)) return
     sums.set(key, {
       name: measurement.name,
       unit,
@@ -470,9 +571,17 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
 
   return {
     startSpan(spanOptions: StartSpanOptions): OtlpSpan {
-      if (closed) return inertSpan(spanOptions.parent)
-      const id = spanId()
       const trace = spanOptions.parent?.traceId ?? traceId()
+      if (closed) return inertSpan(trace)
+      // PARENT-BASED: a span under a parent follows the parent's decision; a
+      // root decides once, and the decision rides the traceparent from there.
+      const sampled = spanOptions.parent
+        ? spanOptions.parent.sampled !== false
+        : typeof options.sample === "function"
+          ? options.sample(trace)
+          : ratioSampled(trace, options.sample ?? 1)
+      if (!sampled) return inertSpan(trace)
+      const id = spanId()
       const startEpochMs = Date.now()
       const startPerf = performance.now()
       let ended = false
@@ -505,6 +614,7 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
       return {
         traceId: trace,
         spanId: id,
+        sampled: true,
         end: () => finish({ code: StatusCode.OK }),
         fail: (error: unknown) =>
           finish(
@@ -517,10 +627,12 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
     addCount,
 
     recordHistogram(measurement: Measurement): void {
+      if (!metricsEnabled) return
       const unit = measurement.unit ?? "1"
       const key = seriesKey(measurement.name, unit, measurement.attributes)
       let series = histograms.get(key)
       if (!series) {
+        if (!admitSeries(measurement.name)) return
         series = {
           name: measurement.name,
           unit,
@@ -530,7 +642,8 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
           sum: 0,
           min: Number.POSITIVE_INFINITY,
           max: Number.NEGATIVE_INFINITY,
-          buckets: new Array<number>(DEFAULT_BOUNDS.length + 1).fill(0),
+          bounds: measurement.bounds ?? DEFAULT_BOUNDS,
+          buckets: new Array<number>((measurement.bounds ?? DEFAULT_BOUNDS).length + 1).fill(0),
         }
         histograms.set(key, series)
       }
@@ -538,8 +651,8 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
       series.sum += measurement.value
       series.min = Math.min(series.min, measurement.value)
       series.max = Math.max(series.max, measurement.value)
-      let bucket = DEFAULT_BOUNDS.findIndex((bound) => measurement.value <= bound)
-      if (bucket === -1) bucket = DEFAULT_BOUNDS.length
+      let bucket = series.bounds.findIndex((bound) => measurement.value <= bound)
+      if (bucket === -1) bucket = series.bounds.length
       series.buckets[bucket] = (series.buckets[bucket] ?? 0) + 1
     },
 

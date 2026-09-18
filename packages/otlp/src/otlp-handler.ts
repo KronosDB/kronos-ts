@@ -1,6 +1,7 @@
 import type { Message, MessageKind, UnitOfWork } from "@kronos-ts/core"
 import { describe, qualifiedNameToString, type Described } from "@kronos-ts/core"
 import { SpanKind, type Attributes, type OtlpExporter, type SpanKindValue } from "./otlp-exporter.js"
+import { metrics, type Metrics } from "./metrics.js"
 import { trace, type Trace } from "./trace.js"
 import { traceparentOf, withTraceparent } from "./traceparent.js"
 
@@ -29,12 +30,33 @@ import { traceparentOf, withTraceparent } from "./traceparent.js"
 // time from this handler's end to durability (event flush, adapter commit,
 // after-commit work). A batch's handlers each get one; for a command it is
 // exactly the post-handler work.
+//
+// And the three numbers you page on come with the span, not from a second
+// wrapper: how many, how many failed (and as WHAT — the error's type, so a
+// typed domain rejection is its own series), and how long. They share the
+// span's name, so a series and its traces always agree. `ctx.metrics` is the
+// same exporter bound to the same two attributes, for anything custom.
+// Whether metrics leave the process at all is the EXPORTER's switch
+// (`otlpExporter({ metrics: false })`), not a wiring decision.
 // ---------------------------------------------------------------------------
+
+const DURATION = "kronos.message.handler.duration"
+const HANDLED = "kronos.messages.handled"
+const FAILED = "kronos.messages.failed"
+
+/** The error's TYPE — a constructor name, never its message. Bounded by the code's error vocabulary. */
+function errorType(error: unknown): string {
+  if (error instanceof Error) return error.name || error.constructor.name || "Error"
+  return typeof error
+}
 
 /** The capability this wrapper supplies. A handler names it to reach `ctx.trace`. */
 export type TraceCapability = {
   readonly trace: Trace
 }
+
+// `MetricsCapability` — `ctx.metrics` — lives with `Metrics` in `./metrics.ts`.
+export type { Metrics }
 
 /** The attributes a span over a message carries. Shared with the bus wrappers. */
 export function messageAttributes(message: Message): Attributes {
@@ -63,7 +85,7 @@ function handlerSpanKind(kind: MessageKind): SpanKindValue {
 
 type OtlpDescription<H> = {
   readonly name: "otlpHandler"
-  readonly supplies: readonly ["trace"]
+  readonly supplies: readonly ["trace", "metrics"]
   readonly stamps: readonly ["message.metadata"]
   readonly next: H
 }
@@ -102,21 +124,27 @@ export function otlpHandler<M extends Message, C, R>(
   next: (message: M, context: C) => R,
   exporter: OtlpExporter,
   label?: (message: Message) => string,
-): ((message: M, context: Omit<C, "trace">) => Promise<Awaited<R>>) & Described<OtlpDescription<(message: M, context: C) => R>> {
-  const wrapped = async (message: M, context: Omit<C, "trace">): Promise<Awaited<R>> => {
+): ((message: M, context: Omit<C, "trace" | "metrics">) => Promise<Awaited<R>>) &
+  Described<OtlpDescription<(message: M, context: C) => R>> {
+  const wrapped = async (message: M, context: Omit<C, "trace" | "metrics">): Promise<Awaited<R>> => {
+    const name = label ? label(message) : messageName(message)
     const remote = traceparentOf(message.metadata)
     const linked = message.kind === "event"
     const span = exporter.startSpan({
-      name: label ? label(message) : messageName(message),
+      name,
       kind: handlerSpanKind(message.kind),
       parent: linked ? undefined : remote,
       links: linked && remote ? [remote] : undefined,
       attributes: messageAttributes(message),
     })
 
+    // The two attributes every series of this handling carries — the standard
+    // three and anything the handler records through `ctx.metrics`.
+    const series: Attributes = { message_type: message.kind, message_name: name }
     const stamped = { ...message, metadata: withTraceparent(message.metadata, span) } as M
-    const supplied = { ...context, trace: trace(exporter, span) } as unknown as C
+    const supplied = { ...context, trace: trace(exporter, span), metrics: metrics(exporter, series) } as unknown as C
 
+    const started = performance.now()
     try {
       const result = await next(stamped, supplied)
       span.end()
@@ -124,10 +152,40 @@ export function otlpHandler<M extends Message, C, R>(
       return result
     } catch (error) {
       span.fail(error)
+      // `failed` is counted IN ADDITION to `handled`, so an error rate is one
+      // division, and it carries the error's type so a typed domain rejection
+      // and a bug are different series.
+      exporter.addCount({
+        name: FAILED,
+        value: 1,
+        unit: "1",
+        description: "Count of message handler invocations that threw",
+        attributes: { ...series, error_type: errorType(error) },
+      })
       throw error
+    } finally {
+      exporter.addCount({
+        name: HANDLED,
+        value: 1,
+        unit: "1",
+        description: "Count of message handler invocations",
+        attributes: series,
+      })
+      exporter.recordHistogram({
+        name: DURATION,
+        value: performance.now() - started,
+        unit: "ms",
+        description: "Handler invocation duration",
+        attributes: series,
+      })
     }
   }
-  return describe(wrapped, { name: "otlpHandler", supplies: ["trace"], stamps: ["message.metadata"], next } as const)
+  return describe(wrapped, {
+    name: "otlpHandler",
+    supplies: ["trace", "metrics"],
+    stamps: ["message.metadata"],
+    next,
+  } as const)
 
   /** The `commit` span: from this handler's end until its task completes or fails. */
   function timeToDurability(context: unknown, parent: { traceId: string; spanId: string }, message: Message): void {

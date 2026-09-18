@@ -5,6 +5,7 @@
 export type OtlpPost = {
   readonly url: string
   readonly body: any
+  readonly headers: Record<string, string>
 }
 
 export type FetchStub = {
@@ -25,7 +26,10 @@ export function stubFetch(options: { fail?: boolean } = {}): FetchStub {
   const original = globalThis.fetch
 
   globalThis.fetch = (async (input: any, init: any) => {
-    posts.push({ url: String(input), body: JSON.parse(String(init?.body)) })
+    // A gzip body arrives as bytes; everything else as a JSON string.
+    const raw = init?.body
+    const text = typeof raw === "string" ? raw : new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(raw)))
+    posts.push({ url: String(input), body: JSON.parse(text), headers: { ...(init?.headers ?? {}) } })
     if (options.fail) throw new Error("collector unreachable")
     return new Response("{}", { status: 200 })
   }) as typeof fetch

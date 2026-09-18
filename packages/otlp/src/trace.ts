@@ -78,7 +78,7 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  */
 export function trace(exporter: OtlpExporter, parent?: TraceContext): Trace {
   const context: TraceContext | undefined = parent
-    ? { traceId: parent.traceId, spanId: parent.spanId }
+    ? { traceId: parent.traceId, spanId: parent.spanId, ...(parent.sampled === false ? { sampled: false } : {}) }
     : undefined
 
   const start = (name: string, options?: Omit<SpanOptions, "name">): OtlpSpan =>
