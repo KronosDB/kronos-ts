@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { SpanKind, otlpExporter, spanId, traceId } from "../otlp-exporter.js"
 import { attribute, delay, stubFetch, type FetchStub } from "./stub-fetch.js"
+import { formatTraceparent, traceparentOf } from "../traceparent.js"
 
 let fetchStub: FetchStub | undefined
 
@@ -398,5 +399,142 @@ describe("otlpExporter — log envelope", () => {
       spanId: "b7ad6b7169203331",
     })
     expect(attribute(record.attributes, "orderId")).toEqual({ stringValue: "o-1" })
+  })
+})
+
+describe("otlpExporter — headers, resource and the cardinality guard", () => {
+  it("sends the configured headers on every POST and the resource attributes beside service.name", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({
+      endpoint: "http://c:4318",
+      serviceName: "svc",
+      headers: { authorization: "Bearer k" },
+      resource: { "service.version": "1.2.3", "deployment.environment.name": "prod" },
+    })
+    exporter.startSpan({ name: "s", kind: SpanKind.INTERNAL }).end()
+    await exporter.close()
+
+    const post = fetchStub.posts[0]!
+    expect(post.headers).toMatchObject({ authorization: "Bearer k", "content-type": "application/json" })
+    const attrs = post.body.resourceSpans[0].resource.attributes
+    expect(attribute(attrs, "service.name")).toEqual({ stringValue: "svc" })
+    expect(attribute(attrs, "service.version")).toEqual({ stringValue: "1.2.3" })
+    expect(attribute(attrs, "deployment.environment.name")).toEqual({ stringValue: "prod" })
+  })
+
+  it("drops attribute combinations past the cap, counts them, and says which metric — once", async () => {
+    fetchStub = stubFetch()
+    const reported: string[] = []
+    const exporter = otlpExporter({
+      endpoint: "http://c:4318",
+      serviceName: "svc",
+      maxSeriesPerMetric: 2,
+      onExportError: (error) => reported.push((error as Error).message),
+    })
+    // An id in an attribute: every call is a new series.
+    for (const orderId of ["a", "b", "c", "d"]) exporter.addCount({ name: "orders.placed", value: 1, attributes: { orderId } })
+    // An existing combination still aggregates past the cap.
+    exporter.addCount({ name: "orders.placed", value: 1, attributes: { orderId: "a" } })
+    await exporter.close()
+
+    const placed = fetchStub.allMetrics().filter((m: any) => m.name === "orders.placed")
+    expect(placed).toHaveLength(2)
+    const dropped = fetchStub.allMetrics().find((m: any) => m.name === "kronos.otlp.dropped")
+    expect(dropped.sum.dataPoints[0].asInt).toBe("2")
+    expect(attribute(dropped.sum.dataPoints[0].attributes, "signal")).toEqual({ stringValue: "metrics" })
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toContain('metric "orders.placed" exceeded 2 distinct attribute combinations')
+  })
+})
+
+describe("otlpExporter — sampling is decided at the root and followed beneath it", () => {
+  it("records nothing for an unsampled trace, but still hands out ids and an UNSAMPLED traceparent", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc", sample: 0 })
+    const root = exporter.startSpan({ name: "root", kind: SpanKind.INTERNAL })
+    const child = exporter.startSpan({ name: "child", kind: SpanKind.INTERNAL, parent: root })
+    child.end()
+    root.end()
+    // Metrics are never sampled — counters stay exact.
+    exporter.addCount({ name: "kept", value: 1 })
+    await exporter.close()
+
+    expect(root.sampled).toBe(false)
+    expect(child.traceId).toBe(root.traceId)
+    expect(formatTraceparent(root)).toBe(`00-${root.traceId}-${root.spanId}-00`)
+    expect(fetchStub.spans()).toHaveLength(0)
+    expect(fetchStub.allMetrics().map((m: any) => m.name)).toEqual(["kept"])
+  })
+
+  it("follows an incoming unsampled traceparent, and a sampled one overrides a zero ratio", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc", sample: 0 })
+    const unsampled = traceparentOf({ traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00" })
+    const sampled = traceparentOf({ traceparent: "00-1af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" })
+
+    exporter.startSpan({ name: "under-unsampled", kind: SpanKind.INTERNAL, parent: unsampled }).end()
+    exporter.startSpan({ name: "under-sampled", kind: SpanKind.INTERNAL, parent: sampled }).end()
+    await exporter.close()
+
+    expect(fetchStub.spans().map((s: any) => s.name)).toEqual(["under-sampled"])
+  })
+
+  it("decides a ratio deterministically from the trace id, so every process agrees", async () => {
+    fetchStub = stubFetch()
+    const decided: string[] = []
+    const exporter = otlpExporter({
+      endpoint: "http://c:4318",
+      serviceName: "svc",
+      sample: (traceId) => {
+        decided.push(traceId)
+        return traceId.startsWith("0")
+      },
+    })
+    for (let i = 0; i < 64; i++) exporter.startSpan({ name: "s", kind: SpanKind.INTERNAL }).end()
+    await exporter.close()
+
+    expect(decided).toHaveLength(64)
+    expect(fetchStub.spans().every((s: any) => s.traceId.startsWith("0"))).toBe(true)
+    expect(fetchStub.spans().length).toBe(decided.filter((t) => t.startsWith("0")).length)
+  })
+})
+
+describe("otlpExporter — endpoints, compression and histogram bounds", () => {
+  it("sends a signal to its own URL when one is given, and the rest to the base", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({
+      endpoint: "http://c:4318",
+      serviceName: "svc",
+      endpoints: { traces: "http://tempo:4318/otlp/v1/traces" },
+    })
+    exporter.startSpan({ name: "s", kind: SpanKind.INTERNAL }).end()
+    exporter.addCount({ name: "m", value: 1 })
+    await exporter.close()
+
+    expect(fetchStub.posts.map((p) => p.url).sort()).toEqual([
+      "http://c:4318/v1/metrics",
+      "http://tempo:4318/otlp/v1/traces",
+    ])
+  })
+
+  it("gzips the body and says so", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc", compression: "gzip" })
+    exporter.startSpan({ name: "zipped", kind: SpanKind.INTERNAL }).end()
+    await exporter.close()
+
+    expect(fetchStub.posts[0]!.headers["content-encoding"]).toBe("gzip")
+    expect(fetchStub.spans()[0].name).toBe("zipped")
+  })
+
+  it("buckets a histogram by its own bounds when given", async () => {
+    fetchStub = stubFetch()
+    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
+    for (const value of [50, 500, 5000]) exporter.recordHistogram({ name: "order.value", value, bounds: [100, 1000] })
+    await exporter.close()
+
+    const dp = fetchStub.allMetrics().find((m: any) => m.name === "order.value").histogram.dataPoints[0]
+    expect(dp.explicitBounds).toEqual([100, 1000])
+    expect(dp.bucketCounts).toEqual(["1", "1", "1"])
   })
 })

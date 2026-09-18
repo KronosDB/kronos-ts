@@ -39,7 +39,10 @@ export { trace, inertTrace, type Trace, type SpanOptions } from "./trace.js"
 // `loggingHandler`; `consoleLogger` is the no-exporter alternative.
 export { otlpLogger, type OtlpLoggerOptions } from "./otlp-logger.js"
 
-export { otlpMetricsHandler } from "./otlp-metrics-handler.js"
+// Custom metrics, as easy as a log line. `otlpHandler` supplies one as
+// `ctx.metrics`, bound to the handler's message name and kind; the three
+// standard series come with the handler span itself.
+export { metrics, inertMetrics, type Metrics, type MetricsCapability, type MetricOptions } from "./metrics.js"
 
 // W3C trace-context plumbing — exported because a transport or an edge that
 // wants to join the same trace needs exactly these two, and hand-rolling a

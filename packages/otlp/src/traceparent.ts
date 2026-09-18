@@ -17,9 +17,9 @@ const TRACEPARENT_PATTERN = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a
 const INVALID_TRACE_ID = "0".repeat(32)
 const INVALID_SPAN_ID = "0".repeat(16)
 
-/** `00-<traceid>-<spanid>-01` — sampled, because we already decided to export it. */
+/** `00-<traceid>-<spanid>-<flags>` — `01` sampled, `00` when the trace was decided not to be recorded. */
 export function formatTraceparent(context: TraceContext): string {
-  return `00-${context.traceId}-${context.spanId}-01`
+  return `00-${context.traceId}-${context.spanId}-${context.sampled === false ? "00" : "01"}`
 }
 
 /**
@@ -32,11 +32,14 @@ export function traceparentOf(metadata: Metadata): TraceContext | undefined {
   if (typeof raw !== "string") return undefined
   const match = TRACEPARENT_PATTERN.exec(raw)
   if (!match) return undefined
-  const [, version, trace, span] = match
+  const [, version, trace, span, flags] = match
   if (version === "ff") return undefined
   if (!trace || !span) return undefined
   if (trace === INVALID_TRACE_ID || span === INVALID_SPAN_ID) return undefined
-  return { traceId: trace, spanId: span }
+  // Bit 0 is the sampled flag. An unsampled parent means everything under it
+  // is unsampled too — the root decided, and a child does not overrule it.
+  const sampled = (Number.parseInt(flags ?? "01", 16) & 1) === 1
+  return sampled ? { traceId: trace, spanId: span } : { traceId: trace, spanId: span, sampled: false }
 }
 
 /** The same metadata, carrying `context` as its traceparent. */

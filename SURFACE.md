@@ -850,7 +850,7 @@ otlpExporter({ endpoint, serviceName, flushIntervalMs? }): OtlpExporter   // res
 otlpCommandBus(bus, exporter): CommandBus       // span per dispatch; W3C traceparent into metadata
 otlpQueryBus(bus, exporter): QueryBus
 otlpHandler(handler, exporter, label?): handler        // parents (command/query msgs) / links (event msgs)
-otlpMetricsHandler(handler, exporter, label?): handler // duration / throughput / failure counters
+// (the three standard series and `ctx.metrics` come from otlpHandler; there is no metrics-only wrapper)
   // label?: (message: Message) => string — ABSENT = the message's qualified name.
   // Parent-vs-link and SERVER-vs-CONSUMER come from `message.kind`; there is no
   // kind argument and no entry to ask, so both wrappers are pre-appliable.
