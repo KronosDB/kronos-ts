@@ -6,7 +6,7 @@ import type { IsolationLevel } from "../adapter.js"
 import { postgresPool } from "../postgres-pool.js"
 import { postgresTransaction, postgresUnitOfWork } from "../postgres-transaction.js"
 import { postgresHandler, type PostgresCapability } from "../postgres-handler.js"
-import { observed, observedPoolView, observedTransactionView, type SpanningTrace } from "../postgres-observability.js"
+import { observedPoolView, observedTransactionView, type SpanningTrace } from "../postgres-observability.js"
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -122,18 +122,9 @@ function ctxWith(uow: ReturnType<typeof unitOfWork> | undefined, trace?: Spannin
 
 const message = { payload: { id: "w-1" } }
 
-describe("observed()", () => {
-  it("brands the SAME adapter — same reference, not a copy", () => {
-    const pg = fakeAdapter()
-    const branded = observed(pg)
-    expect(branded).toBe(pg)
-  })
-})
-
-describe("postgresHandler — unobserved path is unchanged", () => {
-  it("sql() answers the plain pool even when the context happens to carry a trace", async () => {
+describe("postgresHandler — with no trace on the context", () => {
+  it("sql() answers the plain pool", async () => {
     const pool = postgresPool(fakeAdapter(), { bootstrap: false })
-    const { trace } = fakeTrace()
     let seen: unknown
     const handler = postgresHandler(
       commandHandlerFn(async (_m, ctx) => {
@@ -142,15 +133,15 @@ describe("postgresHandler — unobserved path is unchanged", () => {
       pool,
     )
 
-    await handler(message as never, ctxWith(unitOfWork(), trace))
+    await handler(message as never, { unitOfWork: unitOfWork() } as never)
 
     expect(seen).toBe(pool)
   })
 })
 
-describe("postgresHandler — observed path", () => {
+describe("postgresHandler — with a trace on the context", () => {
   it("pool fallback: query()/queryOne() are each one 'db.statement' span, no SQL/params recorded", async () => {
-    const pool = observed(postgresPool(fakeAdapter(), { bootstrap: false }))
+    const pool = postgresPool(fakeAdapter(), { bootstrap: false })
     const { trace, spans } = fakeTrace()
     let seen: PostgresAdapter | undefined
     const handler = postgresHandler(
@@ -174,7 +165,7 @@ describe("postgresHandler — observed path", () => {
   })
 
   it("transaction: query() is spanned once per call, under the SAME trace", async () => {
-    const pool = observed(postgresPool(fakeAdapter(), { bootstrap: false }))
+    const pool = postgresPool(fakeAdapter(), { bootstrap: false })
     const make = postgresUnitOfWork(unitOfWork, pool)
     const { trace, spans } = fakeTrace()
 
@@ -199,7 +190,7 @@ describe("postgresHandler — observed path", () => {
   })
 
   it("has no active span at all when the handler never calls sql()", async () => {
-    const pool = observed(postgresPool(fakeAdapter(), { bootstrap: false }))
+    const pool = postgresPool(fakeAdapter(), { bootstrap: false })
     const { trace, spans } = fakeTrace()
     const handler = postgresHandler(commandHandlerFn(async () => {}), pool)
 
@@ -208,17 +199,7 @@ describe("postgresHandler — observed path", () => {
     expect(spans.length).toBe(0)
   })
 
-  it("describes itself with uses: ['trace'] and a hint, only for the observed overload", () => {
-    const pool = observed(postgresPool(fakeAdapter(), { bootstrap: false }))
-    const handler = postgresHandler(commandHandlerFn(async () => {}), pool)
-    const [link] = chainOf(handler)
-    expect(link?.name).toBe("postgresHandler")
-    expect(link?.supplies).toEqual(["sql"])
-    expect(link?.uses).toEqual(["trace"])
-    expect(Object.keys(link?.hints ?? {})).toEqual(["trace"])
-  })
-
-  it("the plain overload describes itself WITHOUT uses: ['trace']", () => {
+  it("describes itself as supplying sql, and demands nothing — a trace is welcome, never required", () => {
     const pool = postgresPool(fakeAdapter(), { bootstrap: false })
     const handler = postgresHandler(commandHandlerFn(async () => {}), pool)
     const [link] = chainOf(handler)

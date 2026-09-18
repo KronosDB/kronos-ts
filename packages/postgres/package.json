@@ -80,10 +80,18 @@
     "@kronos-ts/core": "workspace:*"
   },
   "peerDependencies": {
+    "drizzle-orm": ">=0.44.0",
+    "kysely": ">=0.27.0",
     "pg": ">=8.0.0",
     "postgres": ">=3.0.0"
   },
   "peerDependenciesMeta": {
+    "drizzle-orm": {
+      "optional": true
+    },
+    "kysely": {
+      "optional": true
+    },
     "pg": {
       "optional": true
     },
@@ -92,8 +100,10 @@
     }
   },
   "devDependencies": {
-    "pg": "^8.20.0",
     "@types/pg": "^8.11.0",
+    "drizzle-orm": "0.44.7",
+    "kysely": "^0.29.6",
+    "pg": "^8.20.0",
     "postgres": "^3.4.9",
     "testcontainers": "^11.14.0"
   }

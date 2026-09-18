@@ -1,8 +1,9 @@
+import type { Kysely } from "kysely"
 import { clientHandler } from "./client-handler.js"
 
-/** What a handler names to reach `ctx.db`: Kysely, typed as your build function types it. */
-export type KyselyCapability<Db> = {
-  readonly db: Db
+/** What a handler names to reach `ctx.db`: Kysely over your table interface — `KyselyCapability<Database>`. */
+export type KyselyCapability<Database> = {
+  readonly db: Kysely<Database>
 }
 
 /**

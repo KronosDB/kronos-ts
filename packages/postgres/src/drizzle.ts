@@ -1,8 +1,14 @@
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core"
 import { clientHandler } from "./client-handler.js"
 
-/** What a handler names to reach `ctx.db`: Drizzle, typed as your build function types it. */
-export type DrizzleCapability<Db> = {
-  readonly db: Db
+/**
+ * What a handler names to reach `ctx.db`: Drizzle's Postgres database, whatever
+ * the driver. The SQL-style builder is typed by the `pgTable` handed to each
+ * call, so the bare name is enough; name a `Schema` only for the relational
+ * `db.query.*` API, and build with the same `{ schema }`.
+ */
+export type DrizzleCapability<Schema extends Record<string, unknown> = Record<string, never>> = {
+  readonly db: PgDatabase<PgQueryResultHKT, Schema>
 }
 
 /**
@@ -22,7 +28,7 @@ export type DrizzleCapability<Db> = {
  * const wrap = (h) => postgresHandler(drizzleHandler(h, (client: Sql) => drizzle(client)), pg)
  *
  * // in a slice
- * type Ctx = EventHandlerContext & DrizzleCapability<ReturnType<typeof makeDb>>
+ * type Ctx = EventHandlerContext & DrizzleCapability
  * eventHandler(OrderCreated, async ({ payload }, ctx: Ctx) => {
  *   await ctx.db.insert(orderViews).values({ … }).onConflictDoUpdate({ … })
  * })

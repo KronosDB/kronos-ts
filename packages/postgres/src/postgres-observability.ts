@@ -1,12 +1,12 @@
 /**
  * Per-statement observability, on objects Kronos already owns.
  *
- * `observed(pg)` brands a {@link PostgresAdapter} so {@link postgresHandler}
- * (in `./postgres-handler.js`) knows to hand every invocation a SPANNED view
- * of `ctx.sql()`: each `query`/`queryOne` becomes one `"db.statement"` span,
+ * When an invocation's context carries `trace`, {@link postgresHandler} (in
+ * `./postgres-handler.js`) hands it a SPANNED view of `ctx.sql()`: each
+ * `query`/`queryOne` becomes one `"db.statement"` span,
  * and `unwrap()` returns a driver client whose own execute call is spanned
  * too — so a query builder issuing raw statements through the escape hatch
- * (Drizzle, say) is covered exactly like the engine's own writes.
+ * (Drizzle, say) is covered exactly like `ctx.sql().query(...)`.
  *
  * Nothing here records SQL text or parameters — the span name is the static
  * string `"db.statement"`, full stop. And nothing here imports
@@ -18,7 +18,7 @@
  * `client.unsafe(...)`; node-postgres executes via `client.query(...)`) is
  * detected structurally, off the PUBLIC shape `unwrap()` hands back — never
  * off which adapter produced it. That is what keeps the public surface to
- * exactly two names: `observed` and `postgresHandler`.
+ * exactly one name: `postgresHandler`.
  */
 
 import type { PostgresAdapter, PostgresAdapterTransaction, QueryRow } from "./adapter.js"
@@ -34,37 +34,6 @@ export type SpanningTrace = {
 }
 
 const SPAN_NAME = "db.statement"
-
-/** Non-enumerable brand key — never collides with an adapter's own properties. */
-const OBSERVED: unique symbol = Symbol("kronos.postgres.observed")
-
-/** Brand marking a {@link PostgresAdapter} built via {@link observed}. */
-export type ObservedPostgres = {
-  readonly [OBSERVED]: true
-}
-
-/** Whether `pg` was branded by {@link observed}. INTERNAL — read by `postgresHandler`. */
-export function isObservedPostgres(pg: PostgresAdapter): pg is PostgresAdapter & ObservedPostgres {
-  return (pg as Partial<ObservedPostgres>)[OBSERVED] === true
-}
-
-/**
- * Brand `pg` — the SAME adapter, same pool, same lifetime — so
- * `postgresHandler` spans every statement it runs through `ctx.sql()`.
- *
- * ```ts
- * const pg = postgresPool(connectionString)
- * const handler = postgresHandler(myHandler, observed(pg))
- * // myHandler's context now REQUIRES `trace`; postgresHandler supplies `sql`.
- * ```
- *
- * Building `postgresHandler` from a plain (unbranded) `pg` is unchanged —
- * this is opt-in per deployment, not a mode switch on the pool.
- */
-export function observed<A extends PostgresAdapter>(pg: A): A & ObservedPostgres {
-  Object.defineProperty(pg, OBSERVED, { value: true, enumerable: false, writable: false })
-  return pg as A & ObservedPostgres
-}
 
 function spanned<F extends (...args: any[]) => any>(trace: SpanningTrace, fn: F): F {
   return trace.span(fn, { name: SPAN_NAME })

@@ -332,12 +332,15 @@ describe("otlpHandler — composes with core's other handler wrappers", () => {
       },
     }
 
+    // The supported order: tracing STAMPS the message, so it sits outside
+    // correlation, which reads the stamp into its cargo.
     const chained = validatingHandler(
-      correlatingHandler(
-        otlpHandler(async (message: CommandMessage<{ accountId: string; tier: string }>, c: typeof ctx) => {
+      otlpHandler(
+        correlatingHandler(async (message: CommandMessage<{ accountId: string; tier: string }>, c: typeof ctx) => {
           c.append(AccountOpened, { accountId: message.payload.accountId })
           return message.payload.tier
-        }, exporter),
+        }),
+        exporter,
       ),
       OpenAccount,
     )
@@ -354,17 +357,19 @@ describe("otlpHandler — composes with core's other handler wrappers", () => {
 
     // Validation parsed the INBOUND payload — the handler read a defaulted field.
     expect(result).toBe("standard")
-    // …and the BIRTH carries validation's parse and correlation's cargo at once.
+    // …and the handling is still a span, joined to the trace it arrived in.
+    expect(fetchStub.spans()).toHaveLength(1)
+    const span = fetchStub.spans()[0]
+    expect(span.name).toBe("billing.OpenAccount")
+    // …and the BIRTH carries validation's parse, correlation's cargo AND the
+    // handling's span at once.
     expect(appended).toEqual([
       [
         AccountOpened,
         { accountId: "a-1", tier: "standard" },
-        { correlationId: "corr-1", causationId: "cmd-1" },
+        { correlationId: "corr-1", causationId: "cmd-1", traceparent: `00-${span.traceId}-${span.spanId}-01` },
       ],
     ])
-    // …and the handling is still a span, joined to the trace it arrived in.
-    expect(fetchStub.spans()).toHaveLength(1)
-    expect(fetchStub.spans()[0].name).toBe("billing.OpenAccount")
   })
 
   it("refuses an invalid inbound message before the span is ever opened", async () => {

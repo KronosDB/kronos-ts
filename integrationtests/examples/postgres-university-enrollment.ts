@@ -195,7 +195,7 @@ const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx
  * driver handle type is adapter-specific, so the build names it.
  */
 const drizzleOver = (client: string) => drizzle(client)
-type ProjectionContext = EventHandlerContext & DrizzleCapability<ReturnType<typeof drizzleOver>>
+type ProjectionContext = EventHandlerContext & DrizzleCapability
 
 // ── projections ─────────────────────────────────────────────────────────────
 // Plain top-level values. They close over NOTHING: the handle comes from the

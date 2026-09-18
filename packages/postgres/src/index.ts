@@ -92,16 +92,12 @@ export {
   type Tx,
 } from "./postgres-handler.js"
 
-// Per-statement observability: brand a pool with `observed(pg)` and
+// Per-statement observability: when the context carries `trace`,
 // `postgresHandler` spans every statement `ctx.sql()` runs as one
-// `"db.statement"` span on the invocation's `trace` — no SQL text, no
-// parameters, ever recorded. `SpanningTrace` is the minimal structural
-// contract a trace needs (no dependency on `@kronos-ts/otlp`).
-export {
-  observed,
-  type ObservedPostgres,
-  type SpanningTrace,
-} from "./postgres-observability.js"
+// `"db.statement"` span on it — no SQL text, no parameters, ever recorded.
+// `SpanningTrace` is the minimal structural contract a trace needs (no
+// dependency on `@kronos-ts/otlp`).
+export { type SpanningTrace } from "./postgres-observability.js"
 
 // Per-transaction safety timeouts (idle-in-transaction / statement), armed by
 // each adapter's transaction() at BEGIN. The options are spread onto every
