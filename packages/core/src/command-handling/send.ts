@@ -24,7 +24,7 @@ export type CommandDispatchFunction = <P extends StandardSchemaV1, R extends Sta
   descriptor: CommandDescriptor<P, R>,
   payload: InferOutput<P>,
   metadata?: Metadata,
-) => Promise<unknown>
+) => Promise<InferResult<R>>
 
 /**
  * Build the `send` capability for ONE invocation, closed over that
@@ -55,7 +55,11 @@ export function sendFunction(deps: {
   uow: UnitOfWork
   commandBus?: CommandBus
 }): CommandDispatchFunction {
-  return async (descriptor, payload, metadata) => {
+  return async <P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined = undefined>(
+    descriptor: CommandDescriptor<P, R>,
+    payload: InferOutput<P>,
+    metadata?: Metadata,
+  ) => {
     const uow = requireInvocation(deps.uow)
     const bus = deps.commandBus
     if (!bus) throw new Error("No command bus configured")
@@ -66,7 +70,7 @@ export function sendFunction(deps: {
       payload,
       metadata: metadata ?? emptyMetadata(),
       timestamp: uow.now(),
-    })
+    }) as Promise<InferResult<R>>
   }
 }
 

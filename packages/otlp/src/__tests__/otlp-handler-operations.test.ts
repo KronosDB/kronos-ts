@@ -92,7 +92,7 @@ function rig(options: { buses: boolean; correlate: boolean; availability?: () =>
     const before = await ctx.load(Order, { orderId: message.payload.orderId })
     const sourced = await ctx.source(Order.query({ orderId: message.payload.orderId }))
     ctx.append(OrderPlaced, message.payload)
-    const { reserved } = (await ctx.send(ReserveStock, { sku: message.payload.sku })) as { reserved: number }
+    const { reserved } = await ctx.send(ReserveStock, { sku: message.payload.sku })
     return { reserved, placedBefore: before.placed, sourced: sourced.length }
   })
 

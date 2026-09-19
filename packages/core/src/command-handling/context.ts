@@ -4,6 +4,7 @@ import {
   type CommandDescriptor,
   type EventDescriptor,
   type EventMessage,
+  type InferResult,
   type QueryDescriptor,
 } from "../messaging/messages.js"
 import { appendFunction } from "../event-sourcing/append.js"
@@ -89,13 +90,15 @@ export type ContextSourceFunction = (query: EventQuery) => Promise<ReadonlyArray
 
 /**
  * `send` as a context capability. Dispatches a command that is handled in its
- * own fresh UnitOfWork (see `send.ts` for the atomic-boundary semantics).
+ * own fresh UnitOfWork (see `send.ts` for the atomic-boundary semantics), and
+ * resolves to what the descriptor's `result` schema promises — `unknown` when
+ * it declares none, exactly as the edge verb `send(bus, …)` does.
  */
 export type ContextSendFunction = <P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined = undefined>(
   descriptor: CommandDescriptor<P, R>,
   payload: InferOutput<P>,
   metadata?: Metadata,
-) => Promise<unknown>
+) => Promise<InferResult<R>>
 
 /**
  * `query` as a context capability. Consults a query handler — local or across

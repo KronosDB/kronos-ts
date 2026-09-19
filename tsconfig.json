@@ -30,6 +30,7 @@
     "packages/core/src/event-sourcing/__tests__/state-initial.types.ts",
     "packages/core/src/validation/__tests__/validation-composition.types.ts",
     "packages/core/src/logging/__tests__/logging-demand.types.ts",
+    "packages/core/src/command-handling/__tests__/send-result.types.ts",
     "packages/core/src/composition/__tests__/wrapper-order.types.ts",
     "packages/core/src/query-handling/__tests__/query-bus-factory.types.ts",
     "integrationtests/src/__tests__/observability-order.types.ts"
