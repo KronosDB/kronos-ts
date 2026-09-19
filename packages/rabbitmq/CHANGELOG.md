@@ -1,5 +1,12 @@
 # @kronos-ts/rabbitmq
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [926b661]
+  - @kronos-ts/core@0.5.1
+
 ## 0.8.0
 
 ### Major Changes

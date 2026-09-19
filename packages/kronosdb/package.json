@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/kronosdb",
-  "version": "0.9.0",
-  "description": "KronosDB extension for Kronos \u2014 native event store transport.",
+  "version": "0.9.1",
+  "description": "KronosDB extension for Kronos — native event store transport.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",

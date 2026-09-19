@@ -1,7 +1,7 @@
 {
   "name": "@kronos-ts/core",
-  "version": "0.5.0",
-  "description": "The Kronos core \u2014 task lifecycle, bus and store shapes, reference-following assembly, and the DCB model.",
+  "version": "0.5.1",
+  "description": "The Kronos core — task lifecycle, bus and store shapes, reference-following assembly, and the DCB model.",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Theo Emanuelsson",
