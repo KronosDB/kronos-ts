@@ -146,7 +146,7 @@ describe("kronosDbCommandBus — concurrent inbound wire handling", () => {
     const parent = commandHandler(Parent, async ({ payload }, ctx) => {
       units.push(ctx.unitOfWork)
       ctx.unitOfWork.onCommit(() => { commits.push("parent") })
-      return await ctx.send(Child, payload) as number
+      return await ctx.send(Child, payload)
     })
     const child = commandHandler(Child, async ({ payload }, ctx) => {
       units.push(ctx.unitOfWork)
