@@ -1,5 +1,12 @@
 # @kronos-ts/test
 
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [926b661]
+  - @kronos-ts/core@0.5.1
+
 ## 0.6.0
 
 ### Major Changes
