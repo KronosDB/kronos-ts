@@ -14,7 +14,7 @@ import { observedPoolView, observedTransactionView, type SpanningTrace } from ".
 
 type RecordedSpan = { readonly options: Record<string, unknown> | undefined }
 
-/** A trace whose `span()` records every wrap — name only, never SQL/params. */
+/** A trace whose `span()` records every wrap — its name and attributes. */
 function fakeTrace(): { trace: SpanningTrace; spans: RecordedSpan[] } {
   const spans: RecordedSpan[] = []
   const trace: SpanningTrace = {
@@ -140,7 +140,7 @@ describe("postgresHandler — with no trace on the context", () => {
 })
 
 describe("postgresHandler — with a trace on the context", () => {
-  it("pool fallback: query()/queryOne() are each one 'db.statement' span, no SQL/params recorded", async () => {
+  it("pool fallback: query()/queryOne() are each one 'db.statement' span carrying the text, never the params", async () => {
     const pool = postgresPool(fakeAdapter(), { bootstrap: false })
     const { trace, spans } = fakeTrace()
     let seen: PostgresAdapter | undefined
@@ -156,12 +156,11 @@ describe("postgresHandler — with a trace on the context", () => {
     await seen!.query("SELECT 1", ["secret-param"])
     await seen!.queryOne("SELECT 2", ["another-secret"])
 
-    expect(spans.length).toBe(2)
-    for (const span of spans) {
-      expect(span.options).toEqual({ name: "db.statement" })
-      expect(JSON.stringify(span.options)).not.toContain("SELECT")
-      expect(JSON.stringify(span.options)).not.toContain("secret")
-    }
+    expect(spans.map((span) => span.options)).toEqual([
+      { name: "db.statement", attributes: { "db.query.text": "SELECT 1" } },
+      { name: "db.statement", attributes: { "db.query.text": "SELECT 2" } },
+    ])
+    expect(JSON.stringify(spans)).not.toContain("secret")
   })
 
   it("transaction: query() is spanned once per call, under the SAME trace", async () => {
@@ -183,10 +182,11 @@ describe("postgresHandler — with a trace on the context", () => {
       await handler(message as never, ctxWith(uow, trace))
     })
 
-    expect(spans.length).toBe(2)
-    for (const span of spans) {
-      expect(span.options).toEqual({ name: "db.statement" })
-    }
+    expect(spans.map((span) => span.options?.attributes)).toEqual([
+      { "db.query.text": "UPDATE widgets SET name = $1 WHERE id = $2" },
+      { "db.query.text": "SELECT * FROM widgets WHERE id = $1" },
+    ])
+    expect(JSON.stringify(spans)).not.toContain("shhh")
   })
 
   it("has no active span at all when the handler never calls sql()", async () => {
@@ -227,7 +227,12 @@ describe("observedTransactionView() / observedPoolView() — unwrap()", () => {
     await wrapped.query("SELECT 1", ["p"])
     expect(callCount()).toBe(1)
     expect(spans.length).toBe(1)
-    expect(spans[0]!.options).toEqual({ name: "db.statement" })
+    expect(spans[0]!.options).toEqual({ name: "db.statement", attributes: { "db.query.text": "SELECT 1" } })
+
+    // node-postgres' config-object form carries its text the same way.
+    await wrapped.query({ text: "SELECT 2", values: ["p"] })
+    expect(spans[1]!.options).toEqual({ name: "db.statement", attributes: { "db.query.text": "SELECT 2" } })
+    expect(JSON.stringify(spans)).not.toContain('"p"')
 
     // Other members pass through untouched.
     expect(typeof wrapped.release).toBe("function")
@@ -257,8 +262,25 @@ describe("observedTransactionView() / observedPoolView() — unwrap()", () => {
     const result = await chained // only awaiting triggers execution
     expect(executedCount()).toBe(1)
     expect(spans.length).toBe(1)
-    expect(spans[0]!.options).toEqual({ name: "db.statement" })
+    expect(spans[0]!.options).toEqual({ name: "db.statement", attributes: { "db.query.text": "SELECT 1" } })
     expect(result).toEqual([{ label: "SELECT 1:values" }])
+    expect(JSON.stringify(spans)).not.toContain('"p"')
+  })
+
+  it("postgres.js / Bun.sql-like tag call: template strings are joined back with $n placeholders", async () => {
+    const { trace, spans } = fakeTrace()
+    const { client } = fakePostgresJsLikeClient()
+    const view = observedPoolView({ ...fakeAdapter(), unwrap: () => client }, trace)
+    const wrapped = view.unwrap<typeof client>()
+
+    const id = "w-1"
+    await wrapped`SELECT * FROM widgets WHERE id = ${id} AND name = ${"shhh"}`
+    expect(spans[0]!.options).toEqual({
+      name: "db.statement",
+      attributes: { "db.query.text": "SELECT * FROM widgets WHERE id = $1 AND name = $2" },
+    })
+    expect(JSON.stringify(spans)).not.toContain("w-1")
+    expect(JSON.stringify(spans)).not.toContain("shhh")
   })
 
   it("pool view: everything besides query/queryOne passes straight through", async () => {

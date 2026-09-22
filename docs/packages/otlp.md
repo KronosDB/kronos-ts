@@ -121,8 +121,8 @@ and falls back to `inertTrace` / `inertMetrics`.
 A resource that a handler wrapper supplies needs nothing at all: with
 `otlpHandler` outside `postgresHandler`, every statement issued through
 `ctx.sql()` — and through `ctx.db` from `drizzleHandler` or `kyselyHandler` —
-is a `db.statement` span under the handling. SQL text and parameters are never
-recorded. The other way round is a compile error: the trace would arrive too
+is a `db.statement` span under the handling, carrying the statement as
+`db.query.text` — placeholders and all, never the parameters. The other way round is a compile error: the trace would arrive too
 late to span anything. To drop those spans, filter `db.statement` at the
 collector.
 
