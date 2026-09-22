@@ -8,8 +8,10 @@
  * too — so a query builder issuing raw statements through the escape hatch
  * (Drizzle, say) is covered exactly like `ctx.sql().query(...)`.
  *
- * Nothing here records SQL text or parameters — the span name is the static
- * string `"db.statement"`, full stop. And nothing here imports
+ * Every span is named `"db.statement"` and carries the statement's text as
+ * `db.query.text`, OpenTelemetry's attribute for it. Parameters are never
+ * recorded: the text is what the developer wrote, the parameters are what the
+ * user sent. And nothing here imports
  * `@kronos-ts/otlp`: the trace this package spans onto is a minimal
  * structural type, {@link SpanningTrace}, so any object with a compatible
  * `span()` works.
@@ -25,18 +27,50 @@ import type { PostgresAdapter, PostgresAdapterTransaction, QueryRow } from "./ad
 
 /**
  * The one thing this package needs of a trace: the ability to wrap a
- * function so calling it runs inside a span. Deliberately NOT
- * `@kronos-ts/otlp`'s `Trace` — any object shaped like this works, which
+ * function so calling it runs inside a span, named and attributed. Deliberately
+ * NOT `@kronos-ts/otlp`'s `Trace` — any object shaped like this works, which
  * keeps this package's dependency on tracing at zero.
  */
 export type SpanningTrace = {
-  span<F extends (...args: any[]) => any>(fn: F, options?: { name?: string }): F
+  span<F extends (...args: any[]) => any>(
+    fn: F,
+    options?: { name?: string; attributes?: Readonly<Record<string, string>> },
+  ): F
 }
 
 const SPAN_NAME = "db.statement"
+/** OpenTelemetry's attribute for the statement text. Parameters have no attribute here, ever. */
+const QUERY_TEXT = "db.query.text"
 
-function spanned<F extends (...args: any[]) => any>(trace: SpanningTrace, fn: F): F {
-  return trace.span(fn, { name: SPAN_NAME })
+/**
+ * Run `fn` in one `db.statement` span carrying the statement's text — the SQL
+ * as the code wrote it, placeholders and all — and never its parameters, which
+ * is where user data travels. A call whose text cannot be read off its
+ * arguments (a driver shape this package does not know) is spanned bare.
+ */
+function statement<T>(trace: SpanningTrace, text: string | undefined, fn: () => T): T {
+  return trace.span(fn, {
+    name: SPAN_NAME,
+    ...(text !== undefined ? { attributes: { [QUERY_TEXT]: text } } : {}),
+  })()
+}
+
+/**
+ * The statement text a driver call carries. node-postgres takes either the
+ * text or a config object with `text`; postgres.js / Bun.sql take the text
+ * on `.unsafe(text, params)` and template strings on the tag itself, which
+ * are joined back with `$n` placeholders — the same statement the driver
+ * sends, parameters left out.
+ */
+function textOf(first: unknown): string | undefined {
+  if (typeof first === "string") return first
+  if (Array.isArray(first) && "raw" in first) {
+    return (first as ReadonlyArray<string>).reduce((sql, part, index) => `${sql}$${index}${part}`)
+  }
+  if (typeof first === "object" && first !== null && typeof (first as { text?: unknown }).text === "string") {
+    return (first as { text: string }).text
+  }
+  return undefined
 }
 
 /**
@@ -49,17 +83,18 @@ function spanned<F extends (...args: any[]) => any>(trace: SpanningTrace, fn: F)
  * it. `.values()` / `.raw()` return a further pending query, so they are
  * wrapped recursively rather than spanned themselves.
  */
-function wrapLazyQuery<T>(pending: T, trace: SpanningTrace): T {
+function wrapLazyQuery<T>(pending: T, trace: SpanningTrace, text: string | undefined): T {
   if (pending === null || (typeof pending !== "object" && typeof pending !== "function")) return pending
   return new Proxy(pending as object, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, target)
       if (prop === "then" && typeof value === "function") {
-        return spanned(trace, (...args: unknown[]) => (value as (...a: unknown[]) => unknown).apply(target, args))
+        return (...args: unknown[]) =>
+          statement(trace, text, () => (value as (...a: unknown[]) => unknown).apply(target, args))
       }
       if ((prop === "values" || prop === "raw") && typeof value === "function") {
         return (...args: unknown[]) =>
-          wrapLazyQuery((value as (...a: unknown[]) => unknown).apply(target, args), trace)
+          wrapLazyQuery((value as (...a: unknown[]) => unknown).apply(target, args), trace, text)
       }
       return typeof value === "function" ? value.bind(target) : value
     },
@@ -73,13 +108,13 @@ function observePostgresJsLikeClient<T>(client: T, trace: SpanningTrace): T {
       const value = Reflect.get(target, prop, target)
       if (prop === "unsafe" && typeof value === "function") {
         return (...args: unknown[]) =>
-          wrapLazyQuery((value as (...a: unknown[]) => unknown).apply(target, args), trace)
+          wrapLazyQuery((value as (...a: unknown[]) => unknown).apply(target, args), trace, textOf(args[0]))
       }
       return typeof value === "function" ? value.bind(target) : value
     },
     apply(target, thisArg, args) {
       const pending = Reflect.apply(target as (...a: unknown[]) => unknown, target, args)
-      return wrapLazyQuery(pending, trace)
+      return wrapLazyQuery(pending, trace, textOf(args[0]))
     },
   }) as T
 }
@@ -89,7 +124,7 @@ function observePgLikeClient<T extends { query: (...args: unknown[]) => unknown 
   client: T,
   trace: SpanningTrace,
 ): T {
-  const query = spanned(trace, (...args: unknown[]) => client.query(...args))
+  const query = (...args: unknown[]) => statement(trace, textOf(args[0]), () => client.query(...args))
   return new Proxy(client as object, {
     get(target, prop, receiver) {
       if (prop === "query") return query
@@ -124,9 +159,8 @@ export function observedTransactionView(
   trace: SpanningTrace,
 ): PostgresAdapterTransaction {
   return {
-    query: spanned(trace, <R extends QueryRow = QueryRow>(sql: string, params?: unknown[]) =>
-      tx.query<R>(sql, params),
-    ),
+    query: <R extends QueryRow = QueryRow>(sql: string, params?: unknown[]) =>
+      statement(trace, sql, () => tx.query<R>(sql, params)),
     unwrap<T = unknown>(): T {
       return observeUnwrappedClient(tx.unwrap<T>(), trace)
     },
@@ -145,10 +179,10 @@ export function observedTransactionView(
 export function observedPoolView(pg: PostgresAdapter, trace: SpanningTrace): PostgresAdapter {
   return {
     ...pg,
-    query: spanned(trace, <R extends QueryRow = QueryRow>(sql: string, params?: unknown[]) => pg.query<R>(sql, params)),
-    queryOne: spanned(trace, <R extends QueryRow = QueryRow>(sql: string, params?: unknown[]) =>
-      pg.queryOne<R>(sql, params),
-    ),
+    query: <R extends QueryRow = QueryRow>(sql: string, params?: unknown[]) =>
+      statement(trace, sql, () => pg.query<R>(sql, params)),
+    queryOne: <R extends QueryRow = QueryRow>(sql: string, params?: unknown[]) =>
+      statement(trace, sql, () => pg.queryOne<R>(sql, params)),
     unwrap<T = unknown>(): T {
       return observeUnwrappedClient(pg.unwrap<T>(), trace)
     },

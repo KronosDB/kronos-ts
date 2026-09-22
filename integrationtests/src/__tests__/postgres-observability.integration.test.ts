@@ -109,11 +109,12 @@ describe("postgres observability + drizzle over the task's transaction", () => {
     expect(markers.length).toBe(1)
 
     // ONE span for Kronos's own insert, ONE for Drizzle's — both under the
-    // handler's trace, both bare "db.statement", nothing else on them.
-    expect(spans.length).toBe(2)
-    for (const span of spans) {
-      expect(span.options).toEqual({ name: "db.statement" })
-    }
+    // handler's trace, each carrying the statement it ran and never its values.
+    expect(spans.map((span) => span.options?.name)).toEqual(["db.statement", "db.statement"])
+    const texts = spans.map((span) => (span.options?.attributes as Record<string, string>)["db.query.text"])
+    expect(texts[0]).toBe("INSERT INTO obs_markers (id) VALUES ($1)")
+    expect(texts[1]).toMatch(/^insert into "obs_widgets" \("id", "name"\) values \(\$1, \$2\)/)
+    expect(JSON.stringify(spans)).not.toContain("Widget One")
   })
 
   it("rolls back Kronos's write and Drizzle's write TOGETHER on handler error", async () => {
