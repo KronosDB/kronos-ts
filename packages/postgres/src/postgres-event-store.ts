@@ -84,17 +84,28 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
   }
 
   /**
-   * Extract lock targets from the append condition's query — the writer locks on
-   * what it is READING (the query's tags), not just what it is writing. This
-   * ensures two writers on the same tag serialize (one blocks until the other
-   * commits), while writers on disjoint tags run in parallel.
+   * Lock targets for an append — the tags the condition READS and the tags the
+   * events WRITE. Two writers sharing a tag serialize (one blocks until the
+   * other commits), while writers on disjoint tags run in parallel.
    *
-   * For `any-tag` or empty criteria, returns an empty array so only the
-   * global-intent S-lock is acquired (acquireWriteLocks handles the empty case).
+   * The written tags matter even without a condition. A position is handed out
+   * at INSERT and becomes visible at COMMIT, so two unserialized writers of one
+   * tag can commit out of position order, and a read in between sees the later
+   * event but not the earlier one — below the read's marker, where the append
+   * condition never looks. Serializing writers per tag keeps the visible events
+   * of a tag a prefix of all of them.
+   *
+   * For `any-tag` or empty criteria and untagged events, returns an empty array
+   * so only the global-intent S-lock is acquired (acquireWriteLocks handles the
+   * empty case).
    */
-  function lockTargetsForCondition(condition: AppendCondition | undefined): LockTarget[] {
-    if (!condition) return []
-    return extractCriteriaTags(compileQuery(condition.query)).map((tag) => ({ type: "", tag }))
+  function lockTargetsFor(
+    condition: AppendCondition | undefined,
+    events: ReadonlyArray<EventMessage>,
+  ): LockTarget[] {
+    const read = condition ? extractCriteriaTags(compileQuery(condition.query)) : []
+    const written = events.flatMap((e) => encodedTagsOf(e))
+    return [...new Set([...read, ...written])].map((tag) => ({ type: "", tag }))
   }
 
   function extractCriteriaTags(criteria: EventCriteria): string[] {
@@ -130,10 +141,20 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
     // --- Conflict check ---
     if (condition) {
       const markerPos = condition.marker.position
-      const built = buildCriteriaWhere(compileQuery(condition.query), 2) // $1 = markerPos
+      // Each read against its own marker when the condition carries them;
+      // otherwise the whole query against the one marker.
+      const reads = condition.reads ?? [condition]
+      const clauses: string[] = []
+      const params: unknown[] = []
+      for (const read of reads) {
+        params.push(read.marker.position)
+        const built = buildCriteriaWhere(compileQuery(read.query), params.length + 1)
+        clauses.push(`(sequence_position > $${params.length} AND (${built.where}))`)
+        params.push(...built.params)
+      }
       const sql = `SELECT count(*)::bigint AS cnt FROM ${tables.events}
-                   WHERE sequence_position > $1 AND (${built.where})`
-      const rows = await tx.query<{ cnt: string | number }>(sql, [markerPos, ...built.params])
+                   WHERE ${clauses.join(" OR ")}`
+      const rows = await tx.query<{ cnt: string | number }>(sql, params)
       const cnt = BigInt(rows[0]?.cnt ?? 0)
       if (cnt > 0n) {
         // Throw with the KR001 code so isDcbViolation() can identify it
@@ -181,7 +202,12 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
     return { position: lastPosition, xid: lastXid }
   }
 
-  /** The plain read: the query, plus the head the marker falls back to. */
+  /**
+   * The plain read: the query's events, and the marker an append conditioned on
+   * it checks above. With matches, the last match: every matching event at or
+   * below it was seen. Without, the position just below `start` — never the log
+   * head, which can sit above a matching event still uncommitted.
+   */
   async function sourcePlain(condition: SourcingCondition): Promise<SourcingResult> {
     const start = condition.start ?? 0n
     const built = buildCriteriaWhere(compileQuery(condition.query), 2) // $1 = start
@@ -194,12 +220,9 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
     const rows = await adapter.query<EventRow>(sql, [start, ...built.params])
 
     const events: EventMessage[] = rows.map((r) => decodeEvent(r))
-    const headRow = await adapter.queryOne<{ head: string | null }>(
-      `SELECT MAX(sequence_position)::text AS head FROM ${tables.events}`,
-    )
-    const head = headRow?.head ? BigInt(headRow.head) : -1n
-    const lastPos = rows.length > 0 ? BigInt(rows[rows.length - 1]!.sequence_position) : -1n
-    const marker = rows.length > 0 ? markerAt(lastPos) : markerAt(head)
+    const marker = rows.length > 0
+      ? markerAt(BigInt(rows[rows.length - 1]!.sequence_position))
+      : markerAt(start - 1n)
     return { events, marker }
   }
 
@@ -217,7 +240,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       // Two-phase: open tx, acquire locks, run conflict check + INSERT, hold
       // tx open until commit(). We bridge adapter.transaction() (which owns
       // the full lifecycle) with a deferred that the AppendTransaction controls.
-      const targets = lockTargetsForCondition(condition)
+      const targets = lockTargetsFor(condition, events)
 
       let resolveOuter!: (v: { position: bigint; xid: string }) => void
       let rejectOuter!: (e: unknown) => void
@@ -326,7 +349,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       // short-lived tx when no unit of work was handed in. The shared path
       // defers NOTIFY to AFTER_COMMIT because the tx
       // hasn't actually committed yet when checkAndInsert returns.
-      const targets = lockTargetsForCondition(condition)
+      const targets = lockTargetsFor(condition, events)
       const shared = await sharedPostgresTransaction(uow)
 
       const notify = async () => {

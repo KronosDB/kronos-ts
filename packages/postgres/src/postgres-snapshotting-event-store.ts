@@ -91,15 +91,14 @@ export function postgresSnapshottingEventStore<E extends EventStore>(
   const tables = pg.tables
 
   /**
-   * THE FUSED READ — four CTEs and a LEFT JOIN off a one-row anchor.
+   * THE FUSED READ — three CTEs and a LEFT JOIN off a one-row anchor.
    *
    *   snap   the cache entry, or nothing
    *   bound  where the event scan starts: `snap.position + 1`, floored by any
    *          `start` the condition independently asked for, so the two
-   *          narrowings compose instead of fighting
-   *   head   `MAX(sequence_position)` — always exactly one row, which is what
-   *          guarantees the outer SELECT returns a row even when the state has
-   *          no events and no snapshot
+   *          narrowings compose instead of fighting. Always exactly one row,
+   *          which is what guarantees the outer SELECT returns a row even when
+   *          the state has no events and no snapshot
    *   ev     the event query itself, from `bound`
    *
    * The snapshot's columns ride along on every event row. That is a few bytes
@@ -134,9 +133,6 @@ export function postgresSnapshottingEventStore<E extends EventStore>(
                    $2::bigint
                  ) AS start_at
         ),
-        head AS (
-          SELECT COALESCE(MAX(sequence_position), -1)::bigint AS head FROM ${tables.events}
-        ),
         ev AS (
           SELECT ${EVENT_COLUMNS}
             FROM ${tables.events}
@@ -145,16 +141,16 @@ export function postgresSnapshottingEventStore<E extends EventStore>(
         )
         SELECT ev.sequence_position, ev.event_id, ev.type, ev.tags,
                ev.payload, ev.metadata, ev.version, ev.timestamp,
-               head.head::text                              AS head,
+               bound.start_at::text                         AS start_at,
                (SELECT position::text FROM snap)            AS snap_position,
                (SELECT encode(payload, 'base64') FROM snap) AS snap_payload,
                (SELECT metadata FROM snap)                  AS snap_metadata
-          FROM head LEFT JOIN ev ON true
+          FROM bound LEFT JOIN ev ON true
          ORDER BY ev.sequence_position ASC NULLS LAST
       `
     const rows = await adapter.query<
       Partial<EventRow> & {
-        head: string | null
+        start_at: string | null
         snap_position: string | null
         snap_payload: string | null
         snap_metadata: unknown
@@ -164,7 +160,7 @@ export function postgresSnapshottingEventStore<E extends EventStore>(
     // The anchor guarantees at least one row; an empty `ev` shows up as that
     // row with every event column NULL.
     const anchor = rows[0]
-    const head = anchor?.head ? BigInt(anchor.head) : -1n
+    const startAt = anchor?.start_at ? BigInt(anchor.start_at) : start
     const eventRows = rows.filter((r) => r.event_id != null) as EventRow[]
     const events: EventMessage[] = eventRows.map((r) => decodeEvent(r))
 
@@ -180,7 +176,10 @@ export function postgresSnapshottingEventStore<E extends EventStore>(
     const lastPos = eventRows.length > 0
       ? BigInt(eventRows[eventRows.length - 1]!.sequence_position)
       : -1n
-    const marker = eventRows.length > 0 ? markerAt(lastPos) : markerAt(head)
+    // Without events after the resume point, the position just below it —
+    // never the log head, which can sit above a matching event still
+    // uncommitted.
+    const marker = eventRows.length > 0 ? markerAt(lastPos) : markerAt(startAt - 1n)
 
     return { events, marker, ...(snapshot !== undefined ? { snapshot } : {}) }
   }

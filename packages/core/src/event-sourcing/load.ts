@@ -79,8 +79,9 @@ function requireLog(eventStore: EventStore | undefined, call: string): EventStor
  * `ctx.load` and `ctx.source` both come through here, which is what makes their
  * consistency guarantee literally the same guarantee rather than two
  * implementations of one idea. The PREPARE_COMMIT flush concatenates every
- * recorded query's items (they OR) and takes the highest marker; the store then
- * refuses the write if anything matching landed after it.
+ * recorded query's items (they OR) under the earliest marker, and passes each
+ * read with its own marker alongside; the store then refuses the write if
+ * anything a read did not see landed after it.
  */
 function recordSourcing(uow: UnitOfWork, info: SourcingInfo): void {
   uow.events.sourcingInfos.push(info)
