@@ -343,6 +343,7 @@ export {
 
 export {
   type AppendCondition,
+  type AppendConditionRead,
   appendCondition,
 } from "./event-sourcing/append-condition.js"
 

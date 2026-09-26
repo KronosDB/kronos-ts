@@ -601,6 +601,16 @@ the `state()` fold has: if another task appends a matching event between this
 read and this write, this write fails. A raw fold is a first-class decision, not
 an escape hatch that gives one up.
 
+**Several reads, each protected from its own point.** A decision that loads two
+states records two entries, and a later read does not refresh an earlier one:
+an event matching the first read can land before the second read happens. The
+condition therefore carries the union of the queries under the *earliest*
+marker, which every store checks, and each read under its own marker in
+`reads`, which a store that can check them one by one uses instead. In-memory
+and Postgres do, so they refuse exactly the events a read did not see; KronosDB
+and Axon Server take one marker on the wire, so an event a *later* read already
+saw can still cost a retry there, never a wrong decision.
+
 **Declaring `types` narrows the conflict window.** Omitting it is legal and means
 "every event carrying these tags" — a wider window, and more spurious conflicts.
 That narrowing is one of the things the state derivation was doing on your
