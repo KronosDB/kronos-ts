@@ -111,6 +111,10 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   let isRunning = false
   let stream: MessageStream<SequencedEvent> | null = null
   let pollTimer: ReturnType<typeof setTimeout> | null = null
+  // The between-batches hop. `setImmediate`, not `setTimeout(…, 0)`: both
+  // runtimes clamp a zero timeout to a millisecond, which at batch size 1 is
+  // a hard ceiling of a thousand events a second before any real work.
+  let pollImmediate: ReturnType<typeof setImmediate> | null = null
   let processing = false
   let caughtUp = false
   let lastError: Error | undefined
@@ -239,9 +243,13 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
           : advanceToken(batchEndToken, sequencedEvent.sequence + 1n)
       }
 
+      // Only the token. No claim is ever taken on this path (`claimToken` has
+      // no caller), so the per-batch `extendClaim` that used to follow was a
+      // statement matching zero rows on every commit — a third of the
+      // statements in a batch-size-1 transaction, for nothing. Claims get
+      // their own design when a processor actually takes one.
       uow.onPrepareCommit(async () => {
         await tokenStore.store(name, segment, batchEndToken, uow)
-        await tokenStore.extendClaim(name, segment, name, uow)
       })
     })
 
@@ -292,9 +300,20 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   }
 
   function scheduleImmediate() {
-    if (pollTimer !== null) clearTimeout(pollTimer)
-    pollTimer = setTimeout(poll, 0)
-    pollTimer.unref?.()
+    cancelScheduledPoll()
+    pollImmediate = setImmediate(poll)
+    pollImmediate.unref?.()
+  }
+
+  function cancelScheduledPoll() {
+    if (pollTimer !== null) {
+      clearTimeout(pollTimer)
+      pollTimer = null
+    }
+    if (pollImmediate !== null) {
+      clearImmediate(pollImmediate)
+      pollImmediate = null
+    }
   }
 
   return {
@@ -330,10 +349,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
 
     stop() {
       isRunning = false
-      if (pollTimer !== null) {
-        clearTimeout(pollTimer)
-        pollTimer = null
-      }
+      cancelScheduledPoll()
       if (stream) {
         stream.close()
         stream = null
