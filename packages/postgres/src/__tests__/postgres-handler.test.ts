@@ -4,7 +4,7 @@ import type { CommandHandler, CommandHandlerContext, EventHandlerContext, QueryH
 import type { PostgresAdapter, PostgresAdapterTransaction, ListenSubscription } from "../adapter.js"
 import type { IsolationLevel } from "../adapter.js"
 import { postgresPool } from "../postgres-pool.js"
-import { postgresTransaction, postgresUnitOfWork } from "../postgres-transaction.js"
+import { activePostgresTransaction, postgresTransaction, postgresUnitOfWork } from "../postgres-transaction.js"
 import {
   postgresHandler,
   type PostgresCapability,
@@ -108,7 +108,58 @@ describe("postgresHandler", () => {
     expect(seen).not.toBe(pool)
   })
 
-  it("never OPENS a transaction — sql() only observes", async () => {
+  it("opens the unit of work's LAZY transaction when the handler is its first writer", async () => {
+    // A processor batch runs its handlers before anything else touches the
+    // unit of work; the token store joins the transaction only at prepare-
+    // commit. If the handler did not open it, every one of its statements
+    // would autocommit on the pool and never share a commit with the token.
+    const pool = postgresPool(fakeAdapter(), { bootstrap: false })
+    const make = postgresUnitOfWork(unitOfWork, pool)
+
+    let seen: unknown
+    let activeInside: unknown
+    const handler = postgresHandler(
+      commandHandlerFn(async (_m, ctx) => {
+        seen = ctx.sql()
+        activeInside = activePostgresTransaction(ctx.unitOfWork)
+      }),
+      pool,
+    )
+
+    let activeAfter: unknown
+    await make().execute(async (uow) => {
+      expect(activePostgresTransaction(uow)).toBeUndefined()
+      await handler(message as never, ctxWith(uow))
+      activeAfter = activePostgresTransaction(uow)
+    })
+
+    expect(seen).not.toBe(pool)
+    expect(seen).toBe(activeInside)
+    expect(activeAfter).toBe(seen)
+  })
+
+  it("opens nothing for a unit of work the family did not mint", async () => {
+    const pool = postgresPool(fakeAdapter(), { bootstrap: false })
+    let seen: unknown
+    const handler = postgresHandler(
+      commandHandlerFn(async (_m, ctx) => {
+        seen = ctx.sql()
+      }),
+      pool,
+    )
+
+    await unitOfWork().execute(async (uow) => {
+      await handler(message as never, ctxWith(uow))
+      expect(activePostgresTransaction(uow)).toBeUndefined()
+    })
+
+    expect(seen).toBe(pool)
+  })
+
+  it("begins the family's transaction ONCE per unit of work, however many handlers run in it", async () => {
+    // The wrapper opens the lazy transaction before the first handler; a
+    // second handler (a processor batch is many) joins it. `sql()` itself
+    // still only observes — it is the wrapper, not the accessor, that opens.
     const adapter = fakeAdapter()
     let begins = 0
     const counting: PostgresAdapter = {
@@ -123,15 +174,17 @@ describe("postgresHandler", () => {
     const handler = postgresHandler(
       commandHandlerFn(async (_m, ctx) => {
         ctx.sql()
+        ctx.sql()
       }),
       pool,
     )
 
     await make().execute(async (uow) => {
       await handler(message as never, ctxWith(uow))
+      await handler(message as never, ctxWith(uow))
     })
 
-    expect(begins).toBe(0)
+    expect(begins).toBe(1)
   })
 
   it("is ONE function for all three kinds — event and query handlers too", async () => {

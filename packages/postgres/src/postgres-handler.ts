@@ -28,7 +28,7 @@ import {
   type UnitOfWork,
 } from "@kronos-ts/core"
 import type { PostgresAdapter, PostgresAdapterTransaction } from "./adapter.js"
-import { activePostgresTransaction } from "./postgres-transaction.js"
+import { activePostgresTransaction, sharedPostgresTransaction } from "./postgres-transaction.js"
 import { observedPoolView, observedTransactionView, type SpanningTrace } from "./postgres-observability.js"
 
 /**
@@ -62,7 +62,9 @@ export type PostgresCapability = {
    * Always safe to call. A handler written against it works unchanged whether
    * or not the seam it runs in was given a transactional factory — which is the
    * point, because that is a DEPLOYMENT decision and a slice should not encode
-   * it. It never OPENS a transaction; use `postgresTransaction` for that.
+   * it. The accessor itself never OPENS a transaction: when the unit of work is
+   * this family's, `postgresHandler` opened it before the handler ran, so the
+   * handler's statements commit with everything else in the unit of work.
    *
    * Both arms answer `query(sql, params)`, so the common case needs no
    * narrowing:
@@ -127,9 +129,8 @@ export function postgresHandler(
   next: (message: unknown, context: any) => unknown,
   pg: PostgresAdapter,
 ): unknown {
-  const wrapped = (message: unknown, context: any) => {
-    const unitOfWork = (context as { readonly unitOfWork: UnitOfWork }).unitOfWork
-    return next(message, {
+  const invoke = (message: unknown, context: any, unitOfWork: UnitOfWork) =>
+    next(message, {
       ...context,
       sql: () => {
         const active = activePostgresTransaction(unitOfWork)
@@ -138,6 +139,16 @@ export function postgresHandler(
         return active !== undefined ? observedTransactionView(active, trace) : observedPoolView(pg, trace)
       },
     })
+  const wrapped = (message: unknown, context: any) => {
+    const unitOfWork = (context as { readonly unitOfWork: UnitOfWork }).unitOfWork
+    if (activePostgresTransaction(unitOfWork) !== undefined) return invoke(message, context, unitOfWork)
+    // The unit of work's transaction is LAZY, and a handler is usually its
+    // first writer: nothing else has opened it when the handler runs. Open
+    // it here when the unit of work is this family's, so the handler's
+    // statements land in the transaction that commits with the token —
+    // not on the pool, one autocommit statement at a time. A unit of work
+    // that is not ours opens nothing, and `sql()` stays the pool.
+    return sharedPostgresTransaction(unitOfWork).then(() => invoke(message, context, unitOfWork))
   }
 
   return describe(wrapped, { name: "postgresHandler", supplies: ["sql"], next })
