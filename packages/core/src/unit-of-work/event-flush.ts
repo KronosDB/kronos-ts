@@ -55,12 +55,25 @@ export function registerEventFlush(uow: UnitOfWork, options: EventFlushOptions):
       const combined: ReadonlyArray<QueryItem> = sourcingInfos.flatMap((s) =>
         queryItems(s.query),
       )
-      const maxMarker = sourcingInfos.reduce(
-        (max, s) => (s.markerPosition > max ? s.markerPosition : max),
-        -1n,
+      // The EARLIEST marker. A later read does not refresh an earlier one: an
+      // event matching the first read's query can land between the two reads,
+      // below the second read's marker, and only the earliest marker still
+      // covers it.
+      const earliest = sourcingInfos.reduce(
+        (min, s) => (s.markerPosition < min ? s.markerPosition : min),
+        sourcingInfos[0]!.markerPosition,
       )
-      const query = options.appendCondition ? options.appendCondition(combined) : combined
-      appendCondition = { query, marker: { position: maxMarker } }
+      if (options.appendCondition) {
+        // An override replaces the query, so the per-read form no longer
+        // describes it.
+        appendCondition = { query: options.appendCondition(combined), marker: { position: earliest } }
+      } else {
+        appendCondition = {
+          query: combined,
+          marker: { position: earliest },
+          reads: sourcingInfos.map((s) => ({ query: s.query, marker: { position: s.markerPosition } })),
+        }
+      }
     }
 
     await options.eventStore.append(resolvedEvents, appendCondition, uow)

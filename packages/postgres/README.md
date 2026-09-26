@@ -295,6 +295,8 @@ The engine implements [Dynamic Consistency Boundaries](https://dcb.events):
 
 Concurrent writers on **disjoint tags** run in parallel (advisory-lock taxonomy permits this). Concurrent writers on the **same tag** serialise — exactly one commits; the other receives `AppendConditionError`.
 
+A writer locks the tags its condition reads **and** the tags its events carry, with or without a condition. A position is assigned at insert and becomes visible at commit, so unserialised writers of one tag could commit out of position order and leave a read unable to see an event below its own marker. A read that matches nothing is anchored below its start rather than at the log head, for the same reason. When a condition carries `reads`, each read is checked against its own marker.
+
 ### Gap-free streaming
 
 The `open()` streaming method uses a two-phase cursor to prevent the concurrent-commit gap bug:

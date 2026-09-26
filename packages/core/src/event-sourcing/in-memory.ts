@@ -30,6 +30,22 @@ export function inMemoryEventStore(): EventStore {
   const events: Array<{ position: bigint; event: EventMessage }> = []
   let nextPosition = 0n
 
+  // Each read is checked against its own marker when the condition carries
+  // them; otherwise the whole query against the one marker.
+  function refuseConflicts(condition: AppendCondition): void {
+    const reads = condition.reads ?? [condition]
+    const checks = reads.map((read) => ({ criteria: compileQuery(read.query), after: read.marker.position }))
+    const conflicting = events.filter((entry) =>
+      checks.some((check) => entry.position > check.after && matchesCriteria(entry.event, check.criteria)),
+    )
+    if (conflicting.length > 0) {
+      throw new AppendConditionError(
+        `Append condition violated: ${conflicting.length} conflicting event(s) ` +
+        `found after position ${condition.marker.position}`,
+      )
+    }
+  }
+
   // Registered stream listeners — notified when events are appended
   const streamListeners = new Set<() => void>()
 
@@ -99,19 +115,7 @@ export function inMemoryEventStore(): EventStore {
       newEvents: ReadonlyArray<EventMessage>,
       condition?: AppendCondition,
     ): Promise<AppendTransaction> {
-      if (condition) {
-        const criteria = compileQuery(condition.query)
-        const conflicting = events
-          .filter((entry) => entry.position > condition.marker.position)
-          .filter((entry) => matchesCriteria(entry.event, criteria))
-
-        if (conflicting.length > 0) {
-          throw new AppendConditionError(
-            `Append condition violated: ${conflicting.length} conflicting event(s) ` +
-            `found after position ${condition.marker.position}`,
-          )
-        }
-      }
+      if (condition) refuseConflicts(condition)
 
       // Stage events — they're added to the store but we track the range
       const startPosition = nextPosition
@@ -147,19 +151,7 @@ export function inMemoryEventStore(): EventStore {
       newEvents: ReadonlyArray<EventMessage>,
       condition?: AppendCondition,
     ): Promise<ConsistencyMarker> {
-      if (condition) {
-        const criteria = compileQuery(condition.query)
-        const conflicting = events
-          .filter((entry) => entry.position > condition.marker.position)
-          .filter((entry) => matchesCriteria(entry.event, criteria))
-
-        if (conflicting.length > 0) {
-          throw new AppendConditionError(
-            `Append condition violated: ${conflicting.length} conflicting event(s) ` +
-            `found after position ${condition.marker.position}`,
-          )
-        }
-      }
+      if (condition) refuseConflicts(condition)
 
       for (const event of newEvents) {
         events.push({ position: nextPosition, event })
