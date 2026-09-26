@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/postgres",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "PostgreSQL persistence for Kronos — event store with snapshotting and scheduling tiers, token store, dead-letter queue, unit of work and handler wrapper.",
   "license": "Apache-2.0",
   "type": "module",
