@@ -76,7 +76,7 @@ export type StateRepository<Id = unknown, S = unknown> = {
  * any test that runs the handler. Loud on first use beats a compile-time
  * demand that forced every handler to name a store tier it never touched.
  *
- * ALL OF THIS IS SUGAR. `ctx.source(query, { snapshot })` plus an
+ * ALL OF THIS IS SUGAR. `eventStore.source(…)` with a `SnapshotKey` plus an
  * `eventStore.storeSnapshot(key, …)` call is the same mechanism with the policy
  * and the key composition written by hand, and it is four lines. What `state()`
  * adds is that the fold, the query, the policy and the key sit in one value.

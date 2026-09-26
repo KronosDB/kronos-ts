@@ -15,7 +15,7 @@ transport takes your local bus and returns a bus of the same shape. Handlers are
 functions of `(message, ctx)`, and `ctx` is built fresh per invocation as a
 closure over that invocation's unit of work — nothing is reachable from a global,
 so using a capability outside a handler is a compile error rather than a runtime
-throw. Assembly is four flat lists whose entries carry, as bare properties, the
+throw. Assembly is three flat lists whose entries carry, as bare properties, the
 shared objects they run against. `kronos` follows those references and never
 counts: two entries share one event store because they name the *same object*,
 and two entries share one delivery because they name the same processor *name*.
@@ -73,7 +73,9 @@ const app = kronos({
 })
 
 await send(commandBus, Deposit, { accountId: "acc-1", amount: 100 })
-console.log(await query(queryBus, GetBalance, { accountId: "acc-1" }))
+// The projection runs on its own processor: wait for it to catch up.
+while (!balances.has("acc-1")) await new Promise((resolve) => setTimeout(resolve, 10))
+console.log(await query(queryBus, GetBalance, { accountId: "acc-1" })) // 100
 await app.stop()
 ```
 
@@ -93,7 +95,7 @@ changes.
 | `@kronos-ts/test` | `given(...).when(...).then(...)` — a test as a value, run at a fixture. |
 | `@kronos-ts/rabbitmq` | Command and query transport over AMQP. A dumb pipe: routing happens client-side. |
 | `@kronos-ts/kronosdb` | Event store plus its snapshotting and scheduling tiers, command/query transport and control plane over KronosDB. Server-side routing. |
-| `@kronos-ts/axon-server` | The same family, over Axon Server. |
+| `@kronos-ts/axon-server` | Event store plus its snapshotting tier, command/query transport and control plane over Axon Server. |
 | `@kronos-ts/postgres` | The full persistence family with no ORM: event store plus its snapshotting and scheduling tiers, unit of work, token store, dead-letter queue, handler wrapper, plus the DDL. |
 | `@kronos-ts/otlp` | Tracing and metrics as OTLP over `fetch`. No `@opentelemetry/*` dependency, no SDK, no global tracer. |
 
@@ -106,17 +108,12 @@ changes.
 - [Building an application](docs/building-an-application.md) — the full
   walkthrough: slices as plain values, a composition root, edges, and the folder
   convention. Marks clearly which parts are library and which are house style.
-- [Testing](docs/testing.md) — unit level (folds are reduces) and behaviour level
-  (`given`/`when`/`then`, timelines, sagas, scenario tables).
-- [Writing your own](docs/writing-your-own.md) — the three templates for a new
-  package, worked against how `drizzle` and `otlp` are actually built.
-- Package guides: [rabbitmq](docs/packages/rabbitmq.md) ·
-  [kronosdb](docs/packages/kronosdb.md) ·
-  [axon-server](docs/packages/axon-server.md) ·
-  [postgres](docs/packages/postgres.md) ·
-  [drizzle](docs/packages/drizzle.md) ·
-  [otlp](docs/packages/otlp.md) ·
-  [test](docs/packages/test.md)
+- [Messaging reliability](docs/messaging-reliability.md) — timeouts, bounded
+  admission, overload and shutdown across the local and remote buses.
+- [API surface](SURFACE.md) — every public function and type, package by
+  package.
+- Package guides: [postgres](packages/postgres/README.md) ·
+  [otlp](docs/packages/otlp.md)
 
 ## Requirements
 

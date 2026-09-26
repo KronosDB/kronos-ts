@@ -4,9 +4,9 @@
  *
  * What it pins, with the real wrappers:
  *
- * - The documented stack compiles and wires into an entry: `drizzleHandler`
- *   from the postgres package's subpath inside `postgresHandler`, inside
- *   correlation and logging, `otlpHandler` outermost.
+ * - The documented stack compiles and wires into an entry: an app-written
+ *   `drizzleHandler` inside `postgresHandler`, inside correlation and logging,
+ *   `otlpHandler` outermost.
  * - `otlpHandler` inside `correlatingHandler` or `loggingHandler` is refused
  *   with a sentence.
  * - `otlpHandler` inside `postgresHandler` is refused with a sentence: the
@@ -20,6 +20,7 @@ import {
   commandHandler,
   consoleLogger,
   correlatingHandler,
+  describe,
   inMemoryEventStore,
   localCommandBus,
   localQueryBus,
@@ -30,10 +31,15 @@ import {
   type CommandHandlerEntry,
   type LogCapability,
 } from "@kronos-ts/core"
-import { postgresHandler, postgresUnitOfWork, type PostgresAdapter } from "@kronos-ts/postgres"
-import { drizzleHandler, type DrizzleCapability } from "@kronos-ts/postgres/drizzle"
+import {
+  postgresHandler,
+  postgresUnitOfWork,
+  type PostgresAdapter,
+  type PostgresCapability,
+} from "@kronos-ts/postgres"
 import { otlpExporter, otlpHandler, type TraceCapability } from "@kronos-ts/otlp"
-import { drizzle } from "drizzle-orm/postgres-js"
+import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js"
+import type { Sql as PostgresJs } from "postgres"
 
 declare function pipe<A, B>(a: A, ab: (a: A) => B): B
 declare function pipe<A, B, C>(a: A, ab: (a: A) => B, bc: (b: B) => C): C
@@ -51,9 +57,16 @@ const commandBus = localCommandBus(uow)
 const queryBus = localQueryBus(unitOfWork)
 
 // The one persistence step a slice takes: Drizzle over the task's
-// transaction, from the postgres package's subpath. The handler names the
-// capability bare — no driver, no build function's return type.
-const drizzleOver = (client: unknown) => drizzle(client as never)
+// transaction. The APP writes it — Kronos ships no builder integration — and
+// it composes with the real wrappers like any other described step.
+type DrizzleCapability = { readonly db: PostgresJsDatabase }
+
+const drizzleHandler = <M, C extends DrizzleCapability, R>(next: (message: M, context: C) => R) =>
+  describe(
+    (message: M, context: Omit<C, "db"> & PostgresCapability): R =>
+      next(message, { ...context, db: drizzle(context.sql().unwrap<PostgresJs>()) } as unknown as C),
+    { name: "drizzleHandler", supplies: ["db"], uses: ["sql"], next } as const,
+  )
 
 type Ctx = CommandHandlerContext & DrizzleCapability & LogCapability & Partial<TraceCapability>
 const place = commandHandler(Place, async (_m, ctx: Ctx) => {
@@ -69,7 +82,7 @@ export const documented: CommandHandlerEntry = {
   ...place,
   handler: pipe(
     place.handler,
-    (h) => drizzleHandler(h, drizzleOver),
+    (h) => drizzleHandler(h),
     (h) => postgresHandler(h, pg),
     (h) => correlatingHandler(h),
     (h) => loggingHandler(h, log),
@@ -86,7 +99,7 @@ export const documented: CommandHandlerEntry = {
 
 export const tracingInsideCorrelation = pipe(
   place.handler,
-  (h) => drizzleHandler(h, drizzleOver),
+  (h) => drizzleHandler(h),
   (h) => postgresHandler(h, pg),
   (h) => otlpHandler(h, exporter),
   // @ts-expect-error — "a wrapper that stamps message.metadata is inside correlatingHandler: move it outside…"
@@ -95,7 +108,7 @@ export const tracingInsideCorrelation = pipe(
 
 export const tracingInsideLogging = pipe(
   place.handler,
-  (h) => drizzleHandler(h, drizzleOver),
+  (h) => drizzleHandler(h),
   (h) => postgresHandler(h, pg),
   (h) => otlpHandler(h, exporter),
   // @ts-expect-error — "a wrapper that stamps message.metadata is inside loggingHandler: move it outside…"
@@ -109,7 +122,7 @@ export const tracingInsideLogging = pipe(
 
 export const tracingInsidePostgres = pipe(
   place.handler,
-  (h) => drizzleHandler(h, drizzleOver),
+  (h) => drizzleHandler(h),
   (h) => otlpHandler(h, exporter),
   // @ts-expect-error — "a wrapper that supplies ctx.trace is inside postgresHandler: move it outside…"
   (h) => postgresHandler(h, pg),
@@ -119,7 +132,7 @@ export const plainWithoutTracer: CommandHandlerEntry = {
   ...place,
   handler: pipe(
     place.handler,
-    (h) => drizzleHandler(h, drizzleOver),
+    (h) => drizzleHandler(h),
     (h) => postgresHandler(h, pg),
     (h) => correlatingHandler(h),
     (h) => loggingHandler(h, log),

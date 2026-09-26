@@ -12,9 +12,8 @@
  *   query       : drizzle reads course_views for the final dump
  *
  * ONE FAMILY OWNS THE TRANSACTION, AND THE ORM RIDES IT. The postgres family
- * owns each task's transaction; `drizzleHandler` (from
- * `@kronos-ts/postgres/drizzle`) builds drizzle over the very connection the
- * event store appends on, so a projection write and the processor's token
+ * owns each task's transaction; this file's own `drizzleHandler` builds
+ * drizzle over the very connection the event store appends on, so a projection write and the processor's token
  * update commit or roll back together, and the handler reads it as `ctx.db`
  * with drizzle's own types. Handing drizzle its own pool would give it its
  * own transaction — silently non-atomic. See "Transactions: one owner, and
@@ -43,6 +42,7 @@ import { kronos } from "@kronos-ts/core"
 import {
   correlatingHandler,
   correlation,
+  describe,
   interceptingCommandBus,
   interceptingQueryBus,
   unitOfWork,
@@ -60,10 +60,10 @@ import {
   postgresTokenStore,
   postgresHandler,
   postgresUnitOfWork,
+  type PostgresCapability,
 } from "@kronos-ts/postgres"
-import { drizzleHandler, type DrizzleCapability } from "@kronos-ts/postgres/drizzle"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
-import { drizzle } from "drizzle-orm/bun-sql"
+import { drizzle, type BunSQLDatabase } from "drizzle-orm/bun-sql"
 import { pgTable, text, integer, timestamp } from "drizzle-orm/pg-core"
 import { eq, sql } from "drizzle-orm"
 
@@ -190,11 +190,22 @@ const enrollStudent = commandHandler(EnrollStudent, async ({ payload: cmd }, ctx
 /**
  * Drizzle bound to THE TASK'S transaction — the same connection the event
  * store appends on, so what a projection writes commits with the token update
- * that records it. The composition root builds it with `drizzleHandler` over
- * `ctx.sql()`; a projection names the capability and reads `ctx.db`. The
- * driver handle type is adapter-specific, so the build names it.
+ * that records it. The app owns this step: it builds drizzle over the client
+ * `ctx.sql()` unwraps to and puts it on the context as `db`, typed by the
+ * drizzle version the app installed. `describe` keeps it in the boot walk, so
+ * a chain with it outside `postgresHandler` is refused.
  */
-const drizzleOver = (client: string) => drizzle(client)
+type DrizzleCapability = { readonly db: BunSQLDatabase }
+/** The Bun `SQL` client drizzle wraps — what `ctx.sql().unwrap()` returns under `bunSqlAdapter`. */
+type BunSql = ReturnType<typeof drizzle>["$client"]
+
+const drizzleHandler = <M, C extends DrizzleCapability, R>(next: (message: M, context: C) => R) =>
+  describe(
+    (message: M, context: Omit<C, "db"> & PostgresCapability): R =>
+      next(message, { ...context, db: drizzle(context.sql().unwrap<BunSql>()) } as unknown as C),
+    { name: "drizzleHandler", supplies: ["db"], uses: ["sql"], next } as const,
+  )
+
 type ProjectionContext = EventHandlerContext & DrizzleCapability
 
 // ── projections ─────────────────────────────────────────────────────────────
@@ -310,7 +321,7 @@ async function main(): Promise<void> {
     // transaction from `postgresHandler`, then correlation. One line per
     // wrapper, and the boot walk refuses a chain in the wrong order.
     const projecting = (h: (message: any, context: ProjectionContext) => Promise<void> | void) =>
-      correlatingHandler(postgresHandler(drizzleHandler(h, drizzleOver), pg))
+      correlatingHandler(postgresHandler(drizzleHandler(h), pg))
     const app = kronos({
       commandHandlers: [
         { ...openCourse, handler: correlatingHandler(openCourse.handler), eventStore, commandBus, queryBus },

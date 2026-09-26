@@ -67,7 +67,7 @@ export function messageFields(message: Message): LogFields {
  * id, kind, correlation pair and (when present) trace ids parsed off a W3C
  * `traceparent`.
  *
- * Same shape as `drizzleHandler`: a plain function over a plain function,
+ * Same shape as `postgresHandler`: a plain function over a plain function,
  * supplying the one field it adds and erasing it from what `next` had to ask
  * for, so the host spreads the entry and nothing about `log` leaks into it:
  *

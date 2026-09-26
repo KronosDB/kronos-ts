@@ -16,16 +16,15 @@ import type { EventQuery } from "./dcb-query.js"
  * is cached"; the REPOSITORY, which is the only party that knows the shape it
  * folds into, decides whether to start from it. See `structural-fitness.ts`.
  *
- * IT IS SET BY WHOEVER ASKED FOR IT — `ctx.source(query, { snapshot })` at the
- * raw layer, or a `ctx.load` whose state declared `snapshot: { key, when }`.
- * A bare `ctx.source(query)` sets nothing and reads the whole history, which is
- * what it always did.
+ * IT IS SET BY WHOEVER ASKED FOR IT — a direct `eventStore.source(…)` caller,
+ * or a `ctx.load` whose state declared `snapshot: { key, when }`. `ctx.source`
+ * never sets it and always reads the whole history.
  */
 export type SnapshotKey = {
   /**
    * THE STRING YOU WROTE. One opaque key, filed as one column — not a name the
-   * framework assigned and not a hash of anything. A raw `ctx.source` caller
-   * passes it directly; `state()` composes `"<your key>:<flattened id>"`.
+   * framework assigned and not a hash of anything. A direct store caller
+   * passes it as is; `state()` composes `"<your key>:<flattened id>"`.
    */
   readonly key: string
 }

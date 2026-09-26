@@ -119,9 +119,8 @@ export type PostgresAdapter = {
    * Escape hatch returning the live driver-specific handle backing this
    * ADAPTER — the pg `Pool`, or the root `sql` for postgres.js / Bun.sql. The
    * pool-level counterpart of {@link PostgresAdapterTransaction.unwrap} — for
-   * a query builder built once per `ctx.sql()` handle (see
-   * `@kronos-ts/postgres/drizzle`, `@kronos-ts/postgres/kysely`) that must
-   * also work OUTSIDE a transaction, on the bare pool.
+   * a query builder built over `ctx.sql()` that must also work OUTSIDE a
+   * transaction, on the bare pool.
    *
    * The caller owns the cast (the handle type is driver-specific).
    */

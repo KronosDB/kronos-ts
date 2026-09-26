@@ -51,7 +51,7 @@ The rules this surface is held to — every export must survive all of them:
 packages/core          ← merge of common + messaging + eventsourcing + modelling + app
 packages/test
 packages/rabbitmq · kronosdb · axon-server            (transports)
-packages/postgres      (persistence — the one family; drizzle/kysely ride it via subpaths)
+packages/postgres      (persistence — the one family; a query builder rides it as app code, not a subpath)
 packages/otlp          ← replaces opentelemetry; zero @opentelemetry deps
 ```
 The `extensions/` directory is gone; the concept is gone.
@@ -214,7 +214,7 @@ type SubscriptionCapability = { emitUpdate }   // ← WHAT A HANDLER WRITES, and
 //   type parameters are POSITIONAL, so annotating the bus would restate the log the
 //   handler had no opinion about. Parameters are the SUPPLY side (the entry threads
 //   its bus and log in); intersections are the DEMAND side. Same as the persistence
-//   faces (`DrizzleCapability`), and the refusal is identical either way. localQueryBus
+//   faces (`PostgresCapability`), and the refusal is identical either way. localQueryBus
 //   offers the tier natively; kronosdb/axon-server/rabbitmq offer it
 //   server- or broker-mediated; a custom bus writes TWO functions or claims it.
 //   The subscriptionQuery EDGE VERB demands SubscriptionCapableQueryBus.
@@ -307,15 +307,16 @@ afterEvents(n) · whenSourcingTimeExceeds(ms) · noSnapshotPolicy()   // the POL
 // ONE object, and everything else here is those two with the key composition and
 // the policy written for you:
 //
-//   const key = `course:${courseId}`
-//   const { snapshot, events, position } = await ctx.source(query, { snapshot: key })
+//   const key = `course-v1:${courseId}`
+//   const { snapshot, events, marker } = await eventStore.source(sourcingCondition(query, undefined, { key }))
 //   const state = events.reduce(fold, snapshot?.state as S ?? initial)
-//   if (events.length > 100) await eventStore.storeSnapshot(key, { state, position })
+//   if (events.length > 100) await eventStore.storeSnapshot(key, { state, position: marker.position })
 //
-// You wrote the key, you ran the fold, you judged the cached value, and the `if`
-// IS the policy. `position` is the consistency marker the read reached — what
-// the entry you write records as its own. THE WRITE IS A MEMBER OF THE LOG the
-// slice already holds, so there is deliberately NO `ctx` write capability.
+// This is the STORE layer — what the repository behind ctx.load runs. The key,
+// the fold, judging the cached value, and the `if` that IS the policy.
+// `marker.position` is the consistency marker the read reached — what the new
+// entry records as its own. Both primitives are MEMBERS OF THE LOG, so there is
+// deliberately NO `ctx` capability for either.
 //
 // THE KEY IS YOURS. A snapshot is filed under a STRING YOU WROTE — nothing is
 // derived from your code and nothing is hashed. Which makes invalidation one
@@ -512,7 +513,7 @@ commandHandler(descriptor, (message, ctx: CommandHandlerContext) => result)
 queryHandler(descriptor,  (message, ctx: QueryHandlerContext) => result)
 eventHandler(descriptor,  (message, ctx: EventHandlerContext) => void)
 // A HOST NAMES ITS OWN CONTEXT ONCE and every handler writes that one word:
-//   type CmdCtx = CommandHandlerContext & ScheduleCapability & SubscriptionCapability & DrizzleCapability
+//   type CmdCtx = CommandHandlerContext & ScheduleCapability & SubscriptionCapability & PostgresCapability
 // The app's floor lives on ONE line — add a tier and no handler is edited. NO
 // TYPE PARAMETERS IN SLICE CODE: a demand is a capability intersected onto the
 // base, never a store or bus named positionally. There are no per-package
@@ -520,7 +521,7 @@ eventHandler(descriptor,  (message, ctx: EventHandlerContext) => void)
 // spelling of. Keep it a FLOOR: name capabilities, never a concrete store or bus.
 //
 // ONE NAMING RULE. `<Tier>Capability` is what a handler intersects on ctx
-// (`ScheduleCapability`, `SubscriptionCapability`, `DrizzleCapability`).
+// (`ScheduleCapability`, `SubscriptionCapability`, `PostgresCapability`).
 // `<Tier>StoreCapability` / `<Tier>BusCapability` is what a wrapper adds to a
 // store or bus (`SnapshotStoreCapability`, `ScheduleStoreCapability`,
 // `SubscriptionBusCapability`). `<Tier>Capable<Thing>` is the alias a
@@ -704,7 +705,7 @@ its users — the same rule that moved the transaction glue out.
 ```ts
 rabbitMqConnection(url, { serviceName, instanceId, topology?, retry? }): Promise<RabbitMqConnection>  // start()/close()
 rabbitMqCommandBus(next: CommandBus, rabbit, { preferLocal?, timeoutMs? }?): CommandBus
-rabbitMqQueryBus(next: QueryBus, rabbit, { preferLocal?, timeoutMs? }?): QueryBus
+rabbitMqQueryBus(next: QueryBus, rabbit, { preferLocal?, timeoutMs? }?): SubscriptionCapableQueryBus   // live updates broker-mediated
 ```
 
 ## @kronos-ts/kronosdb — smart hub: server-side routing
@@ -789,9 +790,9 @@ const uow = postgresUnitOfWork(() => unitOfWork(clock), pg)
 
 PRINCIPLE: persistence is keyed by TRANSACTION IDENTITY — the token store/DLQ
 must write through the same transaction the handlers write through. There is
-ONE family, postgres. A query builder (Drizzle, Kysely) is a CLIENT constructed
-over `ctx.sql().unwrap()` by `@kronos-ts/postgres/drizzle` / `/kysely`; it
-never owns a transaction. The former ORM-owned families are deprecated on npm
+ONE family, postgres. A query builder (Drizzle, say) is a CLIENT the app
+constructs over `ctx.sql().unwrap()`; it never owns a transaction. Kronos
+ships no builder integration, so no builder version is pinned by it. The former ORM-owned families are deprecated on npm
 and removed from this repository.
 
 NEVER MIX FAMILIES WITHIN ONE PROCESSOR — AND THE STORES SAY SO THEMSELVES. A
@@ -828,21 +829,21 @@ glue only ever touched the PUBLIC phase API (`uow.on(Phase.COMMIT, …)`,
 a helper lives with its users. The binding is LAZY: claimed at mint, begun only
 when a writer asks, so read paths pay no begin/commit and claim no connection.
 
-## @kronos-ts/postgres/drizzle · /kysely — your query builder over the task's transaction
+## Your query builder over the task's transaction — app code, not a package
 ```ts
-drizzleHandler(handler, (client) => drizzle(client)): handler   // ctx gains `db`, typed as Drizzle types it
-kyselyHandler(handler, (client) => new Kysely<DB>({ dialect })): handler
-type DbCapability<Db> = { readonly db: Db }                    // a slice writes `ctx: EventHandlerContext & DbCapability<Db>`
+const db = drizzle(ctx.sql().unwrap<Sql>())               // inline, in a handler naming PostgresCapability
+wrap = (h) => postgresHandler(drizzleHandler(h), pg)      // or the app's own wrapper supplying ctx.db
 ```
-Each is the same minimal step: build your client over `ctx.sql().unwrap()`,
-cache it per task, put it on `ctx.db`, and describe itself for the boot walk.
-Goes INSIDE `postgresHandler`, which supplies the `ctx.sql()` it builds from
-(and, from an `observed(pg)` pool, a trace-bound one — every statement the
-builder issues is then a `db.statement` span under the handler, with no ORM
-internals touched). HANDLER WRAPPERS ARE FUNCTION-LEVEL —
-`(next, ...config) => (message, ctx) => result` — the host wraps by spreading
-the entry, and the erasure is DIRECTIONAL, so a wrapper ordered wrong is a
-compile error and a boot error naming the entry, the chain and the fix.
+No subpath, no peer dependency: the builder's types are the version the app
+installed. The app's wrapper (recipe in `@kronos-ts/postgres`'s README) builds
+the client over `ctx.sql().unwrap()`, puts it on `ctx.db`, and may `describe`
+itself for the boot walk. It goes INSIDE `postgresHandler`, which supplies the
+`ctx.sql()` it builds from — trace-bound when `otlpHandler` is outside, so
+every statement the builder issues is a `db.statement` span under the handler.
+HANDLER WRAPPERS ARE FUNCTION-LEVEL — `(next, ...config) => (message, ctx) =>
+result` — the host wraps by spreading the entry, and the erasure is
+DIRECTIONAL, so a wrapper ordered wrong is a compile error and a boot error
+naming the entry, the chain and the fix.
 
 ## @kronos-ts/otlp — the protocol, not the ecosystem
 ```ts

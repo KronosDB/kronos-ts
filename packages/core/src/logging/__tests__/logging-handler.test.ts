@@ -1,6 +1,6 @@
 /**
  * `loggingHandler(next, logger)` — supplies `ctx.log`, a logger already
- * carrying this invocation's message identity. Same shape as `drizzleHandler`:
+ * carrying this invocation's message identity. Same shape as `postgresHandler`:
  * a plain function over a plain function, and the two things worth pinning
  * are what it puts on `log` and that it changes nothing else about `next`.
  */

@@ -369,36 +369,38 @@ model — the capabilities you must not have are *absent from the type*, not
 merely discouraged.
 
 ```ts
-type EventHandlerContext<E extends EventStore = EventStore, U extends UnitOfWork = UnitOfWork> =
-  { load · source · send · query · emitUpdate · isReplay() · unitOfWork: U }
-  & SnapshotReads<E>      // the fused read — only when the log caches folds
-  & ScheduleVerbs<E>      // schedule · scheduleAfter · cancelSchedule — only when the log holds deadlines
-type CommandHandlerContext<E, U> = EventHandlerContext<E, U> & { append }
-type QueryHandlerContext<E, U> = { load · source · query · unitOfWork: U } & SnapshotReads<E>
+type EventHandlerContext<E extends EventStore = EventStore, Q extends QueryBus = QueryBus, U extends UnitOfWork = UnitOfWork> =
+  { load · source · send · query · isReplay() · unitOfWork: U }
+  & SuppliedScheduleCapability<E>       // schedule · scheduleAfter · cancelSchedule — only when the log holds deadlines
+  & SuppliedSubscriptionCapability<Q>   // emitUpdate — only when the bus can serve live subscribers
+type CommandHandlerContext<E, Q, U> = EventHandlerContext<E, Q, U> & { append }
+type QueryHandlerContext<U extends UnitOfWork = UnitOfWork> = { load · source · query · unitOfWork: U }
 ```
 
-`E` comes first because `E` is what a handler writes: it annotates the log it
-*uses* (`ctx: CommandHandlerContext<SnapshotCapableEventStore>`). `U` stays
-defaulted — the task is something done *to* a handling, demanded by a wrapper on
-its output and minted by a bus — and a handler names it only when it reaches for
-the task directly.
+The parameters are the *supply* side: the entry threads its log (`E`), its
+query bus (`Q`) and its task (`U`) in, and slice code never writes them. A
+handler *demands* a tier by intersecting the capability it calls —
+`ctx: EventHandlerContext & ScheduleCapability` — and the entry that places it
+must carry a log that supplies it.
 
 **A context is assembled by intersection.** The first line is what every handling
-gets; the other two are what the entry's *log* contributes, and against a log
-that was never wrapped they resolve to `unknown` and vanish. So the fused
-`ctx.source(query, { snapshot })` and the three scheduling verbs are structurally
-*absent* rather than present-and-failing — the diagnostic is "property does not
-exist", at the call site.
+gets; the other two are what the entry's *log* and *bus* contribute, and against
+a log or bus that was never wrapped they resolve to `unknown` and vanish. So the
+three scheduling verbs and `emitUpdate` are structurally *absent* rather than
+present-and-failing — the diagnostic is "property does not exist", at the call
+site. Snapshotting adds no context member at all: `state({ snapshot })` says a
+state wants caching, `ctx.load` asks the entry's log for it, and a policy loaded
+through a log that cannot serve it throws at runtime, on the first load — see
+[Snapshotting](#snapshotting-a-cache-over-the-fold).
 
-`U` is whatever the seam's unit-of-work factory mints and `E` is the entry's log,
-both threaded through so a handler can *demand* what it needs. Both default —
-`UnitOfWork` and `EventStore` — so a handler that wants nothing special writes
-nothing special.
+`U` is whatever the seam's unit-of-work factory mints, `E` is the entry's log and
+`Q` its query bus. All three default — `UnitOfWork`, `EventStore`, `QueryBus` —
+so a handler that wants nothing special writes nothing special.
 
 ### Name your app's context once
 
-A demand names only what it uses, and it says so by **intersecting a face** or
-naming a tier's type — never by restating parameters it has no opinion about.
+A demand names only what it uses, and it says so by **intersecting a face** —
+never by restating parameters it has no opinion about.
 But an app that depends on several capabilities would then repeat the same
 intersection in every handler, and every handler would have to be edited the
 day the deployment learns a new trick. So name it once, in your own vocabulary:
@@ -406,10 +408,10 @@ day the deployment learns a new trick. So name it once, in your own vocabulary:
 ```ts
 // yours, in your app — not something the framework ships
 type UniversityCommandContext =
-  CommandHandlerContext<SnapshotCapableEventStore & ScheduleCapableEventStore> & EmitCapability
+  CommandHandlerContext & ScheduleCapability & SubscriptionCapability
 
 const enrollStudent = commandHandler(EnrollStudent, async ({ payload }, ctx: UniversityCommandContext) => {
-  const course = await ctx.load(Course, { courseId: payload.courseId })   // needs the snapshot tier
+  const course = await ctx.load(Course, { courseId: payload.courseId })   // any state, snapshotting or not
   ctx.append(StudentEnrolled, payload)
   await ctx.scheduleAfter(EnrollmentLapses, payload, 86_400_000)          // needs the schedule tier
   ctx.emitUpdate(WatchCourse, (q) => q.courseId === payload.courseId, …)  // needs the subscription tier
@@ -418,9 +420,9 @@ const enrollStudent = commandHandler(EnrollStudent, async ({ payload }, ctx: Uni
 
 One word per handler, one line to change when the app's floor moves — and the
 line still reads as a floor, so every entry is checked against it exactly as
-before. The adapter packages name theirs the same way
-(`PostgresCommandContext`, `DrizzleEventContext`), which is where the naming
-convention comes from: the thing it belongs to, then the message kind.
+before. The per-package `<Pkg>CommandContext` / `<Pkg>EventContext` aliases
+adapter packages used to ship are gone — a host names its own context once, in
+its own vocabulary, the way `UniversityCommandContext` does above.
 
 Keep it a *floor*, not a description of your infrastructure: name the
 capability tiers you use, never a concrete store or bus type. `state()` and the
@@ -463,7 +465,7 @@ conditional event-store write — that write *is* the DCB consistency check.
 loads sees its own writes.
 
 `ctx.unitOfWork` is how a handler reaches a transaction:
-`activeDrizzleTransaction(ctx.unitOfWork) ?? db` to write inside whatever is
+`activePostgresTransaction(ctx.unitOfWork) ?? db` to write inside whatever is
 already open, or `await postgresTransaction(ctx.unitOfWork)` to open one.
 
 ## States and the derived DCB query
@@ -608,13 +610,11 @@ It reads the entry's store, so a store composed with `upcastingEventStore` hands
 this layer upcasted events too, and it is on all three contexts — on a query
 context there is no `append` to condition, but the read is the same read.
 
-**It also takes a snapshot key — when the entry's log can serve one.**
-`ctx.source(query, { snapshot: "course:cs-101" })` returns
-`{ snapshot, events, position }` instead of the bare array — the cached fold
-filed under that string, plus only the events after it. That overload is
-*contributed* by a snapshot-capable log and is structurally **absent** otherwise,
-so on a bare log `ctx.source` takes exactly one argument and always did. That is
-the whole snapshotting capability at this layer; see below.
+**It has one signature, everywhere.** Snapshotting is invisible at this layer:
+`ctx.source(query)` takes exactly one argument whether or not the entry's log
+caches folds. The fused read lives entirely behind `ctx.load` — `state({
+snapshot })` declares the policy, and the repository asks the wrapped log for
+it without a hand-rolled fold ever naming a key; see below.
 
 ## Snapshotting: a cache over the fold
 
@@ -632,32 +632,37 @@ every rule of the mechanism falls out of that one word, **cache**.
 
 ### The raw idiom
 
-Start here, because this *is* the capability. Two primitives — a source that
-takes a key, and a write that takes the same key — **and both come off the one
-object the entry already carries.** The rest of this section is sugar over them.
+Start here, because this *is* the capability — seen at the layer that actually
+runs it, the **store**, not the context. Two primitives — a source that takes a
+key, and a write that takes the same key — **and both come off the one object a
+wrapped log is.** `state({ snapshot })` is sugar over exactly this; there is no
+handler-facing equivalent, because `ctx.source` has one signature and never
+carries a key (see above).
 
 ```ts
-const key = `course:${courseId}`
-const { snapshot, events, position } = await ctx.source(query, { snapshot: key })
+const key = `course-v1:${courseId}`
+const { snapshot, events, marker } = await eventStore.source(sourcingCondition(query, undefined, { key }))
 const state = events.reduce(fold, (snapshot?.state as CourseState) ?? initial)
-if (events.length > 100) await eventStore.storeSnapshot(key, { state, position })
+if (events.length > 100) await eventStore.storeSnapshot(key, { state, position: marker.position })
 ```
 
-Four lines, and every decision in them is yours. **You** wrote the key. **You**
-ran the fold. **You** judged whether the cached value was worth starting from —
-the framework hands it over without an opinion, because it does not know what
-your fold folds into. **You** decided a snapshot was due; the `if` is the policy,
-and there is no other kind. And `position` is the consistency marker the read
-reached, which is exactly what the entry you write should record as its own.
+Four lines, and every decision in them belongs to the repository behind
+`ctx.load`, not to a handler. **It** composes the key from the state's declared
+`snapshot.key` and the id. **It** runs the fold. **It** judges whether the
+cached value was worth starting from — the store hands it over without an
+opinion, because it does not know what the fold folds into. **It** decides a
+snapshot was due, from the `when` policy on `state({ snapshot })`; the `if` is
+the policy, and there is no other kind. And `marker.position` is the consistency
+marker the read reached, which is exactly what the new entry records as its own.
 
-A bare `ctx.source(query)` is untouched: no key, no fusion, and the return is
-still the events array.
+A bare `eventStore.source(sourcingCondition(query))` is untouched: no key, no
+fusion, and the result's `snapshot` field is simply absent.
 
-The write primitive is **a member of the log** — a slice already holds its
-`eventStore` among its resources, so writing is a one-line call at the moment the
-slice decides a fold was expensive enough to keep. There is deliberately no `ctx`
-capability for it, because there does not need to be one; and there is no second
-resource to wire, because the capability rides on the store it belongs to.
+The write primitive is **a member of the log** — the same object the read came
+off, so writing is a one-line call at the moment the repository decides a fold
+was expensive enough to keep. There is no `ctx` capability for either primitive,
+and there does not need to be one: nothing outside `state()`'s own machinery
+ever calls them.
 
 ### The key is yours
 
@@ -685,8 +690,9 @@ under it.
 
 ### The strategy is said on the condition
 
-This is what lets one address serve four very different storage families. A read
-does not fetch a snapshot — it **asks** for one, on the sourcing condition:
+This is what lets one address serve four very different storage families. The
+repository behind `ctx.load` does not fetch a snapshot — it **asks** for one, on
+the sourcing condition:
 
 ```ts
 type SourcingCondition = { query; start?; snapshot?: SnapshotKey }
@@ -723,35 +729,30 @@ query and the head. When KronosDB or Axon Server grow a fused RPC, it lands
 inside their wrapper and **no host changes a line**, because the capability was
 never a promise about round trips.
 
-### The compiler makes you wire it
+### The check is at `load`, at runtime
 
-This is the part that changed the feel of the feature. A snapshot policy used to
-be a wish: declare one, forget the store, and you got a silent full replay plus a
-cache nobody read. Now the state's type says it caches, and `ctx.load` refuses it
-against a log that cannot:
+This is the part that changed the feel of the feature, but not the way a first
+guess would expect. A snapshot policy used to be a wish: declare one, forget the
+store, and you got a silent full replay plus a cache nobody read. It is not a
+wish now — but it is also not a compile-time demand on a handler's context, the
+way the scheduling tier below is. A handler has nothing new to *call* for
+snapshotting, so there is nothing for a context type to gate:
 
 ```ts
 const Course = state({ /* … */, snapshot: { key: "course-v1", when: afterEvents(100) } })
 
-// ✗ — "this state declares a snapshot policy, but this handler's eventStore
-//      cannot serve one" / "wrap this entry's eventStore in the snapshotting wrapper
-//      for its persistence family — <family>SnapshottingEventStore(store, …)"
+// this typechecks against a BARE EventStore — ctx.load's signature never
+// mentions snapshotting
 commandHandler(OpenCourse, async (m, ctx: CommandHandlerContext) => {
-  await ctx.load(Course, { courseId })
-})
-
-// ✓ — say what you need, and the ENTRY must supply it
-commandHandler(OpenCourse, async (m, ctx: CommandHandlerContext<SnapshotCapableEventStore>) => {
-  await ctx.load(Course, { courseId })
+  await ctx.load(Course, { courseId })   // throws HERE, at runtime, if eventStore can't serve it
 })
 ```
 
-The demand travels the same way correlation's does: annotate the context, and the
-entry that places the handler must carry a log which satisfies it — so a wiring
-mistake stops at the composition root instead of at 3 a.m. One alias says it for
-every read surface (`IfSnapshotCapable`, in `event-sourcing/load.ts`), and
-**nothing runs**: the whole demand is erased, and the only runtime trace is one
-defensive `throw` for callers who had no compiler.
+The check lives once, where both halves are known: inside the repository
+`ctx.load` builds, right before it sources. A state with a snapshot policy
+loaded through a log that was never wrapped in `<family>SnapshottingEventStore`
+throws, naming the wrapper, on the first load in any test that runs the handler
+(`capableOrThrow`, in `event-sourcing/repository.ts`).
 
 **Fusing does not narrow the append condition.** It narrows which *events* come
 back; it does not narrow what was *read*. Both reads record the same query and
@@ -763,10 +764,10 @@ guarantee a fold that replayed everything has.
 **One member is added, and it is the write:**
 
 ```ts
-type SnapshotCapability = {
+type SnapshotStoreCapability = {
   storeSnapshot(key: string, snapshot: Snapshot, uow?: UnitOfWork): Promise<void>
 }
-type SnapshotCapableEventStore = EventStore & SnapshotCapability
+type SnapshotCapableEventStore = EventStore & SnapshotStoreCapability
 ```
 
 There is no `loadSnapshot`, because reading is not a second call — a capable log
@@ -775,7 +776,7 @@ cached fold, which is exactly what lets a store that owns its query serve the
 whole thing at once. No list, no history, no delete: a cache has a *current*
 entry, and replacing it **is** how you invalidate it.
 
-The wrappers are **additive** — `<E extends EventStore>(next: E, …) => E & SnapshotCapability`
+The wrappers are **additive** — `<E extends EventStore>(next: E, …) => E & SnapshotStoreCapability`
 — so wrapping an upcasting store still gives an upcasting store, and stacking in
 either order keeps everything. A wrapper typed `(EventStore) => SnapshotCapableEventStore`
 would have *laundered* whatever it was not itself adding, and a demand built on
@@ -912,7 +913,7 @@ for the spelling that stays true if that ever changes.
 **Both orders typecheck with every capability intact**, because both wrappers
 preserve what flows through them: `upcastingEventStore` is a generic identity
 (`<E extends EventStore>(next: E, upcast) => E`) and the snapshotting wrappers
-are additive (`… => E & SnapshotCapability`). A wrapper that collapsed to the
+are additive (`… => E & SnapshotStoreCapability`). A wrapper that collapsed to the
 base seam would *launder* — the runtime object still delegates everything, but
 the type threw the capability away, so `ctx.load` would reject a state the
 configuration serves perfectly. The order here is a semantic preference, never a
@@ -939,11 +940,11 @@ So scheduling became a capability tier, added by wrapping — exactly like
 snapshotting, demanded through exactly the same construction:
 
 ```ts
-type ScheduleCapability = {
+type ScheduleStoreCapability = {
   schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken>
   cancelSchedule(token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult>
 }
-type ScheduleCapableEventStore = EventStore & ScheduleCapability
+type ScheduleCapableEventStore = EventStore & ScheduleStoreCapability
 ```
 
 Three wrappers, one per family that has one, each **additive**:
@@ -971,8 +972,9 @@ can see it.
 
 ### The compiler makes you wire it
 
-The mirror of the snapshotting demand, one capability over. Against a bare log the
-three verbs are not on the context at all:
+Unlike snapshotting, scheduling gives a handler something new to call, so it is
+a context capability. Against a bare log the three verbs are not on the context
+at all:
 
 ```ts
 // ✗ — "Property 'schedule' does not exist on type 'CommandHandlerContext'."
@@ -981,16 +983,14 @@ eventHandler(OrderPlaced, async (m, ctx: EventHandlerContext) => {
 })
 
 // ✓ — say what you need, and the ENTRY must supply it
-eventHandler(OrderPlaced, async (m, ctx: EventHandlerContext<ScheduleCapableEventStore>) => {
+eventHandler(OrderPlaced, async (m, ctx: EventHandlerContext & ScheduleCapability) => {
   await ctx.scheduleAfter(PaymentTimedOut, { orderId: m.payload.orderId }, 900_000)
 })
 ```
 
 One alias says it — `IfScheduleCapable`, in `event-scheduling/schedule.ts` — and
-one face derives from it, `ScheduleVerbs<E>`, which the contexts intersect.
-Snapshotting needed *two* faces because a `state()` can declare that it caches, so
-there was something to refuse as well as something to offer. Nothing declares that
-it schedules, so this side of the mirror is one conditional.
+one face derives from it, `SuppliedScheduleCapability<E>`, which the contexts
+intersect.
 
 What this replaces is a `throw new Error("No event scheduler configured")` — a
 missing field, discovered by the first deadline anybody armed in production.
@@ -1119,25 +1119,22 @@ Only one thing owns a task's transaction, and it is the postgres family:
 `postgresUnitOfWork` opens it, the token store and dead-letter queue write in
 it, the event store appends in it, and `postgresHandler` hands it to the
 handler as `ctx.sql()`. A query builder is a CLIENT over that transaction,
-never the owner of one. Kronos ships the two-line step for the two builders
-it recommends, as subpaths of the postgres package, and they do nothing but
-construct the client over `ctx.sql().unwrap()` and put it on `ctx`:
+never the owner of one: construct it over `ctx.sql().unwrap()`, the live
+driver connection. Kronos ships no builder integration, so nothing in it pins
+a builder version; the builder's types are the ones your app installed.
 
 ```ts
-import { drizzleHandler } from "@kronos-ts/postgres/drizzle"
-import { kyselyHandler } from "@kronos-ts/postgres/kysely"
+// inline, in a handler that names PostgresCapability
+const db = drizzle(ctx.sql().unwrap<Sql>())
 
-// Drizzle: your driver flavour, Drizzle's own types on ctx.db. The SQL-style
-// builder is typed by the table you pass to each call; `{ schema }` is only
-// for the relational `db.query.*` API.
-wrap = (h) => postgresHandler(drizzleHandler(h, (client) => drizzle(client)), pg)
-
-// Kysely: the wrapper presents the transaction as the pool its dialect expects
-wrap = (h) => postgresHandler(kyselyHandler(h, (pool) => new Kysely<DB>({ dialect: new PostgresDialect({ pool }) })), pg)
+// or once, as the app's own wrapper INSIDE postgresHandler, supplying ctx.db
+wrap = (h) => postgresHandler(drizzleHandler(h), pg)
 ```
 
-A repository is the same wrapper returning your own functions over
-`ctx.sql()`; nothing in Kronos needs to know. Because everything passes through
+The wrapper is a dozen lines of the app's code; `@kronos-ts/postgres`'s README
+has it, under "On `ctx.db`, as a handler wrapper". A
+repository is the same wrapper returning your own functions over `ctx.sql()`;
+nothing in Kronos needs to know. Because everything passes through
 the adapter Kronos owns, a traced handling — `otlpHandler` outside
 `postgresHandler` — gets every statement it issues, `ctx.sql()`'s and the
 builder's, as a span under the handler that issued it, with nothing to switch on
@@ -1145,11 +1142,6 @@ and no ORM internals touched. The former ORM-owned families (`@kronos-ts/drizzle
 typeorm, prisma) are deprecated on npm and removed from this repository: they
 existed to let an ORM own the transaction, which is no longer something Kronos
 offers.
-
-So the rule, per processor: **ORM family end-to-end** when the handlers only
-project — their atomicity need is projection + token, which the family gives.
-**Postgres family with the ORM as a lens** when handlers must write tables *and*
-append in one transaction.
 
 There is no drizzle event store, deliberately: the log's SQL is engine code —
 append conditions, advisory locks, watermark queries — not application data. So

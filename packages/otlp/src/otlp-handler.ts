@@ -9,7 +9,7 @@ import { traceparentOf, withTraceparent } from "./traceparent.js"
 // The CONSUMER side.
 //
 // A wrapper over the handler FUNCTION, in the shape the persistence packages
-// use (`drizzleHandler(handler, db)`): take a handler, return a handler of the
+// use (`postgresHandler(handler, pg)`): take a handler, return a handler of the
 // same shape. It reads NOTHING from the entry it was taken off — the span's name,
 // its kind and whether it parents or links all come from the message being
 // handled, which is where they honestly live.
@@ -120,7 +120,7 @@ type OtlpDescription<H> = {
  * sentence and `kronos()` refuses at boot.
  *
  * ```ts
- * const wrap = (h) => otlpHandler(loggingHandler(correlatingHandler(drizzleHandler(h, db)), log), exporter)
+ * const wrap = (h) => otlpHandler(loggingHandler(correlatingHandler(postgresHandler(h, pg)), log), exporter)
  * ```
  */
 export function otlpHandler<M extends Message, C, R>(

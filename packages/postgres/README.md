@@ -23,7 +23,7 @@ Requires Postgres 14+ (for `xid8` and `pg_snapshot_xmin`).
 One pool has a lifetime. Everything else is a plain function of it:
 
 ```typescript
-import { unitOfWork, localCommandBus, jsonSerializer, descriptorBasedTagResolver } from "@kronos-ts/core"
+import { unitOfWork, localCommandBus, jsonSerializer } from "@kronos-ts/core"
 import {
   postgresPool,
   postgresEventStore,
@@ -36,7 +36,7 @@ import {
 const pg = postgresPool("postgresql://user:pass@host/db")
 await pg.start()          // connects + bootstraps the schema
 
-const eventStore  = postgresEventStore(pg, { tagResolver: descriptorBasedTagResolver() })
+const eventStore  = postgresEventStore(pg)
 const tokenStore  = postgresTokenStore(pg)
 const deadLetters = postgresDeadLetterQueue(pg)
 const uow         = postgresUnitOfWork(unitOfWork, pg)
@@ -70,8 +70,9 @@ unit of work; the token store, the dead-letter queue, the event store and a
 handler's own `ctx.sql()` all read it. A crash cannot advance a processor's
 token while losing the work that token accounts for.
 
-Never mix families within one processor: a `drizzleTokenStore` alongside a
-`postgresEventStore` is two clients, hence two transactions, hence no atomicity.
+Never mix families within one processor: a token store or client built over a
+different pool or connection than the one the unit of work's transaction runs
+on is two clients, hence two transactions, hence no atomicity.
 
 ### `ctx.sql()` in a handler
 
@@ -240,7 +241,44 @@ await db.insert(widgets).values({ id, name })
 ctx.append(WidgetUpdated, { id, name })
 ```
 
-#### Kysely / TypeORM and other pool-owning ORMs
+#### On `ctx.db`, as a handler wrapper
+
+Kronos ships no builder integration, so the builder's types are always the
+version your app installed. To hand handlers a ready-built `ctx.db`, write the
+step next to your composition root — a wrapper that goes INSIDE
+`postgresHandler`:
+
+```typescript
+import { describe } from "@kronos-ts/core"
+import type { PostgresCapability } from "@kronos-ts/postgres"
+import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js"
+import type { Sql } from "postgres"
+
+export type DbCapability = { readonly db: PostgresJsDatabase }
+
+export const drizzleHandler = <M, C extends DbCapability, R>(next: (message: M, context: C) => R) =>
+  describe(
+    (message: M, context: Omit<C, "db"> & PostgresCapability): R =>
+      next(message, { ...context, db: drizzle(context.sql().unwrap<Sql>()) } as unknown as C),
+    { name: "drizzleHandler", supplies: ["db"], uses: ["sql"], next } as const,
+  )
+
+// composition root
+const wrap = (h) => postgresHandler(drizzleHandler(h), pg)
+
+// in a slice
+eventHandler(OrderCreated, async ({ payload }, ctx: EventHandlerContext & DbCapability) => {
+  await ctx.db.insert(orderViews).values({ … })
+})
+```
+
+`describe` is optional; it names the step in the boot walk, which then refuses
+the wrapper outside `postgresHandler`. With a relational `{ schema }`, memoize
+the built client per `ctx.sql()` handle (a `WeakMap`) rather than rebuilding it
+per call. Do not call `db.transaction()` on it — it is already inside the
+task's transaction.
+
+#### Pool-owning ORMs
 
 ORMs that manage their own connection pool are more work — they don't take a borrowed connection directly. The route is a thin custom dialect/driver whose `acquireConnection()` hands back `unwrap()`'s connection and whose begin/commit/release are no-ops (the UoW owns the transaction lifecycle). Doable, just more plumbing than Drizzle. For occasional statements, the raw `tx.query(...)` path above is usually simpler than wiring a dialect.
 

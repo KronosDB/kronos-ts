@@ -173,8 +173,8 @@ export function observedTransactionView(
  * `unwrap` (`transaction`, `listen`, `connect`, `disconnect`) passes straight
  * through to `pg` unchanged; those are not per-statement calls. `unwrap()` is
  * spanned the same way the transaction view's is, so a query builder built
- * once per `ctx.sql()` handle (e.g. `@kronos-ts/postgres/drizzle`) is covered
- * whether or not a transaction happens to be open.
+ * over a `ctx.sql()` handle is covered whether or not a transaction happens
+ * to be open.
  */
 export function observedPoolView(pg: PostgresAdapter, trace: SpanningTrace): PostgresAdapter {
   return {
