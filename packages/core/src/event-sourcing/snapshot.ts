@@ -30,8 +30,9 @@
 //     snapshot store that is down makes loads slower and nothing else.
 //
 // THE KEY IS YOURS. A snapshot is filed under a STRING YOU WROTE — at the raw
-// layer you pass it to `ctx.source(query, { snapshot })` and to
-// `eventStore.storeSnapshot(key, …)`; through `state()` you declare it once as
+// store layer you pass it to `eventStore.source(sourcingCondition(query,
+// undefined, { key }))` and to `eventStore.storeSnapshot(key, …)`; through
+// `state()` you declare it once as
 // `snapshot: { key, when }`. Nothing is derived from your code, nothing is
 // hashed, and nothing about the framework's opinion of your fold enters into
 // it.
@@ -168,7 +169,7 @@ export type SnapshotConfig = {
  * IT IS PART OF A CACHE KEY, so changing this encoding breaks nothing: every
  * old entry simply stops being found, and is recomputed and overwritten.
  *
- * A RAW USER NEED NOT USE IT. `ctx.source(query, { snapshot })` takes whatever
+ * A RAW USER NEED NOT USE IT. A `SnapshotKey` at the store layer takes whatever
  * string you like — `\`course:${courseId}\`` reads better in a database row
  * than JSON does, and nothing downstream parses either.
  */

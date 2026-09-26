@@ -535,7 +535,7 @@ export type { MessagingLimits, MessagingActivity } from "./messaging-reliability
 // `Logger` is structural, not this package's concept to own — an OTLP-backed
 // implementation (`@kronos-ts/otlp`) satisfies the same shape. `consoleLogger`
 // is the one destination that lives here, and `loggingHandler` is the
-// FUNCTION-LEVEL wrapper (same shape as `drizzleHandler`) that supplies
+// FUNCTION-LEVEL wrapper (same shape as `postgresHandler`) that supplies
 // `ctx.log`, already carrying the handled message's identity and trace ids.
 export {
   type Logger,

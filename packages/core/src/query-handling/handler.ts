@@ -27,7 +27,7 @@ export type QueryHandler<
   /**
    * `C` is the context this handler REQUIRES — see the note on
    * {@link import("../command-handling/handler.js").CommandHandler}. An
-   * adapter's `drizzleHandler(handler, db)` supplies the difference between its own
+   * adapter's `postgresHandler(handler, pg)` supplies the difference between its own
    * context and the base one.
    */
   readonly handler: (

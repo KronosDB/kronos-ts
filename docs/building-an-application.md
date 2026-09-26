@@ -143,12 +143,11 @@ export function billingModule(eventStore: EventStore): ModuleLists {
   const slices = [billingSlice, settlementSlice]
 
   // The one persistence step a slice takes: its query builder over the
-  // task's transaction. Drizzle here; `@kronos-ts/postgres/kysely` is the
-  // same shape. Handlers then read `ctx.db` with Drizzle's own types — the
-  // SQL-style builder is typed by the `pgTable` you pass to each call, so no
-  // schema is needed; pass `{ schema }` only for Drizzle's relational
-  // `db.query.*` API.
-  const wrap = (h) => postgresHandler(drizzleHandler(h, (client) => drizzle(client)), pg)
+  // task's transaction. `drizzleHandler` is THIS APP's dozen-line wrapper
+  // (see `@kronos-ts/postgres`'s README, "On `ctx.db`, as a handler
+  // wrapper"); handlers then read `ctx.db` with the Drizzle types the app
+  // installed.
+  const wrap = (h) => postgresHandler(drizzleHandler(h), pg)
 
   return {
     commandHandlers: slices.flatMap((s) => s.commandHandlers).map((h) => ({ ...h, handler: wrap(h.handler), eventStore })),
@@ -264,8 +263,8 @@ Topology is which literals share which objects. Two modules on separate logs is
 literally two objects:
 
 ```ts
-const billingLog = postgresEventStore(billingPool, opts)
-const catalogLog = postgresEventStore(catalogPool, opts)
+const billingLog = postgresEventStore(billingPool)
+const catalogLog = postgresEventStore(catalogPool)
 
 const modules = [billingModule(billingLog), catalogModule(catalogLog)]
 ```

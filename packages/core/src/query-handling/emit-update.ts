@@ -22,7 +22,7 @@ import { requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work
  * annotation then mentions two things to demand one. The parameters are the
  * SUPPLY side (the entry threads its bus and its log in); the intersection is
  * the DEMAND side, and a demand names only what it needs. The persistence
- * packages' faces (`DrizzleCapability`, `PostgresCapability`) are written and
+ * package's face (`PostgresCapability`) is written and
  * demanded exactly this way.
  *
  * The refusal is unchanged either way: against an entry whose `queryBus` never
