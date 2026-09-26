@@ -1,5 +1,12 @@
 # @kronos-ts/kronosdb
 
+## 0.9.2
+
+### Patch Changes
+
+- Updated dependencies [b853dd5]
+  - @kronos-ts/core@0.5.2
+
 ## 0.9.1
 
 ### Patch Changes
