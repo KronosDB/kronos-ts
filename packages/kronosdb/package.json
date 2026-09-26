@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/kronosdb",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "KronosDB extension for Kronos — event store with snapshotting and scheduling tiers, command and query transport, and control plane.",
   "license": "Apache-2.0",
   "type": "module",

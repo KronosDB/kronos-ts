@@ -1,6 +1,6 @@
 {
   "name": "@kronos-ts/axon-server",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Axon Server extension for Kronos — event store with snapshotting, command and query transport, and control plane.",
   "license": "Apache-2.0",
   "type": "module",
