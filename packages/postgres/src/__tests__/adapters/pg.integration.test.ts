@@ -88,6 +88,33 @@ describe("pgAdapter — transactions", () => {
   })
 })
 
+describe("pgAdapter — a session the server ends", () => {
+  it("fails the transaction at once, raises nothing uncaught, and frees the pool slot", async () => {
+    // One connection, and a callback parked on something that never settles:
+    // before, the dead client held the only slot and its 'error' was uncaught.
+    const single = pgAdapter({
+      connectionString: pg.connectionString,
+      poolConfig: { max: 1 },
+      idleInTransactionTimeoutMs: 500,
+    })
+    await single.connect()
+    try {
+      const started = Date.now()
+      await assert.rejects(
+        single.transaction(IsolationLevel.READ_COMMITTED, async (tx) => {
+          await tx.query("SELECT 1")
+          await new Promise<never>(() => {})
+        }),
+        /terminat/i,
+      )
+      expect(Date.now() - started).toBeLessThan(5_000)
+      expect(await single.query<{ n: number }>("SELECT 1 AS n")).toEqual([{ n: 1 }])
+    } finally {
+      await single.disconnect()
+    }
+  }, 15_000)
+})
+
 describe("pgAdapter — SQLSTATE pass-through (D-12.12 wiring)", () => {
   it("preserves SQLSTATE on .code unchanged (KR001 surfaces from a PL/pgSQL RAISE)", async () => {
     let caught: { code?: string } | undefined

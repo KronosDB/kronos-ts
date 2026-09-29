@@ -56,15 +56,17 @@ export type Tx = PostgresAdapterTransaction
 /** The `sql()` capability this family adds to a handler context. */
 export type PostgresCapability = {
   /**
-   * This invocation's Postgres handle: the unit of work's transaction when one
-   * is open, otherwise the pool the wrapper was built with.
+   * This invocation's Postgres handle. In an event handler, the unit of work's
+   * transaction when one is open, otherwise the pool the wrapper was built
+   * with. In a command handler, always the pool: a command's own writes commit
+   * as they run, before its events are appended, so write them idempotently.
    *
    * Always safe to call. A handler written against it works unchanged whether
    * or not the seam it runs in was given a transactional factory — which is the
    * point, because that is a DEPLOYMENT decision and a slice should not encode
-   * it. The accessor itself never OPENS a transaction: when the unit of work is
-   * this family's, `postgresHandler` opened it before the handler ran, so the
-   * handler's statements commit with everything else in the unit of work.
+   * it. The accessor itself never OPENS a transaction: when an event handler's
+   * unit of work is this family's, `postgresHandler` opened it before the
+   * handler ran, so the handler's statements commit with the token.
    *
    * Both arms answer `query(sql, params)`, so the common case needs no
    * narrowing:
@@ -90,7 +92,10 @@ export type PostgresCapability = {
  *
  * ```ts
  * const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: CommandHandlerContext & PostgresCapability) => {
- *   await ctx.sql().query("UPDATE widgets SET name = $2 WHERE id = $1", [payload.id, payload.name])
+ *   await ctx.sql().query(
+ *     "INSERT INTO widget_names (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+ *     [payload.id, payload.name],
+ *   )
  *   ctx.append(WidgetUpdated, payload)
  * })
  *
@@ -105,9 +110,11 @@ export type PostgresCapability = {
  * ordering a chain wrongly (wrapping twice, or wrapping a handler that never
  * asked for `sql()`) is a compile error rather than a runtime surprise.
  *
- * Build it from the SAME pool you built `postgresUnitOfWork` from. The
- * capability reads this family's uow-keyed registry, so a handler's writes and
- * the unit of work's transaction are the same transaction and commit together.
+ * Build it from the SAME pool you built `postgresUnitOfWork` from. In an event
+ * handler the capability reads this family's uow-keyed registry, so the
+ * handler's writes and the processor's token commit together. A command
+ * handler's writes never join its unit of work's transaction: they run on the
+ * pool, while the handler runs, and a rejected append does not undo them.
  *
  * STATEMENTS ARE SPANNED WHEN THERE IS A TRACE. If the context this wrapper
  * receives carries `trace` (supplied by a wrapper OUTSIDE this one — see
@@ -129,26 +136,37 @@ export function postgresHandler(
   next: (message: unknown, context: any) => unknown,
   pg: PostgresAdapter,
 ): unknown {
-  const invoke = (message: unknown, context: any, unitOfWork: UnitOfWork) =>
+  const invoke = (message: unknown, context: any, transaction: () => Tx | undefined) =>
     next(message, {
       ...context,
       sql: () => {
-        const active = activePostgresTransaction(unitOfWork)
+        const active = transaction()
         const trace = (context as { readonly trace?: SpanningTrace }).trace
         if (trace === undefined) return active ?? pg
         return active !== undefined ? observedTransactionView(active, trace) : observedPoolView(pg, trace)
       },
     })
   const wrapped = (message: unknown, context: any) => {
+    // A COMMAND's statements run on the pool and commit as they go — never in
+    // the transaction its events are appended in, even when something (a
+    // `ctx.schedule`) has opened it. Holding that transaction across the
+    // handler pinned a connection while `ctx.load` waited for a second one
+    // from the same pool, so a burst of commands the size of the pool
+    // deadlocked. A command's own writes are idempotent instead: the handler
+    // runs before its append, and a retry writes them again.
+    if ((message as { readonly kind?: unknown }).kind === "command") {
+      return invoke(message, context, () => undefined)
+    }
     const unitOfWork = (context as { readonly unitOfWork: UnitOfWork }).unitOfWork
-    if (activePostgresTransaction(unitOfWork) !== undefined) return invoke(message, context, unitOfWork)
-    // The unit of work's transaction is LAZY, and a handler is usually its
-    // first writer: nothing else has opened it when the handler runs. Open
-    // it here when the unit of work is this family's, so the handler's
-    // statements land in the transaction that commits with the token —
-    // not on the pool, one autocommit statement at a time. A unit of work
+    const transaction = () => activePostgresTransaction(unitOfWork)
+    if (transaction() !== undefined) return invoke(message, context, transaction)
+    // The unit of work's transaction is LAZY, and in a processor batch the
+    // handler is usually its first writer: nothing else has opened it when the
+    // handler runs. Open it here when the unit of work is this family's, so the
+    // handler's statements land in the transaction that commits with the token
+    // — not on the pool, one autocommit statement at a time. A unit of work
     // that is not ours opens nothing, and `sql()` stays the pool.
-    return sharedPostgresTransaction(unitOfWork).then(() => invoke(message, context, unitOfWork))
+    return sharedPostgresTransaction(unitOfWork).then(() => invoke(message, context, transaction))
   }
 
   return describe(wrapped, { name: "postgresHandler", supplies: ["sql"], next })

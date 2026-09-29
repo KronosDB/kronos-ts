@@ -126,6 +126,24 @@ export function pgAdapter(config: PgAdapterConfig): PostgresAdapter {
       fn: (tx: PostgresAdapterTransaction) => Promise<T>,
     ): Promise<T> {
       const client = await getPool().connect()
+      // pg listens for errors on IDLE clients only. When the server ends a
+      // checked-out client's session (idle_in_transaction_session_timeout, a
+      // terminated backend, a restart), the client's 'error' event would be
+      // uncaught, and a callback parked on something else would hold the dead
+      // client — and its pool slot — until it finished. Fail the transaction
+      // as soon as the session is gone, and destroy the client on release
+      // instead of returning it to the pool.
+      let lost: Error | undefined
+      let failLost!: (err: Error) => void
+      const sessionLost = new Promise<never>((_, reject) => {
+        failLost = reject
+      })
+      sessionLost.catch(() => {})
+      const onError = (err: Error) => {
+        lost = err
+        failLost(err)
+      }
+      client.on("error", onError)
       try {
         await client.query(`BEGIN ISOLATION LEVEL ${isolationLevel}`)
         const tx: PostgresAdapterTransaction = {
@@ -145,7 +163,7 @@ export function pgAdapter(config: PgAdapterConfig): PostgresAdapter {
           // Arm the per-transaction safety timeouts before handing the tx to
           // the caller, so even the very first awaited statement is bounded.
           await applySessionTimeouts(tx, timeouts)
-          result = await fn(tx)
+          result = await Promise.race([fn(tx), sessionLost])
         } catch (err) {
           // ROLLBACK best-effort; preserve the ORIGINAL error.
           try {
@@ -158,7 +176,8 @@ export function pgAdapter(config: PgAdapterConfig): PostgresAdapter {
         await client.query("COMMIT")
         return result
       } finally {
-        client.release()
+        client.off("error", onError)
+        client.release(lost)
       }
     },
 

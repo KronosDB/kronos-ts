@@ -67,8 +67,9 @@ postgresPool(bunSqlAdapter({ connectionString }), { bootstrap: false })
 Every function above is built from the same `pg`, and that is what makes them
 one transaction. `postgresUnitOfWork` puts a (lazily opened) transaction on each
 unit of work; the token store, the dead-letter queue, the event store and a
-handler's own `ctx.sql()` all read it. A crash cannot advance a processor's
-token while losing the work that token accounts for.
+event handler's own `ctx.sql()` all read it. A crash cannot advance a
+processor's token while losing the work that token accounts for. A command
+handler's `ctx.sql()` is the exception: it runs on the pool (see below).
 
 Never mix families within one processor: a token store or client built over a
 different pool or connection than the one the unit of work's transaction runs
@@ -81,8 +82,11 @@ import { postgresHandler, type PostgresCapability } from "@kronos-ts/postgres"
 import type { CommandHandlerContext } from "@kronos-ts/core"
 
 const editWidget = commandHandler(EditWidget, async ({ payload }, ctx: CommandHandlerContext & PostgresCapability) => {
-  await ctx.sql().query("UPDATE widgets SET name = $2 WHERE id = $1", [payload.id, payload.name])
-  ctx.append(WidgetUpdated, payload)   // commits together, rolls back together
+  await ctx.sql().query(
+    "INSERT INTO widget_names (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+    [payload.id, payload.name],
+  )                                    // commits now, on the pool
+  ctx.append(WidgetUpdated, payload)   // commits at the end of the command
 })
 
 kronos({
@@ -104,9 +108,15 @@ The erasure is DIRECTIONAL — a handler that ASKS for `sql()` goes in, one that
 asks only for the base context comes out — so wrapping twice, or wrapping a
 handler that never asked, is a compile error rather than a silent no-op.
 
-`ctx.sql()` returns the unit of work's transaction when one is open and the pool
-otherwise; it never OPENS one. For the writer that must be inside a transaction
-whether or not anything else has touched it yet, use the accessor pair directly:
+In an event handler, `ctx.sql()` returns the unit of work's transaction when one
+is open and the pool otherwise, and `postgresHandler` opens the lazy
+transaction before the handler runs, so a batch's statements commit with the
+token. In a command handler, `ctx.sql()` is always the pool. A command's own
+writes commit as they run, before its events are appended; a rejected append
+does not undo them, and a retry runs them again, so write them idempotently —
+an upsert keyed by the aggregate's id. For the writer that must be inside a
+transaction whether or not anything else has touched it yet, use the accessor
+pair directly:
 
 - `postgresTransaction(uow)` — opens the lazy transaction if it has not begun.
   Rejects if `uow` did not come from `postgresUnitOfWork`.
@@ -173,9 +183,11 @@ const adapter = bunSqlAdapter({
 
 ## Transactions
 
-Every command handler runs inside a single Unit of Work, and with this extension that UoW carries a Postgres transaction. A handler's appended events are buffered and flushed as one bulk write at commit; anything else you write **on the same transaction** commits — or rolls back — atomically with them. So "edit a row and append an `Updated` event" is one atomic operation.
+Every handler runs inside a single Unit of Work, and with this extension that UoW carries a Postgres transaction. It is **lazy**: it opens on the first writer and never opens for pure-read work, so a read claims no connection it does not use.
 
-The transaction is **lazy**: it opens on the first writer (an append, or your own SQL) and never opens for pure-read handlers, so read-only work claims no connection from the pool.
+**In a processor**, the batch is the transaction. `postgresHandler` opens it before the handler runs, and the handler's statements, the token update and any dead letters commit — or roll back — together.
+
+**In a command**, the transaction is the append. A handler's appended events are buffered and flushed as one bulk write at commit, in a transaction that opens and commits within milliseconds. The handler's own writes are not part of it: `ctx.sql()` runs them on the pool, while the handler runs, so write them idempotently. Do not open the unit of work's transaction from a command handler with `postgresTransaction(ctx.unitOfWork)`: it pins a connection for the rest of the handler, and a `ctx.load` after it waits for a second one from the same pool — a burst of commands the size of the pool deadlocks.
 
 This is the framework's transaction, exposed for you to enroll work into. The package does **not** ship an ORM client — you bring (or wrap) your own. The two pieces you need are the accessor pair:
 
@@ -189,10 +201,9 @@ The transaction handle runs parameterised SQL directly (it's what the event stor
 ```typescript
 import { postgresTransaction } from "@kronos-ts/postgres"
 
-// inside a command handler:
+// inside an event handler, in a processor:
 const tx = await postgresTransaction(ctx.unitOfWork)
-await tx.query("UPDATE widgets SET name = $1 WHERE id = $2", [name, id])
-ctx.append(WidgetUpdated, { id, name })   // commits together, rolls back together
+await tx.query("UPDATE widget_views SET name = $1 WHERE id = $2", [name, id])   // commits with the token
 ```
 
 ### Handing the transaction to an ORM
@@ -234,11 +245,10 @@ async function uowDb(ctx: { unitOfWork: UnitOfWork }) {
   return drizzle(tx.unwrap<PoolClient>(), { schema })
 }
 
-// in a command handler:
+// in an event handler, in a processor:
 const db = await uowDb(ctx)
-await db.insert(widgets).values({ id, name })
-  .onConflictDoUpdate({ target: widgets.id, set: { name } })
-ctx.append(WidgetUpdated, { id, name })
+await db.insert(widgetViews).values({ id, name })
+  .onConflictDoUpdate({ target: widgetViews.id, set: { name } })
 ```
 
 #### On `ctx.db`, as a handler wrapper
@@ -284,7 +294,7 @@ ORMs that manage their own connection pool are more work — they don't take a b
 
 ### The one rule
 
-Bind your client to **`unwrap()`'s connection** — never to a separately-created pool. A separate pool is a separate connection, hence a separate transaction, and your writes silently stop being atomic with your events. `unwrap()` is the guarantee that you're on the framework's connection.
+In a processor, bind your client to **`unwrap()`'s connection** — never to a separately-created pool. A separate pool is a separate connection, hence a separate transaction, and your projection writes silently stop being atomic with the token. `unwrap()` is the guarantee that you're on the framework's connection.
 
 ## DCB Semantics
 

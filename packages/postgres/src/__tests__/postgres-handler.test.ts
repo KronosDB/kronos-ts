@@ -66,7 +66,8 @@ function ctxWith(uow: ReturnType<typeof unitOfWork> | undefined): never {
   return { unitOfWork: uow } as never
 }
 
-const message = { payload: { id: "w-1" } }
+const message = { kind: "command", payload: { id: "w-1" } }
+const event = { kind: "event", payload: { id: "w-1" } }
 
 describe("postgresHandler", () => {
   it("adds sql() to a COMMAND handler's context, answering the pool outside a transaction", async () => {
@@ -84,7 +85,7 @@ describe("postgresHandler", () => {
     expect(seen).toBe(pool)
   })
 
-  it("answers the unit of work's TRANSACTION once one is open — same tx as every other writer", async () => {
+  it("answers an EVENT handler the unit of work's TRANSACTION once one is open — same tx as the token", async () => {
     // The whole premise of the family: a handler's own writes and the token
     // store's writes are the same transaction because they read one registry.
     const pool = postgresPool(fakeAdapter(), { bootstrap: false })
@@ -93,7 +94,7 @@ describe("postgresHandler", () => {
     let seen: unknown
     let opened: unknown
     const handler = postgresHandler(
-      commandHandlerFn(async (_m, ctx) => {
+      eventHandlerFn(async (_m, ctx) => {
         seen = ctx.sql()
       }),
       pool,
@@ -101,14 +102,14 @@ describe("postgresHandler", () => {
 
     await make().execute(async (uow) => {
       opened = await postgresTransaction(uow)
-      await handler(message as never, ctxWith(uow))
+      await handler(event as never, ctxWith(uow))
     })
 
     expect(seen).toBe(opened)
     expect(seen).not.toBe(pool)
   })
 
-  it("opens the unit of work's LAZY transaction when the handler is its first writer", async () => {
+  it("opens the unit of work's LAZY transaction when an EVENT handler is its first writer", async () => {
     // A processor batch runs its handlers before anything else touches the
     // unit of work; the token store joins the transaction only at prepare-
     // commit. If the handler did not open it, every one of its statements
@@ -119,7 +120,7 @@ describe("postgresHandler", () => {
     let seen: unknown
     let activeInside: unknown
     const handler = postgresHandler(
-      commandHandlerFn(async (_m, ctx) => {
+      eventHandlerFn(async (_m, ctx) => {
         seen = ctx.sql()
         activeInside = activePostgresTransaction(ctx.unitOfWork)
       }),
@@ -129,13 +130,52 @@ describe("postgresHandler", () => {
     let activeAfter: unknown
     await make().execute(async (uow) => {
       expect(activePostgresTransaction(uow)).toBeUndefined()
-      await handler(message as never, ctxWith(uow))
+      await handler(event as never, ctxWith(uow))
       activeAfter = activePostgresTransaction(uow)
     })
 
     expect(seen).not.toBe(pool)
     expect(seen).toBe(activeInside)
     expect(activeAfter).toBe(seen)
+  })
+
+  it("answers a COMMAND handler the pool, even when its unit of work's transaction is open", async () => {
+    // A command holding a transaction across its handler pinned a connection
+    // while ctx.load waited for another; its writes run on the pool instead.
+    const pool = postgresPool(fakeAdapter(), { bootstrap: false })
+    const make = postgresUnitOfWork(unitOfWork, pool)
+    let seen: unknown
+    const handler = postgresHandler(
+      commandHandlerFn(async (_m, ctx) => {
+        seen = ctx.sql()
+      }),
+      pool,
+    )
+
+    await make().execute(async (uow) => {
+      await postgresTransaction(uow)
+      await handler(message as never, ctxWith(uow))
+    })
+
+    expect(seen).toBe(pool)
+  })
+
+  it("opens nothing for a COMMAND handler", async () => {
+    const pool = postgresPool(fakeAdapter(), { bootstrap: false })
+    const make = postgresUnitOfWork(unitOfWork, pool)
+    let activeInside: unknown = "unset"
+    const handler = postgresHandler(
+      commandHandlerFn(async (_m, ctx) => {
+        activeInside = activePostgresTransaction(ctx.unitOfWork)
+      }),
+      pool,
+    )
+
+    await make().execute(async (uow) => {
+      await handler(message as never, ctxWith(uow))
+    })
+
+    expect(activeInside).toBeUndefined()
   })
 
   it("opens nothing for a unit of work the family did not mint", async () => {
@@ -172,7 +212,7 @@ describe("postgresHandler", () => {
     const pool = postgresPool(counting, { bootstrap: false })
     const make = postgresUnitOfWork(unitOfWork, pool)
     const handler = postgresHandler(
-      commandHandlerFn(async (_m, ctx) => {
+      eventHandlerFn(async (_m, ctx) => {
         ctx.sql()
         ctx.sql()
       }),
@@ -180,8 +220,8 @@ describe("postgresHandler", () => {
     )
 
     await make().execute(async (uow) => {
-      await handler(message as never, ctxWith(uow))
-      await handler(message as never, ctxWith(uow))
+      await handler(event as never, ctxWith(uow))
+      await handler(event as never, ctxWith(uow))
     })
 
     expect(begins).toBe(1)
