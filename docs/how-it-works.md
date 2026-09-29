@@ -1127,8 +1127,11 @@ Absent a queue, a handler failure propagates and the batch retries.
 
 Only one thing owns a task's transaction, and it is the postgres family:
 `postgresUnitOfWork` opens it, the token store and dead-letter queue write in
-it, the event store appends in it, and `postgresHandler` hands it to the
-handler as `ctx.sql()`. A query builder is a CLIENT over that transaction,
+it, the event store appends in it, and `postgresHandler` hands it to an event
+handler as `ctx.sql()`. A command handler's `ctx.sql()` is the pool instead:
+its writes commit as they run, before the append, so they are written
+idempotently, and the command holds no connection while it loads state and
+decides. A query builder is a CLIENT over that transaction,
 never the owner of one: construct it over `ctx.sql().unwrap()`, the live
 driver connection. Kronos ships no builder integration, so nothing in it pins
 a builder version; the builder's types are the ones your app installed.
