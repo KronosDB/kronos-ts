@@ -274,15 +274,37 @@ export function postgresDeadLetterQueue(
       const lease = String(now)
       const cutoff = now - claimDurationMs
 
+      // The filter sees each lane's head letter as read here. It is called
+      // again below, on the head as it is once the lane is claimed.
       const candidates = (await laneHeads(group))
-        .filter((head) => sequenceFilter(head.sequence_identifier))
         .filter((head) => head.processing_started == null || Number(head.processing_started) <= cutoff)
+        .filter((head) => sequenceFilter(head.sequence_identifier, rowToLetter(head)))
         // The oldest lane first, by its head letter's lastTouched.
         .sort((a, b) => Number(a.last_touched) - Number(b.last_touched))
 
+      /**
+       * Hand a lane back. Only while the lease is still OURS: if it expired and
+       * another replayer took the lane, its lease value differs and this
+       * matches nothing. Best-effort by design — the caller is already on a
+       * failure path or has no use for the lane, and an unreleased lease merely
+       * expires after `claimDurationMs`.
+       */
+      async function releaseLane(id: string): Promise<void> {
+        try {
+          await pg.query(
+            `UPDATE ${table} SET processing_started = NULL
+              WHERE processing_group = $1 AND dead_letter_id = $2 AND processing_started = $3`,
+            [group, id, lease],
+          )
+        } catch {
+          // See above: the lease expires on its own.
+        }
+      }
+
       let headId: string | undefined
       let chosen: string | undefined
-      for (const head of candidates) {
+      let rows: LetterRow[] = []
+      for (const candidate of candidates) {
         // One statement, atomic: it takes the lane only if nobody holds a live
         // lease, and SKIP LOCKED means it never waits on a row another
         // statement has. Zero rows is "someone else has this lane" — try the
@@ -296,41 +318,44 @@ export function postgresDeadLetterQueue(
                  AND (processing_started IS NULL OR processing_started::bigint <= $4::bigint)
                  FOR UPDATE SKIP LOCKED)
             RETURNING dead_letter_id`,
-          [group, head.dead_letter_id, lease, String(cutoff)],
+          [group, candidate.dead_letter_id, lease, String(cutoff)],
         )
         if (claimed.length === 0) continue
-        headId = head.dead_letter_id
-        chosen = head.sequence_identifier
+
+        // The lane's rows are read AFTER the claim. Read before it, a replayer
+        // that lost the race would hold a stale copy of letters the winner is
+        // about to evict, and replay them again.
+        let fresh: LetterRow[]
+        let passes: boolean
+        try {
+          fresh = await sequenceRows(pg, group, candidate.sequence_identifier)
+          // The selection's head can be stale: another replayer may have
+          // requeued the letter, with new diagnostics, between that read and
+          // this claim. Judge the head as it is now.
+          passes =
+            fresh[0] !== undefined &&
+            sequenceFilter(candidate.sequence_identifier, rowToLetter(fresh[0]))
+        } catch (err) {
+          await releaseLane(candidate.dead_letter_id)
+          throw err
+        }
+        if (!passes) {
+          // Not ours to replay after all. Hand the lane back — on the pool, so
+          // the next replayer sees it at once — and take the next candidate.
+          await releaseLane(candidate.dead_letter_id)
+          continue
+        }
+        headId = candidate.dead_letter_id
+        chosen = candidate.sequence_identifier
+        rows = fresh
         break
       }
       if (headId === undefined || chosen === undefined) return false
+      const claimedId = headId
+      const release = () => releaseLane(claimedId)
 
-      /**
-       * Hand the lane back. Only while the lease is still OURS: if it expired
-       * and another replayer took the lane, its lease value differs and this
-       * matches nothing. Best-effort by design — the caller is already on a
-       * failure path, and an unreleased lease merely expires after
-       * `claimDurationMs`.
-       */
-      async function release(): Promise<void> {
-        try {
-          await pg.query(
-            `UPDATE ${table} SET processing_started = NULL
-              WHERE processing_group = $1 AND dead_letter_id = $2 AND processing_started = $3`,
-            [group, headId, lease],
-          )
-        } catch {
-          // See above: the lease expires on its own.
-        }
-      }
-
-      // The lane's rows are read AFTER the claim. Read before it, a replayer
-      // that lost the race would hold a stale copy of letters the winner is
-      // about to evict, and replay them again.
-      let rows: LetterRow[]
       let handle: SqlHandle
       try {
-        rows = await sequenceRows(pg, group, chosen)
         // Opens the replay transaction (if the unit of work carries one). Opening
         // is not writing: it assigns no xid until the first write below.
         handle = await sql(uow)
@@ -338,7 +363,6 @@ export function postgresDeadLetterQueue(
         await release()
         throw err
       }
-      if (rows.length === 0) return false
 
       // A unit of work that fails — a handler's write, the deferred writes
       // below, the commit itself — is rolled back, and THEN this runs. It has
