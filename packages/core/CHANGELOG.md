@@ -1,5 +1,27 @@
 # @kronos-ts/core
 
+## 0.7.0
+
+### Minor Changes
+
+- 7e7c908: Added `deadLetterBackoff(queue, policy)`, which wraps a dead-letter queue so a lane whose head failed is skipped by `process` until the policy's delay has passed, and `exponentialBackoff(options?)`, a policy with a cap and jitter.
+
+  - The policy returns a delay in milliseconds, or `"hold"` to keep the lane parked until `queue.retryNow(processingGroup, sequenceIdentifier)` releases it. `retryNow` keeps the letter's attempt count.
+  - The wrapper only delays. It never evicts a letter, however many times it fails.
+  - `SequencedDeadLetterQueue.process` calls its `sequenceFilter` with the lane's head letter as a second argument: `(sequenceId, head) => boolean`. An implementation must pass the head letter, and must check the filter again against the head once it has claimed the lane. The filters of `deadLetterReprocessor` and `reprocessDeadLetters` are unchanged.
+
+- d7b7b17: `SequencedDeadLetterQueue.process` replays each letter in its own unit of work. It takes a unit-of-work factory as its last argument instead of a unit of work, and `processingTask` receives the letter's unit of work as a second argument: `(letter, uow) => Promise<EnqueueDecision>`.
+
+  - A letter that replays successfully is evicted through its unit of work, so the eviction commits with the handler's writes.
+  - A letter whose task returns `shouldEnqueue: true` has its unit of work rolled back, so the handler's partial writes are discarded. The letter is then requeued with the decision's cause and diagnostics, and the walk stops.
+  - A task that throws, or a unit of work that fails to commit, rethrows. Letters already evicted stay evicted.
+  - `deadLetterReprocessor` passes its `unitOfWork` factory to `process` instead of opening one unit of work around the whole walk. `reprocess`, `reprocessAll` and `reprocessDeadLetters` are unchanged.
+  - `deadLetterBackoff` passes the factory and the letter's unit of work through. Implementations of `SequencedDeadLetterQueue` must take the new `process` signature.
+
+### Patch Changes
+
+- 1b501ec: An event processor now waits longer between retries of a failed batch. The first retry waits twice the polling interval, as before; each further consecutive failure doubles the wait, up to 60 seconds. A successful batch, or stopping and starting the processor, returns the wait to the first value. The error log line now includes the wait before the retry.
+
 ## 0.6.0
 
 ### Minor Changes
