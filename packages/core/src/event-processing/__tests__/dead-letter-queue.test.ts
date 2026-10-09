@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { unitOfWork, type UnitOfWork } from "../../unit-of-work/unit-of-work.js"
 import { qn, type EventMessage } from "../../messaging/messages.js"
 import { inMemoryDeadLetterQueue, deadLetter, type DeadLetter, type EnqueueDecision } from "../dead-letter-queue.js"
 function testEvent(name: string, payload: unknown = {}): EventMessage {
@@ -15,6 +16,15 @@ function testEvent(name: string, payload: unknown = {}): EventMessage {
 
 /** Every call names its partition, exactly as a processor does. */
 const GROUP = "test-processor"
+
+type Deferred = { promise: Promise<void>; resolve: () => void }
+function deferred(): Deferred {
+  let resolve!: () => void
+  const promise = new Promise<void>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
 
 function letter(seqId: string, eventName: string = "TestEvent"): DeadLetter {
   return deadLetter(
@@ -155,6 +165,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
           processed.push(l.sequenceIdentifier)
           return { shouldEnqueue: false }
         },
+        unitOfWork,
       )
 
       expect(processed).toEqual(["seq-old"])
@@ -168,6 +179,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
       await dlq.process(GROUP, 
         () => true,
         async () => ({ shouldEnqueue: false }),
+        unitOfWork,
       )
 
       expect(await dlq.size(GROUP)).toBe(0)
@@ -187,6 +199,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
           processedCount++
           return { shouldEnqueue: true } // Still failing
         },
+        unitOfWork,
       )
 
       // Should have only tried the first letter
@@ -202,6 +215,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
       const result = await dlq.process(GROUP, 
         (id) => id === "nonexistent",
         async () => ({ shouldEnqueue: false }),
+        unitOfWork,
       )
 
       expect(result).toBe(false)
@@ -219,9 +233,147 @@ describe("InMemorySequencedDeadLetterQueue", () => {
           processed.push(l.sequenceIdentifier)
           return { shouldEnqueue: false }
         },
+        unitOfWork,
       )
 
       expect(processed).toEqual(["process"])
+    })
+  })
+
+  describe("process: one unit of work per letter", () => {
+    /** Mint units of work that remember themselves, so a test can look at each. */
+    function minting() {
+      const minted: UnitOfWork[] = []
+      const factory = () => {
+        const uow = unitOfWork()
+        minted.push(uow)
+        return uow
+      }
+      return { minted, factory }
+    }
+
+    it("hands each letter a unit of work of its own, minted by the factory", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      await dlq.enqueue(GROUP, letter("seq-1"))
+      await dlq.enqueue(GROUP, letter("seq-1"))
+      await dlq.enqueue(GROUP, letter("seq-1"))
+      const { minted, factory } = minting()
+
+      const handed: UnitOfWork[] = []
+      await dlq.process(GROUP, () => true, async (_l, uow) => {
+        handed.push(uow)
+        return { shouldEnqueue: false }
+      }, factory)
+
+      expect(minted.length).toBe(3)
+      expect(handed).toEqual(minted)
+      expect(new Set(handed).size).toBe(3)
+      // Each ran to completion: the lifecycle ran, and nothing is left open.
+      expect(handed.every((uow) => uow.closed)).toBe(true)
+    })
+
+    it("evicts a letter before the next letter's task starts", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      await dlq.enqueue(GROUP, letter("seq-1", "A"))
+      await dlq.enqueue(GROUP, letter("seq-1", "B"))
+      const entered = deferred()
+      const release = deferred()
+      let calls = 0
+
+      const walk = dlq.process(GROUP, () => true, async () => {
+        calls++
+        if (calls === 2) {
+          entered.resolve()
+          await release.promise
+        }
+        return { shouldEnqueue: false }
+      }, unitOfWork)
+
+      await entered.promise
+      // Letter 1's unit of work has committed while letter 2 is still running.
+      expect(await dlq.size(GROUP)).toBe(1)
+      expect((await dlq.deadLetterSequence(GROUP, "seq-1"))[0]!.message.identifier).toBe("id-B")
+      release.resolve()
+      await walk
+      expect(await dlq.size(GROUP)).toBe(0)
+    })
+
+    it("rolls a failing letter's unit of work back and requeues it with the decision", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      await dlq.enqueue(GROUP, letter("seq-1", "A"))
+      await dlq.enqueue(GROUP, letter("seq-1", "B"))
+      await dlq.enqueue(GROUP, letter("seq-1", "C"))
+      const { minted, factory } = minting()
+
+      const events: string[] = []
+      const processed = await dlq.process(GROUP, () => true, async (l, uow) => {
+        const id = l.message.identifier
+        uow.onPrepareCommit(() => void events.push(`prepare:${id}`))
+        uow.onCommit(() => void events.push(`commit:${id}`))
+        uow.onError(() => void events.push(`error:${id}`))
+        uow.events.buffered.push(l.message)
+        return id === "id-B"
+          ? { shouldEnqueue: true, cause: new TypeError("still failing"), diagnostics: { note: "kept" } }
+          : { shouldEnqueue: false }
+      }, factory)
+
+      expect(processed).toBe(true)
+      // A committed. B rolled back: its commit hooks never ran, its error hooks did.
+      expect(events).toEqual(["prepare:id-A", "commit:id-A", "error:id-B"])
+      // The walk stopped at B: C never got a unit of work.
+      expect(minted.length).toBe(2)
+      const failed = minted[1]!
+      expect(failed.closed).toBe(true)
+      // What B buffered stays on its own, closed unit of work; nothing flushes it
+      // and no later unit of work shares it.
+      expect(minted[0]!.events.buffered).not.toBe(failed.events.buffered)
+
+      const lane = await dlq.deadLetterSequence(GROUP, "seq-1")
+      expect(lane.map((l) => l.message.identifier)).toEqual(["id-B", "id-C"])
+      expect(lane[0]!.cause.name).toBe("TypeError")
+      expect(lane[0]!.diagnostics["note"]).toBe("kept")
+    })
+
+    it("rethrows a task that throws, keeping its letter and the lane claimable", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      await dlq.enqueue(GROUP, letter("seq-1", "A"))
+      await dlq.enqueue(GROUP, letter("seq-1", "B"))
+
+      await expect(
+        dlq.process(GROUP, () => true, async (l) => {
+          if (l.message.identifier === "id-B") throw new Error("task broke")
+          return { shouldEnqueue: false }
+        }, unitOfWork),
+      ).rejects.toThrow("task broke")
+
+      // A was evicted with its own unit of work; B is neither evicted nor requeued.
+      const lane = await dlq.deadLetterSequence(GROUP, "seq-1")
+      expect(lane.map((l) => l.message.identifier)).toEqual(["id-B"])
+      expect(lane[0]!.cause.message).toBe("test failure")
+      // The lane was handed back.
+      expect(await dlq.process(GROUP, () => true, async () => ({ shouldEnqueue: false }), unitOfWork)).toBe(true)
+      expect(await dlq.size(GROUP)).toBe(0)
+    })
+
+    it("keeps a letter whose unit of work fails to commit", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      await dlq.enqueue(GROUP, letter("seq-1", "A"))
+      await dlq.enqueue(GROUP, letter("seq-1", "B"))
+
+      let calls = 0
+      await expect(
+        dlq.process(GROUP, () => true, async (_l, uow) => {
+          calls++
+          uow.onPrepareCommit(() => {
+            throw new Error("flush failed")
+          })
+          return { shouldEnqueue: false }
+        }, unitOfWork),
+      ).rejects.toThrow("flush failed")
+
+      // The commit failed, so the eviction did not happen, and the walk stopped.
+      expect(calls).toBe(1)
+      expect(await dlq.size(GROUP)).toBe(2)
     })
   })
 

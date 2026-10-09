@@ -651,6 +651,7 @@ type SnapshotCapableEventStore = EventStore & SnapshotStoreCapability   // added
 type ScheduleCapableEventStore = EventStore & ScheduleStoreCapability   // added by WRAPPING
 type TokenStore<U = UnitOfWork>              // members take (processorName, …, uow?: U)
 type SequencedDeadLetterQueue<U = UnitOfWork> // members take (processingGroup, …, uow?: U)
+  // `process` takes a unit-of-work FACTORY, not a unit of work: one per letter, and a failed letter's is rolled back
   // FUNCTION-TYPED FIELDS, NOT METHOD SHORTHAND. It costs nothing and keeps the
   // parameter positions checked contravariantly, the way a reader expects.
 deadLetterBackoff(queue, policy) · exponentialBackoff(options?)  // delays replay of a failing lane; never evicts

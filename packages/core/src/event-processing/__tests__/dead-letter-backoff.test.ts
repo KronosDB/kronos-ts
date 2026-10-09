@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, setSystemTime } from "bun:test"
+import { unitOfWork, type UnitOfWork } from "../../unit-of-work/unit-of-work.js"
 import { qn, type EventMessage } from "../../messaging/messages.js"
 import { deadLetterBackoff, exponentialBackoff } from "../dead-letter-backoff.js"
 import {
@@ -66,12 +67,45 @@ describe("deadLetterBackoff", () => {
     await queue.process(GROUP, () => true, async () => ({
       shouldEnqueue: true,
       cause: new Error("second"),
-    }))
+    }), unitOfWork)
 
     expect(seen).toEqual([
       { attempts: 1, cause: "first" },
       { attempts: 2, cause: "second" },
     ])
+  })
+
+  it("passes each letter's unit of work through, and its diagnostics to the requeue", async () => {
+    setSystemTime(new Date(T0))
+    const queue = deadLetterBackoff(inMemoryDeadLetterQueue(), () => 5_000)
+    await queue.enqueue(GROUP, letter("s1", "A"))
+    await queue.enqueueIfPresent(GROUP, "s1", () => letter("s1", "B"))
+    const minted: UnitOfWork[] = []
+    const handed: UnitOfWork[] = []
+
+    setSystemTime(new Date(T0 + 5_000))
+    await queue.process(
+      GROUP,
+      () => true,
+      async (l, uow) => {
+        handed.push(uow)
+        return l.message.identifier === "id-A"
+          ? { shouldEnqueue: false }
+          : { shouldEnqueue: true, diagnostics: { note: "kept" } }
+      },
+      () => {
+        const uow = unitOfWork()
+        minted.push(uow)
+        return uow
+      },
+    )
+
+    expect(handed).toEqual(minted)
+    expect(minted.length).toBe(2)
+    const [b] = await queue.deadLetterSequence(GROUP, "s1")
+    expect(b!.diagnostics["note"]).toBe("kept")
+    // B was never attempted before, so this is its first failure.
+    expect(backoffOf(b)).toEqual({ attempts: 1, retryAt: T0 + 5_000 + 5_000 })
   })
 
   it("skips a lane whose head is not due", async () => {
@@ -83,7 +117,7 @@ describe("deadLetterBackoff", () => {
     const processed = await queue.process(GROUP, () => true, async () => {
       calls++
       return { shouldEnqueue: false }
-    })
+    }, unitOfWork)
 
     expect(processed).toBe(false)
     expect(calls).toBe(0)
@@ -104,6 +138,7 @@ describe("deadLetterBackoff", () => {
         return id === "s2"
       },
       succeed,
+      unitOfWork,
     )
 
     expect(processed).toBe(true)
@@ -118,10 +153,10 @@ describe("deadLetterBackoff", () => {
     await queue.enqueue(GROUP, letter("s1"))
 
     setSystemTime(new Date(T0 + 4_999))
-    expect(await queue.process(GROUP, () => true, succeed)).toBe(false)
+    expect(await queue.process(GROUP, () => true, succeed, unitOfWork)).toBe(false)
 
     setSystemTime(new Date(T0 + 5_000))
-    expect(await queue.process(GROUP, () => true, succeed)).toBe(true)
+    expect(await queue.process(GROUP, () => true, succeed, unitOfWork)).toBe(true)
     expect(await queue.contains(GROUP, "s1")).toBe(false)
   })
 
@@ -131,14 +166,14 @@ describe("deadLetterBackoff", () => {
     await queue.enqueue(GROUP, letter("s1"))
 
     setSystemTime(new Date(T0 + 1_000))
-    expect(await queue.process(GROUP, () => true, fail)).toBe(true)
+    expect(await queue.process(GROUP, () => true, fail, unitOfWork)).toBe(true)
     expect(backoffOf((await queue.deadLetterSequence(GROUP, "s1"))[0])).toEqual({
       attempts: 2,
       retryAt: T0 + 1_000 + 2_000,
     })
 
     setSystemTime(new Date(T0 + 3_000))
-    expect(await queue.process(GROUP, () => true, fail)).toBe(true)
+    expect(await queue.process(GROUP, () => true, fail, unitOfWork)).toBe(true)
     expect(backoffOf((await queue.deadLetterSequence(GROUP, "s1"))[0])).toEqual({
       attempts: 3,
       retryAt: T0 + 3_000 + 3_000,
@@ -156,7 +191,7 @@ describe("deadLetterBackoff", () => {
       shouldEnqueue: true,
       cause: new TypeError("different"),
       diagnostics: { note: "kept" },
-    }))
+    }), unitOfWork)
 
     const [head] = await queue.deadLetterSequence(GROUP, "s1")
     expect(head!.cause.name).toBe("TypeError")
@@ -171,7 +206,7 @@ describe("deadLetterBackoff", () => {
     await queue.enqueueIfPresent(GROUP, "s1", () => letter("s1", "B"))
     // Fail A once so it carries attempts 2.
     setSystemTime(new Date(T0 + 1_000))
-    await queue.process(GROUP, () => true, fail)
+    await queue.process(GROUP, () => true, fail, unitOfWork)
     expect(backoffOf((await queue.deadLetterSequence(GROUP, "s1"))[0])?.attempts).toBe(2)
 
     // A succeeds and is evicted. B is replayed in the same walk and fails: its
@@ -181,7 +216,7 @@ describe("deadLetterBackoff", () => {
     await queue.process(GROUP, () => true, async (l) => {
       calls++
       return l.message.identifier === "id-A" ? { shouldEnqueue: false } : fail()
-    })
+    }, unitOfWork)
 
     expect(calls).toBe(2)
     const lane = await queue.deadLetterSequence(GROUP, "s1")
@@ -199,7 +234,7 @@ describe("deadLetterBackoff", () => {
 
     const [b] = await queue.deadLetterSequence(GROUP, "s1")
     expect(backoffOf(b)).toBeUndefined()
-    expect(await queue.process(GROUP, () => true, succeed)).toBe(true)
+    expect(await queue.process(GROUP, () => true, succeed, unitOfWork)).toBe(true)
   })
 
   it('"hold" is never due until retryNow', async () => {
@@ -212,10 +247,10 @@ describe("deadLetterBackoff", () => {
     })
 
     setSystemTime(new Date(T0 + 10 * 365 * 24 * 3_600_000))
-    expect(await queue.process(GROUP, () => true, succeed)).toBe(false)
+    expect(await queue.process(GROUP, () => true, succeed, unitOfWork)).toBe(false)
 
     expect(await queue.retryNow(GROUP, "s1")).toBe(true)
-    expect(await queue.process(GROUP, () => true, succeed)).toBe(true)
+    expect(await queue.process(GROUP, () => true, succeed, unitOfWork)).toBe(true)
     expect(await queue.contains(GROUP, "s1")).toBe(false)
   })
 
@@ -224,13 +259,13 @@ describe("deadLetterBackoff", () => {
     await queue.enqueue(GROUP, letter("s1"))
     await queue.retryNow(GROUP, "s1")
 
-    expect(await queue.process(GROUP, () => true, fail)).toBe(true)
+    expect(await queue.process(GROUP, () => true, fail, unitOfWork)).toBe(true)
 
     expect(backoffOf((await queue.deadLetterSequence(GROUP, "s1"))[0])).toEqual({
       attempts: 2,
       retryAt: "hold",
     })
-    expect(await queue.process(GROUP, () => true, succeed)).toBe(false)
+    expect(await queue.process(GROUP, () => true, succeed, unitOfWork)).toBe(false)
   })
 
   it("retryNow keeps attempts, makes the head due, and reports an empty lane", async () => {
@@ -238,7 +273,7 @@ describe("deadLetterBackoff", () => {
     const queue = deadLetterBackoff(inMemoryDeadLetterQueue(), () => 60_000)
     await queue.enqueue(GROUP, letter("s1"))
     setSystemTime(new Date(T0 + 60_000))
-    await queue.process(GROUP, () => true, fail)
+    await queue.process(GROUP, () => true, fail, unitOfWork)
     expect(backoffOf((await queue.deadLetterSequence(GROUP, "s1"))[0])?.attempts).toBe(2)
 
     expect(await queue.retryNow(GROUP, "s1")).toBe(true)
@@ -247,7 +282,7 @@ describe("deadLetterBackoff", () => {
       attempts: 2,
       retryAt: null,
     })
-    expect(await queue.process(GROUP, () => true, succeed)).toBe(true)
+    expect(await queue.process(GROUP, () => true, succeed, unitOfWork)).toBe(true)
     expect(await queue.retryNow(GROUP, "s1")).toBe(false)
     expect(await queue.retryNow(GROUP, "never-parked")).toBe(false)
   })
@@ -262,7 +297,7 @@ describe("deadLetterBackoff", () => {
     setSystemTime(new Date(T0 + 2))
     await queue.retryNow(GROUP, "older")
 
-    await queue.process(GROUP, () => true, succeed)
+    await queue.process(GROUP, () => true, succeed, unitOfWork)
     expect(await queue.contains(GROUP, "newer")).toBe(false)
     expect(await queue.contains(GROUP, "older")).toBe(true)
   })
@@ -292,8 +327,8 @@ describe("deadLetterBackoff", () => {
       }),
     )
 
-    expect(await queue.process(GROUP, () => true, succeed)).toBe(true)
-    expect(await queue.process(GROUP, () => true, succeed)).toBe(true)
+    expect(await queue.process(GROUP, () => true, succeed, unitOfWork)).toBe(true)
+    expect(await queue.process(GROUP, () => true, succeed, unitOfWork)).toBe(true)
     expect(await queue.size(GROUP)).toBe(0)
   })
 

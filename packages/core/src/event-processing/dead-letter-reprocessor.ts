@@ -15,8 +15,9 @@ export type DeadLetterReprocessorOptions<U extends UnitOfWork = UnitOfWork> = {
   processingGroup: string
   replay: DeadLetterReplay<U>
   /**
-   * Runs each reprocess inside a unit of work so the claim/evict/requeue and
-   * any handler side effects commit in one transaction.
+   * Mints the unit of work each LETTER is replayed in. The queue runs one per
+   * letter: the handlers' writes and the letter's eviction commit together, and
+   * a letter that fails rolls its unit of work back before it is requeued.
    */
   unitOfWork: () => U
 }
@@ -24,9 +25,10 @@ export type DeadLetterReprocessorOptions<U extends UnitOfWork = UnitOfWork> = {
 export type DeadLetterReprocessor = {
   /**
    * Reprocess the oldest parked lane matching the filter, once. Walks the lane
-   * head-to-tail: each letter that replays successfully is evicted; the first
-   * that fails is requeued and stops the walk, keeping the lane ordered.
-   * Returns true if a lane was processed.
+   * head-to-tail, each letter in a unit of work of its own: a letter that
+   * replays successfully is evicted, committing with the handlers' writes; the
+   * first that fails has its unit of work rolled back, is requeued and stops the
+   * walk, keeping the lane ordered. Returns true if a lane was processed.
    */
   reprocess(filter?: (sequenceId: string) => boolean): Promise<boolean>
   /**
@@ -54,25 +56,23 @@ export function deadLetterReprocessor<U extends UnitOfWork = UnitOfWork>(
   const { queue, processingGroup, replay, unitOfWork } = options
 
   async function reprocess(filter: (sequenceId: string) => boolean = () => true): Promise<boolean> {
-    // The MINTED handle, not `execute`'s parameter — the replay is typed
-    // against whatever the factory produces, and reading it off the parameter
-    // would launder that back to the bare handle.
-    const uow = unitOfWork()
-    return uow.execute(async () =>
-      queue.process(
-        processingGroup,
-        (sequenceId) => filter(sequenceId),
-        async (letter) => {
-          try {
-            await replay(letter, uow)
-            return { shouldEnqueue: false }
-          } catch (err) {
-            const cause = err instanceof Error ? err : new Error(String(err))
-            return { shouldEnqueue: true, cause }
-          }
-        },
-        uow,
-      ),
+    return queue.process(
+      processingGroup,
+      (sequenceId) => filter(sequenceId),
+      // `uow` is the letter's own unit of work, minted by the queue from the
+      // factory below, so the replay is typed against whatever it produces.
+      async (letter, uow) => {
+        try {
+          await replay(letter, uow)
+          return { shouldEnqueue: false }
+        } catch (err) {
+          // A decision, not a rethrow: the queue turns it into a rollback of
+          // this letter's unit of work, then requeues the letter with the cause.
+          const cause = err instanceof Error ? err : new Error(String(err))
+          return { shouldEnqueue: true, cause }
+        }
+      },
+      unitOfWork,
     )
   }
 
