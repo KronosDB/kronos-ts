@@ -12,6 +12,10 @@
  * postgres transaction as the token update. A crash cannot advance a
  * processor's token while losing the letter it parked.
  *
+ * The one exception is the `process()` lease. Claiming a lane is its own short
+ * committed statement on the pool, so other replayers see it at once and the
+ * replay's transaction takes no xid before its handlers have run.
+ *
  * The table is shared across processors and partitioned by `processingGroup`,
  * which every method takes as its FIRST argument — the same way a token store
  * takes `processorName`. One queue object is one table, and which partition a
@@ -35,7 +39,13 @@ export type PostgresDeadLetterQueueOptions = {
   readonly maxSequences?: number
   /** Maximum letters per sequence. Default: 1024 (Axon parity). */
   readonly maxSequenceSize?: number
-  /** Lease duration for in-flight processing, ms. Default: 30000 (Axon parity). */
+  /**
+   * Lease duration for in-flight processing, ms. Default: 30000 (Axon parity).
+   *
+   * Must exceed the longest replay a handler can take. A lane stays claimed
+   * for this long; past it another replayer may claim the same lane and replay
+   * its letters again, while the first is still running.
+   */
   readonly claimDurationMs?: number
 }
 
@@ -159,6 +169,16 @@ export function postgresDeadLetterQueue(
     )
   }
 
+  /** The first letter of every lane in a group — what age and lease are read from. */
+  async function laneHeads(group: string): Promise<LetterRow[]> {
+    return pg.query<LetterRow>(
+      `SELECT DISTINCT ON (sequence_identifier) ${COLUMNS} FROM ${table}
+        WHERE processing_group = $1
+        ORDER BY sequence_identifier, sequence_index ASC`,
+      [group],
+    )
+  }
+
   async function distinctSequences(handle: SqlHandle, group: string): Promise<string[]> {
     const rows = await handle.query<{ sequence_identifier: string }>(
       `SELECT DISTINCT sequence_identifier FROM ${table} WHERE processing_group = $1`,
@@ -242,63 +262,143 @@ export function postgresDeadLetterQueue(
     },
 
     async process(group, sequenceFilter, processingTask, uow) {
-      const handle = await sql(uow)
-      const candidates = (await distinctSequences(handle, group)).filter(sequenceFilter)
-      if (candidates.length === 0) return false
+      // CANDIDATE SELECTION AND THE CLAIM RUN ON THE POOL, never on the unit of
+      // work's transaction. A lease written through the replay's own
+      // transaction is invisible to every other replayer until that
+      // transaction ends — and is cleared before it does — so it would
+      // protect nothing; and the write would give the transaction an xid
+      // before the handlers run, which holds back the event store's gap-free
+      // tail (`transaction_id < pg_snapshot_xmin(...)`) for every streaming
+      // processor until the replay is over.
+      const now = Date.now()
+      const lease = String(now)
+      const cutoff = now - claimDurationMs
 
-      // Pick the oldest sequence by its head letter's lastTouched, skipping
-      // sequences under an unexpired processing lease (multi-node safety).
-      const cutoff = Date.now() - claimDurationMs
+      const candidates = (await laneHeads(group))
+        .filter((head) => sequenceFilter(head.sequence_identifier))
+        .filter((head) => head.processing_started == null || Number(head.processing_started) <= cutoff)
+        // The oldest lane first, by its head letter's lastTouched.
+        .sort((a, b) => Number(a.last_touched) - Number(b.last_touched))
+
+      let headId: string | undefined
       let chosen: string | undefined
-      let oldest = Number.POSITIVE_INFINITY
-      for (const seqId of candidates) {
-        const rows = await sequenceRows(handle, group, seqId)
-        const head = rows[0]
-        if (head === undefined) continue
-        const leased = head.processing_started != null && Number(head.processing_started) > cutoff
-        if (leased) continue
-        if (Number(head.last_touched) < oldest) {
-          oldest = Number(head.last_touched)
-          chosen = seqId
+      for (const head of candidates) {
+        // One statement, atomic: it takes the lane only if nobody holds a live
+        // lease, and SKIP LOCKED means it never waits on a row another
+        // statement has. Zero rows is "someone else has this lane" — try the
+        // next one. The selection above can be stale by the time this runs;
+        // this is the check that counts.
+        const claimed = await pg.query<{ dead_letter_id: string }>(
+          `UPDATE ${table} SET processing_started = $3
+            WHERE dead_letter_id = (
+              SELECT dead_letter_id FROM ${table}
+               WHERE processing_group = $1 AND dead_letter_id = $2
+                 AND (processing_started IS NULL OR processing_started::bigint <= $4::bigint)
+                 FOR UPDATE SKIP LOCKED)
+            RETURNING dead_letter_id`,
+          [group, head.dead_letter_id, lease, String(cutoff)],
+        )
+        if (claimed.length === 0) continue
+        headId = head.dead_letter_id
+        chosen = head.sequence_identifier
+        break
+      }
+      if (headId === undefined || chosen === undefined) return false
+
+      /**
+       * Hand the lane back. Only while the lease is still OURS: if it expired
+       * and another replayer took the lane, its lease value differs and this
+       * matches nothing. Best-effort by design — the caller is already on a
+       * failure path, and an unreleased lease merely expires after
+       * `claimDurationMs`.
+       */
+      async function release(): Promise<void> {
+        try {
+          await pg.query(
+            `UPDATE ${table} SET processing_started = NULL
+              WHERE processing_group = $1 AND dead_letter_id = $2 AND processing_started = $3`,
+            [group, headId, lease],
+          )
+        } catch {
+          // See above: the lease expires on its own.
         }
       }
-      if (chosen === undefined) return false
 
-      // Claim the sequence head's lease for the duration of this pass.
-      const headRows = await sequenceRows(handle, group, chosen)
-      await handle.query(
-        `UPDATE ${table} SET processing_started = $3
-          WHERE processing_group = $1 AND dead_letter_id = $2`,
-        [group, headRows[0]!.dead_letter_id, String(Date.now())],
-      )
+      // The lane's rows are read AFTER the claim. Read before it, a replayer
+      // that lost the race would hold a stale copy of letters the winner is
+      // about to evict, and replay them again.
+      let rows: LetterRow[]
+      let handle: SqlHandle
+      try {
+        rows = await sequenceRows(pg, group, chosen)
+        // Opens the replay transaction (if the unit of work carries one). Opening
+        // is not writing: it assigns no xid until the first write below.
+        handle = await sql(uow)
+      } catch (err) {
+        await release()
+        throw err
+      }
+      if (rows.length === 0) return false
+
+      // A unit of work that fails — a handler's write, the deferred writes
+      // below, the commit itself — is rolled back, and THEN this runs. It has
+      // to run after the rollback: the replay transaction can hold row locks
+      // on this lane, and a release that waited on them from inside `process`
+      // would wait on a rollback that only happens once `process` returns. The
+      // transaction's own rollback handler was registered when it opened just
+      // above, so it runs first.
+      uow?.onError(release)
 
       try {
-        for (const row of headRows) {
+        // THE REPLAY TRANSACTION WRITES NOTHING UNTIL EVERY HANDLER HAS RUN.
+        // The walk only collects what it will do. A write issued between
+        // handlers would give the transaction an xid while a handler is still
+        // running — see the claim above for what that costs — so the evictions
+        // and the requeue are applied together once the walk is over, through
+        // the unit of work, and commit or roll back with the handlers' own
+        // writes.
+        const evicted: string[] = []
+        let failed: { letter: DeadLetter; decision: EnqueueDecision } | undefined
+        for (const row of rows) {
           const letter = rowToLetter(row)
           const decision: EnqueueDecision = await processingTask(letter)
           if (decision.shouldEnqueue) {
-            await queue.requeue(
-              group,
-              letter,
-              { cause: decision.cause, diagnostics: decision.diagnostics },
-              uow,
-            )
-            return true
+            failed = { letter, decision }
+            break
           }
-          await queue.evict(group, chosen, letter, uow)
+          evicted.push(row.dead_letter_id)
         }
-        return true
-      } finally {
-        // Release any lease still set on a surviving head.
-        const remaining = await sequenceRows(handle, group, chosen)
-        const head = remaining[0]
-        if (head !== undefined && head.processing_started != null) {
+
+        if (evicted.length > 0) {
           await handle.query(
-            `UPDATE ${table} SET processing_started = NULL
-              WHERE processing_group = $1 AND dead_letter_id = $2`,
-            [group, head.dead_letter_id],
+            `DELETE FROM ${table} WHERE processing_group = $1 AND dead_letter_id = ANY($2::text[])`,
+            [group, evicted],
           )
         }
+        if (failed !== undefined) {
+          await queue.requeue(
+            group,
+            failed.letter,
+            { cause: failed.decision.cause, diagnostics: failed.decision.diagnostics },
+            uow,
+          )
+        }
+        // A head that survives the pass (it was the letter that failed) is
+        // released in the same transaction. An evicted head took its lease with it.
+        if (evicted.length === 0) {
+          await handle.query(
+            `UPDATE ${table} SET processing_started = NULL
+              WHERE processing_group = $1 AND dead_letter_id = $2 AND processing_started = $3`,
+            [group, headId, lease],
+          )
+        }
+        return true
+      } catch (err) {
+        // Without a unit of work there is no rollback to wait for, and every
+        // write above already committed on its own: release now. With one,
+        // `onError` above does it.
+        if (uow === undefined) await release()
+        throw err
       }
     },
 
