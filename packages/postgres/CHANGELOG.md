@@ -1,5 +1,30 @@
 # @kronos-ts/postgres
 
+## 0.17.2
+
+### Patch Changes
+
+- 1270e23: The Postgres dead-letter queue claims a lane on the pool, and its replay transaction writes nothing until every handler has run.
+
+  - `process()` takes the lane's lease with one committed statement that skips a lane another replayer holds. Two concurrent replayers no longer block on each other or replay the same letters twice.
+  - The lane's letters are read after the claim, not before.
+  - The replay transaction takes no transaction id while handlers run, so streaming processors keep reading the event store during a replay. Evictions, the requeue of the failed letter and the lease release are applied together at the end, in the unit of work.
+  - When the replay's unit of work fails, the lease is released if it is still the caller's. Otherwise it expires after `claimDurationMs`.
+  - `claimDurationMs` must exceed the longest replay a handler can take. Past it, another replayer may claim the lane and replay it again.
+
+- 7e7c908: The Postgres dead-letter queue's `process()` passes each lane's head letter to the sequence filter, and checks the filter again against the head after claiming the lane. A lane whose head no longer passes is released and the next lane is tried; when none is left, `process()` returns false.
+- d7b7b17: The Postgres dead-letter queue replays each letter in its own transaction, and `enqueue` no longer reads whole lanes.
+
+  - A failing replay's handler writes are rolled back before the letter is requeued. The letters before it stay evicted, with their handlers' writes.
+  - Handler writes no longer hold a transaction id across the rest of the lane, so the event store's tail is held back only while one letter's transaction is open.
+  - Before a letter's eviction commits, `process()` claims the next letter's lease with a statement that never waits on a lock. `claimDurationMs` now has to outlast one letter's replay, not the whole lane. If the next letter cannot be claimed, the walk stops after the current letter.
+  - `enqueue`, `enqueueIfPresent`, `isFull` and `amountOfSequences` use `count(*)`, `max(sequence_index)` and `count(DISTINCT sequence_identifier)` instead of reading every letter in the lane. The caps, defaults and overflow error are unchanged.
+
+- Updated dependencies [7e7c908]
+- Updated dependencies [d7b7b17]
+- Updated dependencies [1b501ec]
+  - @kronos-ts/core@0.7.0
+
 ## 0.17.1
 
 ### Patch Changes
