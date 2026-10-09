@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test"
 import {
   qn,
   type QualifiedName,
@@ -402,6 +402,152 @@ describe("event processor", () => {
       // then -- the failed event was retried and the checkpoint advanced past it
       expect(processor.position).toBe(2n)
       expect(attempts.filter((s) => s === 1n).length).toBeGreaterThanOrEqual(2)
+    })
+
+    describe("retry backoff", () => {
+      const POLL_MS = 1000
+      const FIRST_DELAY_MS = POLL_MS * 2
+
+      /** Let the awaited work inside one poll finish; fake timers do not touch promises. */
+      async function settle() {
+        for (let i = 0; i < 100; i++) await Promise.resolve()
+      }
+
+      /** The processor's between-batches hop is a real `setImmediate`; fake timers leave it alone. */
+      async function hop() {
+        await new Promise((resolve) => setImmediate(resolve))
+        await settle()
+      }
+
+      /**
+       * A processor whose handler follows a script: one outcome per delivery,
+       * "fail" throwing and "ok" succeeding. `deliveries` counts handler calls.
+       */
+      function scripted(outcomes: ReadonlyArray<"fail" | "ok">, eventCount = 1) {
+        const state = { deliveries: 0 }
+        const events = Array.from({ length: eventCount }, (_, i) =>
+          makeEvent(TEST_EVENT_NAME, { value: i }, BigInt(i)),
+        )
+        const handler: EventHandler<any> = {
+          kind: "event-handler",
+          descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+          handler: () => {
+            const outcome = outcomes[state.deliveries++] ?? "ok"
+            if (outcome === "fail") throw new Error("handler failed")
+          },
+        }
+        const processor = runOver({
+          name: "backoff-processor",
+          eventSource: createInMemoryEventSource(events),
+          eventHandlers: [handler],
+          pollingIntervalMs: POLL_MS,
+        })
+        return { processor, state }
+      }
+
+      /**
+       * Assert the next retry waits exactly `delayMs`: nothing is delivered one
+       * millisecond early, and the retry runs on the millisecond.
+       */
+      async function expectRetryAfter(state: { deliveries: number }, delayMs: number) {
+        const before = state.deliveries
+        jest.advanceTimersByTime(delayMs - 1)
+        await settle()
+        expect(state.deliveries).toBe(before)
+        jest.advanceTimersByTime(1)
+        await settle()
+        expect(state.deliveries).toBe(before + 1)
+      }
+
+      let errorLog: ReturnType<typeof spyOn>
+
+      beforeEach(() => {
+        jest.useFakeTimers()
+        errorLog = spyOn(console, "error").mockImplementation(() => {})
+      })
+
+      afterEach(() => {
+        errorLog.mockRestore()
+        jest.useRealTimers()
+      })
+
+      it("doubles the delay on every consecutive failure", async () => {
+        const { processor, state } = scripted(["fail", "fail", "fail", "fail"])
+
+        await processor.start()
+        await settle()
+        expect(state.deliveries).toBe(1)
+
+        await expectRetryAfter(state, FIRST_DELAY_MS) // 2x the polling interval
+        await expectRetryAfter(state, FIRST_DELAY_MS * 2) // 4x
+        await expectRetryAfter(state, FIRST_DELAY_MS * 4) // 8x
+        processor.stop()
+
+        expect(processor.position).toBe(0n)
+        expect(errorLog.mock.calls.map((call) => call[0])).toEqual([
+          `Event processor "backoff-processor" error during poll, retrying in 2000ms:`,
+          `Event processor "backoff-processor" error during poll, retrying in 4000ms:`,
+          `Event processor "backoff-processor" error during poll, retrying in 8000ms:`,
+          `Event processor "backoff-processor" error during poll, retrying in 16000ms:`,
+        ])
+      })
+
+      it("caps the delay at 60 seconds", async () => {
+        // 2s, 4s, 8s, 16s, 32s, then 64s would exceed the cap
+        const { processor, state } = scripted(Array(8).fill("fail"))
+
+        await processor.start()
+        await settle()
+        for (const delayMs of [2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]) {
+          await expectRetryAfter(state, delayMs)
+        }
+        processor.stop()
+
+        expect(state.deliveries).toBe(9)
+      })
+
+      it("returns to the first delay after a successful batch", async () => {
+        // e0 fails twice and then succeeds; e1 then fails once and succeeds.
+        const { processor, state } = scripted(["fail", "fail", "ok", "fail", "ok"], 2)
+
+        await processor.start()
+        await settle()
+        await expectRetryAfter(state, FIRST_DELAY_MS)
+        await expectRetryAfter(state, FIRST_DELAY_MS * 2)
+
+        // e0 succeeded on that retry; e1 follows on the immediate hop and fails
+        await hop()
+        expect(state.deliveries).toBe(4)
+        expect(processor.position).toBe(1n)
+
+        // had the delay kept growing this would be 8000
+        await expectRetryAfter(state, FIRST_DELAY_MS)
+        processor.stop()
+
+        expect(processor.position).toBe(2n)
+      })
+
+      it("starts again from the first delay after a restart", async () => {
+        const { processor, state } = scripted(["fail", "fail", "fail", "fail"])
+
+        await processor.start()
+        await settle()
+        await expectRetryAfter(state, FIRST_DELAY_MS)
+        await expectRetryAfter(state, FIRST_DELAY_MS * 2)
+
+        processor.stop()
+        jest.advanceTimersByTime(60_000)
+        await settle()
+        expect(state.deliveries).toBe(3) // stopped: no retry fires
+
+        await processor.start()
+        await settle()
+        expect(state.deliveries).toBe(4)
+
+        // had the delay survived the restart this would be 8000
+        await expectRetryAfter(state, FIRST_DELAY_MS)
+        processor.stop()
+      })
     })
   })
 
