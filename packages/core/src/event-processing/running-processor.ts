@@ -24,6 +24,9 @@ import type { QueryBus, SubscriptionCapableQueryBus } from "../query-handling/bu
 import type { EventStore } from "../event-sourcing/event-store.js"
 import { eventHandlerContext, type EventHandlerContext } from "./context.js"
 
+/** The longest wait between retries of a failed batch (ms). */
+const MAX_RETRY_DELAY_MS = 60_000
+
 /**
  * One event handler as the processor sees it: the definition, plus the buses
  * ITS context reaches. The buses ride on the entry rather than on the
@@ -65,7 +68,10 @@ export type RunEventProcessorOptions<
  * Failure semantics are the two the surface names, and nothing in between:
  * - No dead-letter queue → the error PROPAGATES. The batch rolls back, the
  *   token does not advance, the stream is realigned to the checkpoint and the
- *   batch is redelivered with backoff. A read model never silently skips.
+ *   batch is redelivered after a delay. The first delay is twice the polling
+ *   interval; every consecutive failure doubles it, up to 60 seconds. A
+ *   successful batch, or a stop and start, returns it to the first delay. A
+ *   read model never silently skips.
  * - Dead-letter queue → the failed event and everything behind it in its lane
  *   are parked, the batch commits, and the token advances past the pill.
  */
@@ -118,6 +124,11 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   let processing = false
   let caughtUp = false
   let lastError: Error | undefined
+  // The wait before the next retry of a failed batch. Starts at the first delay,
+  // doubles on every consecutive failure up to MAX_RETRY_DELAY_MS, and returns
+  // to the first delay after a successful batch or a restart.
+  const firstRetryDelayMs = pollingIntervalMs * 2
+  let retryDelayMs = firstRetryDelayMs
 
   async function initialize() {
     await tokenStore.initializeSegments(name, 1)
@@ -160,8 +171,10 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       if (batch.length > 0) {
         caughtUp = false
         await processBatch(batch)
-        // A clean batch clears any prior error — the processor has recovered.
+        // A clean batch clears any prior error and the retry backoff — the
+        // processor has recovered.
         lastError = undefined
+        retryDelayMs = firstRetryDelayMs
         if (isRunning) {
           if (stream!.hasNextAvailable()) scheduleImmediate()
           // Drained everything currently available — caught up until the
@@ -179,7 +192,15 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       }
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
-      console.error(`Event processor "${name}" error during poll:`, err)
+      // A stopped processor schedules no retry, so it neither waits nor backs
+      // off further.
+      const retryInMs = isRunning ? retryDelayMs : undefined
+      console.error(
+        retryInMs === undefined
+          ? `Event processor "${name}" error during poll:`
+          : `Event processor "${name}" error during poll, retrying in ${retryInMs}ms:`,
+        err,
+      )
       // Realign the live stream to the committed checkpoint. During batch
       // accumulation the stream cursor (and any read-ahead buffer) advanced
       // past this batch, but `token` was NOT advanced — the failing UnitOfWork
@@ -189,7 +210,11 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       // token recovery.
       stream?.close()
       stream = null
-      if (isRunning) { pollTimer = setTimeout(poll, pollingIntervalMs * 2); pollTimer.unref?.() }
+      if (retryInMs !== undefined) {
+        retryDelayMs = Math.min(retryDelayMs * 2, Math.max(MAX_RETRY_DELAY_MS, firstRetryDelayMs))
+        pollTimer = setTimeout(poll, retryInMs)
+        pollTimer.unref?.()
+      }
     } finally {
       processing = false
     }
@@ -343,6 +368,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     async start() {
       if (isRunning) return
       await initialize()
+      retryDelayMs = firstRetryDelayMs
       isRunning = true
       void poll()
     },
