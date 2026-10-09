@@ -61,7 +61,7 @@ export function deadLetterReprocessor<U extends UnitOfWork = UnitOfWork>(
     return uow.execute(async () =>
       queue.process(
         processingGroup,
-        filter,
+        (sequenceId) => filter(sequenceId),
         async (letter) => {
           try {
             await replay(letter, uow)

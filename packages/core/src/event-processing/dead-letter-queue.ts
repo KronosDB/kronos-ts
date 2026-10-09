@@ -110,7 +110,13 @@ export type SequencedDeadLetterQueue<U extends UnitOfWork = UnitOfWork> = {
   sequenceIdentifiers: (processingGroup: string, uow?: U) => Promise<string[]>
 
   /**
-   * Process the oldest parked lane matching the filter.
+   * Process the oldest parked lane the filter accepts. The filter is called
+   * with each candidate lane's identifier and its head letter — the letter
+   * that would be replayed first — so it can decide on the letter's own
+   * diagnostics, not only on the lane's name. An implementation that holds a
+   * lane's lease checks the filter against the head as it is once the lane is
+   * claimed, and moves on to the next lane if the head no longer passes.
+   *
    * For each letter in the lane:
    * - `{ shouldEnqueue: false }`: letter is evicted, continue
    * - `{ shouldEnqueue: true }`: letter is requeued, stop
@@ -119,7 +125,7 @@ export type SequencedDeadLetterQueue<U extends UnitOfWork = UnitOfWork> = {
    */
   process: (
     processingGroup: string,
-    sequenceFilter: (sequenceId: string) => boolean,
+    sequenceFilter: (sequenceId: string, head: DeadLetter) => boolean,
     processingTask: (letter: DeadLetter) => Promise<EnqueueDecision>,
     uow?: U,
   ) => Promise<boolean>
@@ -245,7 +251,7 @@ export function inMemoryDeadLetterQueue(options?: {
       for (const [id, letters] of sequences) {
         if (processing.has(`${group}:${id}`)) continue
         if (letters.length === 0) continue
-        if (!sequenceFilter(id)) continue
+        if (!sequenceFilter(id, letters[0]!)) continue
 
         const firstTouched = letters[0]!.lastTouched
         if (firstTouched < oldestTime) {

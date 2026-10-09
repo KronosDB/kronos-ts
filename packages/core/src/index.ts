@@ -462,6 +462,14 @@ export {
   DeadLetterQueueOverflowError,
 } from "./event-processing/dead-letter-queue.js"
 
+// Dead-letter backoff — delays replay of a failing lane; never evicts
+export {
+  type DeadLetterBackoffFailure,
+  type DeadLetterBackoffPolicy,
+  deadLetterBackoff,
+  exponentialBackoff,
+} from "./event-processing/dead-letter-backoff.js"
+
 // Dead-letter reprocessing
 export {
   type DeadLetterReprocessor,

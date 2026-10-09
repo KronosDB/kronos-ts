@@ -1123,6 +1123,26 @@ rather than a default.
 Absent a queue, a handler failure propagates and the batch retries.
 `batchSize` (default 1) is how many events share one unit of work.
 
+A parked lane is replayed whenever something calls `reprocessDeadLetters`.
+`deadLetterBackoff` wraps a queue so a lane that keeps failing is skipped until
+its delay has passed. It only delays: nothing is evicted however many times a
+letter fails, because giving up on a letter is an operator's decision.
+
+```ts
+const exponential = exponentialBackoff({ initialDelayMs: 30_000 })
+const deadLetterQueue = deadLetterBackoff(postgresDeadLetterQueue(pg), (failure) =>
+  failure.letter.cause.name === "ValidationError" ? "hold" : exponential(failure),
+)
+
+await deadLetterQueue.retryNow("balances", "account-42") // make the lane due now
+```
+
+`"hold"` keeps a lane parked until `retryNow`. Events that arrive for a held
+lane keep parking behind it, and a lane that reaches `maxSequenceSize` throws
+`DeadLetterQueueOverflowError` out of the batch, which then retries without
+advancing its token. Test a cause by `cause.name`, not `instanceof`: a cause
+read back from Postgres is a plain `Error` with the original name.
+
 ## Transactions: one owner, and your query builder rides it
 
 Only one thing owns a task's transaction, and it is the postgres family:

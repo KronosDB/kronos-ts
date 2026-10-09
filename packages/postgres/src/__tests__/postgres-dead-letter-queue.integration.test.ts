@@ -9,6 +9,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test"
 import {
   DeadLetterQueueOverflowError,
   deadLetter,
+  deadLetterBackoff,
   emptyMetadata,
   generateIdentifier,
   qn,
@@ -562,5 +563,215 @@ describe("postgresDeadLetterQueue.process() lease", () => {
     )
 
     expect(await leaseOf("s1")).toBe(theirs)
+  })
+})
+
+describe("postgresDeadLetterQueue.process() filter", () => {
+  const makeUow = () => postgresUnitOfWork(unitOfWork, pool)()
+
+  /**
+   * A pool whose first claim statement is preceded by `beforeClaim` — the moment
+   * between a replayer's candidate selection and its claim, when another
+   * replayer can change a lane.
+   */
+  function poolWithRaceBeforeClaim(beforeClaim: () => Promise<unknown>): PostgresResource {
+    let raced = false
+    return new Proxy(pool, {
+      get(target, prop) {
+        if (prop === "query") {
+          return async (sql: string, params?: unknown[]) => {
+            if (!raced && sql.includes("SKIP LOCKED")) {
+              raced = true
+              await beforeClaim()
+            }
+            return target.query(sql, params)
+          }
+        }
+        const value = Reflect.get(target, prop, target)
+        return typeof value === "function" ? value.bind(target) : value
+      },
+    })
+  }
+
+  /** Overwrite a lane's head diagnostics, as another replayer's requeue would. */
+  const setHeadDiagnostics = (seqId: string, diagnostics: Record<string, unknown>) =>
+    pool.query(
+      `UPDATE ${pool.tables.deadLetters} SET diagnostics = $3
+        WHERE processing_group = $1 AND sequence_identifier = $2 AND sequence_index = 0`,
+      [GROUP, seqId, JSON.stringify(diagnostics)],
+    )
+
+  it("hands the filter each lane's head letter, with its stored diagnostics and identity", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+    await queue.enqueue(GROUP, makeLetter("s1", "b"))
+    await queue.enqueue(GROUP, makeLetter("s2", "c", new TypeError("typed")))
+
+    const seen = new Map<string, DeadLetter>()
+    await queue.process(
+      GROUP,
+      (id, head) => {
+        seen.set(id, head)
+        return false
+      },
+      keep,
+    )
+
+    expect([...seen.keys()].sort()).toEqual(["s1", "s2"])
+    const head = seen.get("s1")!
+    expect(valueOf(head)).toBe("a")
+    expect(head.sequenceIdentifier).toBe("s1")
+    expect(head.diagnostics["position"]).toBe(0)
+    expect(typeof head.diagnostics["__dlqId"]).toBe("string")
+    expect(seen.get("s2")!.cause.name).toBe("TypeError")
+    // Looking is not claiming.
+    expect(await leaseOf("s1")).toBeNull()
+  })
+
+  it("re-checks the filter on the head as it is after the claim, and takes the next lane", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await queue.enqueue(GROUP, makeLetter("s2", "b"))
+
+    // Between selection and claim another replayer requeues s1's head, and the
+    // requeue makes it not eligible.
+    const racing = postgresDeadLetterQueue(
+      poolWithRaceBeforeClaim(() => setHeadDiagnostics("s1", { position: 0, skip: true })),
+    )
+    const checks: Array<[string, boolean]> = []
+    const seen: string[] = []
+    const handled = await racing.process(
+      GROUP,
+      (id, head) => {
+        const eligible = head.diagnostics["skip"] !== true
+        checks.push([id, eligible])
+        return eligible
+      },
+      async (letter) => {
+        seen.push(valueOf(letter))
+        return { shouldEnqueue: false }
+      },
+    )
+
+    expect(handled).toBe(true)
+    expect(seen).toEqual(["b"])
+    // Selection saw s1 as eligible; the check after the claim saw it was not.
+    expect(checks).toContainEqual(["s1", true])
+    expect(checks).toContainEqual(["s1", false])
+    // s1's lease went back, and its letter is still parked.
+    expect(await leaseOf("s1")).toBeNull()
+    expect(await queue.contains(GROUP, "s1")).toBe(true)
+    expect(await queue.contains(GROUP, "s2")).toBe(false)
+  })
+
+  it("returns false, with the lease released, when no lane passes the re-check", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+
+    const racing = postgresDeadLetterQueue(
+      poolWithRaceBeforeClaim(() => setHeadDiagnostics("s1", { position: 0, skip: true })),
+    )
+    let called = 0
+    const handled = await racing.process(
+      GROUP,
+      (_id, head) => head.diagnostics["skip"] !== true,
+      async () => {
+        called++
+        return { shouldEnqueue: false }
+      },
+    )
+
+    expect(handled).toBe(false)
+    expect(called).toBe(0)
+    expect(await leaseOf("s1")).toBeNull()
+    expect(await queue.size(GROUP)).toBe(1)
+  })
+
+  it("releases the claim when the filter throws on the re-check", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+
+    let calls = 0
+    await assert.rejects(
+      queue.process(
+        GROUP,
+        () => {
+          if (++calls === 2) throw new Error("filter broke")
+          return true
+        },
+        keep,
+      ),
+      /filter broke/,
+    )
+
+    expect(await leaseOf("s1")).toBeNull()
+  })
+
+  describe("under deadLetterBackoff", () => {
+    it("round-trips backoff through a failing process, then skips the lane until retryNow", async () => {
+      const backoff = deadLetterBackoff(queue, () => 60_000)
+      const before = Date.now()
+      await backoff.enqueue(GROUP, makeLetter("s1", "a"))
+
+      const parked = (await backoff.deadLetterSequence(GROUP, "s1"))[0]!
+      const stamped = parked.diagnostics["backoff"] as { attempts: number; retryAt: number }
+      expect(stamped.attempts).toBe(1)
+      expect(stamped.retryAt).toBeGreaterThanOrEqual(before + 60_000)
+      // The letter's own diagnostics survive the stamp.
+      expect(parked.diagnostics["position"]).toBe(0)
+
+      // Not due: skipped without a lease or a handler call.
+      let calls = 0
+      const task = async (): Promise<EnqueueDecision> => {
+        calls++
+        return { shouldEnqueue: true, cause: new TypeError("still failing") }
+      }
+      expect(await backoff.process(GROUP, () => true, task)).toBe(false)
+      expect(calls).toBe(0)
+      expect(await leaseOf("s1")).toBeNull()
+
+      // retryNow makes it due and keeps the count; a failing replay in the
+      // replay's unit of work then stamps attempt 2 and pushes it out again.
+      expect(await backoff.retryNow(GROUP, "s1")).toBe(true)
+      expect((await backoff.deadLetterSequence(GROUP, "s1"))[0]!.diagnostics["backoff"]).toEqual({
+        attempts: 1,
+        retryAt: null,
+      })
+      const uow = makeUow()
+      expect(await uow.execute(() => backoff.process(GROUP, () => true, task, uow))).toBe(true)
+      expect(calls).toBe(1)
+
+      const failed = (await backoff.deadLetterSequence(GROUP, "s1"))[0]!
+      const next = failed.diagnostics["backoff"] as { attempts: number; retryAt: number }
+      expect(next.attempts).toBe(2)
+      expect(next.retryAt).toBeGreaterThanOrEqual(before + 60_000)
+      expect(failed.cause.name).toBe("TypeError")
+      expect(await leaseOf("s1")).toBeNull()
+
+      // And the lane is skipped again.
+      expect(await backoff.process(GROUP, () => true, task)).toBe(false)
+      expect(calls).toBe(1)
+    })
+
+    it('round-trips "hold" and lets a due lane be replayed ahead of a held one', async () => {
+      const policy = (failure: { letter: DeadLetter }) =>
+        failure.letter.sequenceIdentifier === "held" ? ("hold" as const) : 0
+      const backoff = deadLetterBackoff(queue, policy)
+      await backoff.enqueue(GROUP, makeLetter("held", "a"))
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      await backoff.enqueue(GROUP, makeLetter("due", "b"))
+
+      expect((await backoff.deadLetterSequence(GROUP, "held"))[0]!.diagnostics["backoff"]).toEqual({
+        attempts: 1,
+        retryAt: "hold",
+      })
+
+      const seen: string[] = []
+      expect(
+        await backoff.process(GROUP, () => true, async (letter) => {
+          seen.push(valueOf(letter))
+          return { shouldEnqueue: false }
+        }),
+      ).toBe(true)
+      expect(seen).toEqual(["b"])
+      expect(await backoff.contains(GROUP, "held")).toBe(true)
+    })
   })
 })

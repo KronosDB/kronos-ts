@@ -653,6 +653,7 @@ type TokenStore<U = UnitOfWork>              // members take (processorName, …
 type SequencedDeadLetterQueue<U = UnitOfWork> // members take (processingGroup, …, uow?: U)
   // FUNCTION-TYPED FIELDS, NOT METHOD SHORTHAND. It costs nothing and keeps the
   // parameter positions checked contravariantly, the way a reader expects.
+deadLetterBackoff(queue, policy) · exponentialBackoff(options?)  // delays replay of a failing lane; never evicts
 inMemoryEventStore() · inMemorySnapshottingEventStore(next) · inMemoryTokenStore()
 inMemorySchedulingEventStore(next, { clock? }?)   // clock absent = system time
 
