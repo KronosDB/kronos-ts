@@ -144,12 +144,12 @@ export function deadLetterBackoff<U extends UnitOfWork>(
       )
     },
 
-    async process(group, sequenceFilter, processingTask, uow) {
+    async process(group, sequenceFilter, processingTask, unitOfWork) {
       return queue.process(
         group,
         (sequenceId, head) => sequenceFilter(sequenceId, head) && isDue(head),
-        async (letter) => {
-          const decision = await processingTask(letter)
+        async (letter, uow) => {
+          const decision = await processingTask(letter, uow)
           if (!decision.shouldEnqueue) return decision
           const attempts = (backoffOf(letter)?.attempts ?? 0) + 1
           const backoff = stamp({
@@ -161,7 +161,7 @@ export function deadLetterBackoff<U extends UnitOfWork>(
             diagnostics: { ...decision.diagnostics, backoff },
           } satisfies EnqueueDecision
         },
-        uow,
+        unitOfWork,
       )
     },
 

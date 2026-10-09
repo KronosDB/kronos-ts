@@ -117,17 +117,27 @@ export type SequencedDeadLetterQueue<U extends UnitOfWork = UnitOfWork> = {
    * lane's lease checks the filter against the head as it is once the lane is
    * claimed, and moves on to the next lane if the head no longer passes.
    *
-   * For each letter in the lane:
-   * - `{ shouldEnqueue: false }`: letter is evicted, continue
-   * - `{ shouldEnqueue: true }`: letter is requeued, stop
+   * EACH LETTER IS REPLAYED IN A UNIT OF WORK OF ITS OWN, minted by
+   * `unitOfWork` and handed to `processingTask`. The queue runs the task in it,
+   * and then, for a letter in the lane, head to tail:
+   * - `{ shouldEnqueue: false }`: the letter is evicted through that unit of
+   *   work, so the eviction commits with whatever the task wrote through it,
+   *   and the walk continues with the next letter.
+   * - `{ shouldEnqueue: true }`: that unit of work is ROLLED BACK, so nothing
+   *   the task wrote through it survives. The letter is then requeued, with the
+   *   decision's `cause` and `diagnostics`, outside it, and the walk stops.
+   *
+   * A task that throws, or a unit of work that fails to commit, is not a
+   * decision: the error is rethrown after the lane's leases are released, and
+   * the letters already evicted stay evicted.
    *
    * Returns true if a lane was processed.
    */
   process: (
     processingGroup: string,
     sequenceFilter: (sequenceId: string, head: DeadLetter) => boolean,
-    processingTask: (letter: DeadLetter) => Promise<EnqueueDecision>,
-    uow?: U,
+    processingTask: (letter: DeadLetter, uow: U) => Promise<EnqueueDecision>,
+    unitOfWork: () => U,
   ) => Promise<boolean>
 
   /** Total number of dead letters in the group. */
@@ -144,6 +154,18 @@ export type SequencedDeadLetterQueue<U extends UnitOfWork = UnitOfWork> = {
    * reached. Async so persistent backends can answer with a count query.
    */
   isFull: (processingGroup: string, sequenceIdentifier: string, uow?: U) => Promise<boolean>
+}
+
+/**
+ * Thrown inside a letter's unit of work when its replay failed, to make the
+ * unit of work roll back. Private: `process` catches it, and it never reaches a
+ * caller.
+ */
+class LetterFailed extends Error {
+  constructor(readonly decision: EnqueueDecision) {
+    super("dead letter replay failed")
+    this.name = "LetterFailed"
+  }
 }
 
 /**
@@ -242,7 +264,7 @@ export function inMemoryDeadLetterQueue(options?: {
       return [...lanes(group).keys()]
     },
 
-    async process(group, sequenceFilter, processingTask, uow) {
+    async process(group, sequenceFilter, processingTask, unitOfWork) {
       const sequences = lanes(group)
       // Find oldest untaken lane matching filter
       let oldestId: string | undefined
@@ -261,31 +283,42 @@ export function inMemoryDeadLetterQueue(options?: {
       }
 
       if (!oldestId) return false
+      const laneId = oldestId
 
-      processing.add(`${group}:${oldestId}`)
+      processing.add(`${group}:${laneId}`)
       try {
-        const letters = sequences.get(oldestId)
+        const letters = sequences.get(laneId)
         if (!letters) return false
 
         // Process letters in order — take a snapshot of current letters
         const snapshot = [...letters]
         for (const letter of snapshot) {
-          const decision = await processingTask(letter)
-          if (decision.shouldEnqueue) {
+          // One unit of work per letter. A failed one is dropped with whatever
+          // it buffered: nothing flushes it, and the next letter gets its own.
+          const uow = unitOfWork()
+          try {
+            await uow.execute(async () => {
+              const decision = await processingTask(letter, uow)
+              // Throwing is what rolls the unit of work back; `process` catches
+              // it below, so the decision still reaches the requeue.
+              if (decision.shouldEnqueue) throw new LetterFailed(decision)
+              // Evict once the unit of work has committed, so a letter whose
+              // commit fails is still parked.
+              uow.onAfterCommit(() => queue.evict(group, laneId, letter, uow))
+            })
+          } catch (err) {
+            if (!(err instanceof LetterFailed)) throw err
             // Requeue and stop — the lane is still blocked
-            await queue.requeue(
-              group,
-              letter,
-              { cause: decision.cause, diagnostics: decision.diagnostics },
-              uow,
-            )
+            await queue.requeue(group, letter, {
+              cause: err.decision.cause,
+              diagnostics: err.decision.diagnostics,
+            })
             return true
           }
-          await queue.evict(group, oldestId, letter, uow)
         }
         return true
       } finally {
-        processing.delete(`${group}:${oldestId}`)
+        processing.delete(`${group}:${laneId}`)
       }
     },
 

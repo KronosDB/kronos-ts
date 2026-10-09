@@ -7,7 +7,9 @@ import { inMemoryTokenStore } from "../token-store.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
 import type { StreamableEventSource, SequencedEvent } from "../source.js"
 import type { EventHandler } from "../handler.js"
-import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
+import { deadLetter, inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
+import { deadLetterReprocessor } from "../dead-letter-reprocessor.js"
+import type { UnitOfWork } from "../../unit-of-work/unit-of-work.js"
 import { sequentialPerTag } from "../sequence.js"
 
 const EVENT_NAME = qn("test", "SomethingHappened")
@@ -150,5 +152,67 @@ describe("dead-letter reprocessing", () => {
 
     expect(await dlq.size("reproc-cap")).toBe(1)
     expect(await dlq.contains("reproc-cap", "A")).toBe(true)
+  })
+
+  describe("deadLetterReprocessor", () => {
+    function parked(dlq: ReturnType<typeof inMemoryDeadLetterQueue>, ...names: string[]) {
+      return Promise.all(
+        names.map((name) =>
+          dlq.enqueue(
+            "g",
+            deadLetter(
+              {
+                kind: "event",
+                identifier: name,
+                name: EVENT_NAME,
+                version: "1.0",
+                payload: {},
+                metadata: emptyMetadata(),
+                timestamp: Date.now(),
+                tags: [],
+              },
+              new Error("parked"),
+              "lane",
+            ),
+          ),
+        ),
+      )
+    }
+
+    it("replays each letter in a unit of work of its own, rolling the failed one back", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      await parked(dlq, "A", "B", "C")
+      const minted: UnitOfWork[] = []
+      const factory = () => {
+        const uow = unitOfWork()
+        minted.push(uow)
+        return uow
+      }
+      const replayed: Array<{ id: string; uow: UnitOfWork }> = []
+      const rolledBack: string[] = []
+
+      const reprocessor = deadLetterReprocessor({
+        queue: dlq,
+        processingGroup: "g",
+        unitOfWork: factory,
+        replay: async (letter, uow) => {
+          const id = letter.message.identifier
+          replayed.push({ id, uow })
+          uow.onError(() => void rolledBack.push(id))
+          if (id === "B") throw new Error("B is still broken")
+        },
+      })
+
+      expect(await reprocessor.reprocess()).toBe(true)
+
+      // One unit of work per letter, each the one the replay was handed; the
+      // reprocessor opened none of its own around the walk.
+      expect(minted.length).toBe(2)
+      expect(replayed.map((r) => r.uow)).toEqual(minted)
+      expect(rolledBack).toEqual(["B"])
+      const lane = await dlq.deadLetterSequence("g", "lane")
+      expect(lane.map((l) => l.message.identifier)).toEqual(["B", "C"])
+      expect(lane[0]!.cause.message).toBe("B is still broken")
+    })
   })
 })

@@ -1123,7 +1123,11 @@ rather than a default.
 Absent a queue, a handler failure propagates and the batch retries.
 `batchSize` (default 1) is how many events share one unit of work.
 
-A parked lane is replayed whenever something calls `reprocessDeadLetters`.
+A parked lane is replayed whenever something calls `reprocessDeadLetters`. The
+lane is walked head to tail with a unit of work per letter: a letter that
+replays is evicted in the same transaction as its handlers' writes, and the
+first that fails has its unit of work rolled back, is requeued and stops the
+walk.
 `deadLetterBackoff` wraps a queue so a lane that keeps failing is skipped until
 its delay has passed. It only delays: nothing is evicted however many times a
 letter fails, because giving up on a letter is an operator's decision.
