@@ -10,12 +10,21 @@ import {
   DeadLetterQueueOverflowError,
   deadLetter,
   emptyMetadata,
+  generateIdentifier,
   qn,
   unitOfWork,
 } from "@kronos-ts/core"
-import type { DeadLetter, SequencedDeadLetterQueue } from "@kronos-ts/core"
+import type {
+  DeadLetter,
+  EnqueueDecision,
+  EventMessage,
+  SequencedDeadLetterQueue,
+  SequencedEvent,
+} from "@kronos-ts/core"
+import type { PostgresAdapterTransaction } from "../adapter.js"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { postgresDeadLetterQueue } from "../postgres-dead-letter-queue.js"
+import { postgresEventStore } from "../postgres-event-store.js"
 import { postgresTransaction, postgresUnitOfWork } from "../postgres-transaction.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
 
@@ -206,5 +215,352 @@ describe("postgresDeadLetterQueue", () => {
     })
 
     expect(await queue.size(GROUP)).toBe(1)
+  })
+})
+
+// ── process(): the lease and the replay transaction ──────────────────────────
+
+type Deferred = { promise: Promise<void>; resolve: () => void }
+
+function deferred(): Deferred {
+  let resolve!: () => void
+  const promise = new Promise<void>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
+
+const keep = async (): Promise<EnqueueDecision> => ({ shouldEnqueue: false })
+
+/** The xid the transaction has been given, or null while it has written nothing. */
+async function assignedXid(tx: PostgresAdapterTransaction): Promise<string | null> {
+  const rows = await tx.query<{ xid: string | null }>(
+    "SELECT pg_current_xact_id_if_assigned()::text AS xid",
+  )
+  return rows[0]!.xid
+}
+
+/** The lease on the head letter of a lane, as committed. */
+async function leaseOf(seqId: string): Promise<string | null> {
+  const rows = await pool.query<{ processing_started: string | null }>(
+    `SELECT processing_started FROM ${pool.tables.deadLetters}
+      WHERE processing_group = $1 AND sequence_identifier = $2
+      ORDER BY sequence_index ASC LIMIT 1`,
+    [GROUP, seqId],
+  )
+  return rows[0]!.processing_started
+}
+
+/** The next event a tracking stream delivers, awaited through its callback. */
+function nextEvent(stream: {
+  next(): SequencedEvent | undefined
+  setCallback(callback: () => void): void
+}): Promise<SequencedEvent> {
+  return new Promise((resolve) => {
+    const take = () => {
+      const event = stream.next()
+      if (event !== undefined) resolve(event)
+    }
+    stream.setCallback(take)
+    take()
+  })
+}
+
+describe("postgresDeadLetterQueue.process() lease", () => {
+  // `pool` exists only once beforeAll has run, so the factory is built per use.
+  const makeUow = () => postgresUnitOfWork(unitOfWork, pool)()
+
+  it("gives the replay transaction no xid before the handler writes", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+
+    const uow = makeUow()
+    let xid: string | null | undefined
+    await uow.execute(() =>
+      queue.process(
+        GROUP,
+        () => true,
+        async () => {
+          xid = await assignedXid(await postgresTransaction(uow))
+          return { shouldEnqueue: false }
+        },
+        uow,
+      ),
+    )
+
+    expect(xid).toBeNull()
+    expect(await queue.size(GROUP)).toBe(0)
+  })
+
+  it("lets an event appended during a replay reach a tracking stream", async () => {
+    // The replay's transaction takes no xid while a handler runs, so it cannot
+    // hold back the event store's gap-free tail.
+    await pool.query(`TRUNCATE TABLE ${pool.tables.events} RESTART IDENTITY`)
+    const store = postgresEventStore(pool)
+    const stream = store.open({ position: 0n })
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+
+    const entered = deferred()
+    const hold = deferred()
+    const uow = makeUow()
+    const replay = uow.execute(() =>
+      queue.process(
+        GROUP,
+        () => true,
+        async () => {
+          entered.resolve()
+          await hold.promise
+          return { shouldEnqueue: false }
+        },
+        uow,
+      ),
+    )
+    try {
+      await entered.promise
+      await store.append([
+        {
+          identifier: generateIdentifier(),
+          name: EVENT_NAME,
+          version: "1.0",
+          payload: {},
+          metadata: emptyMetadata(),
+          timestamp: Date.now(),
+          tags: [],
+        } as unknown as EventMessage,
+      ])
+      const event = await nextEvent(stream)
+      expect(event.sequence).toBe(1n)
+    } finally {
+      hold.resolve()
+      stream.close()
+      await replay
+    }
+  }, 15_000)
+
+  it("lets one replayer take a lane and sends a concurrent one away without waiting", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+
+    const entered = deferred()
+    const hold = deferred()
+    const seen: string[] = []
+    const first = makeUow()
+    const firstPass = first.execute(() =>
+      queue.process(
+        GROUP,
+        () => true,
+        async (letter) => {
+          seen.push(`first:${valueOf(letter)}`)
+          entered.resolve()
+          await hold.promise
+          return { shouldEnqueue: false }
+        },
+        first,
+      ),
+    )
+    try {
+      await entered.promise
+      // The claim is committed: visible to everyone while the replay is open.
+      expect(await leaseOf("s1")).not.toBeNull()
+
+      const second = makeUow()
+      const handled = await second.execute(() =>
+        queue.process(
+          GROUP,
+          () => true,
+          async (letter) => {
+            seen.push(`second:${valueOf(letter)}`)
+            return { shouldEnqueue: false }
+          },
+          second,
+        ),
+      )
+      expect(handled).toBe(false)
+    } finally {
+      hold.resolve()
+    }
+
+    expect(await firstPass).toBe(true)
+    expect(seen).toEqual(["first:a"])
+    expect(await queue.size(GROUP)).toBe(0)
+  }, 15_000)
+
+  it("skips a lane under a live lease and claims it once the lease is older than claimDurationMs", async () => {
+    const leased = postgresDeadLetterQueue(pool, { claimDurationMs: 60_000 })
+    await leased.enqueue(GROUP, makeLetter("s1", "a"))
+    const setLease = (value: string) =>
+      pool.query(`UPDATE ${pool.tables.deadLetters} SET processing_started = $1`, [value])
+    const seen: string[] = []
+    const task = async (letter: DeadLetter): Promise<EnqueueDecision> => {
+      seen.push(valueOf(letter))
+      return { shouldEnqueue: false }
+    }
+
+    const recent = String(Date.now() - 1_000)
+    await setLease(recent)
+    expect(await leased.process(GROUP, () => true, task)).toBe(false)
+    expect(seen).toEqual([])
+    expect(await leaseOf("s1")).toBe(recent)
+
+    await setLease(String(Date.now() - 120_000))
+    expect(await leased.process(GROUP, () => true, task)).toBe(true)
+    expect(seen).toEqual(["a"])
+    expect(await leased.size(GROUP)).toBe(0)
+  })
+
+  it("moves on to the next lane when the oldest one is under a live lease", async () => {
+    await queue.enqueue(GROUP, makeLetter("old", "a"))
+    await queue.enqueue(GROUP, makeLetter("new", "b"))
+    await pool.query(
+      `UPDATE ${pool.tables.deadLetters} SET processing_started = $1 WHERE sequence_identifier = 'old'`,
+      [String(Date.now())],
+    )
+
+    const seen: string[] = []
+    await queue.process(GROUP, () => true, async (letter) => {
+      seen.push(valueOf(letter))
+      return { shouldEnqueue: false }
+    })
+
+    expect(seen).toEqual(["b"])
+    expect(await queue.contains(GROUP, "old")).toBe(true)
+  })
+
+  it("applies evictions only after every handler in the walk has run", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+    await queue.enqueue(GROUP, makeLetter("s1", "b"))
+    await queue.enqueue(GROUP, makeLetter("s1", "c"))
+
+    const uow = makeUow()
+    const xids: Array<string | null> = []
+    const seen: string[] = []
+    await uow.execute(() =>
+      queue.process(
+        GROUP,
+        () => true,
+        async (letter) => {
+          // Letters 2 and 3 run after letter 1 succeeded; if its eviction had
+          // been written already the transaction would hold an xid by now.
+          xids.push(await assignedXid(await postgresTransaction(uow)))
+          seen.push(valueOf(letter))
+          return { shouldEnqueue: false }
+        },
+        uow,
+      ),
+    )
+
+    expect(seen).toEqual(["a", "b", "c"])
+    expect(xids).toEqual([null, null, null])
+    expect(await queue.size(GROUP)).toBe(0)
+  })
+
+  it("evicts the letters that succeeded, requeues the one that failed and releases the lease", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+    await queue.enqueue(GROUP, makeLetter("s1", "b"))
+    await queue.enqueue(GROUP, makeLetter("s1", "c"))
+
+    const uow = makeUow()
+    await uow.execute(() =>
+      queue.process(
+        GROUP,
+        () => true,
+        async (letter) =>
+          valueOf(letter) === "b"
+            ? { shouldEnqueue: true, cause: new TypeError("still failing") }
+            : { shouldEnqueue: false },
+        uow,
+      ),
+    )
+
+    const rest = await queue.deadLetterSequence(GROUP, "s1")
+    expect(rest.map(valueOf)).toEqual(["b", "c"])
+    expect(rest[0]!.cause.message).toBe("still failing")
+    expect(await leaseOf("s1")).toBeNull()
+  })
+
+  it("releases the lease when the first letter fails", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+
+    const uow = makeUow()
+    await uow.execute(() =>
+      queue.process(
+        GROUP,
+        () => true,
+        async () => ({ shouldEnqueue: true, cause: new Error("nope") }),
+        uow,
+      ),
+    )
+
+    expect(await leaseOf("s1")).toBeNull()
+    expect((await queue.deadLetterSequence(GROUP, "s1")).map(valueOf)).toEqual(["a"])
+  })
+
+  it("releases the lease when the replay's unit of work rejects, and rolls the walk back", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+    await queue.enqueue(GROUP, makeLetter("s1", "b"))
+
+    const uow = makeUow()
+    await assert.rejects(
+      uow.execute(() =>
+        queue.process(
+          GROUP,
+          () => true,
+          async (letter) => {
+            if (valueOf(letter) === "b") throw new Error("handler broke")
+            return { shouldEnqueue: false }
+          },
+          uow,
+        ),
+      ),
+      /handler broke/,
+    )
+
+    expect(await queue.size(GROUP)).toBe(2)
+    expect(await leaseOf("s1")).toBeNull()
+    // Free to be claimed again straight away, not after claimDurationMs.
+    const seen: string[] = []
+    await queue.process(GROUP, () => true, async (letter) => {
+      seen.push(valueOf(letter))
+      return { shouldEnqueue: false }
+    })
+    expect(seen).toEqual(["a", "b"])
+  })
+
+  it("releases the lease when the unit of work fails after the walk, at commit", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+
+    const uow = makeUow()
+    uow.onPrepareCommit(() => {
+      throw new Error("flush failed")
+    })
+    await assert.rejects(
+      uow.execute(() => queue.process(GROUP, () => true, keep, uow)),
+      /flush failed/,
+    )
+
+    expect(await queue.size(GROUP)).toBe(1)
+    expect(await leaseOf("s1")).toBeNull()
+  })
+
+  it("leaves a lease another replayer took alone when releasing", async () => {
+    await queue.enqueue(GROUP, makeLetter("s1", "a"))
+
+    const uow = makeUow()
+    const theirs = String(Date.now() + 5_000)
+    await assert.rejects(
+      uow.execute(() =>
+        queue.process(
+          GROUP,
+          () => true,
+          async () => {
+            // Ours expired mid-replay and another replayer claimed the lane.
+            await pool.query(`UPDATE ${pool.tables.deadLetters} SET processing_started = $1`, [theirs])
+            throw new Error("handler broke")
+          },
+          uow,
+        ),
+      ),
+      /handler broke/,
+    )
+
+    expect(await leaseOf("s1")).toBe(theirs)
   })
 })
