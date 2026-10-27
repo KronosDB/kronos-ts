@@ -14,12 +14,14 @@
  *   filters      the handlers' types sent to the server
  *   batch        + a replay batch of --replay-batch
  *   bulk         + the projection's writes buffered and flushed once per batch
+ *   repository   + the same, through a repository that reads a row on a miss and saves whole rows
  */
 import { eventProcessor, jsonSerializer, kronos, localCommandBus, localQueryBus, unitOfWork, type EventStore } from "@kronos-ts/core"
 import { kronosDbConnection, kronosDbEventStore } from "@kronos-ts/kronosdb"
 import { expected } from "./domain.js"
 import { drizzleProjection, memoryProjection, type Projection } from "./projections.js"
 import { bulkDrizzleProjection } from "./bulk.js"
+import { repositoryProjection } from "./repository.js"
 
 function arg(name: string, fallback?: string): string {
   const at = process.argv.indexOf(`--${name}`)
@@ -54,12 +56,13 @@ const everything: EventStore = {
   open: (condition) => base.open({ position: condition.position, ...(condition.token ? { token: condition.token } : {}) }),
 }
 
-const config: Record<string, { filter: boolean; batchSize: number; replayBatchSize: number; bulk: boolean }> = {
-  today: { filter: false, batchSize: 1, replayBatchSize: 1, bulk: false },
-  "today-tuned": { filter: false, batchSize: 100, replayBatchSize: 100, bulk: false },
-  filters: { filter: true, batchSize: 1, replayBatchSize: 1, bulk: false },
-  batch: { filter: true, batchSize: 1, replayBatchSize: replayBatch, bulk: false },
-  bulk: { filter: true, batchSize: 1, replayBatchSize: replayBatch, bulk: true },
+const config: Record<string, { filter: boolean; batchSize: number; replayBatchSize: number; writes: "each" | "bulk" | "repository" }> = {
+  today: { filter: false, batchSize: 1, replayBatchSize: 1, writes: "each" },
+  "today-tuned": { filter: false, batchSize: 100, replayBatchSize: 100, writes: "each" },
+  filters: { filter: true, batchSize: 1, replayBatchSize: 1, writes: "each" },
+  batch: { filter: true, batchSize: 1, replayBatchSize: replayBatch, writes: "each" },
+  bulk: { filter: true, batchSize: 1, replayBatchSize: replayBatch, writes: "bulk" },
+  repository: { filter: true, batchSize: 1, replayBatchSize: replayBatch, writes: "repository" },
 }
 const stageConfig = config[stage]
 if (!stageConfig) throw new Error(`unknown stage ${stage}`)
@@ -67,9 +70,11 @@ if (!stageConfig) throw new Error(`unknown stage ${stage}`)
 const projection: Projection =
   projectionName === "memory"
     ? memoryProjection(all)
-    : stageConfig.bulk
+    : stageConfig.writes === "bulk"
       ? await bulkDrizzleProjection(pgUrl, uniqueKeys)
-      : await drizzleProjection(pgUrl, uniqueKeys)
+      : stageConfig.writes === "repository"
+        ? await repositoryProjection(pgUrl, uniqueKeys)
+        : await drizzleProjection(pgUrl, uniqueKeys)
 
 const name = `replay-${stage}-${Date.now().toString(36)}`
 const processor = eventProcessor({
