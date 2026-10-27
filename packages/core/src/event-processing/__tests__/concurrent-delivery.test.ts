@@ -87,12 +87,12 @@ function recordingHandler(log: string[], failures = new Set<string>()): EventHan
 }
 
 const base = (name: string, events: SequencedEvent[], uow: () => ReturnType<typeof unitOfWork> = unitOfWork) =>
-  eventProcessor({
+  eventProcessor(
     name,
-    eventStore: createInMemoryEventSource(events) as unknown as EventStore,
-    tokenStore: inMemoryTokenStore(),
-    unitOfWork: uow,
-  })
+    createInMemoryEventSource(events) as unknown as EventStore,
+    inMemoryTokenStore(),
+    uow,
+  )
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -211,6 +211,6 @@ describe("batched", () => {
   it("takes a whole number of events, at least one", () => {
     expect(() => batched(base("no-batch", []), 0)).toThrow(/at least 1/)
     expect(() => batched(base("half-batch", []), 1.5)).toThrow(/at least 1/)
-    expect(batched(base("thousand", []), 1000)).toMatchObject({ batchSize: 1000, replayBatchSize: 1000 })
+    expect(batched(base("thousand", []), 1000)).toMatchObject({ batchSize: 1000 })
   })
 })

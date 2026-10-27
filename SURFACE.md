@@ -577,16 +577,11 @@ ctx.source(query: EventQuery): Promise<ReadonlyArray<EventMessage>>
 // `correlatingHandler` is the mechanism, and this parameter is where it injects.
 
 // ── event delivery: tracked only; the processor is a value ────────────────
-type Sequence = (event: EventMessage) => string    // TOTAL — (e) => e.identifier = own lane = no constraint
+type Sequence = (event: EventMessage) => string    // TOTAL — (e) => e.identifier = own bucket = no constraint
 sequentialPerTag(key: string): Sequence            // one-line transparent helper
-eventProcessor<U extends UnitOfWork = UnitOfWork, L extends EventProcessorLane<U> = …>({
-  name: string,
-  eventStore: EventStore, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive
-  sequence?: Sequence,                             // absent = global stream order (projection-safe)
-  deadLetterQueue?: SequencedDeadLetterQueue<U>,   // absent = propagate & retry
-  batchSize?: number,                              // events per unit of work; default 1
-  replayBatchSize?: number,                        // …while BEHIND the head; default 1000, never below batchSize
-}): EventProcessor<U>          // `U` threads to the event handler's ctx.unitOfWork
+eventProcessor<U extends UnitOfWork = UnitOfWork>(
+  name: string, eventStore: EventStore, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive, positional
+): EventProcessor<U>          // `U` is read off the factory and threads to the event handler's ctx.unitOfWork
 // WHAT A PROCESSOR ASKS OF ITS LOG. It opens its stream with the union of its
 // handlers' event types as the query, and a store that can filter (KronosDB on the
 // server, Postgres in its WHERE clause) sends nothing else. The query is a
@@ -597,30 +592,29 @@ eventProcessor<U extends UnitOfWork = UnitOfWork, L extends EventProcessorLane<U
 // token when it has nothing to do — otherwise a processor of rare events sits at
 // its last match, a restart reads the quiet stretch again, a monitor sees it
 // behind forever, and a replay whose last events are quiet never ends.
-// BEHIND THE HEAD (replaying, or short of where the log ended when it started, or
-// its last batch left events waiting) a batch is up to `replayBatchSize` events;
-// at the head it is `batchSize`, and so is the retry of a failed batch until the
-// token is past the failure, so a poison event ends up alone. THE BOUND IS MEMORY:
+// UNWRAPPED, a batch is one event at the head and up to 1000 BEHIND it (replaying,
+// or short of where the log ended when it started, or its last batch left events
+// waiting); `batched(p, n)` makes it up to n in both. The retry of a failed batch is
+// one event at a time until the token is past the failure, so a poison event ends
+// up alone. THE BOUND IS MEMORY:
 // the batch is held decoded until it commits, and the stream reads ahead that far
 // (`StreamingCondition.readAhead`).
 // THE PROCESSOR IS WHERE THE COMPILER MEETS THE FACTORY AND THE STORES, and it
 // now enforces TWO things it used to discover at boot:
-//   1. A DEAD-LETTER QUEUE IMPLIES A LANE. `deadLetterQueue` without `sequence`
-//      does not compile — the demand adds a required `sequence` whose type is an
-//      anonymous ERROR/FIX record, so the compiler prints the keys at the wiring
-//      site. The construction-time throw survives as ONE defensive assert, for
-//      JavaScript callers.
+//   1. A DEAD-LETTER QUEUE IMPLIES BUCKETS. `deadLettering(p, queue, bucketOf)`
+//      takes them as an argument, so a queue without them cannot be written. (It
+//      used to be a demand on a config object, and before that a throw at boot.)
 //   2. NO MIXING PERSISTENCE FAMILIES — enforced by the STORES, not by a type
 //      here: a token store or DLQ handed a task carrying no transaction of its
 //      own throws, naming the factory to build `unitOfWork` with. See the
 //      persistence section for why that beats the brand it replaced.
-type EventProcessorSite<U> · EventProcessorLane<U> · EventProcessorConfig<U> · SequenceDemand<C>
+type EventProcessor<U> · RunningProcessor · EventProcessorStatus
 // WHAT A PROCESSOR DOES WITH ITS BATCH, said as functions over the value. Each
 // returns a new value; the host composes them with whatever `pipe` it uses.
 batched(p, size: number): EventProcessor<U>                     // up to `size` READY events a batch, head and behind alike
 concurrent(p, bucketOf: Sequence): EventProcessor<U>            // the batch's buckets side by side; one bucket in log order
 deadLettering(p, queue: SequencedDeadLetterQueue<U>, bucketOf: Sequence): EventProcessor<U>   // park per bucket
-//   pipe(eventProcessor({ name, eventStore, tokenStore, unitOfWork }), (p) => batched(p, 1000), (p) => concurrent(p, byAccount))
+//   pipe(eventProcessor(name, eventStore, tokenStore, unitOfWork), (p) => batched(p, 1000), (p) => concurrent(p, byAccount))
 // A BUCKET IS ORDERED, BUCKETS ARE NOT. Without `concurrent` the processor hands
 // over one event at a time in log order, whatever the buckets say. With it, every
 // handler on that processor runs concurrently across buckets, so a handler touches

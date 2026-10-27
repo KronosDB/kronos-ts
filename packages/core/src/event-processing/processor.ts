@@ -55,30 +55,19 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
   /** What each batch commits in. Never defaulted — see {@link eventProcessor}. */
   readonly unitOfWork: () => U
   /**
-   * Which ordered lane each event belongs to. Absent means GLOBAL STREAM ORDER
-   * — one lane, which is what a projection wants.
+   * Events per batch — one unit of work, one token write — at the head and
+   * behind it. Set by {@link batched}. Absent: one at the head, and up to
+   * 1000 while the processor is BEHIND (replaying after a reset, or catching up
+   * on a backlog), where the per-batch cost is what dominates.
    */
-  readonly sequence?: Sequence
-  /** Where poison pills park. Absent means propagate and retry. Keyed on `U`. */
-  readonly deadLetterQueue?: SequencedDeadLetterQueue<U>
-  /** Events per batch (one unit of work). Default: 1. */
   readonly batchSize?: number
   /**
-   * Events per batch while the processor is BEHIND — replaying after a reset,
-   * or catching up on a backlog — instead of {@link batchSize}. Default: 1000.
-   *
-   * A batch is one unit of work: one transaction, one token write. Far behind
-   * the head the per-batch cost is what dominates, and a batch only ever takes
-   * the events that are ready, so a large number costs nothing at the head. At
-   * the head the processor is "caught up" and uses `batchSize` again, and so does
-   * its retry after a failed batch, which is how a poison event ends up alone in
-   * a batch.
-   *
-   * THE BOUND IS MEMORY. The batch's events are held, decoded, until it commits,
-   * and the stream reads ahead by as many; budget this times the size of one
-   * event. A value at or below `batchSize` turns the larger batch off.
+   * Which bucket each event parks under when it fails. Set by
+   * {@link deadLettering}, together with {@link deadLetterQueue}.
    */
-  readonly replayBatchSize?: number
+  readonly sequence?: Sequence
+  /** Where a failing event parks. Absent: the batch fails and is retried. Keyed on `U`. */
+  readonly deadLetterQueue?: SequencedDeadLetterQueue<U>
   /**
    * Which bucket each event belongs to when the batch's buckets run SIDE BY
    * SIDE. Absent means one event at a time, in log order. Set by
@@ -88,16 +77,11 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
 }
 
 /**
- * Describe one event delivery.
+ * Describe one event delivery: what it is called, the log it reads, where it
+ * keeps its place, and what each batch commits in.
  *
  * ```ts
- * const balances = eventProcessor({
- *   name: "balances",
- *   eventStore, tokenStore,
- *   unitOfWork: drizzleUnitOfWork(unitOfWork, db),
- *   sequence: sequentialPerTag("accountId"),
- *   deadLetterQueue: drizzleDeadLetterQueue(db),
- * })
+ * const balances = eventProcessor("balances", eventStore, postgresTokenStore(pg), postgresUnitOfWork(unitOfWork, pg))
  *
  * kronos({ eventHandlers: projections.map((h) => ({ ...h, commandBus, queryBus, processor: balances })) })
  * ```
@@ -110,107 +94,22 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
  * did. Both surface much later as a read model nobody can explain, which is
  * why they are parameters rather than defaults.
  *
- * A DEAD-LETTER QUEUE WITHOUT A SEQUENCE DOES NOT COMPILE. Parking is a LANE
- * operation — the queue holds a failed event and everything behind it in the
- * same lane — so "which lane" is not optional once there is a queue. The honest
- * global-order answer for a projection is no queue at all (propagate and
- * retry); the honest per-entity answer is `sequentialPerTag(key)`. See
- * {@link SequenceDemand}.
+ * `U` IS READ OFF `unitOfWork`: `() => U` is the one COVARIANT mention of the
+ * task, so it is the one the checker can read an answer off, and the token
+ * store CHECKS against that answer rather than contributing to it — the
+ * factory says what the tasks are, and the store says whether it can live
+ * with that.
+ *
+ * What the processor does with its batch is said by wrapping the value:
+ * {@link batched}, {@link concurrent}, {@link deadLettering}.
  */
-/**
- * WHERE THIS DELIVERY READS, KEEPS ITS PLACE, AND COMMITS — the part of the
- * config that is not about lanes.
- *
- * `U` IS INFERRED FROM HERE, and it has to be: `unitOfWork: () => U` is the one
- * COVARIANT mention of the task in the whole config, so it is the one the
- * checker can read an answer off. `tokenStore: TokenStore<U>` then CHECKS
- * against that answer rather than contributing to it, which is exactly the
- * direction the demand wants — the factory says what the tasks are, and the
- * stores say whether they can live with that.
- */
-export type EventProcessorSite<U extends UnitOfWork = UnitOfWork> = {
-  name: string
-  eventStore: EventStore
-  tokenStore: TokenStore<U>
-  unitOfWork: () => U
-  batchSize?: number
-  replayBatchSize?: number
-}
-
-/**
- * THE LANE HALF of the config — the two fields the demand below relates.
- *
- * Split out because it is the part {@link eventProcessor} infers a SECOND type
- * parameter from. Keeping `U` out of the inference for that parameter is what
- * lets the two demands coexist: the family check reads the task off the site,
- * the lane check reads the queue off the literal, and neither steals the
- * other's inference.
- */
-export type EventProcessorLane<U extends UnitOfWork = UnitOfWork> = {
-  sequence?: Sequence
-  deadLetterQueue?: SequencedDeadLetterQueue<U>
-}
-
-/** The whole config, for anybody who wants to name it. */
-export type EventProcessorConfig<U extends UnitOfWork = UnitOfWork> =
-  EventProcessorSite<U> & EventProcessorLane<U>
-
-/**
- * THE DEMAND: a queue implies a lane.
- *
- * Branch on the config the caller actually wrote. A `deadLetterQueue` present
- * and a `sequence` absent adds a REQUIRED property the literal does not have,
- * so the compiler reports a missing member whose keys ARE the message — the
- * same trick the correlation demand uses, and for the same reason: give the object
- * type a name and TypeScript prints the NAME, which tells a reader nothing.
- * Left anonymous, it has no shorthand to reach for and prints the structure.
- *
- * The wording is GENERAL, because core is certain about the rule and about
- * nothing else — `sequentialPerTag` is core's own export, so naming it is not
- * core guessing at somebody's stack.
- *
- * This replaces a `throw` at construction time. The old one was honest but
- * late: it fired when the composition root ran, which in a deployed process is
- * boot and in a test suite is whenever that file is first imported.
- */
-export type SequenceDemand<C> = C extends { deadLetterQueue: SequencedDeadLetterQueue<any> }
-  ? C extends { sequence: Sequence }
-    ? unknown
-    : {
-        readonly sequence: {
-          readonly ERROR: "this processor has a deadLetterQueue but no sequence, and parking is a lane operation"
-          readonly FIX: "add `sequence: sequentialPerTag(\"<tagKey>\")`, or drop the queue and let failures propagate and retry"
-        }
-      }
-  : unknown
-
-export function eventProcessor<
-  U extends UnitOfWork = UnitOfWork,
-  L extends EventProcessorLane<U> = EventProcessorLane<U>,
->(config: EventProcessorSite<U> & L & SequenceDemand<L>): EventProcessor<U> {
-  // THE DEFENSIVE ASSERT. A caller with a compiler cannot reach it — the
-  // combination does not typecheck — so this is the JavaScript path, kept for
-  // the same reason `repository.ts` keeps its one line: a named mistake beats a
-  // processor that quietly parks nothing.
-  if (config.deadLetterQueue && !config.sequence) {
-    throw new Error(
-      `eventProcessor("${config.name}"): a deadLetterQueue was given without a sequence. ` +
-        `Parking is a lane operation — the queue parks a failed event AND everything behind ` +
-        `it in the same lane — so there is no lane-free way to park. Add ` +
-        `\`sequence: sequentialPerTag("<tagKey>")\`, or drop the queue and let failures ` +
-        `propagate and retry.`,
-    )
-  }
-  return {
-    name: config.name,
-    eventStore: config.eventStore,
-    tokenStore: config.tokenStore,
-    unitOfWork: config.unitOfWork,
-    ...(config.sequence !== undefined ? { sequence: config.sequence } : {}),
-    ...(config.deadLetterQueue !== undefined ? { deadLetterQueue: config.deadLetterQueue } : {}),
-    ...(config.batchSize !== undefined ? { batchSize: config.batchSize } : {}),
-    ...(config.replayBatchSize !== undefined ? { replayBatchSize: config.replayBatchSize } : {}),
-  }
+export function eventProcessor<U extends UnitOfWork = UnitOfWork>(
+  name: string,
+  eventStore: EventStore,
+  tokenStore: TokenStore<NoInfer<U>>,
+  unitOfWork: () => U,
+): EventProcessor<U> {
+  return { name, eventStore, tokenStore, unitOfWork }
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +118,7 @@ export function eventProcessor<
 // compose in any order through whatever `pipe` the host uses:
 //
 //   pipe(
-//     eventProcessor({ name, eventStore, tokenStore, unitOfWork }),
+//     eventProcessor(name, eventStore, tokenStore, unitOfWork),
 //     (p) => batched(p, 1000),
 //     (p) => concurrent(p, byAccount),
 //   )
@@ -239,7 +138,7 @@ export function batched<U extends UnitOfWork>(processor: EventProcessor<U>, size
   if (!Number.isInteger(size) || size < 1) {
     throw new Error(`batched("${processor.name}"): a batch is a whole number of events, at least 1 — got ${size}`)
   }
-  return { ...processor, batchSize: size, replayBatchSize: size }
+  return { ...processor, batchSize: size }
 }
 
 /**

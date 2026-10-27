@@ -5,6 +5,7 @@ import {
   type EventMessage,
   event,
   eventHandler,
+  batched,
   eventProcessor,
   inMemoryTokenStore,
   kronos,
@@ -513,13 +514,9 @@ async function catchupPass(
         ...handler,
         commandBus: localCommandBus(unitOfWork),
         queryBus: localQueryBus(unitOfWork),
-        processor: eventProcessor({
-          name,
-          eventStore: store,
-          tokenStore: inMemoryTokenStore(),
-          unitOfWork,
-          ...(batchSize === undefined ? {} : { batchSize }),
-        }),
+        processor: ((p) => (batchSize === undefined ? p : batched(p, batchSize)))(
+          eventProcessor(name, store, inMemoryTokenStore(), unitOfWork),
+        ),
       },
     ],
   })
@@ -611,13 +608,7 @@ async function runLive(harness: BackendHarness, options: BenchmarkOptions): Prom
         ...handler,
         commandBus: localCommandBus(unitOfWork),
         queryBus: localQueryBus(unitOfWork),
-        processor: eventProcessor({
-          name: liveName,
-          eventStore: harness.store,
-          tokenStore: inMemoryTokenStore(),
-          unitOfWork,
-          batchSize: 100,
-        }),
+        processor: batched(eventProcessor(liveName, harness.store, inMemoryTokenStore(), unitOfWork), 100),
       },
     ],
   })

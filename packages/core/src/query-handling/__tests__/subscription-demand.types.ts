@@ -33,7 +33,7 @@ const eventStore = inMemoryEventStore()
 const commandBus = localCommandBus(unitOfWork)
 const capableBus = localQueryBus(unitOfWork)       // natively subscription-capable
 declare const plainBus: QueryBus                   // the two-member seam, nothing more
-const processor = eventProcessor({ name: "probe-sub", eventStore, tokenStore: inMemoryTokenStore(), unitOfWork })
+const processor = eventProcessor("probe-sub", eventStore, inMemoryTokenStore(), unitOfWork)
 
 // ---------------------------------------------------------------------------
 // (a) THE UNASKED QUADRANT — an unannotated handler has NO emitUpdate: the

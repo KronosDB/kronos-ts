@@ -98,8 +98,7 @@ export const billingSlice = slice({
   eventHandlers: [
     {
       handler: projectCharged,
-      processor: (eventStore, tokenStore, uow) =>
-        eventProcessor({ name: "billing-balances", eventStore, tokenStore, unitOfWork: uow }),
+      processor: (eventStore, tokenStore, uow) => eventProcessor("billing-balances", eventStore, tokenStore, uow),
     },
   ],
 })
@@ -114,12 +113,11 @@ export const settlementSlice = slice({
     {
       handler: settleCharge,
       processor: (eventStore, tokenStore, uow, deadLetterQueue) =>
-        eventProcessor({
-          name: "billing-settlement",
-          eventStore, tokenStore, unitOfWork: uow,
-          sequence: sequentialPerTag("accountId"),
+        deadLettering(
+          eventProcessor("billing-settlement", eventStore, tokenStore, uow),
           deadLetterQueue,
-        }),
+          sequentialPerTag("accountId"),
+        ),
     },
   ],
 })
@@ -127,7 +125,7 @@ export const settlementSlice = slice({
 
 The parameter list *is* the semantic declaration. A reader sees at a glance that
 the projection takes no queue and therefore runs in global order, and that the
-automation lanes per account. Nothing checks a flag at boot.
+automation parks per account. Nothing checks a flag at boot.
 
 ## 2. A module is your grouping function
 

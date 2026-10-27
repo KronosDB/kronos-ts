@@ -20,8 +20,8 @@ export type Sequence = (event: EventMessage) => string
  * One line, written out rather than hidden, so the fallback is visible:
  *
  * ```ts
- * eventProcessor({ name: "balances", eventStore, tokenStore, unitOfWork,
- *                  sequence: sequentialPerTag("accountId"), deadLetterQueue })
+ * const byAccount = sequentialPerTag("accountId")
+ * deadLettering(eventProcessor("balances", eventStore, tokenStore, unitOfWork), deadLetterQueue, byAccount)
  * ```
  */
 export function sequentialPerTag(key: string): Sequence {

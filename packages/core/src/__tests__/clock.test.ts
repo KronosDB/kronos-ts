@@ -134,14 +134,14 @@ describe("the clock seam", () => {
       await ctx.send(OpenTicket, { ticketId: `${payload.ticketId}-echo` })
     })
 
-    const processor = eventProcessor({
-      name: "clock-echo",
+    const processor = eventProcessor(
+      "clock-echo",
       eventStore,
       tokenStore,
       // The BATCH's clock — deliberately a different instant from the command
       // bus's, so what stamps `ctx.send` is unambiguous.
-      unitOfWork: () => unitOfWork(() => 555),
-    })
+      () => unitOfWork(() => 555),
+    )
 
     const app = kronos({
       eventHandlers: [{ ...onOpened, commandBus, queryBus, processor }],

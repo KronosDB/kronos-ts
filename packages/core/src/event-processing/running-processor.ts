@@ -29,7 +29,7 @@ import { eventHandlerContext, type EventHandlerContext } from "./context.js"
 /** The longest wait between retries of a failed batch (ms). */
 const MAX_RETRY_DELAY_MS = 60_000
 
-/** Events per batch while the processor is behind, unless it says otherwise. */
+/** Events per batch while the processor is behind, unless `batched` says otherwise. */
 const DEFAULT_REPLAY_BATCH_SIZE = 1000
 
 /**
@@ -85,8 +85,10 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
 ): RunningProcessor {
   const { processor, handlers } = options
   const { name, eventStore, tokenStore, unitOfWork: newUoW, deadLetterQueue, sequence, concurrent: buckets } = processor
+  // `batched(p, n)` is n at the head and behind it; unwrapped, one at the head
+  // and the larger batch only while behind. A retry is one either way.
   const batchSize = processor.batchSize ?? 1
-  const replayBatchSize = Math.max(batchSize, processor.replayBatchSize ?? DEFAULT_REPLAY_BATCH_SIZE)
+  const replayBatchSize = processor.batchSize ?? DEFAULT_REPLAY_BATCH_SIZE
   const pollingIntervalMs = options.pollingIntervalMs ?? 500
 
   const segment = 0
@@ -208,11 +210,11 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
 
       // Far behind the head, a batch is as many events as are ready, up to the
       // replay size; at the head, the normal size. A processor that just failed
-      // retries with the normal size until it is past the failure, so the event
+      // retries ONE EVENT AT A TIME until it is past the failure, so the event
       // that fails ends up alone in its batch instead of dragging a thousand
       // others through every retry.
       const behind = isReplaying(token) || (backlogEnd !== undefined && token.position() < backlogEnd)
-      const target = token.position() >= cautiousUntil && (behind || !caughtUp) ? replayBatchSize : batchSize
+      const target = token.position() < cautiousUntil ? 1 : behind || !caughtUp ? replayBatchSize : batchSize
       attemptEnd = 0n
 
       const batch: SequencedEvent[] = []

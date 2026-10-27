@@ -405,12 +405,8 @@ export {
 export { type Sequence, sequentialPerTag } from "./event-processing/sequence.js"
 export {
   type EventProcessor,
-  type EventProcessorConfig,
-  type EventProcessorSite,
-  type EventProcessorLane,
   type EventProcessorStatus,
   type RunningProcessor,
-  type SequenceDemand,
   eventProcessor,
   batched,
   concurrent,

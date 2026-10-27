@@ -43,12 +43,7 @@ const tokenStore = inMemoryTokenStore()
 
 const bareCommandBus = localCommandBus(unitOfWork)
 const bareQueryBus = localQueryBus(unitOfWork)
-const bareProcessor = eventProcessor({
-  name: "probe-bare",
-  eventStore,
-  tokenStore,
-  unitOfWork,
-})
+const bareProcessor = eventProcessor("probe-bare", eventStore, tokenStore, unitOfWork)
 
 // ---------------------------------------------------------------------------
 // (a) A wrapped handler wires against BARE infrastructure. Nothing about the

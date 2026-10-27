@@ -3,7 +3,7 @@ import { emptyMetadata, qn, qualifiedNameToString, type QualifiedName } from "..
 import { compileQuery, type EventQuery } from "../../event-sourcing/dcb-query.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
-import { eventProcessor } from "../processor.js"
+import { batched, deadLettering, eventProcessor, type EventProcessor } from "../processor.js"
 import { runEventProcessor } from "../running-processor.js"
 import { inMemoryTokenStore, type TokenStore } from "../token-store.js"
 import type { SequencedEvent, StreamingCondition } from "../source.js"
@@ -129,20 +129,14 @@ function run(config: {
   log: EventStore
   handlers: EventHandler<any>[]
   tokens?: TokenStore
-  batchSize?: number
-  replayBatchSize?: number
+  batch?: number
   withQueue?: boolean
 }) {
+  let processor: EventProcessor = eventProcessor("p", config.log, config.tokens ?? inMemoryTokenStore(), unitOfWork)
+  if (config.batch !== undefined) processor = batched(processor, config.batch)
+  if (config.withQueue) processor = deadLettering(processor, inMemoryDeadLetterQueue(), sequentialPerTag("order"))
   return runEventProcessor({
-    processor: eventProcessor({
-      name: "p",
-      eventStore: config.log,
-      tokenStore: config.tokens ?? inMemoryTokenStore(),
-      unitOfWork,
-      ...(config.batchSize !== undefined ? { batchSize: config.batchSize } : {}),
-      ...(config.replayBatchSize !== undefined ? { replayBatchSize: config.replayBatchSize } : {}),
-      ...(config.withQueue ? { sequence: sequentialPerTag("order"), deadLetterQueue: inMemoryDeadLetterQueue() } : {}),
-    } as any),
+    processor,
     handlers: config.handlers.map((definition) => ({ definition })),
     pollingIntervalMs: 5,
   })
@@ -335,10 +329,10 @@ describe("parked events and a filtered stream", () => {
 describe("the batch size", () => {
   const backlog = (n: number) => Array.from({ length: n }, (_, i) => event(Ordered, BigInt(i)))
 
-  it("is the replay size while far behind the head", async () => {
+  it("unwrapped, is 1000 while far behind the head", async () => {
     const tokens = recordingTokens()
     const log = fakeLog(backlog(2500))
-    const processor = run({ log, handlers: [handlerFor(Ordered)], tokens, batchSize: 1, replayBatchSize: 1000 })
+    const processor = run({ log, handlers: [handlerFor(Ordered)], tokens })
     await processor.start()
     await until(() => processor.position === 2500n, "the backlog")
     processor.stop()
@@ -347,9 +341,9 @@ describe("the batch size", () => {
     expect(tokens.writes).toEqual([1000n, 2000n, 2500n])
   })
 
-  it("asks the stream to read ahead as far as a replay batch", async () => {
+  it("asks the stream to read ahead as far as a batch", async () => {
     const log = fakeLog([])
-    const processor = run({ log, handlers: [handlerFor(Ordered)], replayBatchSize: 4000 })
+    const processor = run({ log, handlers: [handlerFor(Ordered)], batch: 4000 })
     await processor.start()
     await until(() => log.opened.length > 0, "the stream")
     processor.stop()
@@ -357,37 +351,41 @@ describe("the batch size", () => {
     expect(log.opened[0]!.readAhead).toBe(4000)
   })
 
-  it("falls back to the normal size at the head", async () => {
+  it("unwrapped, takes one event at the head", async () => {
     const tokens = recordingTokens()
     const log = fakeLog(backlog(10))
-    const processor = run({ log, handlers: [handlerFor(Ordered)], tokens, batchSize: 2, replayBatchSize: 100 })
+    const processor = run({ log, handlers: [handlerFor(Ordered)], tokens })
     await processor.start()
     await until(() => processor.position === 10n && processor.status().caughtUp, "the head")
     expect(tokens.writes).toEqual([10n])
 
-    // Live now: five events arrive together and are taken two at a time.
+    // Live now: five events arrive together.
     log.push(...[10n, 11n, 12n, 13n, 14n].map((n) => event(Ordered, n)))
     await until(() => processor.position === 15n, "the live events")
     processor.stop()
 
-    // The first live batch is the normal size. (What is left behind it is a
-    // backlog again, and is taken in one go.)
-    expect(tokens.writes.slice(0, 2)).toEqual([10n, 12n])
+    // The first live batch is one event. (What is left behind it is a backlog
+    // again, and is taken in one go.)
+    expect(tokens.writes.slice(0, 2)).toEqual([10n, 11n])
     expect(tokens.writes.at(-1)).toBe(15n)
   })
 
-  it("is never below the normal size, so a replay size of 1 turns the larger batch off", async () => {
+  it("batched, is the same size at the head and behind it", async () => {
     const tokens = recordingTokens()
     const log = fakeLog(backlog(6))
-    const processor = run({ log, handlers: [handlerFor(Ordered)], tokens, batchSize: 3, replayBatchSize: 1 })
+    const processor = run({ log, handlers: [handlerFor(Ordered)], tokens, batch: 3 })
     await processor.start()
-    await until(() => processor.position === 6n, "the backlog")
+    await until(() => processor.position === 6n && processor.status().caughtUp, "the backlog")
+    expect(tokens.writes).toEqual([3n, 6n])
+
+    log.push(...[6n, 7n, 8n, 9n, 10n].map((n) => event(Ordered, n)))
+    await until(() => processor.position === 11n, "the live events")
     processor.stop()
 
-    expect(tokens.writes).toEqual([3n, 6n])
+    expect(tokens.writes.slice(2)).toEqual([9n, 11n])
   })
 
-  it("goes back to the normal size to retry a failed batch, so the bad event ends up alone", async () => {
+  it("retries a failed batch one event at a time, so the bad event ends up alone", async () => {
     const tokens = recordingTokens()
     const log = fakeLog(backlog(8))
     let failedOnce = false
@@ -400,7 +398,7 @@ describe("the batch size", () => {
         }
       },
     }
-    const processor = run({ log, handlers: [handler], tokens, batchSize: 1, replayBatchSize: 100 })
+    const processor = run({ log, handlers: [handler], tokens, batch: 100 })
     const quiet = console.error
     console.error = () => {}
     try {

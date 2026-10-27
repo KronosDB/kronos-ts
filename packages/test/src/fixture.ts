@@ -75,11 +75,11 @@ export const FIXTURE_EPOCH = Date.UTC(2024, 0, 1)
  * reads from belong to the site.
  *
  * This is the slice idiom, typed: the slice closes out the semantics that are
- * its own — its durable name, its lane, whether it parks poison pills — and
+ * its own — its durable name, its buckets, whether it parks poison pills — and
  * leaves the resources as its parameter list. A shorter parameter list is fine;
  * a projection that wants global order and no queue writes
- * `(eventStore, tokenStore, unitOfWork) => eventProcessor({ ... })` and declines
- * the fourth argument by assignability.
+ * `(eventStore, tokenStore, unitOfWork) => eventProcessor("name", eventStore, tokenStore, unitOfWork)`
+ * and declines the fourth argument by assignability.
  */
 export type PartialProcessor = (
   eventStore: FixtureEventStore,
@@ -470,12 +470,7 @@ export function testFixture<O extends FixtureOptions = FixtureOptions>(
     if (store !== undefined && store !== eventStore) foreign = true
   }
 
-  const defaultProcessor = eventProcessor({
-    name: "fixture",
-    eventStore,
-    tokenStore,
-    unitOfWork: uow,
-  })
+  const defaultProcessor = eventProcessor("fixture", eventStore, tokenStore, uow)
 
   /**
    * Which log each delivery reads, by the processor's durable name.

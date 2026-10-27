@@ -179,17 +179,15 @@ function requireEventStore<E extends EventStore>(
  * Objects and functions compare by IDENTITY, because that is what they mean
  * here: two token stores are the same cursor table only if they are the same
  * object, and two `sequence` functions lane identically only if they are the
- * same function. `batchSize` compares by value because a number IS its value.
+ * same function. A batch size compares by value because a number IS its value.
  */
 function processorConflicts(a: EventProcessor<any>, b: EventProcessor<any>): string[] {
   const conflicts: string[] = []
   if (a.eventStore !== b.eventStore) conflicts.push("eventStore")
   if (a.tokenStore !== b.tokenStore) conflicts.push("tokenStore")
   if (a.unitOfWork !== b.unitOfWork) conflicts.push("unitOfWork")
-  if (a.sequence !== b.sequence) conflicts.push("sequence")
-  if (a.deadLetterQueue !== b.deadLetterQueue) conflicts.push("deadLetterQueue")
-  if ((a.batchSize ?? 1) !== (b.batchSize ?? 1)) conflicts.push("batchSize")
-  if (a.replayBatchSize !== b.replayBatchSize) conflicts.push("replayBatchSize")
+  if (a.sequence !== b.sequence || a.deadLetterQueue !== b.deadLetterQueue) conflicts.push("deadLettering")
+  if (a.batchSize !== b.batchSize) conflicts.push("batched")
   if (a.concurrent !== b.concurrent) conflicts.push("concurrent")
   return conflicts
 }
@@ -218,7 +216,7 @@ export type App = {
  * const eventStore = inMemoryEventStore()
  * const commandBus = interceptingCommandBus(localCommandBus(unitOfWork), correlation)
  * const queryBus = interceptingQueryBus(localQueryBus(unitOfWork), correlation)
- * const projection = eventProcessor({ name: "courses", eventStore, tokenStore, unitOfWork })
+ * const projection = eventProcessor("courses", eventStore, tokenStore, unitOfWork)
  *
  * const app = kronos({
  *   commandHandlers: billing.map((h) => ({ ...h, eventStore, commandBus, queryBus })),
@@ -307,7 +305,7 @@ export function kronos<
         `kronos: event handler "${label}" has no processor, so nothing would ever deliver ` +
           `to it. Attach one at the composition root, e.g. ` +
           `\`{ ...handler, commandBus, queryBus, processor }\` where \`processor\` came from ` +
-          `\`eventProcessor({ name, eventStore, tokenStore, unitOfWork })\`.`,
+          `\`eventProcessor(name, eventStore, tokenStore, unitOfWork)\`.`,
       )
     }
     const existing = processorGroups.get(processor.name)
@@ -327,7 +325,7 @@ export function kronos<
             `configure it differently — they disagree on ${conflicts.join(", ")}. A processor's ` +
             `name is its DURABLE identity (its token is stored under it), so these two would ` +
             `fight over one cursor. Entries: "${existing.firstLabel}" and "${label}". Share one ` +
-            `\`eventProcessor({ ... })\` value between them, or give them different names.`,
+            `\`eventProcessor(...)\` value between them, or give them different names.`,
         )
       }
     }

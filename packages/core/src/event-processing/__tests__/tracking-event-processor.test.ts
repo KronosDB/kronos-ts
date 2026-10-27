@@ -112,17 +112,15 @@ function runOver(config: {
   eventSource: StreamableEventSource
   eventHandlers: ReadonlyArray<EventHandler<any>>
   tokenStore?: TokenStore
-  batchSize?: number
   pollingIntervalMs?: number
 }) {
   return runEventProcessor({
-    processor: eventProcessor({
-      name: config.name ?? "test-processor",
-      eventStore: config.eventSource as unknown as EventStore,
-      tokenStore: config.tokenStore ?? inMemoryTokenStore(),
+    processor: eventProcessor(
+      config.name ?? "test-processor",
+      config.eventSource as unknown as EventStore,
+      config.tokenStore ?? inMemoryTokenStore(),
       unitOfWork,
-      ...(config.batchSize !== undefined ? { batchSize: config.batchSize } : {}),
-    }),
+    ),
     handlers: config.eventHandlers.map((definition) => ({ definition })),
     ...(config.pollingIntervalMs !== undefined
       ? { pollingIntervalMs: config.pollingIntervalMs }

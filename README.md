@@ -64,7 +64,7 @@ const getBalance = queryHandler(GetBalance, ({ payload }) => balances.get(payloa
 const eventStore = inMemoryEventStore()
 const commandBus = interceptingCommandBus(localCommandBus(unitOfWork), correlation)
 const queryBus = interceptingQueryBus(localQueryBus(unitOfWork), correlation)
-const processor = eventProcessor({ name: "balances", eventStore, tokenStore: inMemoryTokenStore(), unitOfWork })
+const processor = eventProcessor("balances", eventStore, inMemoryTokenStore(), unitOfWork)
 
 const app = kronos({
   commandHandlers: [{ ...deposit, eventStore, commandBus, queryBus }],

@@ -1048,7 +1048,7 @@ A processor is a **value** — a record you can hold, compare, and hand to as ma
 event handlers as belong to it.
 
 ```ts
-const projection = eventProcessor({ name: "course-views", eventStore, tokenStore, unitOfWork })
+const projection = eventProcessor("course-views", eventStore, tokenStore, unitOfWork)
 ```
 
 `name` is the durable identity: the tracking token is stored under it, so the
@@ -1058,52 +1058,55 @@ every restart, and a non-transactional unit of work commits the projection write
 and the token update as two unrelated effects. Both surface much later as a read
 model nobody can explain.
 
-### Sequencing is a function
+What the processor does with its batch is said by wrapping the value, and the
+wrappers compose through whatever `pipe` the host uses:
+
+```ts
+const balances = pipe(
+  eventProcessor("balances", eventStore, tokenStore, postgresUnitOfWork(unitOfWork, pg)),
+  (p) => batched(p, 1000),
+  (p) => concurrent(p, byAccount),
+  (p) => deadLettering(p, postgresDeadLetterQueue(pg), byAccount),
+)
+```
+
+### Batches
+
+Unwrapped, a processor takes one event per unit of work at the head and up to
+1000 while it is behind. `batched(p, n)` makes it up to `n` at the head and
+behind alike. A batch only ever takes the events that are ready, so at the head
+it is the one or two that just arrived. A failed batch is retried one event at a
+time until the token is past it, so a poison event ends up alone.
+
+### Buckets are a function
 
 ```ts
 type Sequence = (event: EventMessage) => string
 ```
 
-Total: every event has a lane. Events sharing a lane are processed in order.
+Total: every event has a bucket. Events sharing a bucket are processed in order.
 
-- **Absent** — global stream order, one lane. What a projection wants.
-- **`sequentialPerTag("accountId")`** — one lane per account; different accounts
-  proceed concurrently. The helper is one line, and its fallback is visible: an
-  event without that tag lanes under its own event name.
-- **`(e) => e.identifier`** — every event in a lane of its own, i.e. no ordering
-  constraint at all. "No constraint" is not a missing answer; it is a lane
+- **`sequentialPerTag("accountId")`** — one bucket per account. The helper is one
+  line, and its fallback is visible: an event without that tag goes in a bucket
+  named after its event type.
+- **`(e) => e.identifier`** — every event in a bucket of its own, i.e. no
+  ordering constraint at all. "No constraint" is not a missing answer; it is a
   function you can write down.
 
-### Dead-letter queues park lanes
+Without `concurrent`, a processor hands over one event at a time in log order,
+whatever the buckets say. `concurrent(p, bucketOf)` runs a batch's buckets side
+by side, each bucket in log order. The batch is still one unit of work: without a
+queue, a failure fails it once every bucket has settled.
 
-```ts
-const balances = eventProcessor({
-  name: "balances",
-  eventStore, tokenStore,
-  unitOfWork: postgresUnitOfWork(unitOfWork, pg),
-  sequence: sequentialPerTag("accountId"),
-  deadLetterQueue: postgresDeadLetterQueue(pg),
-})
-```
+### Dead-letter queues park buckets
 
-A queue parks the failed event **and everything behind it in the same lane** —
-that is what preserves per-entity order across a poison pill. So "which lane" is
-not optional once there is a queue, and a `deadLetterQueue` without a `sequence`
-**does not compile**:
-
-```
-Property 'sequence' is missing in type '{ name: string; eventStore: …; deadLetterQueue: … }'
-  but required in type '{ readonly sequence: {
-    readonly ERROR: "this processor has a deadLetterQueue but no sequence, and parking is a lane operation";
-    readonly FIX: "add `sequence: sequentialPerTag(\"<tagKey>\")`, or drop the queue and let failures propagate and retry";
-  }; }'.
-```
-
-The keys *are* the message, which is why the refusal is spelled inline rather than
-behind a named type: give TypeScript a name and it prints the name. This used to
-be a `throw` at construction — honest, and late, because a composition root runs at
-boot. The throw survives as one defensive assert for JavaScript callers. The honest
-global-order answer for a projection is *no queue at all*: propagate and retry.
+A queue parks the failed event **and everything behind it in the same bucket** —
+that is what preserves per-entity order across a poison pill. So
+`deadLettering(p, queue, bucketOf)` takes the buckets as an argument; there is
+no queue without them. With `concurrent`, both must be given the same function,
+or the second wrapper throws: a bucket that runs beside another cannot be parked
+behind it. The honest global-order answer for a projection is *no queue at
+all*: propagate and retry.
 
 **Never mix persistence families within one processor — and the stores enforce
 that themselves.** A token store or dead-letter queue handed a unit of work that
@@ -1121,7 +1124,6 @@ projection's transaction is the entire reason it exists — so absence is an err
 rather than a default.
 
 Absent a queue, a handler failure propagates and the batch retries.
-`batchSize` (default 1) is how many events share one unit of work.
 
 A parked lane is replayed whenever something calls `reprocessDeadLetters`. The
 lane is walked head to tail with a unit of work per letter: a letter that

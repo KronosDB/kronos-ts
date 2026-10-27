@@ -134,7 +134,7 @@ function txHooks(pg: PostgresAdapter, isolationLevel: IsolationLevel) {
  * ```ts
  * const uow = postgresUnitOfWork(unitOfWork, pg)
  * const commandBus = interceptingCommandBus(localCommandBus(uow), correlation)
- * eventProcessor({ name, eventStore, tokenStore, unitOfWork: uow })
+ * eventProcessor(name, eventStore, tokenStore, uow)
  * ```
  *
  * LAZY, unlike the ORM families' eager ones — and that is postgres's HONEST

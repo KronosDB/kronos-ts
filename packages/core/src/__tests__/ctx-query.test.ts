@@ -158,12 +158,7 @@ describe("ctx.query", () => {
         {
           ...onPlaced,
           ...buses,
-          processor: eventProcessor({
-            name: "ctx-query-quotes",
-            eventStore: orderingLog,
-            tokenStore: inMemoryTokenStore(),
-            unitOfWork,
-          }),
+          processor: eventProcessor("ctx-query-quotes", orderingLog, inMemoryTokenStore(), unitOfWork),
         },
       ],
     })
