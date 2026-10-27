@@ -8,6 +8,7 @@ const suites = [
   "packages/axon-server/src/__tests__/axon-server.integration.test.ts",
   "integrationtests/src/__tests__/e2e-kronosdb.integration.test.ts",
   "integrationtests/src/__tests__/bus-topology-kronosdb.integration.test.ts",
+  "integrationtests/src/__tests__/kronosdb-native-messaging.integration.test.ts",
   "integrationtests/src/__tests__/e2e-inmemory.integration.test.ts",
   "integrationtests/src/__tests__/transactional-commands.integration.test.ts",
 ]

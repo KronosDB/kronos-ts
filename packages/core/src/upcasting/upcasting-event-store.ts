@@ -45,6 +45,7 @@
 import type { EventMessage } from "../messaging/messages.js"
 import type { SequencedEvent } from "../event-processing/source.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
+import { queryItems, resolveTypeName, type EventQuery, type QueryItem } from "../event-sourcing/dcb-query.js"
 
 /**
  * One conversion at the log boundary. TOTAL: identity for anything it does not
@@ -86,6 +87,36 @@ import type { EventStore } from "../event-sourcing/event-store.js"
 export type Upcast = (event: EventMessage) => EventMessage
 
 /**
+ * What the wrapper cannot know about an upcaster, said as data.
+ *
+ * A reader of a stream may ask for only some TYPES (a processor asks for the
+ * ones it handles), and the store it asks keeps the names events were WRITTEN
+ * under. An upcaster is a total function — there is no way to run it backwards
+ * — so which stored types become a type the reader asked for has to be told.
+ */
+export type UpcastingOptions = {
+  /**
+   * The stored type names that upcast to `type` — `type` itself included when
+   * events are still written under it. Called once per type a stream asks for.
+   *
+   * ```ts
+   * storedTypes: (type) => (type === "shop.OrderCreated" ? [type, "shop.OrderPlaced"] : [type])
+   * ```
+   *
+   * ABSENT MEANS THE FILTER IS WIDENED, NOT TRUSTED. Without it a type
+   * restriction on a stream is dropped (its tag restriction stays, tags are not
+   * re-derived by an upcast) and the reader discards what it does not want
+   * itself: nothing is missed, but nothing is saved either. The alternative —
+   * assuming no upcaster renames anything — would lose every renamed event
+   * with no error anywhere, which is not a default to hand out.
+   *
+   * An upcaster that only changes a version or a payload keeps the name, so
+   * `(type) => [type]` is the whole answer.
+   */
+  readonly storedTypes?: (type: string) => ReadonlyArray<string>
+}
+
+/**
  * Wrap an event store so everything it hands back passes through an upcaster.
  *
  * THING-FIRST, like every other decorator in this codebase: the store being
@@ -95,7 +126,8 @@ export type Upcast = (event: EventMessage) => EventMessage
  *
  * READ PATHS ONLY:
  * - `source()` — the DCB read a `ctx.load` fold is built from
- * - `open()` — the stream a processor's deliveries come off
+ * - `open()` — the stream a processor's deliveries come off. A type filter on
+ *   it is translated to the stored names (see {@link UpcastingOptions})
  * - `subscribe()` — push delivery, which is a read that arrives at you
  *
  * Everything else is passed straight to the wrapped store: `append`,
@@ -109,7 +141,26 @@ export type Upcast = (event: EventMessage) => EventMessage
  * )
  * ```
  */
-export function upcastingEventStore<E extends EventStore>(next: E, upcast: Upcast): E {
+export function upcastingEventStore<E extends EventStore>(
+  next: E,
+  upcast: Upcast,
+  options: UpcastingOptions = {},
+): E {
+  const { storedTypes } = options
+
+  /** The query as the LOG understands it: the types events are stored under. */
+  function storedQuery(query: EventQuery): EventQuery {
+    const items = queryItems(query).map((item): QueryItem => {
+      if (item.types === undefined || item.types.length === 0) return item
+      const { types: _asked, ...rest } = item
+      if (storedTypes === undefined) return rest
+      const stored = new Set<string>()
+      for (const type of item.types) for (const name of storedTypes(resolveTypeName(type))) stored.add(name)
+      return { ...rest, types: [...stored] }
+    })
+    return items.length === 1 ? items[0]! : items
+  }
+
   return {
     ...next,
 
@@ -119,7 +170,7 @@ export function upcastingEventStore<E extends EventStore>(next: E, upcast: Upcas
     },
 
     open(condition) {
-      const inner = next.open(condition)
+      const inner = next.open(condition.query === undefined ? condition : { ...condition, query: storedQuery(condition.query) })
       const lift = (s: SequencedEvent | undefined) => (s === undefined ? undefined : { ...s, event: upcast(s.event) })
       return {
         next: () => lift(inner.next()),
@@ -129,6 +180,9 @@ export function upcastingEventStore<E extends EventStore>(next: E, upcast: Upcas
         error: () => inner.error(),
         setCallback: (cb) => inner.setCallback(cb),
         close: () => inner.close(),
+        // Where the stream has looked is a position, and positions are not
+        // changed by an upcast.
+        ...(inner.progressToken !== undefined ? { progressToken: () => inner.progressToken!() } : {}),
       }
     },
     // CAPABILITY-PRESERVING, and the type says so. `E` in, `E` out: a store

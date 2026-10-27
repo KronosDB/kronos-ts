@@ -3,8 +3,6 @@ export {
   type KronosDbConnection,
   type ConnectionState,
   connectToKronosDb,
-  kronosMetadata,
-  busMetadata,
 } from "./connection.js"
 
 export {
@@ -12,8 +10,29 @@ export {
 } from "./kronosdb-event-store.js"
 
 export {
+  kronosDbSubscription,
+  kronosDbTail,
+  kronosDbTagsAt,
+  kronosDbPositionAt,
+} from "./kronosdb-log-reads.js"
+
+export {
+  type SubscriptionOptions,
+  type ProgressingStream,
+} from "./kronosdb-subscription.js"
+
+export {
   kronosDbSnapshottingEventStore,
 } from "./kronosdb-snapshotting-event-store.js"
+
+export {
+  type NativeLink,
+} from "./native-link.js"
+
+export {
+  type NativeTransport,
+  type NativeWelcome,
+} from "./native-transport.js"
 
 export {
   type KronosDbSchedulingOptions,
@@ -25,15 +44,25 @@ export {
 
 export {
   kronosDbConnection,
-  kronosDbCommandBus,
-  kronosDbQueryBus,
+  type BusHost,
   type KronosDbConnectionOptions,
   type KronosDbConnectionHandle,
+} from "./kronosdb.js"
+
+export {
+  kronosDbCommandBus,
   type KronosDbCommandBusOptions,
+} from "./kronosdb-command-bus.js"
+
+export {
+  kronosDbQueryBus,
   type KronosDbQueryBusOptions,
+} from "./kronosdb-query-bus.js"
+
+export {
   type FlowControlConfig,
   type ProcessingInstructions,
-} from "./kronosdb.js"
+} from "./native-messaging.js"
 
 export {
   kronosDbControlPlane,
@@ -72,6 +101,7 @@ export {
   KronosDbErrorCode,
   type KronosDbErrorCodeValue,
   KronosDbError,
+  KronosDbRequestError,
   NoHandlerForCommandError,
   NoHandlerForQueryError,
   CommandExecutionError,
@@ -85,23 +115,3 @@ export {
   isTransientError,
 } from "./errors.js"
 
-export {
-  type OutboundStream,
-  outboundStream,
-} from "./outbound-stream.js"
-
-export {
-  metadataToProto,
-  metadataFromProto,
-  metadataToStringMap,
-  metadataFromStringMap,
-} from "./metadata-conversion.js"
-
-export {
-  kronosDbServiceDefinitions,
-  PlatformServiceDefinition,
-  CommandServiceDefinition,
-  QueryServiceDefinition,
-  EventStoreDefinition,
-  SchedulerServiceDefinition,
-} from "./service-definitions.js"

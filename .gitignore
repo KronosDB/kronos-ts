@@ -16,3 +16,4 @@ yarn.lock
 .agents/release-preview/
 .agents/release-artifacts/
 .agents/release-consumer/
+.kronosdb-data/

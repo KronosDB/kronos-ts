@@ -1,15 +1,24 @@
 import type { KronosDbConnection } from "./connection.js"
-import { kronosMetadata } from "./connection.js"
-import { outboundStream } from "./outbound-stream.js"
-import type { PlatformInbound } from "./generated/platform.js"
 import type { ProcessorStatusSupplier } from "./event-processor-info.js"
 import { toEventProcessorInfo } from "./event-processor-info.js"
+import type { NativeStream } from "./native-transport.js"
+import {
+  FrameKind,
+  ProcessorAction,
+  decodeProcessorInstruction,
+  encodeInstructionResult,
+  encodeOpenPlatform,
+  encodePlatformHeartbeat,
+  encodeProcessorStatus,
+  reader,
+  type ClientIdentity,
+} from "./protocol/kronosdb-protocol.js"
 
 /**
  * Server-initiated instructions received via the platform stream.
  *
- * KronosDB uses direct fields on PlatformOutbound (not nested like Axon Server's
- * eventProcessorControl/topologyChange wrappers).
+ * KronosDB sends one ProcessorInstruction frame per action, naming the
+ * processor and, for segment actions, the segment.
  */
 export type PlatformInstruction =
   | { kind: "pause-processor"; processorName: string }
@@ -21,7 +30,7 @@ export type PlatformInstruction =
 
 export type InstructionHandler = (instruction: PlatformInstruction) => void | Promise<void>
 
-export interface PlatformConnection {
+export type PlatformConnection = {
   start(): Promise<void>
   stop(): void
   onInstruction(handler: InstructionHandler): void
@@ -29,8 +38,9 @@ export interface PlatformConnection {
   readonly connected: boolean
   /**
    * Resolves with `true` once KronosDB has acknowledged this client's
-   * registration on the platform stream (we use the first server-originated
-   * inbound message — typically a heartbeat reply — as the ack signal).
+   * registration on the platform stream: the server opens every platform
+   * stream with a NodeInfo frame, so the first frame from the server is the
+   * earliest observable point at which it has accepted the registration.
    * Resolves with `false` if the platform is not yet started.
    *
    * This replaces the legacy 1-second sleep at
@@ -38,21 +48,19 @@ export interface PlatformConnection {
    * `start()` polls this method via `withRetry` so the
    * application waits exactly long enough for handler subscriptions to be
    * routable, no longer or shorter.
-   *
-   * Implementation note: the platform stream sends a `register` frame on
-   * `start()` and KronosDB responds with a heartbeat tick at the configured
-   * heartbeat interval. We treat the first inbound frame as the ack signal,
-   * which is the earliest observable point at which the server has accepted
-   * the registration. (No explicit ack frame exists in the KronosDB protobuf
-   * surface today — Pitfall 5 / RESEARCH.md.)
    */
   subscriptionsAcked(): Promise<boolean>
 }
 
-export interface PlatformServiceOptions {
-  /** Heartbeat interval in ms. Default: 10000 */
+export type PlatformServiceOptions = {
+  /** How often to tell the server this client is alive, in ms. Default: 5000 */
   heartbeatIntervalMs?: number
-  /** Heartbeat timeout in ms. Default: 7500 */
+  /**
+   * How long the server may say nothing on the platform stream before the
+   * connection is considered lost, in ms. The server sends a heartbeat every
+   * `heartbeat-interval` (10 s by default), so this must be well above that.
+   * Default: 30000
+   */
   heartbeatTimeoutMs?: number
   /** Processor status reporting interval in ms. Default: 500 */
   processorsNotificationRateMs?: number
@@ -61,63 +69,45 @@ export interface PlatformServiceOptions {
 }
 
 /**
- * Parses a raw PlatformOutbound message into a typed PlatformInstruction.
- *
- * Returns `null` for any arm that does not correspond to a known instruction
- * (e.g. heartbeat, nodeNotification, topologyNotification). This is the
- * correct catch-all for forward-compatibility: new proto fields added to
- * PlatformOutbound will silently be ignored rather than causing errors.
+ * What a ProcessorInstruction asks of this client, or `null` for an action a
+ * processor here has nothing to do for (`report_status` is answered by the
+ * platform connection itself; anything unknown is refused).
  */
-export function parseInstruction(message: any): PlatformInstruction | null {
-  if (message.requestReconnect) {
-    return { kind: "reconnect-request" }
+export function parseInstruction(message: {
+  action: number
+  processorName: string
+  segment: number
+}): PlatformInstruction | null {
+  switch (message.action) {
+    case ProcessorAction.pause:
+      return { kind: "pause-processor", processorName: message.processorName }
+    case ProcessorAction.start:
+      return { kind: "start-processor", processorName: message.processorName }
+    case ProcessorAction.release_segment:
+      return { kind: "release-segment", processorName: message.processorName, segmentId: message.segment }
+    case ProcessorAction.split_segment:
+      return { kind: "split-segment", processorName: message.processorName, segmentId: message.segment }
+    case ProcessorAction.merge_segment:
+      return { kind: "merge-segment", processorName: message.processorName, segmentId: message.segment }
+    default:
+      return null
   }
-
-  // KronosDB sends processor instructions directly on PlatformOutbound
-  if (message.pauseEventProcessor) {
-    return {
-      kind: "pause-processor",
-      processorName: message.pauseEventProcessor.processorName ?? "",
-    }
-  }
-  if (message.startEventProcessor) {
-    return {
-      kind: "start-processor",
-      processorName: message.startEventProcessor.processorName ?? "",
-    }
-  }
-  if (message.releaseSegment) {
-    return {
-      kind: "release-segment",
-      processorName: message.releaseSegment.processorName ?? "",
-      segmentId: message.releaseSegment.segmentIdentifier ?? 0,
-    }
-  }
-  if (message.splitEventProcessorSegment) {
-    return {
-      kind: "split-segment",
-      processorName: message.splitEventProcessorSegment.processorName ?? "",
-      segmentId: message.splitEventProcessorSegment.segmentIdentifier ?? 0,
-    }
-  }
-  if (message.mergeEventProcessorSegment) {
-    return {
-      kind: "merge-segment",
-      processorName: message.mergeEventProcessorSegment.processorName ?? "",
-      segmentId: message.mergeEventProcessorSegment.segmentIdentifier ?? 0,
-    }
-  }
-
-  return null
 }
+
+/**
+ * What the platform stream remembers of an instruction until a handler has run
+ * it: the instruction, and the stream it came on — the result goes back there,
+ * not on whatever stream is open by the time the handler is done.
+ */
+type Pending = { instruction: PlatformInstruction; instructionId: string; stream: NativeStream | undefined }
 
 /**
  * Creates a PlatformService connection to KronosDB.
  *
  * The platform stream is the control plane:
  * 1. Registers this client with KronosDB
- * 2. Sends periodic heartbeats to verify connectivity
- * 3. Receives instructions from KronosDB (split, merge, pause, resume)
+ * 2. Answers the server's heartbeats and sends its own, so each side knows the other is there
+ * 3. Receives instructions from KronosDB (split, merge, pause, resume) and reports how each went
  * 4. Reports event processor status periodically
  */
 export function platformConnection(
@@ -125,9 +115,10 @@ export function platformConnection(
   options?: PlatformServiceOptions,
 ): PlatformConnection {
   const heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 5000
-  const heartbeatTimeoutMs = options?.heartbeatTimeoutMs ?? 7500
+  const heartbeatTimeoutMs = options?.heartbeatTimeoutMs ?? 30000
   const processorsNotificationRateMs = options?.processorsNotificationRateMs ?? 500
   const processorsNotificationInitialDelayMs = options?.processorsNotificationInitialDelayMs ?? 5000
+  const link = connection.native
 
   const instructionHandlers: InstructionHandler[] = []
   const processorStatusSuppliers: ProcessorStatusSupplier[] = []
@@ -142,7 +133,7 @@ export function platformConnection(
    * window harmless instead of merely forbidden: the first `onInstruction`
    * registration drains this queue in arrival order.
    */
-  const pendingInstructions: PlatformInstruction[] = []
+  const pendingInstructions: Pending[] = []
   let isConnected = false
   let monitoringArmed = false
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined
@@ -150,17 +141,26 @@ export function platformConnection(
   let processorStatusInitialTimer: ReturnType<typeof setTimeout> | undefined
   let processorStatusTimer: ReturnType<typeof setInterval> | null = null
   let processorStatusArmed = false
-  let lastHeartbeatResponse = Date.now()
-  let outbound: ReturnType<typeof outboundStream<PlatformInbound>> | null = null
+  let lastFromServer = Date.now()
+  /** The open platform stream, and the incarnation counter that tells a late callback it is not this one's. */
+  let current: NativeStream | undefined
+  let incarnation = 0
+  /** Instructions are run one after the other, in the order the server sent them. */
+  let instructionQueue: Promise<void> = Promise.resolve()
   /**
-   * Latches once KronosDB sends its first inbound message after registration
-   * — the earliest observable signal that the platform stream is fully wired
-   * (D-102, replaces the legacy 1s sleep). Reset on every `start()` so a
-   * stop/start cycle re-arms the latch correctly.
+   * Latches once KronosDB sends its first frame after registration — the
+   * earliest observable signal that the platform stream is fully wired (D-102,
+   * replaces the legacy 1s sleep). Reset on every open so a stop/start cycle
+   * re-arms the latch correctly.
    */
   let acked = false
 
-  const grpcMetadata = kronosMetadata(connection.config)
+  const identity: ClientIdentity = {
+    clientId: connection.config.clientId,
+    componentName: connection.config.componentName,
+    version: "1.0.0",
+    tags: [],
+  }
 
   function scheduleRecovery() {
     if (!monitoringArmed || recoveryTimer || connection.state === "closed" || connection.state === "reconnecting") return
@@ -173,7 +173,9 @@ export function platformConnection(
 
   connection.onDisconnect?.(() => {
     isConnected = false
-    outbound?.close()
+    incarnation++
+    current?.cancel()
+    current = undefined
   })
 
   connection.onReconnect(() => {
@@ -184,75 +186,73 @@ export function platformConnection(
     openPlatformStream()
   })
 
-  async function processInboundInstructions(inbound: AsyncIterable<any>, stream: typeof outbound) {
+  function answer(stream: NativeStream | undefined, instructionId: string, success: boolean, message?: string): void {
+    if (instructionId === "") return
     try {
-      for await (const message of inbound) {
-        if (stream !== outbound || !monitoringArmed) return
-        // First inbound message after start() = the platform has accepted our
-        // registration and is talking back. Latch the ack flag (D-102).
-        acked = true
-        if (message.requestReconnect) scheduleRecovery()
-        const instruction = parseInstruction(message)
-        if (instruction) {
-          if (instructionHandlers.length === 0) {
-            // Nothing to route to yet — hold it for the first registration
-            // rather than dropping it.
-            pendingInstructions.push(instruction)
-          }
-          for (const handler of instructionHandlers) {
-            try {
-              await handler(instruction)
-            } catch (err) {
-              console.error("Platform instruction handler error:", err)
-            }
-          }
-        }
+      stream?.send(FrameKind.InstructionResult, (w) =>
+        encodeInstructionResult(w, {
+          instructionId,
+          success,
+          error: success ? undefined : { message: message ?? "", location: identity.componentName, details: [], errorCode: "" },
+        }),
+      )
+    } catch {
+      // The stream is going away; the server has stopped waiting.
+    }
+  }
 
-        // The server's heartbeat is a request ("client must respond" — see
-        // platform.proto): answer it at once, and track it as liveness.
-        if (message.heartbeat) {
-          lastHeartbeatResponse = Date.now()
-          outbound?.send({ heartbeat: {} })
-        }
-      }
-    } catch (err) {
-      if (stream === outbound && monitoringArmed && isConnected) {
-        console.error("Platform stream error:", err)
-        isConnected = false
-      }
-    } finally {
-      if (stream === outbound && monitoringArmed) {
-        isConnected = false
-        scheduleRecovery()
+  async function run({ instruction, instructionId, stream }: Pending): Promise<void> {
+    let failure: string | undefined
+    for (const handler of instructionHandlers) {
+      try {
+        await handler(instruction)
+      } catch (err) {
+        console.error("Platform instruction handler error:", err)
+        failure ??= err instanceof Error ? err.message : String(err)
       }
     }
+    answer(stream, instructionId, failure === undefined, failure)
+  }
+
+  function receive(pending: Pending): void {
+    if (instructionHandlers.length === 0) {
+      // Nothing to route to yet — hold it for the first registration
+      // rather than dropping it.
+      pendingInstructions.push(pending)
+      return
+    }
+    instructionQueue = instructionQueue.then(() => run(pending))
   }
 
   function startHeartbeat() {
     if (heartbeatTimer) clearInterval(heartbeatTimer)
-    lastHeartbeatResponse = Date.now()
+    lastFromServer = Date.now()
 
     heartbeatTimer = setInterval(() => {
-      if (!isConnected || !outbound) return
+      if (!isConnected || !current) return
 
-      const timeSinceLastResponse = Date.now() - lastHeartbeatResponse
-      if (timeSinceLastResponse > heartbeatTimeoutMs) {
+      const silence = Date.now() - lastFromServer
+      if (silence > heartbeatTimeoutMs) {
         console.warn(
-          `Platform heartbeat timeout: no response in ${timeSinceLastResponse}ms ` +
+          `Platform heartbeat timeout: nothing from the server in ${silence}ms ` +
           `(threshold: ${heartbeatTimeoutMs}ms). Marking connection as lost.`,
         )
         isConnected = false
+        // The socket looks alive but is not answering: end it, so every stream on it hears.
+        link.current()?.close()
         connection.reconnect().catch((err) => {
           console.error("Failed to reconnect after heartbeat timeout:", err)
         })
         return
       }
 
-      // Send heartbeat — KronosDB PlatformInbound uses oneof, heartbeat field
-      outbound.send({
-        heartbeat: {},
-      })
+      try {
+        current.send(FrameKind.PlatformHeartbeat, (w) => encodePlatformHeartbeat(w, {}))
+      } catch {
+        // The stream just ended; its failure callback takes it from here.
+      }
     }, heartbeatIntervalMs)
+    heartbeatTimer.unref?.()
   }
 
   function startProcessorStatusReporting() {
@@ -262,25 +262,26 @@ export function platformConnection(
 
     processorStatusInitialTimer = setTimeout(() => {
       if (!monitoringArmed) return
-      if (isConnected) void reportProcessorStatus()
+      if (isConnected) reportProcessorStatus()
 
       processorStatusTimer = setInterval(() => {
-        if (!isConnected || !outbound) return
+        if (!isConnected || !current) return
         reportProcessorStatus()
       }, processorsNotificationRateMs)
+      processorStatusTimer.unref?.()
     }, processorsNotificationInitialDelayMs)
+    processorStatusInitialTimer.unref?.()
   }
 
   function reportProcessorStatus() {
-    if (!outbound || processorStatusSuppliers.length === 0) return
+    const stream = current
+    if (!stream || processorStatusSuppliers.length === 0) return
 
     for (const supplier of processorStatusSuppliers) {
       try {
-        const statuses = supplier()
-        for (const status of statuses) {
-          outbound.send({
-            eventProcessorInfo: toEventProcessorInfo(status),
-          })
+        for (const status of supplier()) {
+          const info = toEventProcessorInfo(status)
+          stream.send(FrameKind.ProcessorStatus, (w) => encodeProcessorStatus(w, info))
         }
       } catch (err) {
         console.warn("Failed to report processor status:", err)
@@ -290,30 +291,80 @@ export function platformConnection(
 
   function openPlatformStream() {
     if (isConnected) return
-    outbound?.close()
+    current?.cancel()
+    current = undefined
 
     // Re-arm the ack latch so a stop/start cycle correctly re-waits.
     acked = false
-    outbound = outboundStream<PlatformInbound>()
+    const mine = ++incarnation
 
-    // Register with KronosDB — first message must be ClientIdentification
-    outbound.send({
-      register: {
-        clientId: connection.config.clientId,
-        componentName: connection.config.componentName,
-        version: "1.0.0",
-        tags: {},
-      },
-    })
+    const sink = (kind: number, _flags: number, buf: Uint8Array, start: number, end: number): void => {
+      if (mine !== incarnation || !monitoringArmed) return
+      // Whatever the server says, it is there.
+      lastFromServer = Date.now()
+      switch (kind) {
+        case FrameKind.NodeInfo:
+          // The first frame of every platform stream: the registration took.
+          acked = true
+          return
+        case FrameKind.ServerHeartbeat:
+          // The server's heartbeat is a request ("the client answers it"):
+          // answer at once, and track it as liveness.
+          try {
+            current?.send(FrameKind.PlatformHeartbeat, (w) => encodePlatformHeartbeat(w, {}))
+          } catch {
+            // The stream just ended.
+          }
+          return
+        case FrameKind.RequestReconnect:
+          // The cluster changed, or this node is going: reconnect to rebalance.
+          scheduleRecovery()
+          return
+        case FrameKind.ProcessorInstruction: {
+          const message = decodeProcessorInstruction(reader(buf, start, end))
+          if (message.action === ProcessorAction.report_status) {
+            reportProcessorStatus()
+            answer(current, message.instructionId, true)
+            return
+          }
+          const instruction = parseInstruction(message)
+          if (instruction === null) {
+            answer(current, message.instructionId, false, `Unsupported processor action ${message.action}`)
+            return
+          }
+          receive({ instruction, instructionId: message.instructionId, stream: current })
+          return
+        }
+        default:
+          // TopologyChange and whatever a later version adds: nothing to act on here.
+          return
+      }
+    }
 
-    // Open bidirectional platform stream
-    const inbound = connection.platform.openStream(outbound.iterable, {
-      metadata: grpcMetadata,
-    })
+    const fail = (error: Error): void => {
+      if (mine !== incarnation || !monitoringArmed) return
+      if (isConnected) console.error("Platform stream error:", error)
+      isConnected = false
+      current = undefined
+      scheduleRecovery()
+    }
 
+    const attach = (stream: NativeStream): void => {
+      if (mine !== incarnation) {
+        stream.cancel()
+        return
+      }
+      current = stream
+      isConnected = true
+      startHeartbeat()
+    }
+
+    ;(async () => {
+      const transport = link.current() ?? (await link.ready())
+      return transport.open(FrameKind.OpenPlatform, (w) => encodeOpenPlatform(w, { client: identity }), false, sink, fail)
+    })().then(attach, fail)
+    // Connected as far as callers can tell from here; the stream's own failure undoes it.
     isConnected = true
-    startHeartbeat()
-    void processInboundInstructions(inbound, outbound)
   }
 
   return {
@@ -325,6 +376,7 @@ export function platformConnection(
 
     stop() {
       monitoringArmed = false
+      incarnation++
       clearTimeout(processorStatusInitialTimer)
       clearTimeout(recoveryTimer)
       recoveryTimer = undefined
@@ -341,10 +393,8 @@ export function platformConnection(
         clearInterval(processorStatusTimer)
         processorStatusTimer = null
       }
-      if (outbound) {
-        outbound.close()
-        outbound = null
-      }
+      current?.cancel()
+      current = undefined
     },
 
     onInstruction(handler) {
@@ -353,16 +403,9 @@ export function platformConnection(
 
       // Drain anything that arrived before a handler existed, in arrival order.
       if (isFirst && pendingInstructions.length > 0) {
-        const backlog = pendingInstructions.splice(0, pendingInstructions.length)
-        void (async () => {
-          for (const instruction of backlog) {
-            try {
-              await handler(instruction)
-            } catch (err) {
-              console.error("Platform instruction handler error:", err)
-            }
-          }
-        })()
+        for (const pending of pendingInstructions.splice(0, pendingInstructions.length)) {
+          instructionQueue = instructionQueue.then(() => run(pending))
+        }
       }
     },
 

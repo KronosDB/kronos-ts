@@ -1,235 +1,194 @@
-import {
-  qualifiedNameToString,
-  qualifiedNameFromString,
-  type Tag,
-  type Serializer,
-} from "@kronos-ts/core"
 import type {
-  EventCriteria,
+  AppendCondition,
+  AppendTransaction,
+  ConsistencyMarker,
   EventMessage,
   EventQuery,
+  EventStore,
   MessageStream,
   SequencedEvent,
-  StreamingCondition,
-} from "@kronos-ts/core"
-import { compileQuery } from "@kronos-ts/core"
-import type {
-  EventStore,
-  SourcingResult,
   SourcingCondition,
-  AppendCondition,
-  ConsistencyMarker,
-  AppendTransaction,
+  SourcingResult,
+  StreamingCondition,
+  TrackingToken,
 } from "@kronos-ts/core"
-import type { TrackingToken } from "@kronos-ts/core"
-import { globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/core"
-import { markerAt, noMarker } from "@kronos-ts/core"
-import { contextView, kronosMetadata } from "./connection.js"
+import { compileQuery, FIRST_TOKEN, globalSequenceToken, markerAt, noMarker } from "@kronos-ts/core"
+import { ConcurrencyError } from "./errors.js"
 import type { KronosDbConnectionHandle } from "./kronosdb.js"
-import { metadataFromStringMap, metadataToStringMap } from "./metadata-conversion.js"
-
-// ---------------------------------------------------------------------------
-// Tag conversion — framework Tag (string k/v) ↔ proto Tag (binary k/v)
-// ---------------------------------------------------------------------------
-
-const textEncoder = new TextEncoder()
-const textDecoder = new TextDecoder()
-
-function tagToProto(tag: Tag): { key: Uint8Array; value: Uint8Array } {
-  return {
-    key: textEncoder.encode(tag.key),
-    value: textEncoder.encode(tag.value),
-  }
-}
-
-function tagFromProto(tag: { key: Uint8Array; value: Uint8Array }): Tag {
-  return {
-    key: textDecoder.decode(tag.key),
-    value: textDecoder.decode(tag.value),
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Criteria conversion — framework EventCriteria → proto Criterion[]
-//
-// KronosDB Criterion has: names (string[]) + tags (Tag[])
-// Semantics: event matches if (names empty OR name in names) AND all tags present
-// Multiple criteria are OR'd together.
-// ---------------------------------------------------------------------------
-
-function criteriaToCriterions(criteria: EventCriteria): any[] {
-  switch (criteria.kind) {
-    case "tags":
-      return [{
-        names: [],
-        tags: criteria.tags.map(tagToProto),
-      }]
-
-    case "type-restricted": {
-      const innerTags = criteria.inner.kind === "tags"
-        ? criteria.inner.tags.map(tagToProto)
-        : []
-      return [{
-        names: [...criteria.types],
-        tags: innerTags,
-      }]
-    }
-
-    case "either":
-      return criteria.criteria.flatMap(criteriaToCriterions)
-
-    case "any-tag":
-      return [{ names: [], tags: [] }]
-  }
-}
+import { DEFAULT_CREDITS, subscription, type SubscriptionOptions } from "./kronosdb-subscription.js"
+import {
+  criteriaToWire,
+  outbound,
+  readEvents,
+  writeCondition,
+  writeCriteria,
+  writeRecords,
+  type OutboundEvent,
+  type WireCriterion,
+} from "./native-events.js"
+import { contextRequest, contextStream, unexpected } from "./native-requests.js"
+import {
+  FLAG_END,
+  FrameKind,
+  decodeHead,
+  reader,
+  writeU16,
+  writeU32,
+  writeU64,
+} from "./protocol/kronosdb-protocol.js"
 
 /**
  * The criteria a READ sends, with KronosDB's one structural rule applied.
  *
  * @internal Shared with `kronosDbSnapshottingEventStore`, whose fused read must
- * select EXACTLY what the plain `Source` above selects — the fused RPC is the
+ * select EXACTLY what the plain `Source` below selects — the fused read is the
  * same query with a cached prefix, so a second copy of this rule that drifted
  * would make the two paths disagree about which events a state is folded from.
  */
-export function sourceCriteria(query: EventQuery): any[] {
-  const criterions = criteriaToCriterions(compileQuery(query))
+export function sourceCriteria(query: EventQuery): WireCriterion[] {
+  const criteria = criteriaToWire(compileQuery(query))
 
-  // KronosDB requires at least one criterion for tag-index matching.
-  // An empty criterion (no names, no tags) matches all events.
-  return criterions.length === 0 ? [{ names: [], tags: [] }] : criterions
+  // An empty criteria list would match nothing on a condition, so a read that
+  // means "everything" says so with one criterion that has no names and no tags.
+  return criteria.length === 0 ? [{ names: [], tags: [] }] : criteria
 }
 
-// ---------------------------------------------------------------------------
-// Event conversion — framework EventMessage ↔ proto Event/TaggedEvent
-// ---------------------------------------------------------------------------
-
-/** @internal Shared with `kronosDbSnapshottingEventStore`. */
-export function createEventConverters(serializer: Serializer) {
-  return {
-    eventToProto(event: EventMessage): any {
-      const name = qualifiedNameToString(event.name)
-      const serialized = serializer.serialize(event.payload, name, event.version)
-      return {
-        event: {
-          identifier: event.identifier,
-          timestamp: BigInt(event.timestamp),
-          name,
-          version: event.version,
-          payload: serialized.data,
-          metadata: metadataToStringMap(event.metadata),
-        },
-        tags: event.tags.map(tagToProto),
-      }
-    },
-
-    eventFromProto(protoEvent: any, tags?: any[]): EventMessage {
-      const payload = protoEvent.payload && protoEvent.payload.length > 0
-        ? serializer.deserialize({ data: protoEvent.payload, type: protoEvent.name, revision: protoEvent.version })
-        : {}
-
-      return {
-        kind: "event",
-        identifier: protoEvent.identifier,
-        name: qualifiedNameFromString(protoEvent.name),
-        version: protoEvent.version,
-        payload,
-        metadata: metadataFromStringMap(protoEvent.metadata ?? {}),
-        timestamp: Number(protoEvent.timestamp),
-        tags: (tags ?? []).map(tagFromProto),
-      }
-    },
-  }
+/** The condition an append sends: the marker the decision read up to, and what it must not have missed. */
+function wireCondition(condition: AppendCondition | undefined): { marker: bigint; criteria: WireCriterion[] } | undefined {
+  if (condition === undefined) return undefined
+  // The origin marker (-1) means "nothing was read": everything counts.
+  const marker = condition.marker.position
+  return { marker: marker < 0n ? 0n : marker, criteria: criteriaToWire(compileQuery(condition.query)) }
 }
-
-// ---------------------------------------------------------------------------
-// KronosDB Event Store — implements EventStore interface via gRPC
-// ---------------------------------------------------------------------------
 
 /**
- * Creates an EventStore implementation backed by KronosDB's gRPC event store.
- *
- * Maps the framework's EventStore interface to KronosDB's EventStore service,
- * handling conversion between framework types and proto messages.
- *
- * Key differences from Axon Server:
- * - Event metadata is `map<string, string>` (not MetadataValue)
- * - Source returns `SequencedEvent` (no tags on read — only on append)
- * - Stream returns `SequencedEvent` directly
- * - Criterion uses flat `names` + `tags` (not TagsAndNamesCriterion wrapper)
+ * The marker an Appended answers with. The hot path of every write, so it
+ * reads the one field it needs from the frame instead of decoding the three.
+ * A conflict is not an error on the wire but is one here: it is what the
+ * caller's retry loop catches.
+ */
+function parseAppended(kind: number, buf: Uint8Array, start: number, end: number): bigint {
+  if (kind === FrameKind.Appended) {
+    // first_position u64, count u32, marker u64
+    if (end - start < 20) throw unexpected(kind, "a complete Appended")
+    return new DataView(buf.buffer, buf.byteOffset + start, 20).getBigUint64(12, true)
+  }
+  if (kind === FrameKind.AppendConflict) {
+    const position = new DataView(buf.buffer, buf.byteOffset + start, 8).getBigUint64(0, true)
+    throw new ConcurrencyError(`consistency condition violated: conflicting event at position ${position}`)
+  }
+  throw unexpected(kind, "Appended")
+}
+
+// ---------------------------------------------------------------------------
+// KronosDB Event Store — implements the EventStore interface over the native protocol
+// ---------------------------------------------------------------------------
+
+/** How often a filtered stream hears how far the server has looked (ms). */
+const PROGRESS_INTERVAL_MS = 1000
+
+/**
+ * Creates an EventStore backed by KronosDB's native protocol.
  *
  * `context` is the KronosDB context this store addresses — a plain string, not
- * an object you build. Two stores on different contexts share the ONE channel
- * on `kdb`; the per-call `kronosdb-context` header is the entire difference.
+ * an object you build. Two stores on different contexts share the ONE socket on
+ * `kdb`; the context id each request carries is the entire difference.
+ *
+ * `streaming` overrides how `open()` subscribes. By default a stream reads ahead
+ * as far as its reader asked (at least {@link DEFAULT_CREDITS} events), and one
+ * with a query asks the server for a Progress frame every second while nothing
+ * matches, which is how a processor of rare events moves its token.
+ *
+ * A few things the wire gives that the framework's `EventStore` does not ask
+ * for, kept out of this shape and available beside it: tags on read events (they
+ * are on the returned events' `tags`), `Progress` frames
+ * ({@link kronosDbSubscription}), the log's tail, a position's tags, and a
+ * timestamp's position ({@link kronosDbTail}, {@link kronosDbTagsAt},
+ * {@link kronosDbPositionAt}).
  */
 export function kronosDbEventStore(
   kdb: Pick<KronosDbConnectionHandle, "connection" | "serializer">,
   context: string = kdb.connection.config.context,
+  streaming: SubscriptionOptions = {},
 ): EventStore {
-  const connection = contextView(kdb.connection, context)
-  const { eventToProto, eventFromProto } = createEventConverters(kdb.serializer)
+  const link = kdb.connection.native
+  const serializer = kdb.serializer
 
-  function getMetadata() {
-    return kronosMetadata(connection.config)
+  function send(events: ReadonlyArray<OutboundEvent>, condition: AppendCondition | undefined): Promise<bigint> {
+    const wired = wireCondition(condition)
+    return contextRequest(
+      link,
+      context,
+      FrameKind.Append,
+      (w, id) => {
+        writeU16(w, id)
+        writeCondition(w, wired)
+        writeRecords(w, events)
+      },
+      parseAppended,
+    )
   }
 
+  async function head(): Promise<bigint> {
+    return contextRequest(
+      link,
+      context,
+      FrameKind.GetHead,
+      (w, id) => writeU16(w, id),
+      (kind, buf, start, end) => {
+        if (kind !== FrameKind.Head) throw unexpected(kind, "Head")
+        return decodeHead(reader(buf, start, end)).position
+      },
+    )
+  }
 
   return {
     async source(condition: SourcingCondition): Promise<SourcingResult> {
-      const effectiveCriterions = sourceCriteria(condition.query)
-
-      const request = {
-        fromSequence: condition.start ?? 0n,
-        criteria: effectiveCriterions,
-        // Events per response message; 0 lets the server pick its default.
-        batchSize: 0,
-      }
+      const criteria = sourceCriteria(condition.query)
+      const from = condition.start === undefined || condition.start < 0n ? 0n : condition.start
 
       const events: EventMessage[] = []
       let marker: ConsistencyMarker = noMarker()
 
-      const stream = connection.eventStore.source(request, { metadata: getMetadata() })
-      for await (const response of stream) {
-        const batch = response.batch
-        if (!batch) continue
-        for (const seqEvent of batch.events) {
-          if (seqEvent.event) {
-            // KronosDB doesn't return tags on source — we need to fetch them
-            // For now, pass empty tags; tags are only relevant for append conditions
-            events.push(eventFromProto(seqEvent.event))
-          }
-        }
-        // The final batch carries the marker; 0n is a valid marker for an
-        // empty store, so presence — not truthiness — decides.
-        if (batch.consistencyMarker !== undefined) {
-          marker = markerAt(batch.consistencyMarker)
-        }
-      }
-
-      return { events, marker }
+      // A Source is a request answered by a run of Events frames; the last one
+      // carries END and the marker. 0n is a valid marker for an empty store, so
+      // presence — not truthiness — decides.
+      return new Promise<SourcingResult>((resolve, reject) => {
+        contextStream(
+          link,
+          context,
+          FrameKind.Source,
+          (w, id) => {
+            writeU16(w, id)
+            writeU64(w, from)
+            writeCriteria(w, criteria)
+            // Events per frame; 0 lets the server pick its default.
+            writeU32(w, 0)
+          },
+          true,
+          (kind, flags, buf, start, end) => {
+            if (kind !== FrameKind.Events) throw unexpected(kind, "Events")
+            const reached = readEvents(buf, start, end, serializer, events)
+            if (reached !== undefined) marker = markerAt(reached)
+            if ((flags & FLAG_END) !== 0) resolve({ events, marker })
+          },
+          reject,
+        ).catch(reject)
+      })
     },
 
-    async appendEvents(
-      newEvents: ReadonlyArray<EventMessage>,
-      condition?: AppendCondition,
-    ): Promise<AppendTransaction> {
-      const taggedEvents = newEvents.map(eventToProto)
-      const request = {
-        condition: condition ? {
-          consistencyMarker: condition.marker.position,
-          criteria: criteriaToCriterions(compileQuery(condition.query)),
-        } : undefined,
-        events: taggedEvents,
-      }
-
-      let responseMarker: bigint | undefined
+    async appendEvents(newEvents: ReadonlyArray<EventMessage>, condition?: AppendCondition): Promise<AppendTransaction> {
+      // Serialized now, so a payload the serializer cannot handle fails where
+      // the events are staged, not when the transaction commits.
+      const staged = outbound(serializer, newEvents)
+      let marker: bigint | undefined
 
       return {
         async commit() {
-          const response = await connection.eventStore.append(request, { metadata: getMetadata() })
-          responseMarker = response.consistencyMarker
+          marker = await send(staged, condition)
         },
         async afterCommit() {
-          return markerAt(responseMarker ?? 0n)
+          return markerAt(marker ?? 0n)
         },
         rollback() {
           // If commit() was never called, nothing was sent
@@ -237,158 +196,23 @@ export function kronosDbEventStore(
       }
     },
 
-    async append(
-      newEvents: ReadonlyArray<EventMessage>,
-      condition?: AppendCondition,
-    ): Promise<ConsistencyMarker> {
-      const tx = await this.appendEvents(newEvents, condition)
-      await tx.commit()
-      return tx.afterCommit()
+    async append(newEvents: ReadonlyArray<EventMessage>, condition?: AppendCondition): Promise<ConsistencyMarker> {
+      return markerAt(await send(outbound(serializer, newEvents), condition))
     },
 
     open(condition: StreamingCondition): MessageStream<SequencedEvent> {
-      const criterions = condition.query ? criteriaToCriterions(compileQuery(condition.query)) : []
-
-      // KronosDB requires at least one criterion for tag-index matching.
-      // An empty criterion (no names, no tags) matches all events.
-      const effectiveCriterions = criterions.length === 0
-        ? [{ names: [], tags: [] }]
-        : criterions
-
-      const PERMIT_BATCH = 500
-      const REFILL_THRESHOLD = 0.25
-
-      // Controllable async iterable for sending StreamControl messages.
-      let sendControl: ((msg: any) => void) | null = null
-      let controlDone = false
-      const controlQueue: any[] = []
-      let controlResolve: (() => void) | null = null
-
-      async function* controlStream() {
-        // First message: subscribe with initial permits.
-        yield {
-          subscribe: {
-            fromSequence: condition.position,
-            criteria: effectiveCriterions,
-            initialPermits: BigInt(PERMIT_BATCH),
-            blacklistedNames: [],
-            // Events per response message; 0 lets the server pick. The server
-            // never sends more unconsumed events than granted permits, so the
-            // effective batch cap is min(server default, outstanding permits).
-            batchSize: 0,
-          },
-        }
-
-        // Subsequent messages: permit grants.
-        while (!controlDone) {
-          while (controlQueue.length > 0) {
-            yield controlQueue.shift()!
-          }
-          // Wait for more messages to send.
-          await new Promise<void>((resolve) => {
-            controlResolve = resolve
-          })
-        }
-      }
-
-      function grantPermits(count: number) {
-        controlQueue.push({
-          permits: { permits: BigInt(count) },
-        })
-        controlResolve?.()
-      }
-
-      const grpcStream = connection.eventStore.stream(controlStream(), { metadata: getMetadata() })
-
-      const buffer: SequencedEvent[] = []
-      let availableCallback: (() => void) | null = null
-      let completed = false
-      let streamError: Error | undefined
-      let reading = false
-      let remainingPermits = PERMIT_BATCH
-
-      async function startReading() {
-        if (reading) return
-        reading = true
-        try {
-          for await (const response of grpcStream) {
-            if (completed) break
-            // StreamResponse is a oneof { batch, heartbeat } since kronosdb v0.5.
-            // For heartbeat frames, response.batch is undefined and this guard skips
-            // them transparently — no explicit heartbeat branch needed (RESEARCH.md
-            // KDB-03, Pitfall 3). Server emits one heartbeat every ~15 seconds.
-            if (response.batch) {
-              for (const seqEvent of response.batch.events) {
-                if (seqEvent.event) {
-                  buffer.push({
-                    sequence: seqEvent.sequence,
-                    event: eventFromProto(seqEvent.event),
-                  })
-                }
-              }
-              if (response.batch.events.length > 0) availableCallback?.()
-            }
-          }
-          completed = true
-          availableCallback?.()
-        } catch (err) {
-          streamError = err instanceof Error ? err : new Error(String(err))
-          completed = true
-          availableCallback?.()
-        }
-      }
-
-      startReading()
-
-      function onConsumed() {
-        remainingPermits--
-        const threshold = Math.floor(PERMIT_BATCH * REFILL_THRESHOLD)
-        if (remainingPermits <= threshold && !completed) {
-          const grant = PERMIT_BATCH - remainingPermits
-          remainingPermits += grant
-          grantPermits(grant)
-        }
-      }
-
-      return {
-        next() {
-          const item = buffer.shift()
-          if (item) onConsumed()
-          return item
-        },
-
-        peek() {
-          return buffer[0]
-        },
-
-        hasNextAvailable() {
-          return buffer.length > 0
-        },
-
-        isCompleted() {
-          return completed && buffer.length === 0
-        },
-
-        error() {
-          return streamError
-        },
-
-        setCallback(callback: () => void) {
-          availableCallback = callback
-        },
-
-        close() {
-          completed = true
-          controlDone = true
-          controlResolve?.()
-          availableCallback = null
-        },
-      }
+      return subscription(link, serializer, context, condition, {
+        // A reader that takes events in big batches needs that many ready.
+        ...(condition.readAhead !== undefined ? { credits: Math.max(DEFAULT_CREDITS, Math.floor(condition.readAhead)) } : {}),
+        // A query is a selective reader, and a selective reader needs to hear
+        // how far the server has looked while nothing matches.
+        ...(condition.query !== undefined ? { progressIntervalMs: PROGRESS_INTERVAL_MS } : {}),
+        ...streaming,
+      })
     },
 
     async getHeadPosition(): Promise<bigint> {
-      const response = await connection.eventStore.getHead({}, { metadata: getMetadata() })
-      return response.sequence
+      return head()
     },
 
     async firstToken(): Promise<TrackingToken> {
@@ -396,9 +220,7 @@ export function kronosDbEventStore(
     },
 
     async latestToken(): Promise<TrackingToken> {
-      const response = await connection.eventStore.getHead({}, { metadata: getMetadata() })
-      return globalSequenceToken(response.sequence)
+      return globalSequenceToken(await head())
     },
-
   }
 }

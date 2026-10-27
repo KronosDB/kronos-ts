@@ -13,7 +13,7 @@ import assert from "node:assert/strict"
  *      pre-0.9 per-context bus isolation is gone; contexts address logs only.
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
-import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
+import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 import { z } from "zod"
 import {
   command,
@@ -60,17 +60,14 @@ async function untilRouted<T>(dispatch: () => Promise<T>, timeoutMs = 15_000): P
 }
 
 describe("KronosDB bus topology (0.9, ADR-0006)", () => {
-  let container: StartedTestContainer
+  let server: KronosDbServer
   let handlerSide: KronosDbConnectionHandle   // context "ctx-one"
   let callerSide: KronosDbConnectionHandle    // context "ctx-two"
 
   beforeAll(async () => {
-    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:0.9.0")
-      .withExposedPorts(50051, 9240)
-      .withWaitStrategy(Wait.forHttp("/ready", 9240).forStatusCode(200))
-      .start()
-    const host = container.getHost()
-    const port = container.getMappedPort(50051)
+    server = await startKronosDb()
+    const host = server.host
+    const port = server.port
 
     handlerSide = await kronosDbConnection({
       componentName: "topology-handler",
@@ -89,7 +86,7 @@ describe("KronosDB bus topology (0.9, ADR-0006)", () => {
   afterAll(async () => {
     await handlerSide?.close()
     await callerSide?.close()
-    await container?.stop()
+    await server?.stop()
   })
 
   it("a handler on bus 'shared' answers a dispatch from ANOTHER connection on ANOTHER context", async () => {
@@ -151,10 +148,13 @@ describe("KronosDB bus topology (0.9, ADR-0006)", () => {
         expect(await call(4)).toBe(4)
       }
       expect(await call(0)).toBe(0)
-      const oldChannel = handlerSide.connection.channel
+      // The socket dies under the streams that ride it; the connection brings
+      // up a new one and the handler comes back on it.
+      const oldSocket = handlerSide.connection.native.current()!
       await handlerSide.platform.start()
+      oldSocket.close()
       await handlerSide.connection.reconnect()
-      expect(handlerSide.connection.channel).not.toBe(oldChannel)
+      expect(handlerSide.connection.native.current()).not.toBe(oldSocket)
       expect(handlerSide.platform.connected).toBe(true)
       const recoveredBy = Date.now() + 5000
       for (;;) {

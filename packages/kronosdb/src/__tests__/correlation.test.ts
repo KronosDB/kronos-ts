@@ -8,18 +8,11 @@
  * `correlationId` / `causationId` — while the inbound side faithfully rebuilt a
  * UnitOfWork from `message.metadata` that no longer carried any correlation.
  *
- * These tests assert on the PROTO REQUEST handed to the gRPC client, i.e. the
- * bytes that actually leave the process.
+ * These tests assert on the frames the server received, i.e. the bytes that
+ * actually leave the process.
  */
-import { describe, expect, it } from "bun:test"
-import {
-  emptyMetadata,
-  generateIdentifier,
-  qn,
-  type Metadata,
-  type SerializedObject,
-  type Serializer,
-} from "@kronos-ts/core"
+import { afterEach, describe, expect, it } from "bun:test"
+import { emptyMetadata, generateIdentifier, qn, type Metadata } from "@kronos-ts/core"
 import {
   correlatingHandler,
   commandHandlerContext,
@@ -27,84 +20,11 @@ import {
   localQueryBus,
   unitOfWork,
   type CommandMessage,
-  type QueryMessage,
 } from "@kronos-ts/core"
-import { kronosDbCommandBus, kronosDbQueryBus } from "../kronosdb.js"
-import { metadataFromProto } from "../metadata-conversion.js"
-import type { KronosDbConnection } from "../connection.js"
-
-const jsonSerializer: Serializer = {
-  serialize(value, type, revision = ""): SerializedObject {
-    return { type, revision, data: new TextEncoder().encode(JSON.stringify(value)) }
-  },
-  deserialize<T>({ data }: SerializedObject): T {
-    return JSON.parse(new TextDecoder().decode(data)) as T
-  },
-  canConvert() {
-    return true
-  },
-}
-
-/** Captures the proto requests that reach the wire. */
-function capturingConnection() {
-  const commandRequests: any[] = []
-  const queryRequests: any[] = []
-
-  const connection = {
-    channel: {} as any,
-    platform: {} as any,
-    eventStore: {} as any,
-    commands: {
-      openStream() {
-        return (async function* () {})()
-      },
-      async dispatch(request: any) {
-        commandRequests.push(request)
-        return { errorCode: "", payload: jsonSerializer.serialize(null, "null", "") }
-      },
-    } as any,
-    queries: {
-      openStream() {
-        return (async function* () {})()
-      },
-      query(request: any) {
-        queryRequests.push(request)
-        return (async function* () {
-          yield { errorCode: "", payload: jsonSerializer.serialize(null, "null", "") }
-        })()
-      },
-    } as any,
-    config: {
-      host: "localhost",
-      port: 50051,
-      context: "default",
-      componentName: "correlation-test",
-      clientId: "correlation-client",
-      token: "",
-      reconnectIntervalMs: 0,
-      maxReconnectAttempts: 0,
-      keepAliveTimeMs: 0,
-      keepAliveTimeoutMs: 0,
-      keepAlivePermitWithoutCalls: false,
-    },
-    state: "connected",
-    onReconnect() {},
-    onDisconnect() {},
-    close() {},
-    reconnect: async () => {},
-  } as unknown as KronosDbConnection
-
-  return { connection, commandRequests, queryRequests }
-}
-
-/**
- * The connection HANDLE the buses take. Only the three fields they read are
- * here — the serializer, the live connection, and the latch registry the
- * handle keeps so `close()` can drain every bus opened on it.
- */
-function handleOf(connection: KronosDbConnection) {
-  return { connection, serializer: jsonSerializer, registerShutdownLatch() {} }
-}
+import { kronosDbCommandBus } from "../kronosdb-command-bus.js"
+import { kronosDbQueryBus } from "../kronosdb-query-bus.js"
+import { metadataFromEntries } from "../native-messaging.js"
+import { rig, type Rig } from "./bus-test-kit.js"
 
 function commandMessage(): CommandMessage {
   return {
@@ -143,68 +63,68 @@ function causingCommand(): CommandMessage {
   }
 }
 
-function queryMessage(): QueryMessage {
-  return {
-    kind: "query",
-    identifier: generateIdentifier(),
-    name: qn("correlation", "FindThing"),
-    payload: { id: "x" },
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
-  }
-}
+let r: Rig
+afterEach(() => r?.close())
 
 describe("KronosDB distributed command bus — correlation", () => {
-  it("stamps correlationId/causationId onto the dispatched proto", async () => {
-    const { connection, commandRequests } = capturingConnection()
-    const bus = kronosDbCommandBus(localCommandBus(unitOfWork), handleOf(connection))
+  it("stamps correlationId/causationId onto the dispatched command", async () => {
+    r = await rig()
+    const bus = kronosDbCommandBus(localCommandBus(unitOfWork), r.client.host)
 
     const parent = causingCommand()
     const uow = unitOfWork()
     await uow.execute(async () => {
       const ctx = commandHandlerContext({ uow, commandBus: bus })
       const handler = correlatingHandler(async (_m, c: typeof ctx) => {
-        await c.send(Finish, { id: "x" })
+        // Nobody handles it: the wire is what is under test.
+        await c.send(Finish, { id: "x" }).catch(() => {})
       })
       await handler(parent, ctx)
     })
 
-    expect(commandRequests).toHaveLength(1)
-    const onTheWire: Metadata = metadataFromProto(commandRequests[0]!.metadata)
+    expect(r.server.dispatchedCommands).toHaveLength(1)
+    const onTheWire: Metadata = metadataFromEntries(r.server.dispatchedCommands[0]!.metadata)
     expect(onTheWire.correlationId).toBe("corr-root")
     expect(onTheWire.causationId).toBe("cause-1")
   })
 
   it("leaves a primary dispatch (no handler, nothing carrying) untouched", async () => {
-    const { connection, commandRequests } = capturingConnection()
-    const bus = kronosDbCommandBus(localCommandBus(unitOfWork), handleOf(connection))
+    r = await rig()
+    const bus = kronosDbCommandBus(localCommandBus(unitOfWork), r.client.host)
 
-    await bus.dispatch(commandMessage())
+    await bus.dispatch(commandMessage()).catch(() => {})
 
-    const onTheWire: Metadata = metadataFromProto(commandRequests[0]!.metadata)
+    const onTheWire: Metadata = metadataFromEntries(r.server.dispatchedCommands[0]!.metadata)
     expect(onTheWire.correlationId).toBeUndefined()
     expect(onTheWire.causationId).toBeUndefined()
   })
 })
 
 describe("KronosDB distributed query bus — correlation", () => {
-  it("stamps correlationId/causationId onto the dispatched query proto", async () => {
-    const { connection, queryRequests } = capturingConnection()
-    const bus = kronosDbQueryBus(localQueryBus(unitOfWork), handleOf(connection))
+  it("stamps correlationId/causationId onto the dispatched query", async () => {
+    r = await rig()
+    const bus = kronosDbQueryBus(localQueryBus(unitOfWork), r.client.host)
 
     const parent = causingCommand()
     const uow = unitOfWork()
     await uow.execute(async () => {
       const ctx = commandHandlerContext({ uow, queryBus: bus })
       const handler = correlatingHandler(async (_m, c: typeof ctx) => {
-        await c.query(FindThing, { id: "x" })
+        await c.query(FindThing, { id: "x" }).catch(() => {})
       })
       await handler(parent, ctx)
     })
 
-    expect(queryRequests).toHaveLength(1)
-    const onTheWire: Metadata = metadataFromProto(queryRequests[0]!.metadata)
-    expect(onTheWire.correlationId).toBe("corr-root")
-    expect(onTheWire.causationId).toBe("cause-1")
+    expect(r.server.dispatchedQueries).toHaveLength(1)
+    const dispatched = await captureQueryMetadata()
+    expect(dispatched.correlationId).toBe("corr-root")
+    expect(dispatched.causationId).toBe("cause-1")
   })
 })
+
+/** The metadata of the one query the hub received, as the wire carried it. */
+async function captureQueryMetadata(): Promise<Metadata> {
+  const frame = r.server.connections.flatMap((c) => c.received).find((f) => f.frame.name === "DispatchQuery")!.frame
+  if (frame.name !== "DispatchQuery") throw new Error("no query was dispatched")
+  return metadataFromEntries(frame.body.query.metadata)
+}

@@ -34,8 +34,22 @@ export type StreamingCondition = {
    * engines that only understand a position can ignore it.
    */
   readonly token?: TrackingToken
-  /** Optional query to filter events. When omitted, all events are delivered. */
+  /**
+   * Optional query to filter events. When omitted, all events are delivered.
+   *
+   * A store that can filter does it where the events are kept (a server, a
+   * WHERE clause); one that cannot may ignore it. A reader therefore treats the
+   * query as a REQUEST to send less, never as a promise: it still discards
+   * what it does not want.
+   */
   readonly query?: EventQuery
+  /**
+   * How many events the stream may hold ready ahead of its consumer. A reader
+   * that takes its events in big batches asks for at least a batch, or the
+   * stream would never have that many on hand. A store that does not buffer, or
+   * has its own idea of how far to read ahead, ignores it.
+   */
+  readonly readAhead?: number
 }
 
 /**
@@ -45,7 +59,8 @@ export type StreamingCondition = {
  * SEVEN MEMBERS, AND NOTHING COMPOSES THEM. This used to carry `map`, `filter`,
  * `reduce`, `concatWith` and `onErrorContinue` — another framework's stream
  * algebra, transcribed, with no caller. A wrapper that needs to transform items
- * (see `upcastingEventStore`) writes the seven delegations itself.
+ * (see `upcastingEventStore`) writes the seven delegations itself, and passes
+ * `progressToken` on when the stream it wraps has one.
  */
 export type MessageStream<M> = {
   /** Pull the next available item (non-blocking). */
@@ -62,6 +77,17 @@ export type MessageStream<M> = {
   setCallback(callback: () => void): void
   /** Close the stream and release resources. */
   close(): void
+  /**
+   * How far a FILTERED stream has looked, as the token that resumes after it:
+   * every event matching the query before it has already been handed out by
+   * `next()`. Absent on a stream that cannot say, or that has no query.
+   *
+   * It is what lets a reader of rare events move its token through a quiet
+   * stretch of the log. Without it, the token stays at the last event it
+   * received, a restart reads the quiet stretch again, and a monitor sees a
+   * processor that is permanently behind.
+   */
+  progressToken?(): TrackingToken | undefined
 }
 
 // ---------------------------------------------------------------------------

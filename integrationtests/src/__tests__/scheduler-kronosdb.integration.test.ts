@@ -1,12 +1,9 @@
 /**
  * Integration test for KronosDB's event scheduler (server-side scheduled
- * appends) through @kronos-ts/kronosdb.
+ * appends) through @kronos-ts/kronosdb, over the native protocol.
  *
- * Spins up the KronosDB container. Until the published image ships the
- * SchedulerService, every test skips with a notice (the probe sees
- * UNIMPLEMENTED); once the image updates they run unchanged. Set
- * KRONOSDB_IMAGE to test a locally built image, e.g.
- * `KRONOSDB_IMAGE=kronosdb:dev bun test scheduler-kronosdb`.
+ * Needs a server that speaks it: a local build via KRONOSDB_SERVER_BIN, or an
+ * image of one via KRONOSDB_IMAGE (see ../kronosdb-server.ts).
  *
  * What is pinned here, deliberately from the *consumer's* seat:
  *  - a due schedule appends the event with no client involvement
@@ -16,17 +13,17 @@
  *  - token idempotency refuses a duplicate schedule
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
-import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
-import { inMemoryEventStore, qn, tag } from "@kronos-ts/core"
+import { inMemoryEventStore, qn, qualifiedNameToString, tag } from "@kronos-ts/core"
 import type { EventMessage, ScheduleStoreCapability } from "@kronos-ts/core"
 import {
   connectToKronosDb,
+  kronosDbEventStore,
   kronosDbSchedulingEventStore,
+  ScheduleAlreadyExistsError,
   type KronosDbConnection,
   type KronosDbSchedulingControl,
 } from "@kronos-ts/kronosdb"
-
-const IMAGE = process.env.KRONOSDB_IMAGE ?? "ghcr.io/kronosdb/kronosdb:latest"
+import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 
 const serializer = {
   serialize(value: unknown, type: string, revision?: string) {
@@ -51,21 +48,8 @@ function reminderEvent(orderId: string): EventMessage {
 }
 
 async function sourceByOrder(connection: KronosDbConnection, orderId: string) {
-  const events: { name: string; sequence: bigint }[] = []
-  let marker: bigint | undefined
-  const stream = connection.eventStore.source({
-    fromSequence: 0n,
-    criteria: [{ names: [], tags: [{ key: new TextEncoder().encode("orderId"), value: new TextEncoder().encode(orderId) }] }],
-  })
-  for await (const response of stream) {
-    const batch = response.batch
-    if (!batch) continue
-    for (const sequenced of batch.events) {
-      if (sequenced.event) events.push({ name: sequenced.event.name, sequence: sequenced.sequence })
-    }
-    if (batch.consistencyMarker !== undefined) marker = batch.consistencyMarker
-  }
-  return { events, marker }
+  const { events } = await kronosDbEventStore({ connection, serializer }).source({ query: { tags: { orderId } } })
+  return { events: events.map((e) => ({ name: qualifiedNameToString(e.name) })) }
 }
 
 const waitUntil = async (probe: () => Promise<boolean>, timeoutMs = 15_000) => {
@@ -78,24 +62,16 @@ const waitUntil = async (probe: () => Promise<boolean>, timeoutMs = 15_000) => {
 }
 
 describe("KronosDB scheduler (e2e)", () => {
-  let container: StartedTestContainer
+  let server: KronosDbServer
   let connection: KronosDbConnection
   let scheduler: ScheduleStoreCapability & KronosDbSchedulingControl
-  let schedulerAvailable = false
 
   beforeAll(async () => {
-    container = await new GenericContainer(IMAGE)
-      .withExposedPorts(50051, 9240)
-      // /ready is claim-aware: 200 only once the node can execute writes.
-      // The startup log line prints BEFORE the leader claim commits, so
-      // waiting on it lets the first ScheduleAppend race the claim and
-      // bounce with UNAVAILABLE ("must be directed to the leader").
-      .withWaitStrategy(Wait.forHttp("/ready", 9240).forStatusCode(200))
-      .start()
+    server = await startKronosDb()
 
     connection = await connectToKronosDb({
-      host: container.getHost(),
-      port: container.getMappedPort(50051),
+      host: server.host,
+      port: server.port,
       componentName: "scheduler-e2e",
     })
     // THE TIER, over a throwaway in-memory log. The wrapped store is irrelevant
@@ -103,29 +79,14 @@ describe("KronosDB scheduler (e2e)", () => {
     // the log the connection already owns, which is exactly the property this
     // file exists to prove.
     scheduler = kronosDbSchedulingEventStore(inMemoryEventStore(), connection, { serializer })
-
-    // Probe once: an image without the service answers UNIMPLEMENTED.
-    try {
-      await scheduler.listSchedules()
-      schedulerAvailable = true
-    } catch (error) {
-      // gRPC UNIMPLEMENTED = 12: this server predates the SchedulerService.
-      if ((error as { code?: number }).code === 12) {
-        console.warn(`[scheduler-e2e] ${IMAGE} does not ship SchedulerService yet — skipping`)
-      } else {
-        throw error
-      }
-    }
   }, 120_000)
 
   afterAll(async () => {
     await connection?.close()
-    await container?.stop()
+    await server?.stop()
   })
 
   it("appends a due event server-side, invisibly until it fires", async () => {
-    if (!schedulerAvailable) return
-
     const orderId = `A-${crypto.randomUUID()}`
     await scheduler.schedule(reminderEvent(orderId), new Date(Date.now() + 1_500))
 
@@ -143,18 +104,19 @@ describe("KronosDB scheduler (e2e)", () => {
 
     // The visible-head contract: a drained cursor reaches GetHead exactly,
     // despite the schedule's hidden bookkeeping occupying positions.
-    const head = (await connection.eventStore.getHead({})).sequence
-    const stream = connection.eventStore.source({ fromSequence: 0n, criteria: [] })
+    const store = kronosDbEventStore({ connection, serializer })
+    const head = await store.getHeadPosition()
+    const stream = store.open({ position: 0n })
     let lastSequence = -1n
-    for await (const response of stream) {
-      for (const sequenced of response.batch?.events ?? []) lastSequence = sequenced.sequence
-    }
+    await waitUntil(async () => {
+      for (let item = stream.next(); item !== undefined; item = stream.next()) lastSequence = item.sequence
+      return lastSequence + 1n === head
+    }, 5_000)
+    stream.close()
     expect(lastSequence + 1n).toBe(head)
   }, 30_000)
 
   it("cancels before firing, and reports the loss honestly after", async () => {
-    if (!schedulerAvailable) return
-
     const orderId = `B-${crypto.randomUUID()}`
     const token = await scheduler.schedule(reminderEvent(orderId), new Date(Date.now() + 1_000))
     expect(await scheduler.cancelSchedule(token)).toEqual({ kind: "cancelled" })
@@ -169,10 +131,23 @@ describe("KronosDB scheduler (e2e)", () => {
     expect(await scheduler.cancelSchedule(token)).toEqual({ kind: "already-appended" })
   }, 30_000)
 
-  // THE CALLER-SUPPLIED IDEMPOTENCY TOKEN IS GONE, and with it the test that
-  // covered it. `ScheduleStoreCapability.schedule` has no such parameter, because
-  // neither the postgres nor the in-memory tier can honour one and a capability
-  // is what every member of the tier can promise. A host that needs KronosDB's
-  // idempotent retry reaches `connection.scheduler.scheduleAppend` directly —
-  // the service is still there, it is simply not part of the shared contract.
+  // `ScheduleStoreCapability.schedule` has no idempotency token, because neither
+  // the postgres nor the in-memory tier can honour one and a capability is what
+  // every member of the tier can promise. KronosDB's tier adds it beside the
+  // capability, as `scheduleIdempotent`.
+  it("refuses a second schedule under the same token", async () => {
+    const orderId = `C-${crypto.randomUUID()}`
+    const token = `retry-${orderId}`
+    const due = new Date(Date.now() + 60_000)
+
+    expect(await scheduler.scheduleIdempotent(reminderEvent(orderId), due, token)).toEqual({ id: token })
+    const refusal = await scheduler.scheduleIdempotent(reminderEvent(orderId), due, token).then(
+      () => undefined,
+      (error) => error,
+    )
+    expect(refusal).toBeInstanceOf(ScheduleAlreadyExistsError)
+    expect((refusal as ScheduleAlreadyExistsError).token).toBe(token)
+
+    expect(await scheduler.cancelSchedule({ id: token })).toEqual({ kind: "cancelled" })
+  })
 })

@@ -7,7 +7,7 @@
  * processor status back so the admin UI can render it. Segment instructions
  * (split, merge, release) exist on the wire for Axon clients; a kronos
  * processor has one lane and ignores them. It only ever lived inside the backend because it
- * shares the same gRPC connection as the data path — so it takes that
+ * shares the same connection as the data path — so it takes that
  * connection's platform stream as an argument and is otherwise independent.
  *
  * Opt-in: a backend with no control plane is a perfectly good backend. You just

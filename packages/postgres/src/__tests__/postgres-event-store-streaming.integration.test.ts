@@ -90,6 +90,71 @@ describe("open() — streaming basics", () => {
   })
 })
 
+describe("open() — a filtered stream says how far it has looked", () => {
+  async function until(done: () => boolean, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs
+    while (!done() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25))
+    expect(done()).toBe(true)
+  }
+
+  it("moves past rows nobody asked for, once it has delivered the ones somebody did", async () => {
+    await store.append([
+      makeEvent("Wanted", []),
+      makeEvent("Other", []),
+      makeEvent("Other", []),
+      makeEvent("Other", []),
+    ])
+    const stream = store.open({ position: 0n, query: { types: [{ namespace: "test", name: "Wanted" }] } })
+    const events = await collectAvailable<SequencedEvent>(stream as never, 1)
+    expect(events.map((e) => e.sequence)).toEqual([1n])
+
+    // Everything behind position 4 has been looked at; only position 1 matched.
+    await until(() => stream.progressToken?.() !== undefined)
+    expect(stream.progressToken!().position()).toBe(4n)
+
+    // And it keeps going as quiet rows arrive.
+    await store.append([makeEvent("Other", []), makeEvent("Other", [])])
+    await until(() => stream.progressToken?.()?.position() === 6n)
+
+    // A match arrives after the quiet stretch: it is delivered, from where the stream had got to.
+    await store.append([makeEvent("Wanted", [])])
+    const later = await collectAvailable<SequencedEvent>(stream as never, 1)
+    expect(later.map((e) => e.sequence)).toEqual([7n])
+    stream.close()
+  })
+
+  it("does not look past a row a still-open transaction may yet put in front of it", async () => {
+    // A's transaction takes its xid first and commits LAST; B commits meanwhile.
+    // Looking past B would skip A's event, which will land at a lower position.
+    const stream = store.open({ position: 0n, query: { types: [{ namespace: "test", name: "Wanted" }] } })
+    const held = adapter.transaction("READ COMMITTED" as never, async (tx) => {
+      await tx.query(
+        `INSERT INTO ${DEFAULT_TABLE_NAMES.events} (event_id, type, tags, payload, metadata, version, timestamp)
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)`,
+        [generateIdentifier(), "test.Wanted", [], JSON.stringify({}), JSON.stringify({}), "1", Date.now()],
+      )
+      await tx.query(`SELECT pg_sleep(0.8)`)
+    })
+    await new Promise((r) => setTimeout(r, 150))
+    await store.append([makeEvent("Other", [])])
+    await new Promise((r) => setTimeout(r, 400))
+
+    // B is committed and visible, A is not: nothing may be looked past.
+    expect(stream.progressToken!()).toBeUndefined()
+
+    await held
+    const events = await collectAvailable<SequencedEvent>(stream as never, 1, 8000)
+    expect(events).toHaveLength(1)
+    stream.close()
+  }, 30_000)
+
+  it("an unfiltered stream has nothing to add: its last event is its position", async () => {
+    const stream = store.open({ position: 0n })
+    expect(stream.progressToken).toBeUndefined()
+    stream.close()
+  })
+})
+
 describe("open() — gap-free tailing (xid8 + pg_snapshot_xmin)", () => {
   it("does NOT skip events committed out-of-order relative to BIGSERIAL position", async () => {
     // Setup: two writers A, B. A starts FIRST (lower xid8) but commits AFTER B.

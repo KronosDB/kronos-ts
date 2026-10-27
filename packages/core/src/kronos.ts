@@ -189,6 +189,7 @@ function processorConflicts(a: EventProcessor<any>, b: EventProcessor<any>): str
   if (a.sequence !== b.sequence) conflicts.push("sequence")
   if (a.deadLetterQueue !== b.deadLetterQueue) conflicts.push("deadLetterQueue")
   if ((a.batchSize ?? 1) !== (b.batchSize ?? 1)) conflicts.push("batchSize")
+  if (a.replayBatchSize !== b.replayBatchSize) conflicts.push("replayBatchSize")
   return conflicts
 }
 
