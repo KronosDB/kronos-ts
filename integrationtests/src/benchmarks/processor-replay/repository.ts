@@ -1,25 +1,30 @@
 /**
  * THE REPOSITORY PROTOTYPE. User land, like `bulk.ts`: nothing here is a
- * framework API, and nothing in the framework changed to make it possible.
+ * framework API.
  *
  * A handler reads a row and saves it as if it were the table:
  *
  *   const b = await ctx.balances.get(id)
  *   await ctx.balances.save({ ...b, total: b.total + amount })
  *
- * and the batch decides when the table is written. `get` answers this batch's
- * copy, else the stored row, else a new row from the table's column defaults.
- * `save` only replaces the batch's copy. In PREPARE_COMMIT the copies are
+ * or hands over a fold and does not wait for the row at all:
+ *
+ *   await ctx.balances.upsert(id, (b) => ({ ...b, total: b.total + amount }))
+ *
+ * and the batch decides when the table is read and written. `get` answers this
+ * batch's copy, else the stored row, else a new row from the table's column
+ * defaults. The rows `get`s ask for in one turn of the event loop are read in
+ * ONE select, so under `concurrent` — every bucket's first `get` arriving at
+ * once — a batch reads in one statement. `save` only replaces the batch's
+ * copy. `upsert` queues its fold; in PREPARE_COMMIT the rows it needs are read
+ * in one select and the folds run in order. Then every row saved in the batch is
  * written as one upsert per table, before the processor stores its token (it
  * registers that last, and phase actions run in registration order), so rows
  * and token commit or roll back together, and a failed batch's copies go with
  * its unit of work.
- *
- * How many events fold before a write is the processor's batch: up to
- * `replayBatchSize` while it is behind, one or two at the head.
  */
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres"
-import { eq, getTableColumns, is, sql, SQL, type InferSelectModel } from "drizzle-orm"
+import { getTableColumns, inArray, is, sql, SQL, type InferSelectModel } from "drizzle-orm"
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core"
 import type { PoolClient } from "pg"
 import { eventHandler, unitOfWork, type EventHandlerContext, type UnitOfWork } from "@kronos-ts/core"
@@ -42,17 +47,22 @@ export type Repository<T extends PgTable> = {
   get(id: Row<T>[KeyName<T>]): Promise<Row<T>>
   /** Replace this batch's row. Written with the token when the batch commits. */
   save(row: Row<T>): Promise<void>
+  /** Fold this batch's row when the batch ends. The handler never waits for the row. */
+  upsert(id: Row<T>[KeyName<T>], fold: (row: Row<T>) => Row<T>): Promise<void>
 }
 
 export type Repositories<T extends Record<string, PgTable>> = { readonly [K in keyof T]: Repository<T[K]> }
+
+type Plain = Record<string, unknown>
 
 /** What a table needs to be kept in a batch: its key, and what a row starts as. */
 type Shape = {
   readonly table: PgTable
   readonly key: PgColumn
   readonly keyName: string
-  readonly fresh: Record<string, unknown>
-  readonly others: ReadonlyArray<PgColumn>
+  readonly fresh: Plain
+  readonly columns: number
+  readonly set: Record<string, SQL>
 }
 
 function shapeOf(table: PgTable): Shape {
@@ -60,7 +70,7 @@ function shapeOf(table: PgTable): Shape {
   const keys = columns.filter(([, column]) => column.primary)
   if (keys.length !== 1) throw new Error(`a repository needs a table with a one-column primary key`)
   const [keyName, key] = keys[0]!
-  const fresh: Record<string, unknown> = {}
+  const fresh: Plain = {}
   for (const [name, column] of columns) {
     if (column === key) continue
     // A row nobody has stored yet starts at the column's default. A NOT NULL
@@ -70,31 +80,85 @@ function shapeOf(table: PgTable): Shape {
     else if (!column.notNull) fresh[name] = null
     else throw new Error(`a repository cannot start a row: column "${column.name}" is NOT NULL and has no default`)
   }
-  return { table, key, keyName, fresh, others: columns.map(([, column]) => column).filter((column) => column !== key) }
+  const set = Object.fromEntries(
+    columns.filter(([, column]) => column !== key).map(([name, column]) => [name, sql`excluded.${sql.identifier(column.name)}`]),
+  )
+  return { table, key, keyName, fresh, columns: columns.length, set }
 }
 
 /** Postgres allows 65535 parameters in a statement. */
 const MAX_PARAMETERS = 65_535
 
-async function write(db: NodePgDatabase, shape: Shape, rows: Map<unknown, Record<string, unknown>>): Promise<void> {
-  if (rows.size === 0) return
-  const all = [...rows.values()]
-  const perStatement = Math.floor(MAX_PARAMETERS / (shape.others.length + 1))
-  const set = Object.fromEntries(
-    Object.entries(getTableColumns(shape.table))
-      .filter(([, column]) => column !== shape.key)
-      .map(([name, column]) => [name, sql`excluded.${sql.identifier((column as PgColumn).name)}`]),
-  )
+/** One table within one batch. */
+type Kept = {
+  readonly shape: Shape
+  /** The current row for every key the batch has read or saved. */
+  readonly rows: Map<unknown, Plain>
+  /** Keys whose row the batch has changed. */
+  readonly dirty: Set<unknown>
+  /** Keys asked for in this turn of the event loop, and who is waiting. */
+  readonly asked: Map<unknown, Array<Waiting>>
+  /** Folds waiting for the end of the batch, per key, in the order they came. */
+  readonly folds: Map<unknown, Array<(row: Plain) => Plain>>
+  reading: boolean
+}
+
+type Waiting = { readonly answer: (row: Plain) => void; readonly fail: (error: unknown) => void }
+
+/** One batch: its client, and what it keeps of each table. */
+type Batch = { readonly db: NodePgDatabase; readonly tables: Map<PgTable, Kept> }
+
+async function read(db: NodePgDatabase, kept: Kept, keys: unknown[]): Promise<void> {
+  const { shape } = kept
+  const found = new Map<unknown, Plain>()
+  for (let from = 0; from < keys.length; from += MAX_PARAMETERS) {
+    const rows = (await db
+      .select()
+      .from(shape.table)
+      .where(inArray(shape.key, keys.slice(from, from + MAX_PARAMETERS)))) as Plain[]
+    for (const row of rows) found.set(row[shape.keyName], row)
+  }
+  // A row saved while this read was on the wire is newer than what was read.
+  for (const key of keys) if (!kept.rows.has(key)) kept.rows.set(key, found.get(key) ?? { ...shape.fresh, [shape.keyName]: key })
+}
+
+/** Read everything asked for in this turn, in one select, and answer the askers. */
+function readAsked(db: NodePgDatabase, kept: Kept): void {
+  if (kept.reading) return
+  kept.reading = true
+  setImmediate(async () => {
+    const asked = new Map(kept.asked)
+    kept.asked.clear()
+    kept.reading = false
+    try {
+      await read(db, kept, [...asked.keys()])
+      for (const [key, waiting] of asked) for (const { answer } of waiting) answer(kept.rows.get(key)!)
+    } catch (error) {
+      // Every handler waiting on the read fails, and with it the batch.
+      for (const waiting of asked.values()) for (const { fail } of waiting) fail(error)
+    }
+  })
+}
+
+async function write(db: NodePgDatabase, kept: Kept): Promise<void> {
+  const { shape } = kept
+  const pending = [...kept.folds.keys()].filter((key) => !kept.rows.has(key))
+  if (pending.length > 0) await read(db, kept, pending)
+  for (const [key, folds] of kept.folds) {
+    kept.rows.set(key, folds.reduce((row, fold) => fold(row), kept.rows.get(key)!))
+    kept.dirty.add(key)
+  }
+  kept.folds.clear()
+  if (kept.dirty.size === 0) return
+  const all = [...kept.dirty].map((key) => kept.rows.get(key)!)
+  const perStatement = Math.floor(MAX_PARAMETERS / shape.columns)
   for (let from = 0; from < all.length; from += perStatement) {
     await db
       .insert(shape.table)
-      .values(all.slice(from, from + perStatement) as any)
-      .onConflictDoUpdate({ target: shape.key, set })
+      .values(all.slice(from, from + perStatement) as never)
+      .onConflictDoUpdate({ target: shape.key, set: shape.set })
   }
 }
-
-/** One batch: its client, and a copy of each row a handler has touched. */
-type Batch = { readonly db: NodePgDatabase; readonly rows: Map<PgTable, Map<unknown, Record<string, unknown>>> }
 
 const batches = new WeakMap<UnitOfWork, Promise<Batch>>()
 
@@ -103,9 +167,14 @@ function batchOf(uow: UnitOfWork, shapes: ReadonlyArray<Shape>): Promise<Batch> 
   if (batch === undefined) {
     batch = (async () => {
       const tx = await postgresTransaction(uow)
-      const opened: Batch = { db: drizzle(tx.unwrap<PoolClient>()), rows: new Map() }
+      const opened: Batch = {
+        db: drizzle(tx.unwrap<PoolClient>()),
+        tables: new Map(
+          shapes.map((shape) => [shape.table, { shape, rows: new Map(), dirty: new Set(), asked: new Map(), folds: new Map(), reading: false }]),
+        ),
+      }
       uow.onPrepareCommit(async () => {
-        for (const shape of shapes) await write(opened.db, shape, opened.rows.get(shape.table) ?? new Map())
+        for (const kept of opened.tables.values()) await write(opened.db, kept)
       })
       return opened
     })()
@@ -114,19 +183,39 @@ function batchOf(uow: UnitOfWork, shapes: ReadonlyArray<Shape>): Promise<Batch> 
   return batch
 }
 
-function repository(shape: Shape, batch: Batch): Repository<PgTable> {
-  let rows = batch.rows.get(shape.table)
-  if (rows === undefined) batch.rows.set(shape.table, (rows = new Map()))
-  const kept = rows
+function repository(kept: Kept, db: NodePgDatabase): Repository<PgTable> {
+  const { shape } = kept
+  /** The row as the batch has it now, its queued folds applied. */
+  async function current(id: unknown): Promise<Plain> {
+    let row = kept.rows.get(id)
+    if (row === undefined) {
+      row = await new Promise<Plain>((answer, fail) => {
+        const waiting = kept.asked.get(id)
+        if (waiting) waiting.push({ answer, fail })
+        else kept.asked.set(id, [{ answer, fail }])
+        readAsked(db, kept)
+      })
+    }
+    const folds = kept.folds.get(id)
+    if (folds) {
+      row = folds.reduce((r, fold) => fold(r), row)
+      kept.folds.delete(id)
+      kept.rows.set(id, row)
+      kept.dirty.add(id)
+    }
+    return row
+  }
   return {
-    async get(id) {
-      const row = kept.get(id)
-      if (row !== undefined) return row as never
-      const [stored] = await batch.db.select().from(shape.table).where(eq(shape.key, id)).limit(1)
-      return (stored ?? { ...shape.fresh, [shape.keyName]: id }) as never
-    },
+    get: (id) => current(id) as never,
     async save(row) {
-      kept.set((row as Record<string, unknown>)[shape.keyName], row as Record<string, unknown>)
+      const key = (row as Plain)[shape.keyName]
+      kept.rows.set(key, row as Plain)
+      kept.dirty.add(key)
+    },
+    async upsert(id, fold) {
+      const folds = kept.folds.get(id)
+      if (folds) folds.push(fold as never)
+      else kept.folds.set(id, [fold as never])
     },
   }
 }
@@ -142,7 +231,7 @@ export function repositoryHandler<T extends Record<string, PgTable>, M, C extend
   const shapes = Object.entries(tables).map(([name, t]) => [name, shapeOf(t)] as const)
   return async (message, context) => {
     const batch = await batchOf(context.unitOfWork, shapes.map(([, shape]) => shape))
-    const repositories = Object.fromEntries(shapes.map(([name, shape]) => [name, repository(shape, batch)]))
+    const repositories = Object.fromEntries(shapes.map(([name, shape]) => [name, repository(batch.tables.get(shape.table)!, batch.db)]))
     await next(message, { ...context, ...repositories } as unknown as C)
   }
 }
@@ -151,15 +240,25 @@ export function repositoryHandler<T extends Record<string, PgTable>, M, C extend
 
 type Ctx = EventHandlerContext & Repositories<{ balances: typeof table }>
 
-export async function repositoryProjection(url: string, uniqueKeys = false): Promise<Projection> {
+/** `get-save` reads the row in the handler; `upsert` hands over the fold. */
+export async function repositoryProjection(url: string, uniqueKeys = false, style: "get-save" | "upsert" = "get-save"): Promise<Projection> {
   const pg = postgresPool(pgAdapter({ connectionString: url }))
   await pg.start()
   await prepareDatabase(pg)
 
-  const onHandled = eventHandler(Handled, async ({ payload, sequence }, ctx: Ctx) => {
-    const b = await ctx.balances.get(uniqueKeys ? `${payload.account}#${sequence}` : payload.account)
-    await ctx.balances.save({ ...b, total: b.total + payload.amount, count: b.count + 1 })
-  })
+  const onHandled =
+    style === "upsert"
+      ? eventHandler(Handled, async ({ payload, sequence }, ctx: Ctx) => {
+          await ctx.balances.upsert(uniqueKeys ? `${payload.account}#${sequence}` : payload.account, (b) => ({
+            ...b,
+            total: b.total + payload.amount,
+            count: b.count + 1,
+          }))
+        })
+      : eventHandler(Handled, async ({ payload, sequence }, ctx: Ctx) => {
+          const b = await ctx.balances.get(uniqueKeys ? `${payload.account}#${sequence}` : payload.account)
+          await ctx.balances.save({ ...b, total: b.total + payload.amount, count: b.count + 1 })
+        })
 
   return {
     handlers: [{ ...onHandled, handler: repositoryHandler(onHandled.handler, { balances: table }) }],

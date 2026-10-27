@@ -3,7 +3,7 @@
  *
  *   KRONOSDB_SERVER_BIN=/path/to/kronosdb-server bun run.ts
  *   BENCH_EVENTS=1000000 BENCH_REPS=3 BENCH_RUNTIMES=bun,node BENCH_PROJECTIONS=memory,drizzle bun run.ts
- *   BENCH_STAGES=today,filters,batch,bulk,repository BENCH_REPLAY_BATCH=1000 bun run.ts
+ *   BENCH_STAGES=today,filters,batch,bulk,repository,concurrent,upsert BENCH_REPLAY_BATCH=1000 bun run.ts
  *
  * One server, seeded once; one Postgres container (named for this run, removed
  * at the end) when a drizzle projection is asked for. Every run is a child
@@ -121,7 +121,7 @@ try {
   for (const runtime of runtimes) {
     for (const projection of projections) {
       for (const stage of stages) {
-        if (projection === "memory" && (stage === "bulk" || stage === "repository")) continue
+        if (projection === "memory" && ["bulk", "repository", "concurrent", "upsert"].includes(stage)) continue
         const prefix = prefixes.get(`${projection}:${stage}`)
         const slow = prefix !== undefined && prefix < events
         const limit = slow ? prefix : events

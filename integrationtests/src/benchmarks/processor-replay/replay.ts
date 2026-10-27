@@ -14,9 +14,11 @@
  *   filters      the handlers' types sent to the server
  *   batch        + a replay batch of --replay-batch
  *   bulk         + the projection's writes buffered and flushed once per batch
- *   repository   + the same, through a repository that reads a row on a miss and saves whole rows
+ *   repository   + the same, through a repository: get, then save
+ *   concurrent   + the repository's handler unchanged, the batch's buckets side by side
+ *   upsert       + a repository handler that hands over a fold instead of reading the row
  */
-import { eventProcessor, jsonSerializer, kronos, localCommandBus, localQueryBus, unitOfWork, type EventStore } from "@kronos-ts/core"
+import { concurrent, eventProcessor, jsonSerializer, kronos, localCommandBus, localQueryBus, unitOfWork, type EventMessage, type EventStore } from "@kronos-ts/core"
 import { kronosDbConnection, kronosDbEventStore } from "@kronos-ts/kronosdb"
 import { expected } from "./domain.js"
 import { drizzleProjection, memoryProjection, type Projection } from "./projections.js"
@@ -56,13 +58,15 @@ const everything: EventStore = {
   open: (condition) => base.open({ position: condition.position, ...(condition.token ? { token: condition.token } : {}) }),
 }
 
-const config: Record<string, { filter: boolean; batchSize: number; replayBatchSize: number; writes: "each" | "bulk" | "repository" }> = {
+const config: Record<string, { filter: boolean; batchSize: number; replayBatchSize: number; writes: "each" | "bulk" | "repository" | "upsert"; concurrent?: boolean }> = {
   today: { filter: false, batchSize: 1, replayBatchSize: 1, writes: "each" },
   "today-tuned": { filter: false, batchSize: 100, replayBatchSize: 100, writes: "each" },
   filters: { filter: true, batchSize: 1, replayBatchSize: 1, writes: "each" },
   batch: { filter: true, batchSize: 1, replayBatchSize: replayBatch, writes: "each" },
   bulk: { filter: true, batchSize: 1, replayBatchSize: replayBatch, writes: "bulk" },
   repository: { filter: true, batchSize: 1, replayBatchSize: replayBatch, writes: "repository" },
+  concurrent: { filter: true, batchSize: 1, replayBatchSize: replayBatch, writes: "repository", concurrent: true },
+  upsert: { filter: true, batchSize: 1, replayBatchSize: replayBatch, writes: "upsert" },
 }
 const stageConfig = config[stage]
 if (!stageConfig) throw new Error(`unknown stage ${stage}`)
@@ -72,12 +76,12 @@ const projection: Projection =
     ? memoryProjection(all)
     : stageConfig.writes === "bulk"
       ? await bulkDrizzleProjection(pgUrl, uniqueKeys)
-      : stageConfig.writes === "repository"
-        ? await repositoryProjection(pgUrl, uniqueKeys)
+      : stageConfig.writes === "repository" || stageConfig.writes === "upsert"
+        ? await repositoryProjection(pgUrl, uniqueKeys, stageConfig.writes === "upsert" ? "upsert" : "get-save")
         : await drizzleProjection(pgUrl, uniqueKeys)
 
 const name = `replay-${stage}-${Date.now().toString(36)}`
-const processor = eventProcessor({
+const configured = eventProcessor({
   name,
   eventStore: stageConfig.filter ? base : everything,
   tokenStore: projection.tokenStore ?? (await import("@kronos-ts/core")).inMemoryTokenStore(),
@@ -85,6 +89,9 @@ const processor = eventProcessor({
   batchSize: stageConfig.batchSize,
   replayBatchSize: stageConfig.replayBatchSize,
 } as any)
+// A bucket is what a handler touches: the account, or with a row per event the event.
+const byRow = (e: EventMessage) => (uniqueKeys ? e.identifier : e.tags.find((t) => t.key === "account")?.value ?? e.identifier)
+const processor = stageConfig.concurrent ? concurrent(configured, byRow) : configured
 
 const { handled: expectedHandled, lastToken } = expected(limit, all)
 
