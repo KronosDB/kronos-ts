@@ -11,3 +11,4 @@ A processor is built from its four parts as arguments, and what it does with its
 - `deadLettering(p, queue, bucketOf)`: parks a failing event and the rest of its bucket under that bucket. With `concurrent` both must be given the same function, or the second wrapper throws.
 - `ctx.isReplay()` is fixed per event, read off the token before that event, rather than read off the batch's unit of work.
 - Two processors with the same name merge only if they were wrapped the same way.
+- `sequentialPerTag` is gone. A bucket per tag value is written out: `(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier`.

@@ -9,7 +9,6 @@ import { inMemoryTokenStore, type TokenStore } from "../token-store.js"
 import type { SequencedEvent, StreamingCondition } from "../source.js"
 import type { EventHandler } from "../handler.js"
 import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
-import { sequentialPerTag } from "../sequence.js"
 import { globalSequenceToken, type TrackingToken } from "../tracking-token.js"
 
 // ---------------------------------------------------------------------------
@@ -134,7 +133,7 @@ function run(config: {
 }) {
   let processor: EventProcessor = eventProcessor("p", config.log, config.tokens ?? inMemoryTokenStore(), unitOfWork)
   if (config.batch !== undefined) processor = batched(processor, config.batch)
-  if (config.withQueue) processor = deadLettering(processor, inMemoryDeadLetterQueue(), sequentialPerTag("order"))
+  if (config.withQueue) processor = deadLettering(processor, inMemoryDeadLetterQueue(), (e) => e.tags.find((t) => t.key === "order")?.value ?? qualifiedNameToString(e.name))
   return runEventProcessor({
     processor,
     handlers: config.handlers.map((definition) => ({ definition })),

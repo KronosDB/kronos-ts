@@ -1,4 +1,4 @@
-import { qualifiedNameToString, type EventMessage } from "../messaging/messages.js"
+import type { EventMessage } from "../messaging/messages.js"
 /**
  * Which ordered lane an event belongs to.
  *
@@ -8,25 +8,12 @@ import { qualifiedNameToString, type EventMessage } from "../messaging/messages.
  * `(e) => e.identifier` — every event in a lane of its own.
  *
  * A plain function, not a policy object: there is one operation here, and a
- * record with one method is a function wearing a hat.
- */
-export type Sequence = (event: EventMessage) => string
-
-/**
- * Lane an event by the value of a named tag, falling back to the event name
- * when the tag is absent. The DCB/tag-world analog of Axon's
- * `SequentialPerAggregatePolicy` (aggregate id → sequence).
- *
- * One line, written out rather than hidden, so the fallback is visible:
+ * record with one method is a function wearing a hat. There is no helper for
+ * the usual one — a bucket per tag value is a line, and writing it shows where
+ * an event without the tag goes:
  *
  * ```ts
- * const byAccount = sequentialPerTag("accountId")
- * deadLettering(eventProcessor("balances", eventStore, tokenStore, unitOfWork), deadLetterQueue, byAccount)
+ * const byAccount = (e: EventMessage) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier
  * ```
  */
-export function sequentialPerTag(key: string): Sequence {
-  return (event) => {
-    const match = event.tags.find((t) => t.key === key)
-    return match ? match.value : qualifiedNameToString(event.name)
-  }
-}
+export type Sequence = (event: EventMessage) => string

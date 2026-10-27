@@ -402,7 +402,7 @@ export {
   eventHandlerContext,
 } from "./event-processing/context.js"
 
-export { type Sequence, sequentialPerTag } from "./event-processing/sequence.js"
+export { type Sequence } from "./event-processing/sequence.js"
 export {
   type EventProcessor,
   type EventProcessorStatus,

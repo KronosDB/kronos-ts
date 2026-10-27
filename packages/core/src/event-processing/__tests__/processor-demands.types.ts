@@ -15,17 +15,17 @@
  *   bucketOf)` makes the bucket a required argument, so there is nothing left
  *   to demand.
  */
+import type { EventMessage } from "../../messaging/messages.js"
 import { inMemoryEventStore } from "../../event-sourcing/in-memory.js"
 import { inMemoryTokenStore, type TokenStore } from "../token-store.js"
 import { inMemoryDeadLetterQueue, type SequencedDeadLetterQueue } from "../dead-letter-queue.js"
 import { batched, concurrent, deadLettering, eventProcessor, type EventProcessor } from "../processor.js"
-import { sequentialPerTag } from "../sequence.js"
 import { unitOfWork, type UnitOfWork } from "../../unit-of-work/unit-of-work.js"
 
 const eventStore = inMemoryEventStore()
 const tokenStore = inMemoryTokenStore()
 const deadLetterQueue = inMemoryDeadLetterQueue()
-const byCourse = sequentialPerTag("courseId")
+const byCourse = (e: EventMessage) => e.tags.find((t) => t.key === "courseId")?.value ?? e.identifier
 
 /** A task that carries something the bare one does not — a family's, say. */
 type FamilyUnitOfWork = UnitOfWork & { readonly family: "postgres" }

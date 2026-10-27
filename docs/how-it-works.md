@@ -1086,9 +1086,9 @@ type Sequence = (event: EventMessage) => string
 
 Total: every event has a bucket. Events sharing a bucket are processed in order.
 
-- **`sequentialPerTag("accountId")`** — one bucket per account. The helper is one
-  line, and its fallback is visible: an event without that tag goes in a bucket
-  named after its event type.
+- **`(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier`** —
+  one bucket per account. Written out, so where an event without the tag goes is
+  visible: here, a bucket of its own.
 - **`(e) => e.identifier`** — every event in a bucket of its own, i.e. no
   ordering constraint at all. "No constraint" is not a missing answer; it is a
   function you can write down.

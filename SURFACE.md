@@ -578,7 +578,7 @@ ctx.source(query: EventQuery): Promise<ReadonlyArray<EventMessage>>
 
 // ── event delivery: tracked only; the processor is a value ────────────────
 type Sequence = (event: EventMessage) => string    // TOTAL — (e) => e.identifier = own bucket = no constraint
-sequentialPerTag(key: string): Sequence            // one-line transparent helper
+//   by tag, written out: (e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier
 eventProcessor<U extends UnitOfWork = UnitOfWork>(
   name: string, eventStore: EventStore, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive, positional
 ): EventProcessor<U>          // `U` is read off the factory and threads to the event handler's ctx.unitOfWork
@@ -1038,7 +1038,8 @@ interfaces + `SubscriptionRegistry` · `correlatingCommandBus`/`correlatingQuery
 `amqpConnection` name · the `postgres()` bundle · `SpanFactory`/`MetricsRecorder`
 seams + `tracingHandler`/`meteringHandler` in core · `@kronos-ts/opentelemetry`
 package · `trackingProcessor`/`subscribingProcessor` builders + `SequencingPolicy`
-objects · processors as a kronos list · on-commit delivery + any eventBus ·
+objects · `sequentialPerTag` and the processor's config fields (`batchSize`, `replayBatchSize`,
+`sequence`, `deadLetterQueue`) with `SequenceDemand` · processors as a kronos list · on-commit delivery + any eventBus ·
 `drizzleCommandHandler`×3 (one generic) · the ENTRY level of the handler wrappers
 (same names, now taking `h.handler`) and the entry-constraint types they needed
 (`DrizzleHandlerEntry`, `WithDrizzleSupplied`, `PostgresHandlerDefinition`, `Supplied`,
