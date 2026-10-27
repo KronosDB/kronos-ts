@@ -615,6 +615,25 @@ eventProcessor<U extends UnitOfWork = UnitOfWork, L extends EventProcessorLane<U
 //      own throws, naming the factory to build `unitOfWork` with. See the
 //      persistence section for why that beats the brand it replaced.
 type EventProcessorSite<U> · EventProcessorLane<U> · EventProcessorConfig<U> · SequenceDemand<C>
+// WHAT A PROCESSOR DOES WITH ITS BATCH, said as functions over the value. Each
+// returns a new value; the host composes them with whatever `pipe` it uses.
+batched(p, size: number): EventProcessor<U>                     // up to `size` READY events a batch, head and behind alike
+concurrent(p, bucketOf: Sequence): EventProcessor<U>            // the batch's buckets side by side; one bucket in log order
+deadLettering(p, queue: SequencedDeadLetterQueue<U>, bucketOf: Sequence): EventProcessor<U>   // park per bucket
+//   pipe(eventProcessor({ name, eventStore, tokenStore, unitOfWork }), (p) => batched(p, 1000), (p) => concurrent(p, byAccount))
+// A BUCKET IS ORDERED, BUCKETS ARE NOT. Without `concurrent` the processor hands
+// over one event at a time in log order, whatever the buckets say. With it, every
+// handler on that processor runs concurrently across buckets, so a handler touches
+// only what belongs to its event's bucket. The batch is still ONE unit of work:
+// without a queue a failure fails it once every bucket has SETTLED (the others are
+// running against its transaction); with a queue the failing bucket parks and the
+// rest commit. `concurrent` and `deadLettering` must be given the SAME function —
+// a bucket running beside another cannot be parked behind it — and the second
+// wrapper throws otherwise. `ctx.isReplay()` is fixed per event.
+// BUFFERING IS NOT HERE. A projection that folds a batch in memory and writes it
+// once is app code over the batch's unit of work: a repository on `ctx`, its write
+// in `onPrepareCommit`, which runs before the token is stored. With `concurrent`,
+// the `get`s of a batch arrive together and can be read in one statement.
 
 // ── assembly: three lists. Nothing else. ──────────────────────────────────
 kronos<U extends UnitOfWork = UnitOfWork>({

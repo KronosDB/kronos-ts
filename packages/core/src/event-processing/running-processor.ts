@@ -8,6 +8,7 @@ import type { EventHandler } from "./handler.js"
 import type { MessageStream, SequencedEvent } from "./source.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
 import type { DeadLetter } from "./dead-letter-queue.js"
+import type { Sequence } from "./sequence.js"
 import { deadLetteringDelivery } from "./dead-lettering.js"
 import { type DeadLetterReprocessor, deadLetterReprocessor } from "./dead-letter-reprocessor.js"
 import {
@@ -83,7 +84,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   options: RunEventProcessorOptions<U, E>,
 ): RunningProcessor {
   const { processor, handlers } = options
-  const { name, eventStore, tokenStore, unitOfWork: newUoW, deadLetterQueue, sequence } = processor
+  const { name, eventStore, tokenStore, unitOfWork: newUoW, deadLetterQueue, sequence, concurrent: buckets } = processor
   const batchSize = processor.batchSize ?? 1
   const replayBatchSize = Math.max(batchSize, processor.replayBatchSize ?? DEFAULT_REPLAY_BATCH_SIZE)
   const pollingIntervalMs = options.pollingIntervalMs ?? 500
@@ -303,37 +304,50 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   function contextFor(
     uow: U,
     entry: ProcessorHandlerEntry<U, E>,
+    replaying: boolean,
   ): EventHandlerContext<E, SubscriptionCapableQueryBus<U>, U> {
     // `ctx.load` sources from the entry's own log when it has one, and
     // otherwise from the log this delivery reads — the same store, in every
     // arrangement anybody actually writes.
     const loadFrom = entry.eventStore ?? eventStore
-    return eventHandlerContext<U, E, SubscriptionCapableQueryBus<U>>({
+    const context = eventHandlerContext<U, E, SubscriptionCapableQueryBus<U>>({
       uow,
       eventStore: loadFrom as E,
       ...(entry.commandBus !== undefined ? { commandBus: entry.commandBus } : {}),
       ...(entry.queryBus !== undefined ? { queryBus: entry.queryBus } : {}),
     })
+    // Fixed per EVENT, not read off the batch's task: with buckets side by
+    // side the task's flag is shared by events on both sides of a replay's end.
+    return { ...context, isReplay: () => replaying }
   }
 
   async function processBatch(batch: SequencedEvent[]) {
     let batchEndToken: TrackingToken = token
+    // Whether each event is delivered as part of a replay, read off the token
+    // as it stands BEFORE that event — a replay can end inside a batch.
+    const replaying: boolean[] = []
+    for (const sequencedEvent of batch) {
+      replaying.push(isReplaying(batchEndToken))
+      // Prefer the engine's own cursor token (carries the commit-order key for
+      // gap-free resume); fall back to a position+1 token for dense-sequence
+      // engines that don't supply one.
+      batchEndToken = sequencedEvent.token
+        ? advanceTokenTo(batchEndToken, sequencedEvent.token)
+        : advanceToken(batchEndToken, sequencedEvent.sequence + 1n)
+    }
 
     // The MINTED handle is the batch's task — see the note in `localCommandBus`
     // for why it is read here rather than off `execute`'s parameter.
     const uow = newUoW()
     await uow.execute(async () => {
-      for (const sequencedEvent of batch) {
-        uow.replaying = isReplaying(batchEndToken)
-
-        await deliverEvent(sequencedEvent, uow)
-
-        // Prefer the engine's own cursor token (carries the commit-order key for
-        // gap-free resume); fall back to a position+1 token for dense-sequence
-        // engines that don't supply one.
-        batchEndToken = sequencedEvent.token
-          ? advanceTokenTo(batchEndToken, sequencedEvent.token)
-          : advanceToken(batchEndToken, sequencedEvent.sequence + 1n)
+      if (buckets === undefined) {
+        for (let i = 0; i < batch.length; i++) {
+          uow.replaying = replaying[i]!
+          await deliverEvent(batch[i]!, uow, replaying[i]!)
+        }
+      } else {
+        uow.replaying = replaying[0] ?? false
+        await deliverSideBySide(batch, replaying, uow, buckets)
       }
 
       // Only the token. No claim is ever taken on this path (`claimToken` has
@@ -349,7 +363,43 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     token = batchEndToken
   }
 
-  async function deliverEvent(sequencedEvent: SequencedEvent, uow: U) {
+  /**
+   * The batch's buckets, side by side: each bucket's events one after another
+   * in log order, the buckets all at once. Only events somebody handles are
+   * bucketed — the function is written for those.
+   *
+   * Every bucket SETTLES before the batch does. A failure does not cut the
+   * others short: they are still running against the batch's transaction, and
+   * rolling it back under them would turn one failure into many. The error
+   * that fails the batch is the one at the earliest position.
+   */
+  async function deliverSideBySide(batch: SequencedEvent[], replaying: boolean[], uow: U, bucketOf: Sequence) {
+    const lanes = new Map<string, number[]>()
+    for (let i = 0; i < batch.length; i++) {
+      const event = batch[i]!.event
+      if (!handlerMap.has(qualifiedNameToString(event.name))) continue
+      const bucket = bucketOf(event)
+      const lane = lanes.get(bucket)
+      if (lane) lane.push(i)
+      else lanes.set(bucket, [i])
+    }
+    const failures: Array<{ at: number; error: unknown }> = []
+    await Promise.all(
+      [...lanes.values()].map(async (lane) => {
+        for (const i of lane) {
+          try {
+            await deliverEvent(batch[i]!, uow, replaying[i]!)
+          } catch (error) {
+            failures.push({ at: i, error })
+            return
+          }
+        }
+      }),
+    )
+    if (failures.length > 0) throw failures.reduce((first, f) => (f.at < first.at ? f : first)).error
+  }
+
+  async function deliverEvent(sequencedEvent: SequencedEvent, uow: U, replaying: boolean) {
     const event = sequencedEvent.event
     const eventName = qualifiedNameToString(event.name)
     const entries = handlerMap.get(eventName)
@@ -360,7 +410,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
         { ...sequencedEvent, event },
         entries.map((entry) => ({
           definition: entry.definition,
-          context: contextFor(uow, entry),
+          context: contextFor(uow, entry, replaying),
         })),
         uow,
       )
@@ -370,7 +420,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     for (const entry of entries) {
       await entry.definition.handler(
         { ...event, sequence: sequencedEvent.sequence },
-        contextFor(uow, entry),
+        contextFor(uow, entry, replaying),
       )
     }
   }
@@ -388,7 +438,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     const position =
       typeof letter.diagnostics.position === "number" ? BigInt(letter.diagnostics.position) : 0n
     for (const entry of entries) {
-      await entry.definition.handler({ ...event, sequence: position }, contextFor(uow, entry))
+      await entry.definition.handler({ ...event, sequence: position }, contextFor(uow, entry, uow.replaying))
     }
   }
 

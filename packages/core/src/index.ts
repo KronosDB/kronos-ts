@@ -412,6 +412,9 @@ export {
   type RunningProcessor,
   type SequenceDemand,
   eventProcessor,
+  batched,
+  concurrent,
+  deadLettering,
 } from "./event-processing/processor.js"
 
 // Event source (what a processor reads)

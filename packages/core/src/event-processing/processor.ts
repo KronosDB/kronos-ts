@@ -79,6 +79,12 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
    * event. A value at or below `batchSize` turns the larger batch off.
    */
   readonly replayBatchSize?: number
+  /**
+   * Which bucket each event belongs to when the batch's buckets run SIDE BY
+   * SIDE. Absent means one event at a time, in log order. Set by
+   * {@link concurrent}; the same function as {@link sequence} when both are set.
+   */
+  readonly concurrent?: Sequence
 }
 
 /**
@@ -204,6 +210,80 @@ export function eventProcessor<
     ...(config.deadLetterQueue !== undefined ? { deadLetterQueue: config.deadLetterQueue } : {}),
     ...(config.batchSize !== undefined ? { batchSize: config.batchSize } : {}),
     ...(config.replayBatchSize !== undefined ? { replayBatchSize: config.replayBatchSize } : {}),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// What a processor does with its batch, said as functions over the value.
+// Each one returns a new value with one more thing said about it, so they
+// compose in any order through whatever `pipe` the host uses:
+//
+//   pipe(
+//     eventProcessor({ name, eventStore, tokenStore, unitOfWork }),
+//     (p) => batched(p, 1000),
+//     (p) => concurrent(p, byAccount),
+//   )
+// ---------------------------------------------------------------------------
+
+/**
+ * Up to `size` events per batch — one unit of work, one token write — at the
+ * head and behind it alike. A batch only ever takes the events that are READY,
+ * so at the head it is the one or two that just arrived and the read model is
+ * as fresh as it ever was; behind, it is `size`. A failed batch is retried one
+ * event at a time until the token is past it, so a poison event ends up alone.
+ *
+ * THE BOUND IS MEMORY: the batch is held decoded until it commits, and the
+ * stream reads ahead by as many.
+ */
+export function batched<U extends UnitOfWork>(processor: EventProcessor<U>, size: number): EventProcessor<U> {
+  if (!Number.isInteger(size) || size < 1) {
+    throw new Error(`batched("${processor.name}"): a batch is a whole number of events, at least 1 — got ${size}`)
+  }
+  return { ...processor, batchSize: size, replayBatchSize: size }
+}
+
+/**
+ * Run the batch's buckets side by side. Events `buckets` puts in the same
+ * bucket are handled one after another, in log order; events in different
+ * buckets are not ordered against each other at all. The batch still commits
+ * as ONE unit of work: without a dead-letter queue a failure in any bucket
+ * fails the batch once every bucket has settled, and the whole batch is
+ * redelivered.
+ *
+ * Every handler on this processor runs concurrently across buckets, so a
+ * handler must touch only what belongs to its event's bucket. Unrecognised
+ * events go wherever the function sends them: `e.identifier` gives each a
+ * bucket of its own, a constant puts them all in one.
+ */
+export function concurrent<U extends UnitOfWork>(processor: EventProcessor<U>, buckets: Sequence): EventProcessor<U> {
+  sameBuckets(processor, processor.sequence, buckets, "concurrent")
+  return { ...processor, concurrent: buckets }
+}
+
+/**
+ * Park a failing event in `queue`, under its bucket, and everything behind it
+ * in that bucket, so the batch commits and the token moves past it. Other
+ * buckets go on.
+ *
+ * With {@link concurrent} the two must bucket events THE SAME WAY: a bucket
+ * that runs side by side with another cannot be parked behind it.
+ */
+export function deadLettering<U extends UnitOfWork>(
+  processor: EventProcessor<U>,
+  queue: SequencedDeadLetterQueue<U>,
+  buckets: Sequence,
+): EventProcessor<U> {
+  sameBuckets(processor, processor.concurrent, buckets, "deadLettering")
+  return { ...processor, deadLetterQueue: queue, sequence: buckets }
+}
+
+function sameBuckets(processor: EventProcessor<any>, existing: Sequence | undefined, buckets: Sequence, wrapper: string) {
+  if (existing !== undefined && existing !== buckets) {
+    throw new Error(
+      `${wrapper}("${processor.name}"): this processor already buckets its events with another function. ` +
+        `concurrent and deadLettering must be given the same one — a bucket that runs side by side with ` +
+        `another cannot be parked behind it.`,
+    )
   }
 }
 
