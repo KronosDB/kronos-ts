@@ -1,5 +1,42 @@
 # @kronos-ts/postgres
 
+## 0.18.0
+
+### Minor Changes
+
+- cce420c: A processor opens its stream with the event types its handlers handle, so a log that filters sends nothing else, and it uses a larger batch while it is behind the head.
+
+  - The query is a request. An event nobody handles is still dropped on arrival, so a store that ignores it is only slower.
+  - `MessageStream` has an optional `progressToken()`: how far a filtered stream has looked. A processor stores it as its token when it has nothing to do, so a processor of rare events no longer sits at its last match, and a replay whose last events are quiet ends. The in-memory and Postgres stores and KronosDB (Progress frames) report it.
+  - A KronosDB `Progress` is held back until the events that arrived before it have been taken. `kronosDbEventStore(kdb, context, streaming?)` takes the subscription options; a stream with a query asks for Progress every second.
+  - `eventProcessor({ replayBatchSize })`: events per batch while behind the head, default 1000, never below `batchSize`. `StreamingCondition.readAhead` asks a stream to hold that many ready. A failed batch is retried with `batchSize` until the token is past it.
+  - `upcastingEventStore(next, upcast, { storedTypes })` translates a stream's type filter to the names events are stored under. Without `storedTypes` the type restriction is dropped from the query, not trusted.
+  - The processor's hop between batches is no longer unref'd. Under Node the next batch waited for the next socket read or timer, a millisecond or two a batch.
+
+### Patch Changes
+
+- 1270e23: The Postgres dead-letter queue claims a lane on the pool, and its replay transaction writes nothing until every handler has run.
+
+  - `process()` takes the lane's lease with one committed statement that skips a lane another replayer holds. Two concurrent replayers no longer block on each other or replay the same letters twice.
+  - The lane's letters are read after the claim, not before.
+  - The replay transaction takes no transaction id while handlers run, so streaming processors keep reading the event store during a replay. Evictions, the requeue of the failed letter and the lease release are applied together at the end, in the unit of work.
+  - When the replay's unit of work fails, the lease is released if it is still the caller's. Otherwise it expires after `claimDurationMs`.
+  - `claimDurationMs` must exceed the longest replay a handler can take. Past it, another replayer may claim the lane and replay it again.
+
+- 7e7c908: The Postgres dead-letter queue's `process()` passes each lane's head letter to the sequence filter, and checks the filter again against the head after claiming the lane. A lane whose head no longer passes is released and the next lane is tried; when none is left, `process()` returns false.
+- d7b7b17: The Postgres dead-letter queue replays each letter in its own transaction, and `enqueue` no longer reads whole lanes.
+
+  - A failing replay's handler writes are rolled back before the letter is requeued. The letters before it stay evicted, with their handlers' writes.
+  - Handler writes no longer hold a transaction id across the rest of the lane, so the event store's tail is held back only while one letter's transaction is open.
+  - Before a letter's eviction commits, `process()` claims the next letter's lease with a statement that never waits on a lock. `claimDurationMs` now has to outlast one letter's replay, not the whole lane. If the next letter cannot be claimed, the walk stops after the current letter.
+  - `enqueue`, `enqueueIfPresent`, `isFull` and `amountOfSequences` use `count(*)`, `max(sequence_index)` and `count(DISTINCT sequence_identifier)` instead of reading every letter in the lane. The caps, defaults and overflow error are unchanged.
+
+- Updated dependencies [7e7c908]
+- Updated dependencies [d7b7b17]
+- Updated dependencies [cce420c]
+- Updated dependencies [1b501ec]
+  - @kronos-ts/core@0.7.0
+
 ## 0.17.1
 
 ### Patch Changes
