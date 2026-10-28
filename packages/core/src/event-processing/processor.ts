@@ -63,6 +63,22 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
   readonly deadLetterQueue?: SequencedDeadLetterQueue<U>
   /** Events per batch (one unit of work). Default: 1. */
   readonly batchSize?: number
+  /**
+   * Events per batch while the processor is BEHIND — replaying after a reset,
+   * or catching up on a backlog — instead of {@link batchSize}. Default: 1000.
+   *
+   * A batch is one unit of work: one transaction, one token write. Far behind
+   * the head the per-batch cost is what dominates, and a batch only ever takes
+   * the events that are ready, so a large number costs nothing at the head. At
+   * the head the processor is "caught up" and uses `batchSize` again, and so does
+   * its retry after a failed batch, which is how a poison event ends up alone in
+   * a batch.
+   *
+   * THE BOUND IS MEMORY. The batch's events are held, decoded, until it commits,
+   * and the stream reads ahead by as many; budget this times the size of one
+   * event. A value at or below `batchSize` turns the larger batch off.
+   */
+  readonly replayBatchSize?: number
 }
 
 /**
@@ -112,6 +128,7 @@ export type EventProcessorSite<U extends UnitOfWork = UnitOfWork> = {
   tokenStore: TokenStore<U>
   unitOfWork: () => U
   batchSize?: number
+  replayBatchSize?: number
 }
 
 /**
@@ -186,6 +203,7 @@ export function eventProcessor<
     ...(config.sequence !== undefined ? { sequence: config.sequence } : {}),
     ...(config.deadLetterQueue !== undefined ? { deadLetterQueue: config.deadLetterQueue } : {}),
     ...(config.batchSize !== undefined ? { batchSize: config.batchSize } : {}),
+    ...(config.replayBatchSize !== undefined ? { replayBatchSize: config.replayBatchSize } : {}),
   }
 }
 

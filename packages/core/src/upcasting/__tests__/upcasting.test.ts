@@ -170,3 +170,127 @@ describe("upcastingEventStore", () => {
     expect((await store.latestToken()).position()).toBe((await inner.latestToken()).position())
   })
 })
+
+// ---------------------------------------------------------------------------
+// A FILTERED STREAM MEETS AN UPCASTER.
+//
+// A processor opens its stream asking for the types it handles. The log keeps
+// the names events were written under, so a type the upcaster renamed must be
+// asked for by its OLD name or the events are silently missed.
+// ---------------------------------------------------------------------------
+
+describe("upcastingEventStore and a filtered stream", () => {
+  const Placed = qn("shop", "OrderPlaced") // what the log has for 2019's orders
+  const Created = qn("shop", "OrderCreated") // what the code calls them today
+
+  // An upcaster that RENAMES: nothing in its type says so.
+  const renamed: Upcast = (e) =>
+    e.name.namespace === Placed.namespace && e.name.name === Placed.name ? { ...e, name: Created, version: "2.0" } : e
+
+  const asked: Array<unknown> = []
+  /** An in-memory store that remembers the query each stream was opened with. */
+  function recording() {
+    const inner = inMemoryEventStore()
+    return {
+      ...inner,
+      open(condition: Parameters<typeof inner.open>[0]) {
+        asked.push(condition.query)
+        return inner.open(condition)
+      },
+    }
+  }
+
+  async function drain(stream: ReturnType<EventStoreOpen>) {
+    const seen: string[] = []
+    for (let e = stream.next(); e; e = stream.next()) seen.push(`${e.event.name.name}@${e.event.version}`)
+    stream.close()
+    return seen
+  }
+  type EventStoreOpen = ReturnType<typeof inMemoryEventStore>["open"]
+
+  async function seeded() {
+    asked.length = 0
+    const log = recording()
+    await log.append([
+      stored({ name: Placed, version: "1.0" }),
+      stored({ name: qn("shop", "Shipped"), version: "1.0" }),
+      stored({ name: Created, version: "2.0" }),
+    ])
+    return log
+  }
+
+  it("asks the log for the OLD name too, so a renamed event is not missed", async () => {
+    const log = await seeded()
+    const store = upcastingEventStore(log, renamed, {
+      storedTypes: (type) => (type === "shop.OrderCreated" ? [type, "shop.OrderPlaced"] : [type]),
+    })
+
+    const seen = await drain(store.open({ position: 0n, query: { types: [Created] } }))
+
+    expect(asked[0]).toEqual({ types: ["shop.OrderCreated", "shop.OrderPlaced"] })
+    // Both the renamed one and the one already written under the new name,
+    // and what it receives is the upcast form.
+    expect(seen).toEqual(["OrderCreated@2.0", "OrderCreated@2.0"])
+  })
+
+  it("keeps the tags of the query and translates the types of each item separately", async () => {
+    const log = await seeded()
+    const store = upcastingEventStore(log, renamed, {
+      storedTypes: (type) => (type === "shop.OrderCreated" ? [type, "shop.OrderPlaced"] : [type]),
+    })
+
+    store.open({ position: 0n, query: [{ tags: { courseId: "cs-101" }, types: [Created] }, { types: ["shop.Shipped"] }] }).close()
+
+    expect(asked[0]).toEqual([
+      { tags: { courseId: "cs-101" }, types: ["shop.OrderCreated", "shop.OrderPlaced"] },
+      { types: ["shop.Shipped"] },
+    ])
+  })
+
+  it("WITHOUT being told, widens the filter instead of trusting it: nothing is missed", async () => {
+    const log = await seeded()
+    // The same renaming upcaster, and no `storedTypes`.
+    const store = upcastingEventStore(log, renamed)
+
+    const seen = await drain(store.open({ position: 0n, query: { types: [Created] } }))
+
+    // The type restriction is gone from what the log was asked...
+    expect(asked[0]).toEqual({})
+    // ...so the renamed event arrives (and the reader drops the Shipped one itself).
+    expect(seen).toContain("OrderCreated@2.0")
+    expect(seen.filter((s) => s === "OrderCreated@2.0")).toHaveLength(2)
+  })
+
+  it("widening keeps a tag restriction — tags are not re-derived by an upcast", async () => {
+    const log = await seeded()
+    const store = upcastingEventStore(log, renamed)
+
+    store.open({ position: 0n, query: { tags: { courseId: "cs-101" }, types: [Created] } }).close()
+
+    expect(asked[0]).toEqual({ tags: { courseId: "cs-101" } })
+  })
+
+  it("leaves a query with no types, and a stream with no query, exactly as it was", async () => {
+    const log = await seeded()
+    const store = upcastingEventStore(log, renamed)
+
+    store.open({ position: 0n, query: { tags: { courseId: "cs-101" } } }).close()
+    store.open({ position: 0n }).close()
+
+    expect(asked).toEqual([{ tags: { courseId: "cs-101" } }, undefined])
+  })
+
+  it("passes where the stream has looked straight through", async () => {
+    const log = await seeded()
+    const store = upcastingEventStore(log, renamed, { storedTypes: (type) => [type] })
+
+    const stream = store.open({ position: 0n, query: { types: ["shop.Nothing"] } })
+    expect(stream.progressToken?.()?.position()).toBe(3n)
+    stream.close()
+
+    // And a stream whose log cannot say does not grow the member.
+    const plain = upcastingEventStore(log, renamed).open({ position: 0n })
+    expect(plain.progressToken).toBeUndefined()
+    plain.close()
+  })
+})

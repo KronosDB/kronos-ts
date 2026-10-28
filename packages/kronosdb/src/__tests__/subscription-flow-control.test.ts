@@ -1,129 +1,88 @@
 /**
  * CREDIT-BASED FLOW CONTROL ON A SUBSCRIPTION QUERY.
  *
- * `subscribe` grants a window of permits; the server sends at most that many
- * updates and then waits for the subscriber to top it back up. A client that
- * grants a window and never refills works until exactly `window` updates have
- * flowed and then stalls with no error anywhere — the failure this pins.
+ * OpenSubscriptionQuery grants a window of permits; the server sends at most
+ * that many updates and then waits for the subscriber to top it back up with
+ * Credit. A client that grants a window and never refills works until exactly
+ * `window` updates have flowed and then stalls with no error anywhere — the
+ * failure this pins.
  */
-import { describe, expect, it } from "bun:test"
-import {
-  localQueryBus,
-  qn,
-  unitOfWork,
-  type QueryMessage,
-  type SerializedObject,
-  type Serializer,
-} from "@kronos-ts/core"
+import { afterEach, describe, expect, it } from "bun:test"
+import { localQueryBus, qn, unitOfWork, type QueryMessage } from "@kronos-ts/core"
+import { kronosDbQueryBus } from "../kronosdb-query-bus.js"
+import { FLAG_END } from "../protocol/kronosdb-protocol.js"
+import { clientOf, until, type Client } from "./bus-test-kit.js"
+import { fakeNativeServer, type FakeConnection, type FakeNativeServer } from "./fake-native-server.js"
 
-const jsonSerializer: Serializer = {
-  serialize(value, type, revision = ""): SerializedObject {
-    return { type, revision, data: new TextEncoder().encode(JSON.stringify(value)) }
-  },
-  deserialize<T>({ data }: SerializedObject): T {
-    return JSON.parse(new TextDecoder().decode(data)) as T
-  },
-  canConvert() { return true },
-}
-import { kronosDbQueryBus } from "../kronosdb.js"
-import { shutdownLatch } from "../shutdown-latch.js"
-import type { KronosDbConnection } from "../connection.js"
-
-/** A stream we can push server frames into, and close. */
-function controllable<T>() {
-  let push!: (value: T) => void
-  let close!: () => void
-  const queue: T[] = []
-  let waiting: ((r: IteratorResult<T>) => void) | null = null
-  let done = false
-  const iterable: AsyncIterable<T> = {
-    [Symbol.asyncIterator]: () => ({
-      next: () =>
-        new Promise<IteratorResult<T>>((resolve) => {
-          if (queue.length > 0) return resolve({ value: queue.shift()!, done: false })
-          if (done) return resolve({ value: undefined as never, done: true })
-          waiting = resolve
-        }),
-    }),
-  }
-  push = (value: T) => {
-    if (waiting) { const w = waiting; waiting = null; w({ value, done: false }) }
-    else queue.push(value)
-  }
-  close = () => {
-    done = true
-    if (waiting) { const w = waiting; waiting = null; w({ value: undefined as never, done: true }) }
-  }
-  return { iterable, push, close }
-}
-
-function fakeConnection(captured: { outbound: any[] }, server: AsyncIterable<any>): KronosDbConnection {
-  const never = (async function* () { await new Promise(() => {}) })()
-  return {
-    channel: {} as any,
-    platform: {} as any,
-    eventStore: {} as any,
-    commands: { openStream: () => never } as any,
-    queries: {
-      openStream: () => never,
-      // The subscriber leg: drain what the client sends, hand back server frames.
-      subscription(outbound: AsyncIterable<any>) {
-        void (async () => {
-          try { for await (const msg of outbound) captured.outbound.push(msg) } catch { /* closed */ }
-        })()
-        return server
-      },
-    } as any,
-    config: {
-      host: "localhost", port: 50051, context: "default",
-      componentName: "test", clientId: "test-client", token: "",
-      reconnectIntervalMs: 0, maxReconnectAttempts: 0,
-      keepAliveTimeMs: 0, keepAliveTimeoutMs: 0, keepAlivePermitWithoutCalls: false,
-    },
-    state: "connected",
-    onReconnect() {}, onDisconnect() {}, close() {}, reconnect: async () => {},
-  } as unknown as KronosDbConnection
-}
-
-const message = (): QueryMessage => ({
-  identifier: "q-1",
-  kind: "query",
-  name: qn("kronos.test", "WatchValue"),
-  payload: { id: "x" },
-  metadata: {},
-  timestamp: 1,
-})
-
-const updateFrame = (n: number) => ({
-  update: { payload: jsonSerializer.serialize(n, "kronos.test.Update", "") },
-})
-
-async function flush(ms = 10) { await new Promise((r) => setTimeout(r, ms)) }
+type Opened = { connection: FakeConnection; stream: number; permits: bigint; subscriptionId: string; credits: number[]; cancelled: boolean }
 
 describe("kronosDbQueryBus — subscription query flow control", () => {
-  function setup(bufferSize: number) {
-    const captured: { outbound: any[] } = { outbound: [] }
-    const server = controllable<any>()
-    let latch = shutdownLatch()
-    const bus = kronosDbQueryBus(
-      localQueryBus(unitOfWork),
-      {
-        connection: fakeConnection(captured, server.iterable),
-        serializer: jsonSerializer,
-        registerShutdownLatch: (l) => { latch = l },
+  let server: FakeNativeServer
+  let client: Client
+  const opened: Opened[] = []
+
+  afterEach(async () => {
+    client?.connection.close()
+    await server?.close()
+  })
+
+  async function setup(bufferSize: number) {
+    opened.length = 0
+    server = await fakeNativeServer({
+      onFrame(connection, { stream, frame }) {
+        if (frame.name === "OpenSubscriptionQuery") {
+          opened.push({
+            connection,
+            stream,
+            permits: frame.body.subscription.permits,
+            subscriptionId: frame.body.subscription.subscriptionId,
+            credits: [],
+            cancelled: false,
+          })
+        } else if (frame.name === "Credit") opened.find((o) => o.stream === stream)?.credits.push(frame.body.credits)
+        else if (frame.name === "Cancel") {
+          const o = opened.find((o) => o.stream === stream)
+          if (o) o.cancelled = true
+        }
       },
-    )
+    })
+    client = clientOf(server as never)
+    const bus = kronosDbQueryBus(localQueryBus(unitOfWork), client.host)
     const result = bus.subscriptionQuery(message(), bufferSize)
-    return { captured, server, result, stop: () => latch.initiateShutdown() }
+    void result.initialResult.catch(() => {})
+    await until(() => opened.length === 1, "the subscription")
+    return { result, sent: opened[0]! }
   }
 
-  const flowControls = (outbound: any[]) => outbound.filter((m) => m.flowControl)
+  const message = (): QueryMessage => ({
+    identifier: "q-1",
+    kind: "query",
+    name: qn("kronos.test", "WatchValue"),
+    payload: { id: "x" },
+    metadata: {},
+    timestamp: 1,
+  })
+
+  const update = (sent: Opened, n: number) =>
+    sent.connection.reply(sent.stream, 0, {
+      name: "SubscriptionQueryEvent",
+      body: {
+        subscriptionId: sent.subscriptionId,
+        event: {
+          kind: "update",
+          value: {
+            messageId: "", metadata: [], clientId: "", componentName: "", errorCode: "", error: undefined,
+            payload: { typeName: "kronos.test.Update", revision: "", data: new TextEncoder().encode(JSON.stringify(n)) },
+          },
+        },
+      },
+    })
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
 
   it("keeps wire headroom independent of a small consumer buffer", async () => {
-    const { captured, server, stop } = setup(8)
-    await flush()
-    expect(captured.outbound[0]?.subscribe?.numberOfPermits).toBe(256n)
-    server.close(); stop()
+    const { sent } = await setup(8)
+    expect(sent.permits).toBe(256n)
   })
 
   it("never asks for more credit than the server will grant", async () => {
@@ -132,76 +91,66 @@ describe("kronosDbQueryBus — subscription query flow control", () => {
     // pass before topping up — 226 of them beyond the credit the server
     // actually holds, and silently dropped. So the window we track is the one
     // the server gives.
-    const { captured, server, result, stop } = setup(5000)
-    await flush()
-    expect(captured.outbound[0]?.subscribe?.numberOfPermits).toBe(1024n)
+    const { result, sent } = await setup(5000)
+    expect(sent.permits).toBe(1024n)
 
     // …and the refill cadence follows the granted window (1024 / 4 = 256),
     // not the requested one.
-    for (let i = 0; i < 255; i++) server.push(updateFrame(i))
-    await flush()
-    expect(flowControls(captured.outbound)).toHaveLength(0)
-    server.push(updateFrame(255))
-    await flush()
-    expect(flowControls(captured.outbound).map((m) => m.flowControl.numberOfPermits)).toEqual([256n])
-
-    result.close(); server.close(); stop()
+    for (let i = 0; i < 255; i++) update(sent, i)
+    await settle()
+    expect(sent.credits).toHaveLength(0)
+    update(sent, 255)
+    await until(() => sent.credits.length === 1, "the refill")
+    expect(sent.credits).toEqual([256])
+    result.close()
   })
 
-  it("rejects a zero-sized consumer buffer", () => {
-    expect(() => setup(0)).toThrow("bufferSize must be a positive integer")
+  it("rejects a zero-sized consumer buffer", async () => {
+    await expect(setup(0)).rejects.toThrow("bufferSize must be a positive integer")
   })
 
   it("refills a quarter-window at a time as updates are consumed", async () => {
-    const { captured, server, result, stop } = setup(256)   // quarter window = 64
-    await flush()
+    const { result, sent } = await setup(256) // quarter window = 64
 
-    for (let i = 0; i < 64; i++) server.push(updateFrame(i))
-    await flush()
-    expect(flowControls(captured.outbound).map((m) => m.flowControl.numberOfPermits)).toEqual([64n])
+    for (let i = 0; i < 64; i++) update(sent, i)
+    await until(() => sent.credits.length === 1, "the first refill")
+    expect(sent.credits).toEqual([64])
 
-    for (let i = 0; i < 64; i++) server.push(updateFrame(i))
-    await flush()
-    expect(flowControls(captured.outbound).map((m) => m.flowControl.numberOfPermits)).toEqual([64n, 64n])
+    for (let i = 0; i < 64; i++) update(sent, i)
+    await until(() => sent.credits.length === 2, "the second refill")
+    expect(sent.credits).toEqual([64, 64])
 
     // What was granted back equals what was taken — the window never shrinks.
-    const refilled = flowControls(captured.outbound).reduce((sum, m) => sum + Number(m.flowControl.numberOfPermits), 0)
-    expect(refilled).toBe(128)
-
-    result.close(); server.close(); stop()
+    expect(sent.credits.reduce((sum, n) => sum + n, 0)).toBe(128)
+    result.close()
   })
 
   it("does not refill before a quarter-window has accrued", async () => {
-    const { captured, server, result, stop } = setup(8)
-    await flush()
-    server.push(updateFrame(1))
-    await flush()
-    expect(flowControls(captured.outbound)).toHaveLength(0)
-    result.close(); server.close(); stop()
+    const { result, sent } = await setup(8)
+    update(sent, 1)
+    await settle()
+    expect(sent.credits).toHaveLength(0)
+    result.close()
   })
 
-  it("addresses every refill to the subscription it belongs to", async () => {
-    const { captured, server, result, stop } = setup(256)   // quarter window = 64
-    await flush()
-    const subscriptionId = captured.outbound[0]?.subscribe?.subscriptionIdentifier
-    expect(subscriptionId).toBeTruthy()
-
-    for (let i = 0; i < 64; i++) server.push(updateFrame(i))
-    await flush()
-    expect(flowControls(captured.outbound)[0]?.flowControl.subscriptionIdentifier).toBe(subscriptionId)
-
-    result.close(); server.close(); stop()
+  it("sends every refill on the subscription's own stream", async () => {
+    const { result, sent } = await setup(256)
+    for (let i = 0; i < 64; i++) update(sent, i)
+    await until(() => sent.credits.length === 1, "the refill")
+    // The stream is the address: Credit carries no subscription id of its own.
+    expect(sent.subscriptionId).toBeTruthy()
+    result.close()
   })
 
   it("stops granting credit once the subscription is closed", async () => {
-    const { captured, server, result, stop } = setup(4)
-    await flush()
+    const { result, sent } = await setup(4)
     result.close()
-    const after = flowControls(captured.outbound).length
-    server.push(updateFrame(1))
-    server.push(updateFrame(2))
-    await flush()
-    expect(flowControls(captured.outbound)).toHaveLength(after)
-    server.close(); stop()
+    await until(() => sent.cancelled, "the cancel")
+    const after = sent.credits.length
+    update(sent, 1)
+    update(sent, 2)
+    sent.connection.reply(sent.stream, FLAG_END, { name: "RequestFailed", body: { code: 10, message: "cancelled" } })
+    await settle()
+    expect(sent.credits).toHaveLength(after)
   })
 })

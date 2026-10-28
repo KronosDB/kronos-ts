@@ -38,6 +38,7 @@ import type { AppendCondition } from "@kronos-ts/core"
 import type {
   EventMessage,
   EventCriteria,
+  GapAwareToken,
   MessageStream,
   SequencedEvent,
   StreamingCondition,
@@ -426,6 +427,47 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       const buffer: SequencedEvent[] = []
       let polling = false
       let listenSub: { unlisten: () => Promise<void> } | undefined
+      // How far a FILTERED stream has looked once it has run dry (see `lookPast`).
+      let looked: TrackingToken | undefined
+
+      /**
+       * A filtered stream that has run dry has still looked at everything up to
+       * the newest committed row, and can say so: the reader's token then moves
+       * past rows it never wanted instead of staying at its last match.
+       *
+       * ONE STATEMENT, because two would not agree. It names the newest row
+       * under the commit watermark and asks, in the same snapshot, whether
+       * anything matching is still ahead of the cursor. If a match committed
+       * since the fetch that came back empty, there is no answer yet and the
+       * next fetch picks it up. Rows of transactions at or above the watermark
+       * are still open and may yet land BELOW the newest row in position, so
+       * they are never looked past.
+       */
+      async function lookPast(): Promise<TrackingToken | undefined> {
+        if (!criteria) return undefined
+        const after =
+          cursorXid === "0"
+            ? { where: "sequence_position > $1::bigint", params: [String(cursorPosition)] }
+            : { where: "(transaction_id, sequence_position) > ($1::xid8, $2::bigint)", params: [cursorXid, String(cursorPosition)] }
+        const matching = buildCriteriaWhere(criteria, after.params.length + 1)
+        const row = await adapter.queryOne<{ transaction_id: string; sequence_position: string }>(
+          `SELECT newest.transaction_id::text AS transaction_id, newest.sequence_position::text AS sequence_position
+           FROM (
+             SELECT transaction_id, sequence_position FROM ${tables.events}
+             WHERE transaction_id < pg_snapshot_xmin(pg_current_snapshot())
+             ORDER BY transaction_id DESC, sequence_position DESC
+             LIMIT 1
+           ) newest
+           WHERE NOT EXISTS (
+             SELECT 1 FROM ${tables.events}
+             WHERE transaction_id < pg_snapshot_xmin(pg_current_snapshot())
+               AND ${after.where}
+               AND (${matching.where})
+           )`,
+          [...after.params, ...matching.params],
+        )
+        return row ? gapAwareToken(BigInt(row.sequence_position), row.transaction_id) : undefined
+      }
 
       async function fetchBatch(limit = 100): Promise<void> {
         if (closed) return
@@ -504,14 +546,24 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
           cursorXid = r.transaction_id
           cursorPosition = seq
         }
+        looked = rows.length === 0 ? await lookPast() : undefined
+        // Nothing matching lies behind the newest row, so the next fetch starts
+        // after it instead of reading the same quiet stretch again.
+        if (looked !== undefined) {
+          cursorXid = (looked as GapAwareToken).gapKey
+          cursorPosition = (looked as GapAwareToken).sequence
+        }
       }
 
       async function pump(): Promise<void> {
         if (polling || closed) return
         polling = true
         try {
+          const before = looked?.position()
           await fetchBatch()
-          if (buffer.length > 0 && onAvailable) onAvailable()
+          // A filtered stream that moved on without events wakes its reader too:
+          // there is a position to take.
+          if ((buffer.length > 0 || looked?.position() !== before) && onAvailable) onAvailable()
         } finally {
           polling = false
         }
@@ -574,6 +626,9 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
           }
           if (listenSub) void listenSub.unlisten()
         },
+        // Only a stream with a query has anything to say: an unfiltered one
+        // sees every row, and its last event is its position.
+        ...(criteria ? { progressToken: () => (buffer.length === 0 ? looked : undefined) } : {}),
       }
     },
   }

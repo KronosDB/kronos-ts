@@ -222,6 +222,15 @@ export function inMemoryEventStore(): EventStore {
           availableCallback = null
           streamListeners.delete(listener)
         },
+
+        // A filtered stream that has nothing left has looked at the whole log.
+        // Without this a reader of rare events would sit at its last match.
+        ...(criteria
+          ? {
+              progressToken: () =>
+                findNext() === undefined && !closed ? globalSequenceToken(nextPosition) : undefined,
+            }
+          : {}),
       }
     },
 

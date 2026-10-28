@@ -6,366 +6,226 @@ import {
   qn,
   unitOfWork,
   type CommandMessage,
-  type QueryMessage,
   type MessagingLimits,
+  type QueryMessage,
+  type Serializer,
+  type SubscriptionCapableQueryBus,
 } from "@kronos-ts/core"
-import { kronosDbCommandBus, kronosDbQueryBus } from "../kronosdb.js"
-import { axonServerCommandBus, axonServerQueryBus } from "../../../axon-server/src/axon-server.js"
-import { shutdownLatch as kronosLatch } from "../shutdown-latch.js"
-import { shutdownLatch as axonLatch } from "../../../axon-server/src/shutdown-latch.js"
-import { outboundStream } from "../outbound-stream.js"
+import { connectToKronosDb } from "../connection.js"
+import { kronosDbCommandBus } from "../kronosdb-command-bus.js"
+import { kronosDbQueryBus } from "../kronosdb-query-bus.js"
+import { FLAG_END, type Frame } from "../protocol/kronosdb-protocol.js"
+import { shutdownLatch } from "../shutdown-latch.js"
+import { clientOf, deferred, rawSubscription, rig, tick, until, type Client, type Rig } from "./bus-test-kit.js"
+import { fakeNativeServer, type FakeConnection, type FakeNativeServer } from "./fake-native-server.js"
 
-function deferred<T = void>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((r) => {
-    resolve = r
-  })
-  return { promise, resolve }
-}
-const tick = () => new Promise<void>((r) => setTimeout(r, 0))
 const serializer = jsonSerializer()
-function message(
-  name: string,
-  payload: unknown = 0,
-  kind: "command" | "query" = "query",
-): CommandMessage | QueryMessage {
-  return {
-    kind,
-    identifier: crypto.randomUUID(),
-    name: qn("qa", name),
-    payload,
-    metadata: { tenant: "test" },
-    timestamp: 123,
-  }
+
+function message(name: string, payload: unknown = 0, kind: "command" | "query" = "query"): CommandMessage | QueryMessage {
+  return { kind, identifier: crypto.randomUUID(), name: qn("qa", name), payload, metadata: { tenant: "test" }, timestamp: 123 }
 }
 
-// A credit-aware transport double: requests must travel through the adapter's
-// outbound RPC and return over its inbound stream. No call reaches `next`
-// without being decoded by the adapter. Real-server suites complement this.
+// Both buses cross the real wire to a hub that does what the server does where
+// a bus can tell: handler streams with credit, answers routed back to the
+// stream that dispatched. No call reaches `next` without being decoded by the
+// adapter. The real-server suites complement this.
 function harness(
-  backend: "kronos" | "axon",
+  r: Rig,
   kind: "command" | "query",
-  shortcut = false,
-  codec = serializer,
-  limits?: MessagingLimits,
-  timeoutMs?: number,
+  options: { shortcut?: boolean; codec?: Serializer; limits?: MessagingLimits; timeoutMs?: number } = {},
 ) {
-  const incoming = outboundStream<any>()
-  const subscription = outboundStream<any>()
-  const responses: any[] = []
-  const frames: any[] = []
-  const subscriptionFrames: any[] = []
-  const pending = new Map<string, ReturnType<typeof deferred<any>>>()
-  const queued: any[] = []
-  let credits = 0n
-  let streams = 0
-  let completedQueries = 0
-  let lastRequestId = ""
-  let stallCompletion = false
-  let subscriptionSignal: AbortSignal | undefined
-  let latch = backend === "kronos" ? kronosLatch() : axonLatch()
-  function deliver() {
-    while (credits > 0n && queued.length) {
-      credits--
-      incoming.send({ [kind]: queued.shift() })
-    }
-  }
-  let providerSignal: AbortSignal | undefined
-  let disconnect: () => void = () => {}
-  const openStream = (outbound: AsyncIterable<any>, options: { signal?: AbortSignal }) => {
-    providerSignal = options.signal
-    streams++
-    void (async () => {
-      for await (const frame of outbound) {
-        frames.push(frame)
-        if (frame.flowControl) {
-          credits += frame.flowControl.permits
-          deliver()
-        }
-        const response = frame.commandResponse ?? frame.queryResponse
-        if (response) {
-          responses.push(response)
-          pending.get(response.requestIdentifier)?.resolve(response)
-        }
-      }
-    })()
-    return incoming.iterable
-  }
-  async function request(proto: any, options?: { signal?: AbortSignal }) {
-    lastRequestId = proto.messageIdentifier
-    const result = deferred<any>()
-    pending.set(proto.messageIdentifier, result)
-    queued.push(proto)
-    deliver()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let onAbort: (() => void) | undefined
-    const aborted = new Promise<never>((_, reject) => {
-      onAbort = () => reject(new Error("RPC cancelled by client deadline"))
-      if (options?.signal?.aborted) onAbort()
-      else options?.signal?.addEventListener("abort", onAbort, { once: true })
-    })
-    try {
-      return await Promise.race([
-        result.promise,
-        aborted,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("wire request timed out")), 200)
-        }),
-      ])
-    } finally {
-      clearTimeout(timer)
-      if (onAbort) options?.signal?.removeEventListener("abort", onAbort)
-      pending.delete(proto.messageIdentifier)
-    }
-  }
-  const connection: any = {
-    config: { componentName: "qa", clientId: "qa", context: "default", token: "" },
-    commands: { openStream, dispatch: request },
-    queries: {
-      openStream,
-      async *query(proto: any, options: any) {
-        yield await request(proto, options)
-        if (stallCompletion)
-          await new Promise<void>((_, reject) => {
-            const abort = () => reject(new Error("completion cancelled"))
-            if (options.signal.aborted) abort()
-            else options.signal.addEventListener("abort", abort, { once: true })
-          })
-        completedQueries++
-      },
-      subscription(outbound: AsyncIterable<any>, options: any) {
-        subscriptionSignal = options.signal
-        void (async () => {
-          for await (const frame of outbound) subscriptionFrames.push(frame)
-        })()
-        return subscription.iterable
-      },
-    },
-    onReconnect() {},
-    onDisconnect(callback: () => void) {
-      disconnect = callback
-    },
-  }
-  const source = {
-    connection,
-    serializer: codec,
-    shutdown: latch,
-    registerShutdownLatch(value: typeof latch) {
-      latch = value
-    },
-  }
-  const options = {
-    limits,
-    timeoutMs,
+  r.server.holdUnhandled = 1000
+  const client = options.codec === undefined ? r.client : r.another({}, options.codec)
+  const busOptions = {
+    limits: options.limits,
+    timeoutMs: options.timeoutMs,
     flowControl: { permits: 1, refillThreshold: 0 },
-    shortcutQueriesToLocalHandlers: shortcut,
+    shortcutQueriesToLocalHandlers: options.shortcut ?? false,
   }
-  const bus =
+  const bus: any =
     kind === "command"
-      ? backend === "kronos"
-        ? kronosDbCommandBus(localCommandBus(unitOfWork), source, "default", options)
-        : axonServerCommandBus(localCommandBus(unitOfWork), source, options)
-      : backend === "kronos"
-        ? kronosDbQueryBus(localQueryBus(unitOfWork), source, "default", options)
-        : axonServerQueryBus(localQueryBus(unitOfWork), source, options)
+      ? kronosDbCommandBus(localCommandBus(unitOfWork), client.host, "default", busOptions)
+      : kronosDbQueryBus(localQueryBus(unitOfWork), client.host, "default", busOptions)
+  const calls = {
+    /** What the handler side has answered. */
+    responses(): any[] {
+      return r.server.connections.flatMap((c) => c.received.flatMap((f) => (f.frame.name === "CommandHandled" ? [f.frame.body.result] : f.frame.name === "QueryHandled" ? [f.frame.body.result] : [])))
+    },
+  }
   return {
-    bus: bus as any,
-    frames,
-    responses,
-    subscriptionFrames,
-    incoming,
-    subscription,
-    disconnect() {
-      disconnect()
-    },
-    get providerSignal() {
-      return providerSignal
-    },
+    bus,
+    client,
+    responses: calls.responses,
     get latch() {
-      return latch
-    },
-    get streams() {
-      return streams
-    },
-    stallQueryCompletion() {
-      stallCompletion = true
-    },
-    get lastRequestId() {
-      return lastRequestId
-    },
-    get completedQueries() {
-      return completedQueries
-    },
-    get subscriptionSignal() {
-      return subscriptionSignal
+      return client.latch
     },
     dispatch(name: string, payload: unknown = 0): Promise<unknown> {
-      return kind === "command"
-        ? (bus as any).dispatch(message(name, payload, kind))
-        : (bus as any).query(message(name, payload, kind))
+      return kind === "command" ? bus.dispatch(message(name, payload, kind)) : bus.query(message(name, payload, kind))
     },
-    remote(name: string, extra: Record<string, unknown> = {}) {
-      return request({
-        ...extra,
-        messageIdentifier: crypto.randomUUID(),
-        name: `qa.${name}`,
-        query: `qa.${name}`,
-        payload: serializer.serialize(1, `qa.${name}`),
-        metadata: {},
-        metaData: {},
-        timestamp: 123n,
-      })
+    /** A caller on another client, so nothing of this bus's outbound side can cover for its inbound side. */
+    /** A subscription opened by another client that speaks the wire itself. */
+    remoteSubscription(name: string) {
+      return rawSubscription(r.another(), crypto.randomUUID(), name, {}, 8n)
     },
-    close() {
-      void latch.initiateShutdown()
-      incoming.close()
-      subscription.close()
+    remote(name: string, payload: unknown = 1): Promise<unknown> {
+      const other = r.another()
+      const remoteBus: any =
+        kind === "command"
+          ? kronosDbCommandBus(localCommandBus(unitOfWork), other.host)
+          : kronosDbQueryBus(localQueryBus(unitOfWork), other.host)
+      return kind === "command" ? remoteBus.dispatch(message(name, payload, kind)) : remoteBus.query(message(name, payload, kind))
     },
   }
 }
 
-for (const backend of ["kronos", "axon"] as const) {
-  for (const kind of ["command", "query"] as const) {
-    describe(`${backend} ${kind} transport contract`, () => {
-      let h: ReturnType<typeof harness>
-      afterEach(() => h?.close())
-      it("aborts its provider RPC when the connection closes", async () => {
-        h = harness(backend, kind)
-        h.bus.subscribe("qa.Done", async () => 42)
-        expect(h.providerSignal?.aborted).toBe(false)
-        h.disconnect()
-        expect(h.providerSignal?.aborted).toBe(true)
+for (const kind of ["command", "query"] as const) {
+  describe(`kronos ${kind} transport contract`, () => {
+    let r: Rig
+    afterEach(() => r?.close())
+
+    it("ends its provider stream when the connection is reset", async () => {
+      r = await rig()
+      const h = harness(r, kind)
+      h.bus.subscribe("qa.Done", async () => 42)
+      await until(() => r.server.handlerStreams[0]?.names.size === 1, "the handler stream")
+      expect(r.server.handlerStreams[0]!.ended).toBe(false)
+      await h.client.connection.reconnect()
+      await until(() => r.server.handlerStreams[0]!.ended, "the old stream to end")
+    })
+
+    it("handles nesting beyond the receive window, preserving response order and fresh units", async () => {
+      r = await rig()
+      const h = harness(r, kind)
+      const units = new Set()
+      h.bus.subscribe("qa.Nested", async (m: any, uow: any) => {
+        units.add(uow)
+        return m.payload === 0 ? 0 : 1 + Number(await h.dispatch("Nested", m.payload - 1))
       })
-      it("handles nesting beyond the receive window, preserving response order and fresh units", async () => {
-        h = harness(backend, kind)
-        const units = new Set()
-        h.bus.subscribe("qa.Nested", async (m: any, uow: any) => {
-          units.add(uow)
-          return m.payload === 0 ? 0 : 1 + Number(await h.dispatch("Nested", m.payload - 1))
-        })
-        expect(await h.dispatch("Nested", 4)).toBe(4)
-        expect(units.size).toBe(5)
-        expect(h.responses).toHaveLength(5)
-        expect(h.latch.activeCount).toBe(0)
+      expect(await h.dispatch("Nested", 4)).toBe(4)
+      expect(units.size).toBe(5)
+      expect(h.responses()).toHaveLength(5)
+      expect(h.latch.activeCount).toBe(0)
+    })
+
+    it("rejects a nested child at saturation and releases the parent's capacity", async () => {
+      r = await rig()
+      const snapshots: any[] = []
+      const h = harness(r, kind, { limits: { maxConcurrentHandlers: 1, observe: (s) => snapshots.push(s) } })
+      h.bus.subscribe("qa.Nested", async (m: any) => (m.payload ? h.dispatch("Nested", 0) : 42))
+      await expect(h.dispatch("Nested", 1)).rejects.toThrow(/overloaded/)
+      expect(await h.dispatch("Nested", 0)).toBe(42)
+      expect(r.server.handlerStreams).toHaveLength(1)
+      expect(h.latch.activeCount).toBe(0)
+      expect(snapshots.filter((s) => s.name === "inbound handlers").every((s) => s.active <= 1)).toBe(true)
+    })
+
+    it("correlates a burst of out-of-order responses without exceeding handler capacity", async () => {
+      r = await rig()
+      const snapshots: any[] = []
+      const h = harness(r, kind, { limits: { maxConcurrentHandlers: 8, observe: (s) => snapshots.push(s) } })
+      h.bus.subscribe("qa.Burst", async (m: any) => {
+        await new Promise((resolve) => setTimeout(resolve, 8 - (m.payload % 8)))
+        return m.payload
       })
-      it("rejects a nested child at saturation and releases the parent's capacity", async () => {
-        const snapshots: any[] = []
-        h = harness(backend, kind, false, serializer, {
-          maxConcurrentHandlers: 1,
-          observe: (s) => snapshots.push(s),
-        })
-        h.bus.subscribe("qa.Nested", async (m: any) => (m.payload ? h.dispatch("Nested", 0) : 42))
-        await expect(h.dispatch("Nested", 1)).rejects.toThrow(/overloaded/)
-        expect(await h.dispatch("Nested", 0)).toBe(42)
-        expect(h.streams).toBe(1)
-        expect(h.latch.activeCount).toBe(0)
-        expect(
-          snapshots.filter((s) => s.name === "inbound handlers").every((s) => s.active <= 1),
-        ).toBe(true)
+      const results = await Promise.all(
+        Array.from({ length: 128 }, async (_, index) => {
+          try {
+            expect(await h.dispatch("Burst", index)).toBe(index)
+            return "ok"
+          } catch (error) {
+            expect(String(error)).toContain("overloaded")
+            return "overloaded"
+          }
+        }),
+      )
+      expect(results).toContain("ok")
+      expect(results).toContain("overloaded")
+      expect(Math.max(...snapshots.filter((s) => s.name === "inbound handlers").map((s) => s.active))).toBe(8)
+      expect(h.latch.activeCount).toBe(0)
+    })
+
+    it("rejects duplicate pending identifiers without stealing the original response", async () => {
+      r = await rig()
+      const h = harness(r, kind)
+      const entered = deferred(), release = deferred()
+      h.bus.subscribe("qa.Slow", async () => {
+        entered.resolve()
+        await release.promise
+        return 7
       })
-      it("correlates a burst of out-of-order responses without exceeding handler capacity", async () => {
-        const snapshots: any[] = []
-        h = harness(backend, kind, false, serializer, {
-          maxConcurrentHandlers: 8,
-          observe: (s) => snapshots.push(s),
-        })
-        h.bus.subscribe("qa.Burst", async (m: any) => {
-          await new Promise((r) => setTimeout(r, 8 - (m.payload % 8)))
-          return m.payload
-        })
-        const results = await Promise.all(
-          Array.from({ length: 128 }, async (_, index) => {
-            try {
-              expect(await h.dispatch("Burst", index)).toBe(index)
-              return "ok"
-            } catch (error) {
-              expect(String(error)).toContain("overloaded")
-              return "overloaded"
-            }
-          }),
-        )
-        expect(results).toContain("ok")
-        expect(results).toContain("overloaded")
-        expect(
-          Math.max(...snapshots.filter((s) => s.name === "inbound handlers").map((s) => s.active)),
-        ).toBe(8)
-        expect(h.latch.activeCount).toBe(0)
+      const m = message("Slow", 0, kind)
+      const dispatch = () => (kind === "command" ? h.bus.dispatch(m) : h.bus.query(m))
+      const first = dispatch()
+      await entered.promise
+      try {
+        await expect(dispatch()).rejects.toThrow(/already pending/)
+      } finally {
+        release.resolve()
+      }
+      expect(await first).toBe(7)
+    })
+
+    it("bounds pending callers independently of handler slots", async () => {
+      r = await rig()
+      const h = harness(r, kind, { limits: { maxPendingRequests: 1 } })
+      const entered = deferred(), release = deferred()
+      h.bus.subscribe("qa.Slow", async () => {
+        entered.resolve()
+        await release.promise
+        return 7
       })
-      it("rejects duplicate pending identifiers without stealing the original response", async () => {
-        h = harness(backend, kind)
-        const entered = deferred(),
-          release = deferred()
-        h.bus.subscribe("qa.Slow", async () => {
-          entered.resolve()
-          await release.promise
-          return 7
-        })
-        const m = message("Slow")
-        const dispatch = () => (kind === "command" ? h.bus.dispatch(m) : h.bus.query(m))
-        const first = dispatch()
-        await entered.promise
-        try {
-          await expect(dispatch()).rejects.toThrow(/already pending/)
-        } finally {
-          release.resolve()
-        }
-        expect(await first).toBe(7)
+      const first = h.dispatch("Slow")
+      await entered.promise
+      try {
+        await expect(h.dispatch("Slow")).rejects.toThrow(/pending requests overloaded/)
+      } finally {
+        release.resolve()
+        await first
+      }
+      expect(h.latch.activeCount).toBe(0)
+    })
+
+    it("cancels the request at its deadline while retaining capacity for a running handler", async () => {
+      r = await rig()
+      const h = harness(r, kind, { limits: { maxConcurrentHandlers: 1 }, timeoutMs: 20 })
+      const entered = deferred(), release = deferred()
+      h.bus.subscribe("qa.Slow", async () => {
+        entered.resolve()
+        await release.promise
+        return 7
       })
-      it("bounds pending callers independently of handler slots", async () => {
-        h = harness(backend, kind, false, serializer, { maxPendingRequests: 1 })
-        const entered = deferred(),
-          release = deferred()
-        h.bus.subscribe("qa.Slow", async () => {
-          entered.resolve()
-          await release.promise
-          return 7
-        })
-        const first = h.dispatch("Slow")
-        await entered.promise
-        try {
-          await expect(h.dispatch("Slow")).rejects.toThrow(/pending requests overloaded/)
-        } finally {
-          release.resolve()
-          await first
-        }
-        expect(h.latch.activeCount).toBe(0)
+      const first = h.dispatch("Slow")
+      void first.catch(() => {})
+      await entered.promise
+      try {
+        await expect(first).rejects.toThrow(/deadline/)
+        expect(h.latch.activeCount).toBe(1)
+        await expect(h.dispatch("Slow")).rejects.toThrow(/overloaded/)
+      } finally {
+        release.resolve()
+        await tick()
+      }
+      expect(h.latch.activeCount).toBe(0)
+    })
+
+    it("isolates result serialization failure and keeps the stream usable", async () => {
+      r = await rig()
+      const h = harness(r, kind)
+      h.bus.subscribe("qa.Bad", async () => {
+        const cycle: any = {}
+        cycle.self = cycle
+        return cycle
       })
-      it("cancels the RPC at its deadline while retaining capacity for a running handler", async () => {
-        h = harness(backend, kind, false, serializer, { maxConcurrentHandlers: 1 }, 20)
-        const entered = deferred(),
-          release = deferred()
-        h.bus.subscribe("qa.Slow", async () => {
-          entered.resolve()
-          await release.promise
-          return 7
-        })
-        const first = h.dispatch("Slow")
-        void first.catch(() => {})
-        await entered.promise
-        try {
-          await expect(first).rejects.toThrow(/cancelled/)
-          expect(h.latch.activeCount).toBe(1)
-          await expect(h.dispatch("Slow")).rejects.toThrow(/overloaded/)
-        } finally {
-          release.resolve()
-          await tick()
-        }
-        expect(h.latch.activeCount).toBe(0)
-      })
-      it("isolates result serialization failure and keeps the stream usable", async () => {
-        h = harness(backend, kind)
-        h.bus.subscribe("qa.Bad", async () => {
-          const cycle: any = {}
-          cycle.self = cycle
-          return cycle
-        })
-        h.bus.subscribe("qa.Good", async () => 7)
-        await expect(h.dispatch("Bad")).rejects.toThrow(/cyclic|circular/i)
-        expect(await h.dispatch("Good")).toBe(7)
-        expect(h.streams).toBe(1)
-      })
-      it("preserves serializer type and revision on both request and response", async () => {
-        h = harness(backend, kind, false, {
+      h.bus.subscribe("qa.Good", async () => 7)
+      await expect(h.dispatch("Bad")).rejects.toThrow(/cyclic|circular/i)
+      expect(await h.dispatch("Good")).toBe(7)
+      expect(r.server.handlerStreams).toHaveLength(1)
+    })
+
+    it("preserves serializer type and revision on both request and response", async () => {
+      r = await rig()
+      const h = harness(r, kind, {
+        codec: {
           ...serializer,
           serialize(value, type) {
             return serializer.serialize(value, type, "v1")
@@ -375,369 +235,305 @@ for (const backend of ["kronos", "axon"] as const) {
             expect(value.revision).toBe("v1")
             return serializer.deserialize<T>(value)
           },
-        })
-        h.bus.subscribe("qa.Typed", async () => 7)
-        expect(await h.dispatch("Typed")).toBe(7)
-      })
-      it("tracks remote inbound work until completion during shutdown", async () => {
-        h = harness(backend, kind)
-        const entered = deferred(),
-          release = deferred()
-        h.bus.subscribe("qa.Slow", async () => {
-          entered.resolve()
-          await release.promise
-          return 7
-        })
-        const result = h.remote("Slow")
-        await entered.promise
-        let drained = false
-        const drain = h.latch.initiateShutdown().then(() => {
-          drained = true
-        })
-        try {
-          await tick()
-          expect(h.latch.activeCount).toBe(1)
-          expect(drained).toBe(false)
-        } finally {
-          release.resolve()
-          await result
-          await drain
-        }
-      })
-    })
-  }
-  describe(`${backend} query lifecycle`, () => {
-    let h: ReturnType<typeof harness>
-    afterEach(() => h?.close())
-    if (backend === "axon")
-      it("refills credits consumed by subscription acknowledgements", async () => {
-        h = harness(backend, "query")
-        h.bus.subscribe("qa.Credited", async () => 42)
-        await tick()
-        const grants = () => h.frames.filter((frame) => frame.flowControl).length
-        const before = grants()
-        h.incoming.send({ ack: { instructionId: "subscribed", success: true } })
-        await tick()
-        expect(grants()).toBe(before + 1)
-      })
-    if (backend === "axon")
-      it("expires orphaned early credits within the bounded table", async () => {
-        h = harness(backend, "query", false, serializer, { maxPendingRequests: 1 }, 15)
-        h.bus.subscribe("qa.Credited", async () => 42)
-        h.incoming.send({
-          queryFlowControl: { queryReference: { requestId: "orphan" }, permits: 1n },
-        })
-        await new Promise((r) => setTimeout(r, 25))
-        h.incoming.send({ queryFlowControl: { queryReference: { requestId: "new" }, permits: 1n } })
-        h.incoming.send({
-          query: {
-            messageIdentifier: "new",
-            query: "qa.Credited",
-            timestamp: 0n,
-            processingInstructions: [
-              { key: 7, value: { booleanValue: true } },
-              { key: 8, value: { booleanValue: true } },
-            ],
-          },
-        })
-        await tick()
-        expect(h.responses).toHaveLength(1)
-        expect(h.responses[0].requestIdentifier).toBe("new")
-      })
-    if (backend === "axon")
-      it("retains response credits delivered before their query", async () => {
-        h = harness(backend, "query")
-        h.bus.subscribe("qa.Credited", async () => 42)
-        h.incoming.send({
-          queryFlowControl: { queryReference: { requestId: "early-credit" }, permits: 1n },
-        })
-        await tick()
-        h.incoming.send({
-          query: {
-            messageIdentifier: "early-credit",
-            query: "qa.Credited",
-            timestamp: 0n,
-            processingInstructions: [
-              { key: 7, value: { booleanValue: true } },
-              { key: 8, value: { booleanValue: true } },
-            ],
-          },
-        })
-        await tick()
-        expect(h.responses).toHaveLength(1)
-        expect(h.responses[0].requestIdentifier).toBe("early-credit")
-        expect(h.responses[0].errorCode).toBe("")
-        expect(h.latch.activeCount).toBe(0)
-      })
-    if (backend === "axon")
-      it("drains an admitted reply when its response credit arrives during shutdown", async () => {
-        h = harness(backend, "query")
-        h.bus.subscribe("qa.Credited", async () => 42)
-        const result = h.remote("Credited", {
-          processingInstructions: [
-            { key: 7, value: { booleanValue: true } },
-            { key: 8, value: { booleanValue: true } },
-          ],
-        })
-        await tick()
-        const drain = h.latch.initiateShutdown()
-        await tick()
-        expect(h.latch.activeCount).toBe(1)
-        h.incoming.send({
-          queryFlowControl: { queryReference: { requestId: h.lastRequestId }, permits: 1n },
-        })
-        expect((await result).errorCode).toBe("")
-        await drain
-        expect(h.responses).toHaveLength(1)
-        expect(h.latch.activeCount).toBe(0)
-      })
-    if (backend === "axon")
-      it("cancellation releases a completed handler waiting for response credit", async () => {
-        h = harness(backend, "query")
-        h.bus.subscribe("qa.Credited", async () => 42)
-        h.incoming.send({
-          query: {
-            messageIdentifier: "cancelled",
-            query: "qa.Credited",
-            timestamp: 0n,
-            processingInstructions: [
-              { key: 7, value: { booleanValue: true } },
-              { key: 8, value: { booleanValue: true } },
-            ],
-          },
-        })
-        await tick()
-        expect(h.latch.activeCount).toBe(1)
-        h.incoming.send({ queryCancel: { requestId: "cancelled" } })
-        await tick()
-        expect(h.latch.activeCount).toBe(0)
-        expect(h.responses).toHaveLength(0)
-        expect(await h.dispatch("Credited")).toBe(42)
-      })
-    if (backend === "axon")
-      it("waits for per-query response credit while continuing to receive control frames", async () => {
-        h = harness(backend, "query")
-        h.bus.subscribe("qa.Credited", async () => 42)
-        const result = h.remote("Credited", {
-          processingInstructions: [
-            { key: 7, value: { booleanValue: true } },
-            { key: 8, value: { booleanValue: true } },
-          ],
-        })
-        await tick()
-        expect(h.responses).toHaveLength(0)
-        // The handler is complete, but its reply still awaits the response credit.
-        expect(h.latch.activeCount).toBe(1)
-        // Query IDs originate on the wire. Capture the delivered request in the harness.
-        const id = h.lastRequestId
-        h.incoming.send({ queryFlowControl: { queryReference: { requestId: id }, permits: 1n } })
-        expect((await result).errorCode).toBe("")
-        await tick()
-        expect(h.latch.activeCount).toBe(0)
-      })
-    it("times out a stream whose end is lost after a response, without replaying", async () => {
-      h = harness(backend, "query", false, serializer, undefined, 20)
-      let calls = 0
-      h.bus.subscribe("qa.Done", async () => {
-        calls++
-        return 42
-      })
-      h.stallQueryCompletion()
-      const error = await h.dispatch("Done").catch((error: Error) => error)
-      expect(error).toBeInstanceOf(Error)
-      expect((error as Error).message).toMatch(/completion cancelled/)
-      expect(calls).toBe(1)
-      expect(h.completedQueries).toBe(0)
-      expect(h.latch.activeCount).toBe(0)
-    })
-    it("consumes query completion instead of cancelling immediately after a response", async () => {
-      h = harness(backend, "query")
-      h.bus.subscribe("qa.Done", async () => 42)
-      expect(await h.dispatch("Done")).toBe(42)
-      expect(h.completedQueries).toBe(1)
-    })
-    it("does not retain a subscription when request serialization fails", () => {
-      h = harness(backend, "query", false, {
-        ...serializer,
-        serialize(value, type, revision) {
-          if ((value as any)?.fail) throw new Error("serialization failed")
-          return serializer.serialize(value, type, revision)
         },
       })
-      const m = message("Watch", { fail: true })
-      expect(() => h.bus.subscriptionQuery(m)).toThrow("serialization failed")
-      const sub = h.bus.subscriptionQuery({ ...m, payload: {} })
-      sub.close()
-      expect(h.subscriptionSignal?.aborted).toBe(true)
+      h.bus.subscribe("qa.Typed", async () => 7)
+      expect(await h.dispatch("Typed")).toBe(7)
     })
-    it("tracks a local shortcut until its handler settles", async () => {
-      h = harness(backend, "query", true)
-      const entered = deferred(),
-        release = deferred()
+
+    it("tracks remote inbound work until completion during shutdown", async () => {
+      r = await rig()
+      const h = harness(r, kind)
+      const entered = deferred(), release = deferred()
       h.bus.subscribe("qa.Slow", async () => {
         entered.resolve()
         await release.promise
         return 7
       })
-      const result = h.dispatch("Slow")
+      const result = h.remote("Slow")
       await entered.promise
+      let drained = false
+      const drain = h.latch.initiateShutdown().then(() => {
+        drained = true
+      })
       try {
+        await tick()
         expect(h.latch.activeCount).toBe(1)
+        expect(drained).toBe(false)
       } finally {
         release.resolve()
         await result
+        await drain
       }
     })
-    it("rejects an initial result if the subscription stream ends before one arrives", async () => {
-      h = harness(backend, "query")
-      const sub = h.bus.subscriptionQuery(message("Watch"))
-      const settled = sub.initialResult.then(
-        () => "resolved",
-        (e: Error) => e.message,
-      )
-      h.subscription.close()
-      await tick()
-      expect(await Promise.race([settled, Promise.resolve("still pending")])).toMatch(
-        /before.*initial/i,
-      )
-      expect(await sub.updates[Symbol.asyncIterator]().next()).toEqual({
-        value: undefined,
-        done: true,
-      })
-    })
-    it("settles a pending initial result when the caller closes", async () => {
-      h = harness(backend, "query")
-      const sub = h.bus.subscriptionQuery(message("Watch"))
-      const settled = sub.initialResult.then(
-        () => "resolved",
-        (e: Error) => e.message,
-      )
-      sub.close()
-      await tick()
-      expect(await Promise.race([settled, Promise.resolve("still pending")])).toMatch(/closed/i)
-    })
-    it("reports update overflow instead of silently dropping data", async () => {
-      h = harness(backend, "query")
-      const sub = h.bus.subscriptionQuery(message("Watch"), 1)
-      h.subscription.send({ initialResult: { payload: serializer.serialize(0, "result") } })
-      await sub.initialResult
-      h.subscription.send({ update: { payload: serializer.serialize(1, "result") } })
-      h.subscription.send({ update: { payload: serializer.serialize(2, "result") } })
-      await tick()
-      const iterator = sub.updates[Symbol.asyncIterator]()
-      expect((await iterator.next()).value).toBe(1)
-      const error = iterator.next().then(
-        () => "resolved",
-        (e: Error) => e.message,
-      )
-      await tick()
-      expect(await Promise.race([error, Promise.resolve("still pending")])).toMatch(/overflow/i)
-      sub.close()
-    })
-    it("defers updates until commit and suppresses rolled-back updates", async () => {
-      h = harness(backend, "query")
-      h.bus.subscribe("qa.Watch", async () => 0)
-      const request = {
-        subscriptionIdentifier: "sub-commit",
-        queryRequest: { messageIdentifier: "initial-commit", query: "qa.Watch", timestamp: 0n },
-      }
-      h.incoming.send({ subscriptionQueryRequest: { subscribe: request } })
-      if (backend === "axon")
-        h.incoming.send({ subscriptionQueryRequest: { getInitialResult: request } })
-      await tick()
-      const updates = () => h.frames.filter((f) => f.subscriptionQueryResponse?.update)
-      const committed = unitOfWork()
-      await committed.execute(async () => {
-        await h.bus.emitUpdate("qa.Watch", () => true, 1, committed)
-        await tick()
-        expect(updates()).toHaveLength(0)
-      })
-      await tick()
-      expect(updates()).toHaveLength(1)
-      const rolledBack = unitOfWork()
-      await expect(
-        rolledBack.execute(async () => {
-          await h.bus.emitUpdate("qa.Watch", () => true, 2, rolledBack)
-          throw new Error("rollback")
-        }),
-      ).rejects.toThrow("rollback")
-      await tick()
-      expect(updates()).toHaveLength(1)
-    })
-    it("fails the update stream if transport EOF follows the initial result", async () => {
-      h = harness(backend, "query")
-      const sub = h.bus.subscriptionQuery(message("Watch"))
-      h.subscription.send({ initialResult: { payload: serializer.serialize(0, "result") } })
-      await sub.initialResult
-      const update = sub.updates[Symbol.asyncIterator]().next()
-      h.subscription.close()
-      await expect(update).rejects.toThrow(/ended unexpectedly/)
-    })
-    it("shutdown settles active subscriptions and refuses new registrations", async () => {
-      h = harness(backend, "query")
-      const sub = h.bus.subscriptionQuery(message("Watch"))
-      const update = sub.updates[Symbol.asyncIterator]().next()
-      void update.catch(() => {})
-      await h.latch.initiateShutdown()
-      await expect(sub.initialResult).rejects.toThrow(/shutdown/)
-      await expect(update).rejects.toThrow(/shutdown/)
-      expect(() => h.bus.subscriptionQuery(message("Watch"))).toThrow(/shutdown/)
-    })
-    it("processes unsubscribe while the initial handler is still awaiting work", async () => {
-      h = harness(backend, "query")
-      const entered = deferred(),
-        release = deferred()
-      h.bus.subscribe("qa.Watch", async () => {
-        entered.resolve()
-        await release.promise
-        return 7
-      })
-      h.bus.subscribe("qa.Barrier", async () => 1)
-      h.incoming.send({
-        subscriptionQueryRequest: {
-          subscribe: {
-            subscriptionIdentifier: "sub-1",
-            queryRequest: { messageIdentifier: "initial-1", query: "qa.Watch", timestamp: 0n },
-          },
-        },
-      })
-      if (backend === "axon")
-        h.incoming.send({
-          subscriptionQueryRequest: {
-            getInitialResult: {
-              subscriptionIdentifier: "sub-1",
-              queryRequest: { messageIdentifier: "initial-1", query: "qa.Watch", timestamp: 0n },
-            },
-          },
-        })
-      await entered.promise
-      h.incoming.send({
-        subscriptionQueryRequest: { unsubscribe: { subscriptionIdentifier: "sub-1" } },
-      })
-      try {
-        expect(await h.dispatch("Barrier")).toBe(1)
-      } finally {
-        release.resolve()
-      }
-      await tick()
-      await h.bus.emitUpdate("qa.Watch", () => true, 9)
-      await tick()
-      expect(
-        h.frames.filter(
-          (f) => f.subscriptionQueryResponse || f.queryResponse?.requestIdentifier === "initial-1",
-        ),
-      ).toHaveLength(0)
-      expect(h.latch.activeCount).toBe(0)
-    })
-  })
-  it(`${backend}: concurrent shutdown callers share the same drain`, async () => {
-    const latch = backend === "kronos" ? kronosLatch() : axonLatch()
-    const activity = latch.registerActivity()
-    const a = latch.initiateShutdown(),
-      b = latch.initiateShutdown()
-    const settled = a.then(() => "drained")
-    activity.end()
-    await b
-    expect(await Promise.race([settled, Promise.resolve("still pending")])).toBe("drained")
   })
 }
+
+describe("kronos query lifecycle", () => {
+  let r: Rig
+  afterEach(() => r?.close())
+
+  function queries(options: Parameters<typeof harness>[2] = {}) {
+    const h = harness(r, "query", options)
+    return Object.assign(h, { bus: h.bus as SubscriptionCapableQueryBus })
+  }
+
+  it("times out a stream whose end is lost after a response, without replaying", async () => {
+    r = await rig()
+    const h = queries({ timeoutMs: 20 })
+    let calls = 0
+    h.bus.subscribe("qa.Done", async () => {
+      calls++
+      return 42
+    })
+    r.server.stallQueryEnd = true
+    const error = await h.dispatch("Done").catch((error: Error) => error)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toMatch(/deadline/)
+    expect(calls).toBe(1)
+    expect(h.latch.activeCount).toBe(0)
+  })
+
+  it("consumes the end of the stream instead of cancelling right after a response", async () => {
+    r = await rig()
+    const h = queries()
+    h.bus.subscribe("qa.Done", async () => 42)
+    expect(await h.dispatch("Done")).toBe(42)
+    await tick()
+    expect(r.server.connections.some((c) => c.received.some((f) => f.frame.name === "Cancel"))).toBe(false)
+  })
+
+  it("does not retain a subscription when request serialization fails", async () => {
+    r = await rig()
+    const h = queries({
+      codec: {
+        ...serializer,
+        serialize(value, type, revision) {
+          if ((value as any)?.fail) throw new Error("serialization failed")
+          return serializer.serialize(value, type, revision)
+        },
+      },
+    })
+    const m = message("Watch", { fail: true })
+    expect(() => h.bus.subscriptionQuery(m as QueryMessage)).toThrow("serialization failed")
+    const sub = h.bus.subscriptionQuery({ ...m, payload: {} } as QueryMessage)
+    sub.close()
+    await until(() => r.server.connections.some((c) => c.received.some((f) => f.frame.name === "Cancel")), "the Cancel")
+    expect(r.server.subscriptions).toHaveLength(1)
+  })
+
+  it("tracks a local shortcut until its handler settles", async () => {
+    r = await rig()
+    const h = queries({ shortcut: true })
+    const entered = deferred(), release = deferred()
+    h.bus.subscribe("qa.Slow", async () => {
+      entered.resolve()
+      await release.promise
+      return 7
+    })
+    const result = h.dispatch("Slow")
+    await entered.promise
+    try {
+      expect(h.latch.activeCount).toBe(1)
+    } finally {
+      release.resolve()
+      await result
+    }
+  })
+
+  it("shutdown settles active subscriptions and refuses new registrations", async () => {
+    r = await rig()
+    const h = queries()
+    const sub = h.bus.subscriptionQuery(message("Watch") as QueryMessage)
+    const update = sub.updates[Symbol.asyncIterator]().next()
+    void update.catch(() => {})
+    void sub.initialResult.catch(() => {})
+    await h.latch.initiateShutdown()
+    await expect(sub.initialResult).rejects.toThrow(/shutdown/)
+    await expect(update).rejects.toThrow(/shutdown/)
+    expect(() => h.bus.subscriptionQuery(message("Watch") as QueryMessage)).toThrow(/shutdown/)
+  })
+
+  it("processes an unsubscribe while the initial handler is still awaiting work", async () => {
+    r = await rig()
+    const h = queries()
+    const entered = deferred(), release = deferred()
+    h.bus.subscribe("qa.Watch", async () => {
+      entered.resolve()
+      await release.promise
+      return 7
+    })
+    h.bus.subscribe("qa.Barrier", async () => 1)
+    const sub = await h.remoteSubscription("qa.Watch")
+    await entered.promise
+    sub.cancel()
+    try {
+      expect(await h.dispatch("Barrier")).toBe(1)
+    } finally {
+      release.resolve()
+    }
+    await tick()
+    await h.bus.emitUpdate("qa.Watch", () => true, 9)
+    await tick()
+    // The handler answered neither the initial result nor an update.
+    const handlerSent = r.server.handlerStreams[0]!.connection.received.filter((f) => f.frame.name === "SubscriptionQueryHandled")
+    expect(handlerSent).toHaveLength(0)
+    expect(h.latch.activeCount).toBe(0)
+  })
+
+  it("defers updates until commit and suppresses rolled-back updates", async () => {
+    r = await rig()
+    const h = queries()
+    h.bus.subscribe("qa.Watch", async () => 0)
+    const sub = await h.remoteSubscription("qa.Watch")
+    await until(() => sub.events.length === 1, "the initial result")
+    const committed = unitOfWork()
+    await committed.execute(async () => {
+      await h.bus.emitUpdate("qa.Watch", () => true, 1, committed)
+      await tick()
+      expect(sub.events).toHaveLength(1)
+    })
+    await until(() => sub.events.length === 2, "the committed update")
+    const rolledBack = unitOfWork()
+    await expect(
+      rolledBack.execute(async () => {
+        await h.bus.emitUpdate("qa.Watch", () => true, 2, rolledBack)
+        throw new Error("rollback")
+      }),
+    ).rejects.toThrow("rollback")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sub.events).toHaveLength(2)
+  })
+})
+
+// A server that stays silent on a subscription stream until the test speaks:
+// the subscriber's reactions to what the stream does.
+describe("kronos subscription query — the subscriber's stream", () => {
+  let fake: FakeNativeServer
+  let client: Client
+  const subscriptions: Array<{ connection: FakeConnection; stream: number; credits: number[]; cancelled: boolean }> = []
+
+  async function setup() {
+    subscriptions.length = 0
+    fake = await fakeNativeServer({
+      onFrame(connection, { stream, frame }) {
+        if (frame.name === "OpenSubscriptionQuery") subscriptions.push({ connection, stream, credits: [], cancelled: false })
+        else if (frame.name === "Credit") subscriptions.find((s) => s.stream === stream)?.credits.push(frame.body.credits)
+        else if (frame.name === "Cancel") {
+          const s = subscriptions.find((s) => s.stream === stream)
+          if (s) s.cancelled = true
+        }
+      },
+    })
+    client = clientOf(fake as never)
+    const bus = kronosDbQueryBus(localQueryBus(unitOfWork), client.host) as SubscriptionCapableQueryBus
+    return bus
+  }
+
+  afterEach(async () => {
+    client?.connection.close()
+    await fake?.close()
+  })
+
+  const event = (connection: FakeConnection, stream: number, flags: number, what: Extract<Frame, { name: "SubscriptionQueryEvent" }>["body"]["event"]) =>
+    connection.reply(stream, flags, { name: "SubscriptionQueryEvent", body: { subscriptionId: "s", event: what } })
+  const result = (value: unknown) => ({
+    messageId: "", requestId: "q", errorCode: "", metadata: [], instructions: [],
+    payload: { typeName: "result", revision: "", data: new TextEncoder().encode(JSON.stringify(value)) },
+  })
+  const update = (value: unknown) => ({
+    messageId: "", metadata: [], clientId: "", componentName: "", errorCode: "", error: undefined,
+    payload: { typeName: "result", revision: "", data: new TextEncoder().encode(JSON.stringify(value)) },
+  })
+
+  it("rejects an initial result if the stream ends before one arrives", async () => {
+    const bus = await setup()
+    const sub = bus.subscriptionQuery(message("Watch") as QueryMessage)
+    const settled = sub.initialResult.then(() => "resolved", (e: Error) => e.message)
+    await until(() => subscriptions.length === 1, "the open")
+    const [s] = subscriptions
+    s!.connection.reply(s!.stream, FLAG_END, { name: "RequestFailed", body: { code: 1, message: "gone" } })
+    expect(await settled).toMatch(/gone/)
+    expect(await sub.updates[Symbol.asyncIterator]().next().then((v) => v, (e: Error) => e.message)).toMatch(/gone/)
+  })
+
+  it("settles a pending initial result when the caller closes", async () => {
+    const bus = await setup()
+    const sub = bus.subscriptionQuery(message("Watch") as QueryMessage)
+    const settled = sub.initialResult.then(() => "resolved", (e: Error) => e.message)
+    sub.close()
+    expect(await settled).toMatch(/closed/i)
+    await until(() => subscriptions[0]?.cancelled === true, "the cancel")
+  })
+
+  it("reports update overflow instead of silently dropping data", async () => {
+    const bus = await setup()
+    const sub = bus.subscriptionQuery(message("Watch") as QueryMessage, 1)
+    await until(() => subscriptions.length === 1, "the open")
+    const [s] = subscriptions
+    event(s!.connection, s!.stream, 0, { kind: "initialResult", value: result(0) })
+    await sub.initialResult
+    event(s!.connection, s!.stream, 0, { kind: "update", value: update(1) })
+    event(s!.connection, s!.stream, 0, { kind: "update", value: update(2) })
+    await tick()
+    await until(() => s!.cancelled, "the subscription to be given up")
+    const iterator = sub.updates[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toBe(1)
+    await expect(iterator.next()).rejects.toThrow(/overflow/i)
+    sub.close()
+  })
+
+  it("fails the update stream if the stream ends after the initial result without a completion", async () => {
+    const bus = await setup()
+    const sub = bus.subscriptionQuery(message("Watch") as QueryMessage)
+    await until(() => subscriptions.length === 1, "the open")
+    const [s] = subscriptions
+    event(s!.connection, s!.stream, 0, { kind: "initialResult", value: result(0) })
+    await sub.initialResult
+    const next = sub.updates[Symbol.asyncIterator]().next()
+    event(s!.connection, s!.stream, FLAG_END, { kind: "update", value: update(1) })
+    // The update arrives, then the stream is over without saying so.
+    expect((await next).value).toBe(1)
+    await expect(sub.updates[Symbol.asyncIterator]().next()).rejects.toThrow(/ended unexpectedly/)
+  })
+
+  it("fails the update stream if the connection is lost after the initial result", async () => {
+    const bus = await setup()
+    const sub = bus.subscriptionQuery(message("Watch") as QueryMessage)
+    await until(() => subscriptions.length === 1, "the open")
+    const [s] = subscriptions
+    event(s!.connection, s!.stream, 0, { kind: "initialResult", value: result(0) })
+    await sub.initialResult
+    const next = sub.updates[Symbol.asyncIterator]().next()
+    s!.connection.destroy()
+    await expect(next).rejects.toThrow()
+  })
+
+  it("times out an initial result that never comes", async () => {
+    const bus = await setup()
+    const timed = kronosDbQueryBus(localQueryBus(unitOfWork), client.host, "default", { timeoutMs: 30 }) as SubscriptionCapableQueryBus
+    const sub = timed.subscriptionQuery(message("Watch") as QueryMessage)
+    await expect(sub.initialResult).rejects.toThrow(/timed out/)
+    await until(() => subscriptions[0]?.cancelled === true, "the cancel")
+    void bus
+  })
+
+  it("settles a subscription that was shut down before its stream opened", async () => {
+    const bus = await setup()
+    const sub = bus.subscriptionQuery(message("Watch") as QueryMessage)
+    sub.close()
+    await expect(sub.initialResult).rejects.toThrow(/closed/)
+    await until(() => subscriptions[0]?.cancelled === true, "the cancel of a stream opened after it was abandoned")
+  })
+})
+
+it("concurrent shutdown callers share the same drain", async () => {
+  const latch = shutdownLatch()
+  const activity = latch.registerActivity()
+  const a = latch.initiateShutdown(),
+    b = latch.initiateShutdown()
+  const settled = a.then(() => "drained")
+  activity.end()
+  await b
+  expect(await Promise.race([settled, Promise.resolve("still pending")])).toBe("drained")
+})

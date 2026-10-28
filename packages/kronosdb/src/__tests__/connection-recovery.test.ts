@@ -1,190 +1,171 @@
-import { describe, expect, it } from "bun:test"
-import { createServer } from "nice-grpc"
-import { connectToKronosDb } from "../connection.js"
-import { connectToAxonServer } from "../../../axon-server/src/connection.js"
-import { CommandServiceDefinition } from "../generated/command.js"
-
-for (const [backend, connect] of [
-  ["kronos", connectToKronosDb],
-  ["axon", connectToAxonServer],
-] as const) {
-  describe(`${backend} channel recovery`, () => {
-    it("replaces a nominally connected channel and coalesces concurrent reconnects", async () => {
-      const server = createServer()
-      server.add(CommandServiceDefinition, {
-        async dispatch() {
-          return {}
-        },
-        async *openStream() {},
-      })
-      const port = await server.listen("127.0.0.1:0")
-      const connection = connect({
-        host: "127.0.0.1",
-        port,
-        componentName: "recovery",
-        keepAliveTimeoutMs: 1000,
-      })
-      let disconnects = 0,
-        reconnects = 0
-      connection.onDisconnect(() => {
-        disconnects++
-      })
-      connection.onReconnect(() => {
-        reconnects++
-      })
-      const original = connection.channel
-      try {
-        await Promise.all([connection.reconnect(), connection.reconnect()])
-        expect(connection.channel).not.toBe(original)
-        expect(connection.state).toBe("connected")
-        expect(disconnects).toBe(1)
-        expect(reconnects).toBe(1)
-      } finally {
-        connection.close()
-        server.forceShutdown()
-      }
-      await expect(connection.reconnect()).rejects.toThrow(/permanently closed/)
-    })
-    it("reports failed recovery rather than success from lazy channel construction", async () => {
-      const server = createServer()
-      server.add(CommandServiceDefinition, {
-        async dispatch() {
-          return {}
-        },
-        async *openStream() {},
-      })
-      const port = await server.listen("127.0.0.1:0")
-      server.forceShutdown()
-      const connection = connect({
-        host: "127.0.0.1",
-        port,
-        componentName: "recovery",
-        keepAliveTimeoutMs: 20,
-        maxReconnectAttempts: 1,
-      })
-      let recovered = false
-      connection.onReconnect(() => {
-        recovered = true
-      })
-      try {
-        await expect(connection.reconnect()).rejects.toThrow(/Failed to reconnect/)
-        expect(recovered).toBe(false)
-        expect(connection.state).toBe("disconnected")
-      } finally {
-        connection.close()
-      }
-    })
-  })
-}
-
-import { platformConnection as kronosPlatform } from "../platform-service.js"
-import { platformConnection as axonPlatform } from "../../../axon-server/src/platform-service.js"
-import { outboundStream } from "../outbound-stream.js"
-
-for (const [backend, create] of [
-  ["kronos", kronosPlatform],
-  ["axon", axonPlatform],
-] as const) {
-  it(`${backend}: platform EOF triggers recovery and reopens monitoring`, async () => {
-    const streams: ReturnType<typeof outboundStream<any>>[] = []
-    let onReconnect!: () => void
-    let reconnects = 0
-    const connection: any = {
-      config: {
-        componentName: "qa",
-        clientId: "qa",
-        context: "default",
-        token: "",
-        reconnectIntervalMs: 1,
-      },
-      state: "connected",
-      onReconnect(callback: () => void) {
-        onReconnect = callback
-      },
-      async reconnect() {
-        reconnects++
-        onReconnect()
-      },
-      platform: {
-        openStream(outbound: AsyncIterable<any>) {
-          void (async () => {
-            for await (const _ of outbound) {
-              /* Drain client registration and heartbeat. */
-            }
-          })()
-          const inbound = outboundStream<any>()
-          streams.push(inbound)
-          return inbound.iterable
-        },
-      },
-    }
-    const platform = create(connection, {
-      heartbeatIntervalMs: 1000,
-      processorsNotificationInitialDelayMs: 1000,
-    })
-    try {
-      await platform.start()
-      streams[0]!.close()
-      await new Promise((r) => setTimeout(r, 15))
-      expect(reconnects).toBe(1)
-      expect(streams).toHaveLength(2)
-      expect(platform.connected).toBe(true)
-      platform.stop()
-      streams[1]!.close()
-      await new Promise((r) => setTimeout(r, 15))
-      expect(reconnects).toBe(1)
-      expect(platform.connected).toBe(false)
-    } finally {
-      platform.stop()
-      for (const stream of streams) stream.close()
-    }
-  })
-}
-
-import { kronosDbConnection } from "../kronosdb.js"
-import { axonServerConnection } from "../../../axon-server/src/connection.js"
-import { shutdownLatch } from "../shutdown-latch.js"
+import { afterEach, describe, expect, it } from "bun:test"
 import { jsonSerializer } from "@kronos-ts/core"
+import { connectToKronosDb, contextView, type KronosDbConnection } from "../connection.js"
+import { kronosDbConnection } from "../kronosdb.js"
+import { shutdownLatch } from "../shutdown-latch.js"
+import { streamRecovery } from "../stream-recovery.js"
+import { fakeNativeServer, type FakeNativeServer } from "./fake-native-server.js"
 
-for (const backend of ["kronos", "axon"] as const) {
-  it(`${backend}: shutdown expiry still closes the underlying transport`, async () => {
-    const options = {
+const servers: FakeNativeServer[] = []
+const connections: KronosDbConnection[] = []
+
+afterEach(async () => {
+  for (const c of connections.splice(0)) c.close()
+  await Promise.all(servers.splice(0).map((s) => s.close()))
+})
+
+async function fake(options?: Parameters<typeof fakeNativeServer>[0]) {
+  const server = await fakeNativeServer(options)
+  servers.push(server)
+  return server
+}
+
+function connect(port: number, extra: Partial<Parameters<typeof connectToKronosDb>[0]> = {}) {
+  const connection = connectToKronosDb({ host: "127.0.0.1", port, componentName: "recovery", connectTimeoutMs: 1000, reconnectIntervalMs: 5, ...extra })
+  connections.push(connection)
+  return connection
+}
+
+describe("kronos connection recovery", () => {
+  it("keeps a healthy socket through a reconnect, and coalesces concurrent reconnects", async () => {
+    const server = await fake()
+    const connection = connect(server.port)
+    const socket = await connection.native.ready()
+    let disconnects = 0,
+      reconnects = 0
+    connection.onDisconnect(() => void disconnects++)
+    connection.onReconnect(() => void reconnects++)
+
+    await Promise.all([connection.reconnect(), connection.reconnect()])
+    expect(connection.state).toBe("connected")
+    expect(disconnects).toBe(1)
+    expect(reconnects).toBe(1)
+    // A socket that answers its liveness checks is not replaced.
+    expect(connection.native.current()).toBe(socket)
+    expect(server.connections).toHaveLength(1)
+  })
+
+  it("opens a new socket when the old one is gone, and only then reports recovery", async () => {
+    const server = await fake()
+    const connection = connect(server.port)
+    await connection.native.ready()
+    server.connections[0]!.destroy()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    let reconnects = 0
+    connection.onReconnect(() => void reconnects++)
+    await connection.reconnect()
+    expect(connection.native.current()).toBeDefined()
+    expect(server.connections).toHaveLength(2)
+    expect(reconnects).toBe(1)
+  })
+
+  it("refuses to reconnect once closed", async () => {
+    const server = await fake()
+    const connection = connect(server.port)
+    connection.close()
+    expect(connection.state).toBe("closed")
+    await expect(connection.reconnect()).rejects.toThrow(/permanently closed/)
+  })
+
+  it("reports failed recovery rather than success from a lazily opened socket", async () => {
+    const dead = await fakeNativeServer()
+    const port = dead.port
+    await dead.close()
+    const connection = connect(port, { maxReconnectAttempts: 2, connectTimeoutMs: 100 })
+    let recovered = false
+    connection.onReconnect(() => {
+      recovered = true
+    })
+    await expect(connection.reconnect()).rejects.toThrow(/Failed to reconnect after 2 attempts/)
+    expect(recovered).toBe(false)
+    expect(connection.state).toBe("disconnected")
+  })
+
+  it("keeps trying while the server is down, and recovers when it is back", async () => {
+    const first = await fakeNativeServer()
+    const port = first.port
+    await first.close()
+    const connection = connect(port, { reconnectIntervalMs: 10, connectTimeoutMs: 100 })
+    let reconnects = 0
+    connection.onReconnect(() => void reconnects++)
+    const recovering = connection.reconnect()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(connection.state).toBe("reconnecting")
+    expect(reconnects).toBe(0)
+
+    servers.push(await fakeNativeServer({ port }))
+    await recovering
+    expect(connection.state).toBe("connected")
+    expect(reconnects).toBe(1)
+  })
+
+  it("fails over to the next server in the list", async () => {
+    const down = await fakeNativeServer()
+    const downPort = down.port
+    await down.close()
+    const up = await fake()
+    const connection = connect(up.port, { servers: [`127.0.0.1:${downPort}`, `127.0.0.1:${up.port}`] })
+    await connection.reconnect()
+    expect(up.connections).toHaveLength(1)
+  })
+
+  it("shares its socket among context views and does not let one close it", async () => {
+    const server = await fake()
+    const connection = connect(server.port)
+    const billing = contextView(connection, "billing")
+    expect(billing.config.context).toBe("billing")
+    expect(connection.config.context).toBe("default")
+    expect(billing.native).toBe(connection.native)
+    expect(contextView(connection, "default")).toBe(connection)
+    billing.close()
+    expect(connection.state).toBe("connected")
+    await billing.reconnect()
+    expect(server.connections).toHaveLength(1)
+  })
+})
+
+describe("kronos connection handle", () => {
+  it("still closes the socket when a bus does not drain in time", async () => {
+    const server = await fake()
+    const kdb = await kronosDbConnection({
       componentName: "shutdown",
+      host: "127.0.0.1",
+      port: server.port,
       serializer: jsonSerializer(),
       shutdownTimeoutMs: 10,
-    }
-    const connection =
-      backend === "kronos" ? await kronosDbConnection(options) : await axonServerConnection(options)
-    const latch = "shutdown" in connection ? connection.shutdown : shutdownLatch()
-    if ("registerShutdownLatch" in connection) connection.registerShutdownLatch(latch)
+    })
+    const latch = shutdownLatch()
+    kdb.registerShutdownLatch(latch)
     const activity = latch.registerActivity()
     try {
-      await expect(connection.close()).rejects.toThrow(/shutdown.*timed out/i)
-      expect(connection.connection.state).toBe("closed")
+      await expect(kdb.close()).rejects.toThrow(/shutdown.*timed out/i)
+      expect(kdb.connection.state).toBe("closed")
       expect(latch.activeCount).toBe(1)
     } finally {
       activity.end()
-      await connection.close()
+      await kdb.close()
     }
   })
-}
 
-import { streamRecovery as kronosRecovery } from "../stream-recovery.js"
-import { streamRecovery as axonRecovery } from "../../../axon-server/src/stream-recovery.js"
+  it("opens nothing until something needs it", async () => {
+    const server = await fake()
+    const kdb = await kronosDbConnection({ componentName: "lazy", host: "127.0.0.1", port: server.port, serializer: jsonSerializer() })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(server.connections).toHaveLength(0)
+    await kdb.close()
+  })
+})
 
-for (const [backend, create] of [
-  ["kronos", kronosRecovery],
-  ["axon", axonRecovery],
-] as const) {
-  it(`${backend}: async EOF recovery backs off, coalesces, caps attempts and stops`, async () => {
+describe("kronos stream recovery", () => {
+  it("async EOF recovery backs off, coalesces, caps attempts and stops", async () => {
     let opened = 0
-    const recovery = create(
+    const recovery = streamRecovery(
       () => {
         opened++
         queueMicrotask(() => recovery.failed(new Error("EOF")))
       },
       () => true,
-      { initialDelayMs: 2, maxDelayMs: 4, maxAttempts: 3 },
+      { initialDelayMs: 2, maxDelayMs: 4, maxAttempts: 3, log: () => {} },
     )
     try {
       recovery.failed(new Error("EOF"))
@@ -202,4 +183,4 @@ for (const [backend, create] of [
       recovery.stop()
     }
   })
-}
+})

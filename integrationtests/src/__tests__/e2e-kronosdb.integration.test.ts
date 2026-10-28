@@ -2,7 +2,8 @@ import assert from "node:assert/strict"
 /**
  * Full-stack E2E integration test for KronosDB.
  *
- * Spins up ghcr.io/kronosdb/kronosdb:0.9.0 via testcontainers — no local
+ * Spins up a KronosDB server (a container, or the binary KRONOSDB_SERVER_BIN
+ * names) — no local
  * server needed. The image's entrypoint runs kronosdb-server, which listens
  * for gRPC on 50051 and admin on 9240.
  *
@@ -10,7 +11,7 @@ import assert from "node:assert/strict"
  *   command → event store → tracking processor → projection → query
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
-import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
+import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 import { z } from "zod"
 import { qn, send, query } from "@kronos-ts/core"
 import {
@@ -284,7 +285,7 @@ function id(name: string) { return `${name}-${runId}` }
 // ============================================================================
 
 describe("E2E: KronosDB full stack", () => {
-  let container: StartedTestContainer
+  let server: KronosDbServer
   let app: App
   let backend: KronosDbConnectionHandle
   let backendEventStore: EventStore
@@ -295,16 +296,12 @@ describe("E2E: KronosDB full stack", () => {
   beforeAll(async () => {
     courseViews.clear()
 
-    // Spin up KronosDB. The server logs "KronosDB starting" once it binds
-    // its gRPC listener; testcontainers also waits for port 50051 to accept
-    // connections before returning.
-    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:0.9.0")
-      .withExposedPorts(50051, 9240)
-      .withWaitStrategy(Wait.forHttp("/ready", 9240).forStatusCode(200))
-      .start()
+    // A container, or a local binary when KRONOSDB_SERVER_BIN is set. Either
+    // way the helper returns once /ready answers — the node can execute writes.
+    server = await startKronosDb()
 
-    kronosHost = container.getHost()
-    kronosPort = container.getMappedPort(50051)
+    kronosHost = server.host
+    kronosPort = server.port
 
     // The app's serializer + UoW runner must be the SAME instances the
     // distributed buses use, so the runner is named once and handed to both.
@@ -361,7 +358,7 @@ describe("E2E: KronosDB full stack", () => {
   afterAll(async () => {
     await app?.stop()
     await backend?.close()
-    await container?.stop()
+    await server?.stop()
   })
 
   function eventStore(): EventStore {

@@ -1,15 +1,5 @@
-import { createChannel, createClient, waitForChannelReady, type Channel, type Client, type ChannelCredentials } from "nice-grpc"
-import { ChannelCredentials as GrpcChannelCredentials } from "@grpc/grpc-js"
-import { Metadata } from "nice-grpc"
 import { readFileSync } from "node:fs"
-import {
-  kronosDbServiceDefinitions,
-  PlatformServiceDefinition,
-  CommandServiceDefinition,
-  QueryServiceDefinition,
-  EventStoreDefinition,
-  SchedulerServiceDefinition,
-} from "./service-definitions.js"
+import { nativeLink, type NativeLink } from "./native-link.js"
 
 /**
  * Configuration for connecting to KronosDB.
@@ -17,7 +7,7 @@ import {
 export type KronosDbConnectionConfig = {
   /** Host of the KronosDB server. Defaults to "localhost". */
   host?: string
-  /** gRPC port of the KronosDB server. Defaults to 50051. */
+  /** Port of the KronosDB server: its `listen` address. Defaults to 50051. */
   port?: number
   /**
    * Multiple server addresses for cluster deployments.
@@ -31,23 +21,22 @@ export type KronosDbConnectionConfig = {
   componentName: string
   /** Unique client identifier. Defaults to a generated UUID. */
   clientId?: string
-  /** Access token for authentication. Optional. */
+  /** Access token or JWT for authentication. Optional. */
   token?: string
   /** Reconnection interval in ms. Defaults to 2000. */
   reconnectIntervalMs?: number
   /** Maximum reconnection attempts before giving up. 0 = unlimited. Defaults to 0. */
   maxReconnectAttempts?: number
+  /** Time allowed to connect and complete the handshake, per server, in ms. Default: 10000. */
+  connectTimeoutMs?: number
 
-  /** gRPC keepalive ping interval in ms. Default: 30000. */
-  keepAliveTimeMs?: number
-  /** gRPC keepalive timeout in ms. Default: 10000. */
-  keepAliveTimeoutMs?: number
-  /** Allow keepalive pings without active RPCs. Default: true. */
-  keepAlivePermitWithoutCalls?: boolean
-
-  /** TLS/SSL configuration. */
+  /**
+   * TLS configuration. The server expects the TLS handshake first on its
+   * `listen` port and has no plaintext fallback.
+   */
   ssl?: {
     enabled: boolean
+    /** CA certificate(s) to trust, as a PEM file. */
     certFile?: string
     clientCertFile?: string
     clientKeyFile?: string
@@ -57,77 +46,39 @@ export type KronosDbConnectionConfig = {
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting" | "closed"
 
 /**
- * An active connection to KronosDB, providing typed gRPC clients
- * for all services. Supports reconnection on failure.
+ * An active connection to KronosDB: one native-protocol socket, carrying the
+ * event store, the buses and the platform stream alike, opened on first use.
+ * Supports reconnection on failure.
  */
 export type KronosDbConnection = {
-  readonly channel: Channel
-  /** Platform service client. */
-  readonly platform: Client<typeof PlatformServiceDefinition>
-  /** Command service client. */
-  readonly commands: Client<typeof CommandServiceDefinition>
-  /** Query service client. */
-  readonly queries: Client<typeof QueryServiceDefinition>
-  /** Event store client. */
-  readonly eventStore: Client<typeof EventStoreDefinition>
-  /** Scheduler client — server-side scheduled appends. */
-  readonly scheduler: Client<typeof SchedulerServiceDefinition>
+  /** The native protocol: the socket every request and stream rides. */
+  readonly native: NativeLink
   /** The resolved configuration. `servers` and `ssl` stay optional — they have no defaults. */
   readonly config: Omit<Required<KronosDbConnectionConfig>, "servers" | "ssl"> & {
     servers?: KronosDbConnectionConfig["servers"]
     ssl?: KronosDbConnectionConfig["ssl"]
   }
   readonly state: ConnectionState
+  /** Called once the connection is usable again after {@link reconnect}. */
   onReconnect(callback: () => void): void
+  /** Called when {@link reconnect} begins, or the connection closes: long-lived streams end here. */
   onDisconnect(callback: (error?: Error) => void): void
   close(): void
+  /**
+   * Make sure there is a live, non-draining socket — connecting to the next
+   * server if the last one is gone — and tell the long-lived streams to reopen
+   * on it. A healthy socket is kept: it has a liveness check of its own.
+   */
   reconnect(): Promise<void>
 }
 
 /**
- * Creates gRPC metadata for KronosDB STORE-PLANE requests (event store,
- * snapshots, schedules). Injects the context and optional auth token.
+ * Connects to KronosDB.
  *
- * Since server 0.9 (ADR-0006) this header addresses ONLY the event store side;
- * messaging RPCs ignore it and route on `kronosdb-bus` — see {@link busMetadata}.
- */
-export function kronosMetadata(config: { context: string; token: string }): Metadata {
-  const metadata = new Metadata()
-  metadata.set("kronosdb-context", config.context)
-  if (config.token) {
-    metadata.set("kronosdb-token", config.token)
-  }
-  return metadata
-}
-
-/**
- * Creates gRPC metadata for KronosDB MESSAGING-PLANE requests (commands,
- * queries, subscription queries). Injects the bus name and optional auth token.
- *
- * Buses are server-scoped resources INDEPENDENT of event store contexts
- * (server ADR-0006): `CommandService` and `QueryService` resolve their engine
- * from the per-RPC `kronosdb-bus` header, an absent header means the `default`
- * bus, and there is deliberately NO fallback to `kronosdb-context` — so this
- * helper never reads the connection's context. Which buses map to which
- * contexts is the host's deployment decision, expressed one bus-name string
- * per bus wrapper.
- */
-export function busMetadata(bus: string, config: { token: string }): Metadata {
-  const metadata = new Metadata()
-  metadata.set("kronosdb-bus", bus)
-  if (config.token) {
-    metadata.set("kronosdb-token", config.token)
-  }
-  return metadata
-}
-
-/**
- * Connects to KronosDB and returns typed gRPC clients for all services.
- *
- * Configures gRPC channel-level keepalive to maintain persistent connections.
+ * Nothing is opened here: the socket connects when a store, bus or platform
+ * stream first needs it, and again after it dies. TLS material is read once.
  */
 export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbConnection {
-  const serviceDefinitions = kronosDbServiceDefinitions
   const resolvedConfig = {
     host: config.host ?? "localhost",
     port: config.port ?? 50051,
@@ -137,49 +88,30 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
     token: config.token ?? "",
     reconnectIntervalMs: config.reconnectIntervalMs ?? 2000,
     maxReconnectAttempts: config.maxReconnectAttempts ?? 0,
-    keepAliveTimeMs: config.keepAliveTimeMs ?? 30000,
-    keepAliveTimeoutMs: config.keepAliveTimeoutMs ?? 10000,
-    keepAlivePermitWithoutCalls: config.keepAlivePermitWithoutCalls ?? true,
+    connectTimeoutMs: config.connectTimeoutMs ?? 10_000,
     servers: config.servers,
     ssl: config.ssl,
-  }
-
-  const sslConfig = config.ssl
-  let credentials: ChannelCredentials | undefined
-
-  if (sslConfig?.enabled) {
-    const rootCerts = sslConfig.certFile ? readFileSync(sslConfig.certFile) : null
-    const clientKey = sslConfig.clientKeyFile ? readFileSync(sslConfig.clientKeyFile) : null
-    const clientCert = sslConfig.clientCertFile ? readFileSync(sslConfig.clientCertFile) : null
-    credentials = GrpcChannelCredentials.createSsl(rootCerts, clientKey, clientCert) as ChannelCredentials
-  }
-
-  const channelOptions = {
-    "grpc.keepalive_time_ms": config.keepAliveTimeMs ?? 30000,
-    "grpc.keepalive_timeout_ms": config.keepAliveTimeoutMs ?? 10000,
-    "grpc.keepalive_permit_without_calls": (config.keepAlivePermitWithoutCalls ?? true) ? 1 : 0,
-    // Own subchannel pool per channel. grpc-js pools subchannels PROCESS-WIDE by
-    // target address by default, so a later connection to the same host:port —
-    // a fresh container on a reused mapped port, in a test process that already
-    // talked to another one — can be handed the previous server's HTTP/2
-    // session, and its unary calls hang until the server-side timeout.
-    "grpc.use_local_subchannel_pool": 1,
   }
 
   const serverAddresses = config.servers && config.servers.length > 0
     ? config.servers
     : [`${resolvedConfig.host}:${resolvedConfig.port}`]
 
-  let currentServerIndex = 0
+  const link = nativeLink({
+    addresses: serverAddresses,
+    tls: config.ssl?.enabled
+      ? {
+          ca: config.ssl.certFile ? readFileSync(config.ssl.certFile) : undefined,
+          cert: config.ssl.clientCertFile ? readFileSync(config.ssl.clientCertFile) : undefined,
+          key: config.ssl.clientKeyFile ? readFileSync(config.ssl.clientKeyFile) : undefined,
+        }
+      : undefined,
+    clientName: resolvedConfig.componentName,
+    clientId: resolvedConfig.clientId,
+    token: resolvedConfig.token,
+    connectTimeoutMs: resolvedConfig.connectTimeoutMs,
+  })
 
-  function createGrpcChannel(): Channel {
-    const address = serverAddresses[currentServerIndex % serverAddresses.length]!
-    return credentials
-      ? createChannel(address, credentials, channelOptions)
-      : createChannel(address, undefined, channelOptions)
-  }
-
-  let channel = createGrpcChannel()
   let state: ConnectionState = "connected"
   let reconnectPromise: Promise<void> | undefined
   let retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -188,25 +120,8 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
   const reconnectCallbacks: Array<() => void> = []
   const disconnectCallbacks: Array<(error?: Error) => void> = []
 
-  function createClients() {
-    return {
-      platform: createClient(serviceDefinitions.platform, channel),
-      commands: createClient(serviceDefinitions.commands, channel),
-      queries: createClient(serviceDefinitions.queries, channel),
-      eventStore: createClient(serviceDefinitions.eventStore, channel),
-      scheduler: createClient(serviceDefinitions.scheduler, channel),
-    }
-  }
-
-  let clients = createClients()
-
   const connection: KronosDbConnection = {
-    get channel() { return channel },
-    get platform() { return clients.platform },
-    get commands() { return clients.commands },
-    get queries() { return clients.queries },
-    get eventStore() { return clients.eventStore },
-    get scheduler() { return clients.scheduler },
+    native: link,
     config: resolvedConfig,
 
     get state() { return state },
@@ -227,7 +142,7 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
       }
       clearTimeout(retryTimer)
       finishRetryDelay?.()
-      channel.close()
+      link.close()
     },
 
     reconnect() {
@@ -235,7 +150,6 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
       if (reconnectPromise) return reconnectPromise
       reconnectPromise = (async () => {
         state = "reconnecting"
-        channel.close()
         for (const callback of disconnectCallbacks) {
           try { callback() } catch { /* Listener failures cannot prevent recovery. */ }
         }
@@ -243,20 +157,16 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
         while (state === "reconnecting") {
           attempt++
           try {
-            currentServerIndex++
-            channel = createGrpcChannel()
-            // Channel construction is lazy. Only report recovery once the new
-            // transport is ready, otherwise a dead server falsely "succeeds".
-            await waitForChannelReady(channel, new Date(Date.now() + resolvedConfig.keepAliveTimeoutMs))
+            // Only report recovery once a socket has completed its handshake,
+            // otherwise a dead server falsely "succeeds".
+            await link.ready()
             if ((state as ConnectionState) === "closed") return
-            clients = createClients()
             state = "connected"
             for (const callback of reconnectCallbacks) {
               try { callback() } catch { /* Listener failures are isolated. */ }
             }
             return
           } catch (error) {
-            channel.close()
             if ((state as ConnectionState) === "closed") return
             if (resolvedConfig.maxReconnectAttempts > 0 && attempt >= resolvedConfig.maxReconnectAttempts) {
               state = "disconnected"
@@ -272,7 +182,6 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
         }
       })().finally(() => { reconnectPromise = undefined })
       return reconnectPromise
-
     },
   }
 
@@ -280,23 +189,14 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
 }
 
 /**
- * A context-scoped VIEW of the shared connection.
- *
- * Every client is a getter onto the real connection, so a reconnect that swaps
- * the channel underneath is picked up live by every context. Only
- * `config.context` differs, which is exactly what `kronosMetadata` reads to set
- * the per-call `kronosdb-context` header — so one channel serves N contexts
- * with no per-context socket.
+ * A context-scoped VIEW of the shared connection: the same socket, a different
+ * `config.context` — which is what the event store reads to bind its context on
+ * it. One connection serves N contexts with no per-context socket.
  */
 export function contextView(connection: KronosDbConnection, context: string): KronosDbConnection {
   if (context === connection.config.context) return connection
   return {
-    get channel() { return connection.channel },
-    get platform() { return connection.platform },
-    get commands() { return connection.commands },
-    get queries() { return connection.queries },
-    get eventStore() { return connection.eventStore },
-    get scheduler() { return connection.scheduler },
+    get native() { return connection.native },
     config: { ...connection.config, context },
     get state() { return connection.state },
     onReconnect: (cb) => connection.onReconnect(cb),

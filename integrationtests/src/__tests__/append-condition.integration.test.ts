@@ -16,6 +16,7 @@ import {
 } from "@kronos-ts/postgres"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 import { kronosDbConnection, kronosDbEventStore, type KronosDbConnection } from "@kronos-ts/kronosdb"
+import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 import { appendConditionScenarios } from "./append-condition-scenarios.js"
 
 describe("append condition — in-memory", () => {
@@ -63,19 +64,16 @@ describe("append condition — postgres", () => {
 })
 
 describe("append condition — kronosdb", () => {
-  let container: StartedTestContainer
+  let server: KronosDbServer
   let connection: KronosDbConnection
   let eventStore: EventStore
 
   beforeAll(async () => {
-    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:0.9.0")
-      .withExposedPorts(50051, 9240)
-      .withWaitStrategy(Wait.forHttp("/ready", 9240).forStatusCode(200))
-      .start()
+    server = await startKronosDb()
     connection = await kronosDbConnection({
       componentName: "append-condition-test",
-      host: container.getHost(),
-      port: container.getMappedPort(50051),
+      host: server.host,
+      port: server.port,
       context: "default",
       serializer: jsonSerializer(),
     })
@@ -84,7 +82,7 @@ describe("append condition — kronosdb", () => {
 
   afterAll(async () => {
     await connection?.close()
-    await container?.stop()
+    await server?.stop()
   })
 
   appendConditionScenarios({ eventStore: () => eventStore, exact: false })

@@ -33,7 +33,7 @@
     "!src/**/*.bench.ts"
   ],
   "scripts": {
-    "generate-proto": "grpc_tools_node_protoc --ts_proto_out=./src/generated --ts_proto_opt=outputServices=nice-grpc,outputServices=generic-definitions,useExactTypes=false,importSuffix=.js,esModuleInterop=true,forceLong=bigint --proto_path=./proto ./proto/*.proto && bun ../../scripts/interface-to-type/convert.ts ./src/generated",
+    "vendor-protocol": "bun scripts/vendor-protocol.ts",
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
@@ -49,17 +49,10 @@
     }
   },
   "dependencies": {
-    "@kronos-ts/core": "workspace:*",
-    "@bufbuild/protobuf": "^2.3",
-    "@grpc/grpc-js": "^1.12",
-    "nice-grpc": "^2.1",
-    "nice-grpc-common": "^2.0",
-    "zod": "^4.3.6"
+    "@kronos-ts/core": "workspace:*"
   },
   "devDependencies": {
-    "grpc-tools": "^1.12",
-    "grpc_tools_node_protoc_ts": "^5.3",
     "testcontainers": "^11.13.0",
-    "ts-proto": "^2.6"
+    "zod": "^4.3.6"
   }
 }

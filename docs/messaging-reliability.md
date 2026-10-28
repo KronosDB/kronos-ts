@@ -39,13 +39,14 @@ const commands = kronosDbCommandBus(localCommandBus(unitOfWork), kdb, "default",
 | Pending outgoing requests | 1024 per bus/transport; excess callers fail before publishing |
 | Request deadline | 30 seconds; configurable through bus `timeoutMs` |
 | Graceful drain | 30 seconds; configurable through connection `shutdownTimeoutMs` |
-| gRPC outgoing queue | 4096 frames per stream; overflow is an explicit error |
+| Axon gRPC outgoing queue | 4096 frames per stream; overflow is an explicit error |
 | Subscriber registrations | 1024 per query bus |
-| Provider registrations | 1024 per gRPC query bus |
+| Provider registrations | 1024 per query bus |
+| Provider held updates | 1024 per subscription for a subscriber without credit; beyond that the subscription is ended with an error (KronosDB) |
 | Axon response-credit records | `maxPendingRequests` (1024); includes early credits, expires at the request deadline |
 | RabbitMQ subscription mirror | 16384 entries per registry |
 | Subscription consumer buffer | 256 updates by default; positive integer required |
-| gRPC subscription credit window | 256–1024, independent of smaller consumer buffers |
+| Subscription credit window | 256–1024, independent of smaller consumer buffers |
 
 These bounds count operations, frames, or registrations, not payload bytes or total process memory. In-process handlers invoked directly through local buses remain under their caller's concurrency policy. Configure broker/server message-size and queue-length policies for deployment-specific byte limits.
 
@@ -53,7 +54,7 @@ Admission never waits for a handler slot. If every admitted parent awaits a chil
 
 Query timeouts now default to 30 seconds rather than the previous one-hour server timeout. Set `timeoutMs: 3_600_000` explicitly for queries that require the previous duration; the client deadline follows the same setting.
 
-A caller timing out does not free a still-running handler's slot. gRPC deadlines cancel the client RPC; RabbitMQ deadlines release pending response state and publish requests with message expiry. Neither action forcibly stops JavaScript running in another handler, rolls back a committed transaction, or proves that a command was not executed. Timeout and disconnect outcomes can be ambiguous. Application handlers must use appropriate idempotency and cooperative cancellation for external side effects. Parent deadlines are not propagated as a transactional cancellation boundary to child units of work.
+A caller timing out does not free a still-running handler's slot. gRPC deadlines and KronosDB stream cancels end the client's request; RabbitMQ deadlines release pending response state and publish requests with message expiry. Neither action forcibly stops JavaScript running in another handler, rolls back a committed transaction, or proves that a command was not executed. Timeout and disconnect outcomes can be ambiguous. Application handlers must use appropriate idempotency and cooperative cancellation for external side effects. Parent deadlines are not propagated as a transactional cancellation boundary to child units of work.
 
 Use a unique message identifier for each dispatch. Concurrent outgoing requests with the same identifier on one bus/transport are rejected. This is correlation protection, not a durable deduplication store. Business idempotency keys should be explicit and retained transactionally by the application.
 
@@ -64,15 +65,15 @@ Use a unique message identifier for each dispatch. Concurrent outgoing requests 
 | Local commands | Fresh unit of work per dispatch; normal handler errors reject the caller |
 | Local queries | A supplied live unit of work is reused; otherwise a fresh one is opened |
 | Wire commands and queries | Independently handled and correlated; no global completion ordering |
-| gRPC provider stream recovery | Reconnect replaces the channel, waits for transport readiness, reopens platform monitoring, and resubscribes handlers; old handlers cannot reply on a replacement stream |
+| Provider stream recovery | Reconnect ensures a live socket (Axon: replaces the gRPC channel), waits for transport readiness, reopens platform monitoring, and resubscribes handlers; old handlers cannot reply on a replacement stream |
 | RabbitMQ routing | Replicas with the same service name compete on one queue; distinct service names create distinct queues and can each receive a copy |
 | RabbitMQ disconnect | Pending callers fail immediately; the failed transport refuses reuse; create a replacement connection and register/start its handlers |
 | Automatic command replay | No adapter-level replay after an ambiguous request failure |
 | RabbitMQ unacknowledged delivery | Broker redelivery remains possible after channel loss; application idempotency is required |
 
-KronosDB provider streams use distinct client identifiers, regenerated on each stream incarnation. Caller and platform requests retain the connection's logical client ID. This accommodates the server's provider lookup by client ID: multiple named buses cannot overwrite each other's streams, and delayed cleanup of an old stream cannot remove its replacement. These provider IDs are visible in server diagnostics and are not stable business identifiers.
+KronosDB handler streams are registered under the connection's client ID, which is what ties them to the client's platform stream and lets a restarted handler take over from its stale stream: a newer stream of the same client on the same bus replaces an older one. A second bus built for the same bus name on one connection gets a suffixed client ID of its own (`<clientId>#2`), so two buses do not replace each other for good. Each stream incarnation is its own object: a frame, failure or response belonging to an old one is dropped instead of being taken for the replacement's, and a delayed cleanup of an old stream cannot remove its replacement. Axon provider streams use distinct client identifiers, regenerated on each incarnation; those IDs are visible in server diagnostics and are not stable business identifiers.
 
-Reconnect requests coalesce while an attempt is running. Heartbeat loss, platform EOF, and server reconnect instructions can initiate recovery without an application control-plane handler. Recovery callbacks fire after channel readiness, not merely after constructing a lazy channel; configured attempt limits still apply. Closing the connection interrupts retry delays and aborts its provider RPCs after draining. Unexpected provider EOF/errors use a coalesced timer with backoff and the configured attempt limit; opening an async iterator is not treated as proof that the stream recovered. Sustained traffic resets the stream retry budget.
+Reconnect requests coalesce while an attempt is running. Heartbeat loss, platform stream loss, and server reconnect instructions can initiate recovery without an application control-plane handler. (KronosDB: a healthy socket is kept through a reconnect; silence on the platform stream ends it first.) Recovery callbacks fire after channel readiness, not merely after constructing a lazy channel; configured attempt limits still apply. Closing the connection interrupts retry delays and aborts its provider RPCs after draining. Unexpected provider EOF/errors use a coalesced timer with backoff and the configured attempt limit; opening an async iterator is not treated as proof that the stream recovered. Sustained traffic resets the stream retry budget.
 
 Axon counts every provider instruction toward receive credits, including subscription acknowledgements. Query response credits are separate: they are correlated by request ID and can arrive before the query itself. Early credits are retained within a bounded, expiring table. Admitted replies keep receiving credits during shutdown so they can finish draining.
 
@@ -82,7 +83,7 @@ RabbitMQ connection replacement is explicit; this change does not introduce an a
 
 ## Subscriptions
 
-Subscription queries provide a transient initial result and update stream. Consumer overflow, initial-result failure, initial-result timeout, transport failure, and shutdown release resources. Returning from the update iterator releases registrations. Concurrent reads on one update buffer reject rather than overwriting and stranding the first reader. An unexpected gRPC EOF after the initial result fails the update iterator.
+Subscription queries provide a transient initial result and update stream. Consumer overflow, initial-result failure, initial-result timeout, transport failure, and shutdown release resources. Returning from the update iterator releases registrations. Concurrent reads on one update buffer reject rather than overwriting and stranding the first reader. An unexpected end of the stream after the initial result fails the update iterator.
 
 Updates and terminal subscription operations carrying a unit of work execute after successful commit. Rolled-back work emits no updates.
 
@@ -96,7 +97,7 @@ runAfterCommitOrImmediately(sendUpdate, uow)
 
 A one-item consumer buffer does not imply one wire credit: refills need time to reach the server. The larger wire window fixes the observed small-window race for a consuming subscriber; an overloaded local consumer still receives an overflow error.
 
-**These streams are not durable event feeds.** KronosDB 0.9 can drop an update when server credits are exhausted without notifying the subscriber. Increasing credit headroom does not make unlimited producer bursts lossless. RabbitMQ's subscription registry remains a best-effort gossip mirror; registration propagation and process failure can lose updates or leave stale remote claims. No replay cursor, gap-free reconnect, or exactly-once subscription delivery is promised. Use a durable event store/processor for changes that must survive failure, and requery/resubscribe after interruption.
+**These streams are not durable event feeds.** The KronosDB server drops an update when a subscriber's credits are exhausted, without telling it; this client therefore holds updates at the provider until the subscriber grants credit, and ends a subscription whose subscriber never does. Increasing credit headroom does not make unlimited producer bursts lossless. RabbitMQ's subscription registry remains a best-effort gossip mirror; registration propagation and process failure can lose updates or leave stale remote claims. No replay cursor, gap-free reconnect, or exactly-once subscription delivery is promised. Use a durable event store/processor for changes that must survive failure, and requery/resubscribe after interruption.
 
 The standalone flow-controlled sender now surfaces send failures and completes only after queued updates drain. It is not a substitute for missing end-to-end credit acknowledgements in a server protocol.
 
@@ -117,7 +118,7 @@ bun run test:messaging:integration
 bun run test:integration
 ```
 
-Both integration commands run each suite in a fresh process. `test:messaging:integration` selects the messaging suites; `test:integration` discovers all integration suites. It covers RabbitMQ 3.13, Axon Server 2025.2.5, KronosDB 0.9.0, in-memory execution, and transactional PostgreSQL behavior using the existing testcontainer fixtures. The tests exercise the wire path with local shortcuts disabled where relevant.
+Both integration commands run each suite in a fresh process. `test:messaging:integration` selects the messaging suites; `test:integration` discovers all integration suites. It covers RabbitMQ 3.13, Axon Server 2025.2.5, KronosDB 0.11.0 (or a local build through `KRONOSDB_SERVER_BIN`, or another image through `KRONOSDB_IMAGE`), in-memory execution, and transactional PostgreSQL behavior using the existing testcontainer fixtures. The tests exercise the wire path with local shortcuts disabled where relevant.
 
 Regression coverage includes nested success and failure, nested saturation, fresh units of work, out-of-order response correlation, duplicate pending identifiers, isolated codec errors, bounded caller/handler counts, client deadlines, subscription commit/rollback, cancelled initial results, iterator cleanup, shutdown draining and expiry, broker returns, publisher backpressure, channel loss, explicit connection replacement, and bursts of 128 synthetic / 256 real RabbitMQ requests. Real gRPC subscription tests consume 384 updates through a one-item buffer, crossing multiple refill boundaries.
 

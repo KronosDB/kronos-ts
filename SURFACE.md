@@ -240,7 +240,7 @@ interceptingQueryBus  <U>(bus: QueryBus<U>,   intercept: Intercept<QueryMessage>
 // Interception at the LOG boundary. Old events are REINTERPRETED on the way
 // out; the log is never rewritten.
 type Upcast = (event: EventMessage) => EventMessage     // TOTAL — identity when unconcerned
-upcastingEventStore(next: EventStore, upcast: Upcast): EventStore   // READ paths only
+upcastingEventStore(next: EventStore, upcast: Upcast, { storedTypes? }?): EventStore   // READ paths only
 // NO shipped constructor. Writing the match IS the lesson, and `is()` makes it a
 // typed switch: declare the outdated version as its own descriptor, and the
 // compiler knows what the payload looked like back then. The target version is
@@ -250,6 +250,13 @@ upcastingEventStore(next: EventStore, upcast: Upcast): EventStore   // READ path
 // Commands and queries need nothing new: a message crossing versions at a BUS is
 // what `Intercept` already is. Only events have a second boundary, because only
 // events are kept.
+// A stream asked for TYPES (a processor asks for the ones its handlers handle)
+// reaches a log that keeps the names events were WRITTEN under, and an upcaster
+// is total — it cannot be run backwards — so which stored names become a type is
+// told as data: `storedTypes: (type) => [type, "shop.OrderPlaced"]`. Told
+// nothing, the type restriction is WIDENED (dropped; tags stay), never trusted:
+// nothing is missed, nothing is saved. Assuming no upcaster renames would lose
+// every renamed event with no error anywhere.
 
 // ── snapshotting: NOT A MECHANISM. A CAPABILITY TIER ON THE LOG ───────────
 // THE BASE `EventStore` MENTIONS SNAPSHOTS NOWHERE, and it is COMPLETE without
@@ -577,8 +584,25 @@ eventProcessor<U extends UnitOfWork = UnitOfWork, L extends EventProcessorLane<U
   eventStore: EventStore, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive
   sequence?: Sequence,                             // absent = global stream order (projection-safe)
   deadLetterQueue?: SequencedDeadLetterQueue<U>,   // absent = propagate & retry
-  batchSize?: number,
+  batchSize?: number,                              // events per unit of work; default 1
+  replayBatchSize?: number,                        // …while BEHIND the head; default 1000, never below batchSize
 }): EventProcessor<U>          // `U` threads to the event handler's ctx.unitOfWork
+// WHAT A PROCESSOR ASKS OF ITS LOG. It opens its stream with the union of its
+// handlers' event types as the query, and a store that can filter (KronosDB on the
+// server, Postgres in its WHERE clause) sends nothing else. The query is a
+// REQUEST: an event nobody handles is still dropped on arrival, so a store that
+// ignores it is only slower. A filtered stream may also say how far it has looked
+// (`MessageStream.progressToken`, optional; KronosDB's Progress frame, the
+// in-memory and Postgres stores' own account) and the processor stores that as its
+// token when it has nothing to do — otherwise a processor of rare events sits at
+// its last match, a restart reads the quiet stretch again, a monitor sees it
+// behind forever, and a replay whose last events are quiet never ends.
+// BEHIND THE HEAD (replaying, or short of where the log ended when it started, or
+// its last batch left events waiting) a batch is up to `replayBatchSize` events;
+// at the head it is `batchSize`, and so is the retry of a failed batch until the
+// token is past the failure, so a poison event ends up alone. THE BOUND IS MEMORY:
+// the batch is held decoded until it commits, and the stream reads ahead that far
+// (`StreamingCondition.readAhead`).
 // THE PROCESSOR IS WHERE THE COMPILER MEETS THE FACTORY AND THE STORES, and it
 // now enforces TWO things it used to discover at boot:
 //   1. A DEAD-LETTER QUEUE IMPLIES A LANE. `deadLetterQueue` without `sequence`
@@ -712,19 +736,45 @@ rabbitMqQueryBus(next: QueryBus, rabbit, { preferLocal?, timeoutMs? }?): Subscri
 
 ## @kronos-ts/kronosdb — smart hub: server-side routing
 ```ts
-kronosDbConnection({ host, port, componentName }): Promise<KronosDbConnection>   // one channel; start()/close()
-kronosDbEventStore(kdb, context: string): EventStore
+kronosDbConnection({ host, port, componentName }): Promise<KronosDbConnection>   // ONE native socket for everything; start()/close()
+kronosDbEventStore(kdb, context: string, streaming?: SubscriptionOptions): EventStore   // open(): reads ahead as asked (≥ 500 credits); with a query, Progress every second
 kronosDbSnapshottingEventStore<E>(next: E, kdb, context): E & SnapshotStoreCapability
-kronosDbSchedulingEventStore<E>(next: E, kdb, { serializer }): E & ScheduleStoreCapability & { listSchedules() }
+kronosDbSchedulingEventStore<E>(next: E, kdb, { serializer }): E & ScheduleStoreCapability & { listSchedules(); scheduleIdempotent(event, at, token) }
 kronosDbCommandBus(next: CommandBus, kdb, bus?: string): CommandBus   // inbound runs through YOUR local bus
 kronosDbQueryBus(next: QueryBus, kdb, bus?: string): QueryBus
 kronosDbControlPlane(kdb, processors): ControlPlane
 ```
+EVERYTHING IS NATIVE. The stores, the buses and the platform stream speak
+KronosDB's native binary protocol (`protocol/` in the server repository,
+vendored here as `src/protocol/` and checked against its golden fixtures) and
+there is no gRPC and no protobuf in this package: one `node:net` / `node:tls`
+socket per connection, opened on first use, every request a stream multiplexed
+on it, every frame written in the tick it was issued in one socket write. With
+TLS the server expects the handshake first on the same port (no plaintext
+fallback). Beside the `EventStore` shape, as functions of all their arguments:
+`kronosDbSubscription(kdb, context, condition, { progressIntervalMs })` (a
+stream that also reports `Progress` frames), `kronosDbTail`, `kronosDbTagsAt`,
+`kronosDbPositionAt`. Events read back carry their tags.
+
+A COMMAND OR QUERY IS A STREAM OF ITS OWN, cancelled at its deadline (the server
+then abandons it); a HANDLER IS A LONG-LIVED STREAM per bus, opened at the first
+`subscribe`, announced from scratch on every incarnation and re-opened with
+backoff. The server grants a handler one command per credit, and a credit raises
+EVERY name the stream subscribed, so the window is counted per name. A handler
+stream is registered under the connection's client id (a newer one of the same
+client REPLACES an older one, which is how a restarted handler takes over); a
+second bus built for the same bus name on one connection gets a suffixed id of
+its own. `kdb.start()` waits for the server to acknowledge every handler, so the
+very next dispatch from anywhere is routable. A provider holds the updates a
+subscription query's subscriber has no credit for, and fails a subscription whose
+subscriber never grants any, instead of letting the bus drop them.
+
 BUSES ARE NAMES, CONTEXTS ARE LOGS (server ADR-0006, 0.9). The store wrappers
 address a CONTEXT and the bus wrappers address a BUS, and the two are
 independent dimensions — plain strings both, each defaulting (`config.context` /
-`"default"`). Messaging RPCs carry `kronosdb-bus` per call with NO fallback to
-`kronosdb-context`; a 1:1 topology is the host naming the bus after the
+`"default"`). A bus is bound to a small id on the connection (`BindBus`, like a
+context) and every messaging request names it, with NO fallback to the
+connection's context; a 1:1 topology is the host naming the bus after the
 context, and N contexts sharing one command fabric is N stores and one bus
 name. Since 0.9 the bus name is also the CLUSTER-WIDE identity (ADR-0007):
 subscribe via any node, dispatch via any node, the server forwards.

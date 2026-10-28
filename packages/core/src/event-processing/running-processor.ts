@@ -19,6 +19,7 @@ import {
   advanceToken,
   advanceTokenTo,
 } from "./tracking-token.js"
+import type { EventQuery } from "../event-sourcing/dcb-query.js"
 import type { CommandBus } from "../command-handling/bus.js"
 import type { QueryBus, SubscriptionCapableQueryBus } from "../query-handling/bus.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
@@ -26,6 +27,9 @@ import { eventHandlerContext, type EventHandlerContext } from "./context.js"
 
 /** The longest wait between retries of a failed batch (ms). */
 const MAX_RETRY_DELAY_MS = 60_000
+
+/** Events per batch while the processor is behind, unless it says otherwise. */
+const DEFAULT_REPLAY_BATCH_SIZE = 1000
 
 /**
  * One event handler as the processor sees it: the definition, plus the buses
@@ -81,6 +85,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   const { processor, handlers } = options
   const { name, eventStore, tokenStore, unitOfWork: newUoW, deadLetterQueue, sequence } = processor
   const batchSize = processor.batchSize ?? 1
+  const replayBatchSize = Math.max(batchSize, processor.replayBatchSize ?? DEFAULT_REPLAY_BATCH_SIZE)
   const pollingIntervalMs = options.pollingIntervalMs ?? 500
 
   const segment = 0
@@ -113,13 +118,31 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     else handlerMap.set(eventName, [entry])
   }
 
+  // WHAT THE STORE IS ASKED FOR: the types somebody handles, and nothing else.
+  // The handlers are the whole truth about which events matter, so a store that
+  // can filter (KronosDB does it on the server, Postgres in its WHERE clause)
+  // never sends the rest. It is a request — `deliverEvent` still drops an event
+  // nobody handles, so a store that ignores the query is just slower.
+  const query: EventQuery | undefined = handlerMap.size > 0 ? { types: [...handlerMap.keys()] } : undefined
+
   let token: TrackingToken = globalSequenceToken(0n)
+  // Where the log ended when this run began (or was reset): a token short of it
+  // is BEHIND, which is when the larger batch pays. Unknown is not an error —
+  // the processor then goes by whether its last batch drained the stream.
+  let backlogEnd: bigint | undefined
+  // Where the batch that just failed ended. Until the token is past it the
+  // processor takes the normal batch size, however far behind it is: a failed
+  // batch of a thousand tells nothing about WHICH event failed, and retrying it
+  // whole would fail whole, forever, on a poison pill near its end.
+  let cautiousUntil = 0n
+  let attemptEnd = 0n
   let isRunning = false
   let stream: MessageStream<SequencedEvent> | null = null
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   // The between-batches hop. `setImmediate`, not `setTimeout(…, 0)`: both
   // runtimes clamp a zero timeout to a millisecond, which at batch size 1 is
-  // a hard ceiling of a thousand events a second before any real work.
+  // a hard ceiling of a thousand events a second before any real work. Not
+  // unref'd either — see `scheduleImmediate`.
   let pollImmediate: ReturnType<typeof setImmediate> | null = null
   let processing = false
   let caughtUp = false
@@ -134,13 +157,35 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     await tokenStore.initializeSegments(name, 1)
     const stored = await tokenStore.get(name, segment)
     if (stored !== undefined) token = stored
+    backlogEnd = await eventStore.getHeadPosition().catch(() => undefined)
   }
 
   function openStream() {
-    stream = eventStore.open({ position: token.position(), token })
+    stream = eventStore.open({
+      position: token.position(),
+      token,
+      ...(query !== undefined ? { query } : {}),
+      readAhead: replayBatchSize,
+    })
     stream.setCallback(() => {
       if (isRunning && !processing) scheduleImmediate()
     })
+  }
+
+  /**
+   * A stream that filters says how far it has looked. Through a stretch with
+   * nothing for this processor in it the token would otherwise stay where the
+   * last event left it, and a restart would read the stretch again. Only the
+   * position moves — no handler ran, so there is nothing for the write to be
+   * atomic with — and `advanceTokenTo` ends a replay when the position passes
+   * where the reset began.
+   */
+  async function moveThroughQuietStretch() {
+    const looked = stream?.progressToken?.()
+    if (looked !== undefined && looked.position() > token.position()) {
+      token = advanceTokenTo(token, looked)
+      await tokenStore.store(name, segment, token)
+    }
   }
 
   async function poll() {
@@ -160,16 +205,26 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
         return
       }
 
+      // Far behind the head, a batch is as many events as are ready, up to the
+      // replay size; at the head, the normal size. A processor that just failed
+      // retries with the normal size until it is past the failure, so the event
+      // that fails ends up alone in its batch instead of dragging a thousand
+      // others through every retry.
+      const behind = isReplaying(token) || (backlogEnd !== undefined && token.position() < backlogEnd)
+      const target = token.position() >= cautiousUntil && (behind || !caughtUp) ? replayBatchSize : batchSize
+      attemptEnd = 0n
+
       const batch: SequencedEvent[] = []
       let event = stream!.next()
-      while (event && batch.length < batchSize) {
+      while (event && batch.length < target) {
         batch.push(event)
-        if (batch.length < batchSize && stream!.hasNextAvailable()) event = stream!.next()
+        if (batch.length < target && stream!.hasNextAvailable()) event = stream!.next()
         else break
       }
 
       if (batch.length > 0) {
         caughtUp = false
+        attemptEnd = batch[batch.length - 1]!.sequence + 1n
         await processBatch(batch)
         // A clean batch clears any prior error and the retry backoff — the
         // processor has recovered.
@@ -179,12 +234,24 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
           if (stream!.hasNextAvailable()) scheduleImmediate()
           // Drained everything currently available — caught up until the
           // stream callback wakes us with new events.
-          else caughtUp = true
+          else {
+            caughtUp = true
+            await moveThroughQuietStretch()
+            // A replay ends on a poll that finds nothing, and with the stream
+            // dry there is no event to wake one.
+            if (isReplayToken(token)) {
+              pollTimer = setTimeout(poll, pollingIntervalMs)
+              pollTimer.unref?.()
+            }
+          }
         }
       } else {
         caughtUp = true
-        // If replay is done and no more events, unwrap
-        if (isReplayToken(token)) {
+        await moveThroughQuietStretch()
+        // If replay is done and no more events, unwrap. A stream that reports
+        // progress is the one to say when: it can be empty simply because the
+        // next events are still on the wire.
+        if (isReplayToken(token) && stream!.progressToken === undefined) {
           token = globalSequenceToken(token.position())
           await tokenStore.store(name, segment, token)
         }
@@ -192,6 +259,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       }
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
+      cautiousUntil = attemptEnd
       // A stopped processor schedules no retry, so it neither waits nor backs
       // off further.
       const retryInMs = isRunning ? retryDelayMs : undefined
@@ -326,8 +394,12 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
 
   function scheduleImmediate() {
     cancelScheduledPoll()
+    // NOT unref'd. Node does not count an unref'd immediate when it decides how
+    // long to wait for I/O, so the next batch would wait for the next socket
+    // read or timer — a millisecond or two a batch on a busy loop, and as long
+    // as the loop is quiet on an idle one. An immediate runs on the next turn
+    // of the loop anyway; it cannot keep a process alive.
     pollImmediate = setImmediate(poll)
-    pollImmediate.unref?.()
   }
 
   function cancelScheduledPoll() {
@@ -394,6 +466,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
 
       const headPosition = await eventStore.getHeadPosition()
 
+      backlogEnd = headPosition
       token =
         headPosition <= startPosition
           ? globalSequenceToken(startPosition)

@@ -6,7 +6,6 @@ import {
   messagingDeadline,
   withMessagingTimeout,
 } from "./messaging-reliability.js"
-import { outboundStream as kronosStream } from "../../kronosdb/src/outbound-stream.js"
 import { outboundStream as axonStream } from "../../axon-server/src/outbound-stream.js"
 import { localQueryBus, qn, unitOfWork, updateHandler } from "./index.js"
 
@@ -89,7 +88,6 @@ describe("messaging resource contracts", () => {
 })
 
 for (const [name, create] of [
-  ["kronos", kronosStream],
   ["axon", axonStream],
 ] as const) {
   describe(`${name} bounded outbound stream`, () => {

@@ -10,11 +10,11 @@
 //
 //   AppendSnapshot     — the write. One round trip, opaque bytes under an
 //                        opaque key. The server never interprets the state.
-//   SnapshottedSource  — THE FUSED READ. The latest snapshot under the key,
-//                        then the events matching the criteria from that
-//                        snapshot's fold marker onward, then the same
-//                        consistency marker a plain `Source` ends with. ONE
-//                        call, ONE consistent view.
+//   SnapshottedSource  — THE FUSED READ. The latest snapshot under the key
+//                        (one SnapshotResult frame, always first), then the
+//                        events matching the criteria from that snapshot's fold
+//                        marker onward, then the same consistency marker a plain
+//                        `Source` ends with. ONE call, ONE consistent view.
 //
 // SO THE FUSION IS THE SERVER'S NOW. This file used to do it client-side —
 // `getLast` for the entry, then a second `source` after its position, the two
@@ -33,9 +33,20 @@
 import type { EventStore, Snapshot, SnapshotStoreCapability, SourcingCondition, SourcingResult } from "@kronos-ts/core"
 import type { ConsistencyMarker, EventMessage, Serializer } from "@kronos-ts/core"
 import { markerAt, noMarker } from "@kronos-ts/core"
-import { contextView, kronosMetadata } from "./connection.js"
-import { createEventConverters, sourceCriteria } from "./kronosdb-event-store.js"
+import { sourceCriteria } from "./kronosdb-event-store.js"
 import type { KronosDbConnectionHandle } from "./kronosdb.js"
+import { readEvents, writeCriteria } from "./native-events.js"
+import { contextRequest, contextStream, unexpected } from "./native-requests.js"
+import {
+  FLAG_END,
+  FrameKind,
+  decodeSnapshotResult,
+  encodeAppendSnapshot,
+  reader,
+  writeBytes16,
+  writeU16,
+  writeU32,
+} from "./protocol/kronosdb-protocol.js"
 
 const encoder = new TextEncoder()
 
@@ -59,16 +70,15 @@ function encodeKey(key: string): Uint8Array {
  */
 function createSnapshotConverters(serializer: Serializer) {
   return {
-    stateToProto(key: string, snapshot: Snapshot): Uint8Array {
+    stateToBytes(key: string, snapshot: Snapshot): Uint8Array {
       return serializer.serialize(snapshot.state, key, "").data
     },
 
-    snapshotFromProto(key: string, proto: { state: Uint8Array; position: bigint }): Snapshot {
-      const state = proto.state && proto.state.length > 0
-        ? serializer.deserialize({ data: proto.state, type: key, revision: "" })
-        : {}
-
-      return { state, position: proto.position }
+    snapshotFromWire(key: string, state: Uint8Array, position: bigint): Snapshot {
+      return {
+        state: state.length > 0 ? serializer.deserialize({ data: state, type: key, revision: "" }) : {},
+        position,
+      }
     },
   }
 }
@@ -89,7 +99,7 @@ function createSnapshotConverters(serializer: Serializer) {
  * the inner store carried is laundered on the way through.
  *
  * `context` is the KronosDB context this capability addresses — see
- * {@link kronosDbEventStore}. Both share the one channel on `kdb`.
+ * {@link kronosDbEventStore}. Both share the one socket on `kdb`.
  *
  * LATEST-ONLY, over a log that keeps everything. Every snapshot write appends a
  * record; a newer one supersedes older ones purely by being later, and the
@@ -102,13 +112,8 @@ export function kronosDbSnapshottingEventStore<E extends EventStore>(
   kdb: Pick<KronosDbConnectionHandle, "connection" | "serializer">,
   context: string = kdb.connection.config.context,
 ): E & SnapshotStoreCapability {
-  const connection = contextView(kdb.connection, context)
-  const { stateToProto, snapshotFromProto } = createSnapshotConverters(kdb.serializer)
-  const { eventFromProto } = createEventConverters(kdb.serializer)
-
-  function getMetadata() {
-    return kronosMetadata(connection.config)
-  }
+  const link = kdb.connection.native
+  const { stateToBytes, snapshotFromWire } = createSnapshotConverters(kdb.serializer)
 
   return {
     ...next,
@@ -128,72 +133,74 @@ export function kronosDbSnapshottingEventStore<E extends EventStore>(
      * resumes AT — no arithmetic here, in either direction.
      */
     async storeSnapshot(key: string, snapshot: Snapshot): Promise<void> {
-      await connection.eventStore.appendSnapshot(
-        {
-          key: encodeKey(key),
-          state: stateToProto(key, snapshot),
-          position: snapshot.position,
+      const state = stateToBytes(key, snapshot)
+      await contextRequest(
+        link,
+        context,
+        FrameKind.AppendSnapshot,
+        (w, id) => encodeAppendSnapshot(w, { context: id, key: encodeKey(key), state, position: snapshot.position }),
+        (kind) => {
+          if (kind !== FrameKind.SnapshotAppended) throw unexpected(kind, "SnapshotAppended")
         },
-        { metadata: getMetadata() },
       )
     },
 
     /**
-     * THE FUSED READ — one `SnapshottedSource` call, one consistent view.
+     * THE FUSED READ — one `SnapshottedSource` request, one consistent view.
      *
-     * The stream is a oneof: at most one snapshot frame, always first, then
-     * event batches. The final batch carries the consistency marker exactly as
-     * a plain `Source` does — which is what makes an append condition built
-     * from this read hold identically on both paths. A key with no snapshot
-     * behaves as a plain `Source` from the beginning and simply yields no
-     * snapshot frame.
+     * The answer is a SnapshotResult frame first — holding the snapshot, or
+     * nothing when the key has none — then Events frames. The final one carries
+     * the consistency marker exactly as a plain `Source` does, which is what
+     * makes an append condition built from this read hold identically on both
+     * paths. A key with no snapshot behaves as a plain `Source` from the
+     * beginning.
      *
      * The server has ALREADY applied the snapshot's floor to the events. What
      * it cannot express is a `start` the condition asked for independently —
-     * `SnapshottedSourceRequest` has no `from_sequence` — so that floor is
-     * composed here, against the sequence each event arrives with. The two
-     * narrowings compose instead of fighting, as they do in the SQL family.
+     * `SnapshottedSource` has no `from` — so that floor is composed here,
+     * against the position each event arrives with. The two narrowings compose
+     * instead of fighting, as they do in the SQL family.
      */
     async source(condition: SourcingCondition): Promise<SourcingResult> {
       const key = condition.snapshot
       if (key === undefined) return next.source(condition)
 
-      const request = {
-        criteria: sourceCriteria(condition.query),
-        key: encodeKey(key.key),
-        // Events per batch message; 0 lets the server pick its default.
-        batchSize: 0,
-      }
-
+      const criteria = sourceCriteria(condition.query)
+      const wireKey = encodeKey(key.key)
       const events: EventMessage[] = []
       let marker: ConsistencyMarker = noMarker()
       let snapshot: Snapshot | undefined
 
-      const stream = connection.eventStore.snapshottedSource(request, { metadata: getMetadata() })
-      for await (const response of stream) {
-        if (response.snapshot) {
-          snapshot = snapshotFromProto(key.key, response.snapshot)
-          continue
-        }
-
-        const batch = response.batch
-        if (!batch) continue
-
-        for (const seqEvent of batch.events) {
-          if (!seqEvent.event) continue
-          // The condition's own floor, applied where the server could not.
-          if (condition.start !== undefined && seqEvent.sequence < condition.start) continue
-          events.push(eventFromProto(seqEvent.event))
-        }
-
-        // The final batch carries the marker; 0n is a valid marker for an
-        // empty store, so presence — not truthiness — decides.
-        if (batch.consistencyMarker !== undefined) {
-          marker = markerAt(batch.consistencyMarker)
-        }
-      }
-
-      return { events, marker, ...(snapshot !== undefined ? { snapshot } : {}) }
+      return new Promise<SourcingResult>((resolve, reject) => {
+        contextStream(
+          link,
+          context,
+          FrameKind.SnapshottedSource,
+          (w, id) => {
+            writeU16(w, id)
+            writeCriteria(w, criteria)
+            writeBytes16(w, wireKey, "snapshot key")
+            // Events per frame; 0 lets the server pick its default.
+            writeU32(w, 0)
+          },
+          true,
+          (kind, flags, buf, start, end) => {
+            if (kind === FrameKind.SnapshotResult) {
+              const found = decodeSnapshotResult(reader(buf, start, end)).snapshot
+              if (found !== undefined) snapshot = snapshotFromWire(key.key, found.state, found.position)
+            } else if (kind === FrameKind.Events) {
+              // The final batch carries the marker; 0n is a valid marker for an
+              // empty store, so presence — not truthiness — decides.
+              const reached = readEvents(buf, start, end, kdb.serializer, events, condition.start)
+              if (reached !== undefined) marker = markerAt(reached)
+            } else {
+              throw unexpected(kind, "SnapshotResult or Events")
+            }
+            if ((flags & FLAG_END) !== 0) resolve({ events, marker, ...(snapshot !== undefined ? { snapshot } : {}) })
+          },
+          reject,
+        ).catch(reject)
+      })
     },
   } as E & SnapshotStoreCapability
 }

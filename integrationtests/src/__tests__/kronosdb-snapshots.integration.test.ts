@@ -20,7 +20,6 @@
  */
 import assert from "node:assert/strict"
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
-import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { z } from "zod"
 import {
   qn,
@@ -44,6 +43,7 @@ import {
   kronosDbSnapshottingEventStore,
   type KronosDbConnectionHandle,
 } from "@kronos-ts/kronosdb"
+import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 
 // ── Domain ──────────────────────────────────────────────────────────────────
 
@@ -102,25 +102,18 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 10_000): P
 // ── Suite ───────────────────────────────────────────────────────────────────
 
 describe("KronosDB native snapshots — one fused RPC", () => {
-  let container: StartedTestContainer
+  let server: KronosDbServer
   let backend: KronosDbConnectionHandle
   let store: EventStore & SnapshotStoreCapability
   let plain: EventStore
 
   beforeAll(async () => {
-    container = await new GenericContainer("ghcr.io/kronosdb/kronosdb:0.9.0")
-      .withExposedPorts(50051, 9240)
-      // "KronosDB starting" logs when the gRPC listener BINDS, which is before
-      // the raft leader gate opens — an append that wins that race is rejected
-      // with "context is not installed in the active leader epoch". The admin
-      // `/ready` endpoint is the actual readiness signal.
-      .withWaitStrategy(Wait.forHttp("/ready", 9240).forStatusCode(200))
-      .start()
+    server = await startKronosDb()
 
     backend = await kronosDbConnection({
       componentName: "kronosdb-snapshot-test",
-      host: container.getHost(),
-      port: container.getMappedPort(50051),
+      host: server.host,
+      port: server.port,
       context: "default",
       serializer: jsonSerializer(),
     })
@@ -131,7 +124,7 @@ describe("KronosDB native snapshots — one fused RPC", () => {
 
   afterAll(async () => {
     await backend?.close?.()
-    await container?.stop()
+    await server?.stop()
   }, 60_000)
 
   it("a fused read with no stored snapshot behaves exactly as a plain Source", async () => {
