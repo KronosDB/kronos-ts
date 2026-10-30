@@ -199,10 +199,10 @@ describe("concurrent with deadLettering — the failing sequence parks, the othe
   it("refuses two different sequence functions on one processor", () => {
     const other = (e: EventMessage) => e.identifier
     expect(() => deadLettering(concurrent(base("two-functions", []), bySequence), inMemoryDeadLetterQueue(), other)).toThrow(
-      /concurrent and deadLettering must be given the same one/,
+      /concurrent, deadLettering and segmented must be given the same one/,
     )
     expect(() => concurrent(deadLettering(base("two-functions", []), inMemoryDeadLetterQueue(), other), bySequence)).toThrow(
-      /concurrent and deadLettering must be given the same one/,
+      /concurrent, deadLettering and segmented must be given the same one/,
     )
   })
 })

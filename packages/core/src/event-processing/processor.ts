@@ -74,6 +74,12 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
    * {@link concurrent}; the same function as {@link sequence} when both are set.
    */
   readonly concurrent?: Sequence
+  /**
+   * How many segments the processor starts with, and the sequence each event
+   * belongs to — which decides its segment. Set by {@link segmented}. Absent:
+   * one segment, which one node at a time holds.
+   */
+  readonly segments?: { readonly count: number; readonly sequenceOf: Sequence }
 }
 
 /**
@@ -101,7 +107,7 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
  * with that.
  *
  * What the processor does with its batch is said by wrapping the value:
- * {@link batched}, {@link concurrent}, {@link deadLettering}.
+ * {@link batched}, {@link concurrent}, {@link deadLettering}, {@link segmented}.
  */
 export function eventProcessor<U extends UnitOfWork = UnitOfWork>(
   name: string,
@@ -156,7 +162,7 @@ export function batched<U extends UnitOfWork>(processor: EventProcessor<U>, size
  * sequence of its own, a constant puts them all in one.
  */
 export function concurrent<U extends UnitOfWork>(processor: EventProcessor<U>, sequenceOf: Sequence): EventProcessor<U> {
-  sameSequence(processor, processor.sequence, sequenceOf, "concurrent")
+  sameSequence(processor, sequenceOf, "concurrent")
   return { ...processor, concurrent: sequenceOf }
 }
 
@@ -173,18 +179,58 @@ export function deadLettering<U extends UnitOfWork>(
   queue: SequencedDeadLetterQueue<U>,
   sequenceOf: Sequence,
 ): EventProcessor<U> {
-  sameSequence(processor, processor.concurrent, sequenceOf, "deadLettering")
+  sameSequence(processor, sequenceOf, "deadLettering")
   return { ...processor, deadLetterQueue: queue, sequence: sequenceOf }
 }
 
-function sameSequence(processor: EventProcessor<any>, existing: Sequence | undefined, sequenceOf: Sequence, wrapper: string) {
-  if (existing !== undefined && existing !== sequenceOf) {
+/**
+ * Split the processor into `count` segments (a power of two), each with its own
+ * token and its own claim. An event's segment is decided by its sequence, so a
+ * sequence stays in one segment and keeps its order; different segments are
+ * handled independently — by different nodes, or side by side on one — each
+ * committing its own batches.
+ *
+ * `count` is what the processor STARTS with: it is read the first time the
+ * processor runs, and from then on the token rows are the truth. Change it
+ * with `splitSegment` and `mergeSegment` on the running processor. A node
+ * claims every segment it finds free, so the first node to start holds them
+ * all until segments are released to others (`releaseSegment`).
+ *
+ * With {@link concurrent} and {@link deadLettering} all three must be given the
+ * same function.
+ */
+export function segmented<U extends UnitOfWork>(
+  processor: EventProcessor<U>,
+  count: number,
+  sequenceOf: Sequence,
+): EventProcessor<U> {
+  if (!Number.isInteger(count) || count < 1 || count > 2 ** 16 || (count & (count - 1)) !== 0) {
+    throw new Error(`segmented("${processor.name}"): the number of segments is a power of two, from 1 to 65536 — got ${count}`)
+  }
+  sameSequence(processor, sequenceOf, "segmented")
+  return { ...processor, segments: { count, sequenceOf } }
+}
+
+function sameSequence(processor: EventProcessor<any>, sequenceOf: Sequence, wrapper: string) {
+  const existing = [processor.concurrent, processor.sequence, processor.segments?.sequenceOf]
+  if (existing.some((s) => s !== undefined && s !== sequenceOf)) {
     throw new Error(
       `${wrapper}("${processor.name}"): this processor already sequences its events with another function. ` +
-        `concurrent and deadLettering must be given the same one — a sequence that runs side by side with ` +
-        `another cannot be parked behind it.`,
+        `concurrent, deadLettering and segmented must be given the same one — a sequence that runs side by ` +
+        `side with another cannot be parked behind it, and one spread over two segments loses its order.`,
     )
   }
+}
+
+/** One segment a node holds. */
+export type SegmentStatus = {
+  readonly segment: number
+  /** Which sequences are in it: those whose hash, masked, equals `segment`. */
+  readonly mask: number
+  readonly position: bigint
+  readonly caughtUp: boolean
+  readonly replaying: boolean
+  readonly error?: Error
 }
 
 /**
@@ -198,12 +244,17 @@ function sameSequence(processor: EventProcessor<any>, existing: Sequence | undef
 export type RunningProcessor = {
   readonly name: string
   readonly running: boolean
-  /** Current effective position in the event stream. */
+  /** Current effective position in the event stream: the lowest of the segments this node knows. */
   readonly position: bigint
   /** Whether the processor is currently replaying events. */
   readonly replaying: boolean
+  /**
+   * Run: claim every segment that is free, now and every few seconds after,
+   * and handle each one this node holds. A node that holds none waits.
+   */
   start(): Promise<void>
-  stop(): void
+  /** Stop handling, write where each segment got to, and release the claims. */
+  stop(): Promise<void>
   /**
    * Point-in-time progress snapshot (running / error / position / caughtUp /
    * replaying) — the surface an admin UI reads to show processor health.
@@ -223,6 +274,23 @@ export type RunningProcessor = {
    * commit together. If it throws, neither happens.
    */
   resetTokens(startPosition?: bigint, reset?: (uow: UnitOfWork) => Promise<void> | void): Promise<void>
+  /** The segments this node holds, and how each is doing. */
+  segments(): ReadonlyArray<SegmentStatus>
+  /**
+   * Let go of a segment so another node can claim it. This node does not claim
+   * it back for `forMs` (default: two claim intervals).
+   */
+  releaseSegment(segment: number, forMs?: number): Promise<void>
+  /**
+   * Split a segment in two. This node must hold it or be able to claim it, and
+   * holds both halves after. Needs {@link segmented}.
+   */
+  splitSegment(segment: number): Promise<void>
+  /**
+   * Merge a segment with its other half. This node must hold both or be able to
+   * claim them, and neither may be replaying.
+   */
+  mergeSegment(segment: number): Promise<void>
   /**
    * Replay parked dead letters back through the handlers (the oldest matching
    * lane). No-op returning false when no dead-letter queue is configured. Safe

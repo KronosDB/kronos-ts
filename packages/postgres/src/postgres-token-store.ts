@@ -107,8 +107,22 @@ export function postgresTokenStore(
   }
 
   return {
-    async store(processorName, segment, token, uow) {
+    async store(processorName, segment, token, uow, owner) {
       const { type, data } = serializeTokenData(token)
+      if (owner !== undefined) {
+        // FENCED: only while this owner holds the claim. The row lock this
+        // UPDATE takes serialises it against a claim by another node.
+        const written = await (await sql(uow)).query(
+          `UPDATE ${table} SET token_type = $3, token = $4, timestamp = $5
+            WHERE processor_name = $1 AND segment = $2 AND owner = $6
+            RETURNING segment`,
+          [processorName, segment, type, data, nowIso(), owner],
+        )
+        if (written.length === 0) {
+          throw new UnableToClaimTokenError(processorName, segment, "the claim is no longer held")
+        }
+        return
+      }
       await (await sql(uow)).query(
         `INSERT INTO ${table} (processor_name, segment, mask, token_type, token, timestamp, owner)
          VALUES ($1, $2, 0, $3, $4, $5, NULL)

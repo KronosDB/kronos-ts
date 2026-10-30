@@ -608,12 +608,13 @@ eventProcessor<U extends UnitOfWork = UnitOfWork>(
 //      here: a token store or DLQ handed a task carrying no transaction of its
 //      own throws, naming the factory to build `unitOfWork` with. See the
 //      persistence section for why that beats the brand it replaced.
-type EventProcessor<U> · RunningProcessor · EventProcessorStatus
+type EventProcessor<U> · RunningProcessor · EventProcessorStatus · SegmentStatus
 // WHAT A PROCESSOR DOES WITH ITS BATCH, said as functions over the value. Each
 // returns a new value; the host composes them with whatever `pipe` it uses.
 batched(p, size: number): EventProcessor<U>                     // up to `size` READY events a batch, head and behind alike
 concurrent(p, sequenceOf: Sequence): EventProcessor<U>         // the batch's sequences side by side; one sequence in log order
 deadLettering(p, queue: SequencedDeadLetterQueue<U>, sequenceOf: Sequence): EventProcessor<U>   // park per sequence
+segmented(p, count: number, sequenceOf: Sequence): EventProcessor<U>   // start as `count` segments (a power of two)
 //   pipe(eventProcessor(name, eventStore, tokenStore, unitOfWork), (p) => batched(p, 1000), (p) => concurrent(p, byAccount))
 // A SEQUENCE IS ORDERED, SEQUENCES ARE NOT. Without `concurrent` the processor
 // hands over one event at a time in log order, whatever the sequences say. With it,
@@ -621,9 +622,19 @@ deadLettering(p, queue: SequencedDeadLetterQueue<U>, sequenceOf: Sequence): Even
 // touches only what belongs to its event's sequence. The batch is still ONE unit of
 // work: without a queue a failure fails it once every sequence has SETTLED (the
 // others are running against its transaction); with a queue the failing sequence
-// parks and the rest commit. `concurrent` and `deadLettering` must be given the SAME
-// function — a sequence running beside another cannot be parked behind it — and the second
-// wrapper throws otherwise. `ctx.isReplay()` is fixed per event.
+// parks and the rest commit. `concurrent`, `deadLettering` and `segmented` must be
+// given the SAME function — a sequence running beside another cannot be parked behind
+// it, and one spread over two segments loses its order — and a second wrapper with
+// another function throws. `ctx.isReplay()` is fixed per event.
+// A PROCESSOR IS SEGMENTS, each with its own token row and CLAIM. Unwrapped, one
+// segment: one node handles it, the others wait. `segmented` starts it as `count`,
+// an event's segment decided by hashing its sequence id. A node claims every free
+// segment on start and every claim interval (5 s) after, renews what it holds,
+// releases on stop; every token write is FENCED on the claim, so a node that lost
+// one fails its batch — handlers' writes included — instead of writing over the
+// new holder. The segments a node holds share ONE read of the log. Balancing and
+// scaling are NOT HERE: the controls are on the running processor, and whoever
+// operates the system decides when to call them.
 // BUFFERING IS NOT HERE. A projection that folds a batch in memory and writes it
 // once is app code over the batch's unit of work: a repository on `ctx`, its write
 // in `onPrepareCommit`, which runs before the token is stored. With `concurrent`,
@@ -662,6 +673,11 @@ type App = { processors: ReadonlyMap<string, RunningProcessor>; stop(): Promise<
 // ever ran, and nothing is replayed. `reset` runs in the unit of work that stores the
 // new token, so clearing the projection and the reset commit together; it throws, and
 // neither happens. The replay is stored with the token and survives a restart.
+// Every segment is reset; a segment another node holds refuses it.
+// .segments() — what this node holds · .releaseSegment(id, forMs?) — let another
+// node claim it · .splitSegment(id) · .mergeSegment(id) — this node must hold, or be
+// able to claim, what it changes. A merged segment reads from the half that was
+// behind and passes over what the other half had already handled.
 
 // ── decision models ────────────────────────────────────────────────────────
 state({ id, tags: (id) => TagRecord | readonly [TagRecord, ...],

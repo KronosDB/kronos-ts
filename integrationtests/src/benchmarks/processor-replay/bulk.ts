@@ -78,7 +78,7 @@ function pendingBalances(uow: UnitOfWork): Map<string, Row> {
 }
 
 export async function bulkDrizzleProjection(url: string, uniqueKeys = false): Promise<Projection> {
-  const pg = postgresPool(pgAdapter({ connectionString: url }))
+  const pg = postgresPool(pgAdapter({ connectionString: url, poolConfig: { max: 40 } }))
   await pg.start()
   await prepareDatabase(pg)
 

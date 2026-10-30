@@ -1108,6 +1108,51 @@ or the second wrapper throws: a sequence that runs beside another cannot be park
 behind it. The honest global-order answer for a projection is *no queue at
 all*: propagate and retry.
 
+### Segments: several nodes, one processor
+
+A processor's work is split into **segments**, each with its own token row and its
+own claim. An event's segment is decided by its sequence: the sequence id is
+hashed, and a segment takes the sequences whose hash, masked, equals its id. A
+sequence therefore stays in one segment and keeps its order; different segments
+are handled independently, each committing its own batches.
+
+```ts
+pipe(
+  eventProcessor("balances", eventStore, tokenStore, unitOfWork),
+  (p) => batched(p, 1000),
+  (p) => concurrent(p, byAccount),
+  (p) => segmented(p, 16, byAccount),   // the same function as concurrent's
+)
+```
+
+Unwrapped, a processor is one segment. Either way:
+
+- **A node claims every free segment** when it starts and every 5 seconds after,
+  renews the claims it holds, and releases them on stop. The first node to start
+  holds everything; another waits, and takes over a segment when it is released
+  or its claim lapses (10 seconds, the token stores' default).
+- **Every token write is fenced on the claim.** A node that paused long enough to
+  lose a claim fails its next batch — its handlers' writes roll back with it —
+  rather than writing over the node that took over.
+- **The segments a node holds share one read of the log.** The furthest-behind
+  segment sets where it reads from, and the slowest sets the pace.
+
+`segmented(p, count, sequenceOf)` says what the processor *starts* with; from
+then on the token rows are the truth. Balancing and scaling are not in the
+framework. The running processor has the controls, and whoever operates the
+system decides when to use them:
+
+```ts
+const balances = app.processors.get("balances")!
+balances.segments()                 // what this node holds, and how each is doing
+await balances.releaseSegment(3)    // let another node claim it
+await balances.splitSegment(0)      // 0 becomes 0 and 1 (or 0 and 16, deeper down)
+await balances.mergeSegment(1)      // back together with its other half
+```
+
+A merge of two halves that had got to different places reads from the one
+behind, and passes over what the other half had already handled.
+
 **Never mix persistence families within one processor — and the stores enforce
 that themselves.** A token store or dead-letter queue handed a unit of work that
 carries no transaction of its own throws, naming the factory to build the
@@ -1253,7 +1298,8 @@ type App = {
 
 `app.processors` is keyed by that same durable name. A `RunningProcessor` carries
 `running` / `position` / `replaying`, `status()`, `start()` / `stop()`,
-`resetTokens(from?, reset?)` and `reprocessDeadLetters(filter?)` — what a control plane
+`resetTokens(from?, reset?)`, `reprocessDeadLetters(filter?)`, `segments()`,
+`releaseSegment(id)`, `splitSegment(id)` and `mergeSegment(id)` — what a control plane
 drives and what a test awaits.
 
 A reset replays up to where the processor had got to, not to the head of the log:

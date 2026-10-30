@@ -4,6 +4,7 @@
  *   KRONOSDB_SERVER_BIN=/path/to/kronosdb-server bun run.ts
  *   BENCH_EVENTS=1000000 BENCH_REPS=3 BENCH_RUNTIMES=bun,node BENCH_PROJECTIONS=memory,drizzle bun run.ts
  *   BENCH_STAGES=today,filters,batch,bulk,repository,concurrent,upsert BENCH_REPLAY_BATCH=1000 bun run.ts
+ *   BENCH_SEGMENTS=0,4,16 bun run.ts   (0: not segmented)
  *
  * One server, seeded once; one Postgres container (named for this run, removed
  * at the end) when a drizzle projection is asked for. Every run is a child
@@ -34,6 +35,7 @@ const runtimes = list("BENCH_RUNTIMES", "bun,node")
 const projections = list("BENCH_PROJECTIONS", "memory,drizzle")
 const stages = list("BENCH_STAGES", "today,filters,batch,bulk")
 const replayBatch = process.env.BENCH_REPLAY_BATCH ?? "1000"
+const segmentCounts = list("BENCH_SEGMENTS", "0").map(Number)
 // "--all": a processor that handles every type, not one in ten.
 const extra = [process.env.BENCH_ARGS, process.env.BENCH_HEARTBEAT_MS ? `--heartbeat ${process.env.BENCH_HEARTBEAT_MS}` : ""].filter(Boolean).join(" ")
 // "projection:stage=events": stages too slow to read the whole log (drizzle at batch 1
@@ -120,7 +122,7 @@ try {
 
   for (const runtime of runtimes) {
     for (const projection of projections) {
-      for (const stage of stages) {
+      for (const stage of stages) for (const segments of segmentCounts) {
         if (projection === "memory" && ["bulk", "repository", "concurrent", "upsert"].includes(stage)) continue
         const prefix = prefixes.get(`${projection}:${stage}`)
         const slow = prefix !== undefined && prefix < events
@@ -130,7 +132,7 @@ try {
           const command = runtime === "bun" ? [process.execPath, join(here, "replay.ts")] : ["node", bundle]
           const ran = spawnSync(
             command[0]!,
-            [...command.slice(1), "--port", String(server.port), "--projection", projection, "--stage", stage, "--limit", String(limit), "--replay-batch", replayBatch, ...(slow ? [] : ["--exact"]), ...(db ? ["--pg", db.url] : []), ...(extra ? extra.split(" ") : [])],
+            [...command.slice(1), "--port", String(server.port), "--projection", projection, "--stage", stage, "--limit", String(limit), "--replay-batch", replayBatch, ...(slow ? [] : ["--exact"]), ...(segments > 0 ? ["--segments", String(segments)] : []), ...(db ? ["--pg", db.url] : []), ...(extra ? extra.split(" ") : [])],
             { encoding: "utf8" },
           )
           const line = ran.stdout.trim().split("\n").at(-1)
@@ -141,7 +143,7 @@ try {
           const row = { ...(JSON.parse(line) as Omit<Row, "extrapolated">), extrapolated: slow }
           if (ran.status !== 0) console.error(`${runtime} ${projection} ${stage}: WRONG RESULT handled ${row.handled} of ${row.expectedHandled}`)
           samples.push(row)
-          console.error(`${row.runtime} ${projection} ${stage}${slow ? " (prefix)" : ""}: ${row.ms} ms, ${row.scannedPerSecond}/s scanned, ${row.handledPerSecond}/s handled, cpu ${row.cpuMs} ms, rss ${row.rssMb} MB`)
+          console.error(`${row.runtime} ${projection} ${row.stage}${slow ? " (prefix)" : ""}: ${row.ms} ms, ${row.scannedPerSecond}/s scanned, ${row.handledPerSecond}/s handled, cpu ${row.cpuMs} ms, rss ${row.rssMb} MB`)
         }
         if (samples.length === 0) continue
         const mid = samples.sort((a, b) => a.ms - b.ms)[Math.floor(samples.length / 2)]!

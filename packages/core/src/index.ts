@@ -407,10 +407,12 @@ export {
   type EventProcessor,
   type EventProcessorStatus,
   type RunningProcessor,
+  type SegmentStatus,
   eventProcessor,
   batched,
   concurrent,
   deadLettering,
+  segmented,
 } from "./event-processing/processor.js"
 
 // Event source (what a processor reads)
@@ -427,6 +429,7 @@ export {
   type GlobalSequenceToken,
   type GapAwareToken,
   type ReplayToken,
+  type MergedToken,
   type SerializedToken,
   globalSequenceToken,
   gapAwareToken,
@@ -436,6 +439,7 @@ export {
   isReplayToken,
   isGlobalSequenceToken,
   isGapAwareToken,
+  isMergedToken,
   advanceToken,
   advanceTokenTo,
   serializeToken,

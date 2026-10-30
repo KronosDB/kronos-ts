@@ -88,7 +88,8 @@ function createRecordingTokenStore(): TokenStore & { stored: Array<{ name: strin
       return tokens.get(`${processorName}:${segment}`)
     },
     async initializeSegments() {},
-    async claimToken() { return undefined },
+    // Claiming hands back the segment's token, as every store does.
+    async claimToken(processorName, segment) { return tokens.get(`${processorName}:${segment}`) },
     async extendClaim() {},
     async releaseClaim() {},
     async fetchSegments() { return [0] },

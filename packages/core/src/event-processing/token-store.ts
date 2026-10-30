@@ -44,9 +44,14 @@ export type TokenStore<U extends UnitOfWork = UnitOfWork> = {
   /**
    * Store the token for a processor segment.
    * Called during PREPARE_COMMIT phase (same transaction as handler work).
-   * The caller must own the claim for this segment.
+   *
+   * FENCED when `owner` is given: the write lands only while `owner` holds the
+   * segment's claim, and throws {@link UnableToClaimTokenError} otherwise — so
+   * a node that paused long enough to lose its claim fails its batch instead of
+   * overwriting the token of the node that took over. Without `owner` (tests,
+   * tooling) it writes unconditionally.
    */
-  store: (processorName: string, segment: number, token: TrackingToken, uow?: U) => Promise<void>
+  store: (processorName: string, segment: number, token: TrackingToken, uow?: U, owner?: string) => Promise<void>
 
   /**
    * Get the current token for a processor segment.
@@ -105,8 +110,8 @@ export type TokenStore<U extends UnitOfWork = UnitOfWork> = {
  * Thrown when a segment claim cannot be acquired (already owned by another instance).
  */
 export class UnableToClaimTokenError extends Error {
-  constructor(processorName: string, segment: number) {
-    super(`Unable to claim token for processor "${processorName}" segment ${segment}: already claimed`)
+  constructor(processorName: string, segment: number, reason = "already claimed") {
+    super(`Unable to claim token for processor "${processorName}" segment ${segment}: ${reason}`)
     this.name = "UnableToClaimTokenError"
   }
 }
@@ -140,9 +145,12 @@ export function inMemoryTokenStore(claimTimeoutMs: number = 10000): TokenStore {
   }
 
   return {
-    async store(processorName, segment, token) {
+    async store(processorName, segment, token, _uow, owner) {
       const k = key(processorName, segment)
       const entry = entries.get(k)
+      if (owner !== undefined && entry?.ownerId !== owner) {
+        throw new UnableToClaimTokenError(processorName, segment, "the claim is no longer held")
+      }
       if (entry) {
         entry.token = token
         entry.claimedAt = Date.now() // Refresh claim on store

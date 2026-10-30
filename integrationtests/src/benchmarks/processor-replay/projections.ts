@@ -57,7 +57,7 @@ export async function prepareDatabase(pg: PostgresResource): Promise<void> {
 
 /** One upsert per event, in the batch's transaction: what a projection written today does. */
 export async function drizzleProjection(url: string, uniqueKeys = false): Promise<Projection & { readonly pg: PostgresResource }> {
-  const pg = postgresPool(pgAdapter({ connectionString: url }))
+  const pg = postgresPool(pgAdapter({ connectionString: url, poolConfig: { max: 40 } }))
   await pg.start()
   await prepareDatabase(pg)
 

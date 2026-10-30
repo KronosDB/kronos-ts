@@ -17,8 +17,11 @@
  *   repository   + the same, through a repository: get, then save
  *   concurrent   + the repository's handler unchanged, the batch's sequences side by side
  *   upsert       + a repository handler that hands over a fold instead of reading the row
+ *
+ * `--segments N` splits any stage's processor into N segments by the same
+ * sequence, all held by this one process.
  */
-import { batched, concurrent, eventProcessor, jsonSerializer, kronos, localCommandBus, localQueryBus, unitOfWork, type EventMessage, type EventStore } from "@kronos-ts/core"
+import { batched, concurrent, eventProcessor, segmented, jsonSerializer, kronos, localCommandBus, localQueryBus, unitOfWork, type EventMessage, type EventStore } from "@kronos-ts/core"
 import { kronosDbConnection, kronosDbEventStore } from "@kronos-ts/kronosdb"
 import { expected } from "./domain.js"
 import { drizzleProjection, memoryProjection, type Projection } from "./projections.js"
@@ -46,6 +49,7 @@ const uniqueKeys = process.argv.includes("--unique-keys")
 // never takes it. `--heartbeat 1` puts a 1 ms timer on the loop, which is the
 // kindest thing that can be said for that code.
 const heartbeat = Number(arg("heartbeat", "0"))
+const segments = Number(arg("segments", "0"))
 if (heartbeat > 0) setInterval(() => {}, heartbeat)
 const pgUrl = projectionName === "memory" ? "" : arg("pg")
 
@@ -92,7 +96,8 @@ const configured = batched(
 )
 // A sequence is what a handler touches: the account, or with a row per event the event.
 const byRow = (e: EventMessage) => (uniqueKeys ? e.identifier : e.tags.find((t) => t.key === "account")?.value ?? e.identifier)
-const processor = stageConfig.concurrent ? concurrent(configured, byRow) : configured
+const sideBySide = stageConfig.concurrent ? concurrent(configured, byRow) : configured
+const processor = segments > 0 ? segmented(sideBySide, segments, byRow) : sideBySide
 
 const { handled: expectedHandled, lastToken } = expected(limit, all)
 
@@ -129,7 +134,7 @@ const handled = await projection.handled()
 const result = {
   runtime: process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`,
   projection: projectionName,
-  stage: `${stage}${all ? "+all" : ""}${uniqueKeys ? "+unique-keys" : ""}`,
+  stage: `${stage}${all ? "+all" : ""}${uniqueKeys ? "+unique-keys" : ""}${segments > 0 ? `+segments${segments}` : ""}`,
   limit,
   expectedHandled,
   handled,

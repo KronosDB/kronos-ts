@@ -189,6 +189,7 @@ function processorConflicts(a: EventProcessor<any>, b: EventProcessor<any>): str
   if (a.sequence !== b.sequence || a.deadLetterQueue !== b.deadLetterQueue) conflicts.push("deadLettering")
   if (a.batchSize !== b.batchSize) conflicts.push("batched")
   if (a.concurrent !== b.concurrent) conflicts.push("concurrent")
+  if (a.segments?.count !== b.segments?.count || a.segments?.sequenceOf !== b.segments?.sequenceOf) conflicts.push("segmented")
   return conflicts
 }
 
@@ -351,7 +352,7 @@ export function kronos<
   return {
     processors,
     async stop() {
-      for (const p of started) p.stop()
+      await Promise.all(started.map((p) => p.stop()))
     },
   }
 }

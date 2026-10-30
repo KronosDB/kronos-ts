@@ -199,6 +199,63 @@ export function replayToken(
 }
 
 // ---------------------------------------------------------------------------
+// MergedToken
+// ---------------------------------------------------------------------------
+
+/** One half of a merged segment: its id under the halves' mask, and how far it had got. */
+export type MergedHalf = { readonly segment: number; readonly token: TrackingToken }
+
+/**
+ * The token of a segment just merged from two halves that had got to different
+ * places. The segment reads from the half that is behind; an event belonging to
+ * the half that is ahead, and already handled by it, is passed over. Once both
+ * halves have got to the same place it is a plain token again.
+ */
+export type MergedToken = TrackingToken & {
+  readonly kind: "merged"
+  /** The halves' mask: an event's half is the one whose id is `hash & mask`. */
+  readonly mask: number
+  readonly halves: readonly [MergedHalf, MergedHalf]
+}
+
+export function mergedToken(mask: number, halves: readonly [MergedHalf, MergedHalf]): TrackingToken {
+  const [a, b] = halves
+  if (a.token.samePositionAs(b.token)) return a.token
+  const behind = a.token.position() <= b.token.position() ? a.token : b.token
+  const merged: MergedToken = {
+    kind: "merged",
+    mask,
+    halves,
+    position: () => behind.position(),
+    covers: (other) => behind.covers(other),
+    lowerBound: (other) => behind.lowerBound(other),
+    upperBound: (other) => behind.upperBound(other),
+    samePositionAs: (other) => behind.samePositionAs(other),
+  }
+  return merged
+}
+
+export function isMergedToken(token: TrackingToken): token is MergedToken {
+  return token.kind === "merged"
+}
+
+/** Whether the half of a merged token this sequence hash belongs to has already handled the event ending at `past`. */
+export function handledByMergedHalf(token: MergedToken, hash: number, past: TrackingToken): boolean {
+  const half = token.halves.find((h) => (hash & token.mask) === h.segment)
+  return half !== undefined && half.token.covers(past)
+}
+
+/** The furthest a token had got: past the halves of a merged one, past the reset point of a replay. */
+export function reachedBy(token: TrackingToken): TrackingToken {
+  if (isReplayToken(token)) return token.tokenAtReset
+  if (isMergedToken(token)) {
+    const [a, b] = token.halves
+    return a.token.position() >= b.token.position() ? a.token : b.token
+  }
+  return token
+}
+
+// ---------------------------------------------------------------------------
 // Type guards
 // ---------------------------------------------------------------------------
 
@@ -226,6 +283,10 @@ export function isGapAwareToken(token: TrackingToken): token is GapAwareToken {
  * collapsed to a bare position.
  */
 export function advanceTokenTo(token: TrackingToken, next: TrackingToken): TrackingToken {
+  if (isMergedToken(token)) {
+    const [a, b] = token.halves.map((half) => (half.token.covers(next) ? half : { ...half, token: next }))
+    return mergedToken(token.mask, [a!, b!])
+  }
   if (!isReplayToken(token)) {
     return next
   }
@@ -278,6 +339,8 @@ function tokenOf(body: TokenBody): TrackingToken {
  * {@link GapAwareToken}, the `gapKey` is preserved so the cursor resumes
  * exactly on reload.
  *
+ * A MergedToken carries both halves, with the mask that tells them apart.
+ *
  * A ReplayToken ALSO carries `tokenAtReset` — where the processor had got to
  * when it was reset — so a replay survives a restart: without it a processor
  * stopped mid-replay comes back from the store as a plain token, and every
@@ -285,12 +348,17 @@ function tokenOf(body: TokenBody): TrackingToken {
  *
  * `type` is a human-readable label describing the persisted shape — it matches
  * the historical `GlobalSequenceToken` value (so existing rows are unchanged),
- * and is `GapAwareToken` when a gapKey is present and `ReplayToken` mid-replay.
+ * and is `GapAwareToken` when a gapKey is present, `ReplayToken` mid-replay and
+ * `MergedToken` while a merged segment's halves catch up with each other.
  * Deserialization ignores it (it keys off the body), so it is purely for
  * diagnostics / readability of the token table.
  */
 export function serializeToken(token: TrackingToken): SerializedToken {
   const body = bodyOf(token)
+  if (isMergedToken(token)) {
+    const merged = { mask: token.mask, halves: token.halves.map((h) => ({ segment: h.segment, ...bodyOf(h.token) })) }
+    return { type: "MergedToken", data: JSON.stringify({ ...body, merged }) }
+  }
   if (isReplayToken(token)) {
     return { type: "ReplayToken", data: JSON.stringify({ ...body, tokenAtReset: bodyOf(token.tokenAtReset) }) }
   }
@@ -308,7 +376,14 @@ export function deserializeToken(
   data: string | null | undefined,
 ): TrackingToken | undefined {
   if (!data) return undefined
-  const parsed = JSON.parse(data) as TokenBody & { tokenAtReset?: TokenBody }
+  const parsed = JSON.parse(data) as TokenBody & {
+    tokenAtReset?: TokenBody
+    merged?: { mask: number; halves: Array<TokenBody & { segment: number }> }
+  }
+  if (parsed.merged !== undefined) {
+    const [a, b] = parsed.merged.halves.map((h) => ({ segment: h.segment, token: tokenOf(h) }))
+    return mergedToken(parsed.merged.mask, [a!, b!])
+  }
   const current = tokenOf(parsed)
   return parsed.tokenAtReset !== undefined ? replayToken(tokenOf(parsed.tokenAtReset), current) : current
 }

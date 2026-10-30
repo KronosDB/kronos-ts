@@ -242,7 +242,7 @@ type Ctx = EventHandlerContext & Repositories<{ balances: typeof table }>
 
 /** `get-save` reads the row in the handler; `upsert` hands over the fold. */
 export async function repositoryProjection(url: string, uniqueKeys = false, style: "get-save" | "upsert" = "get-save"): Promise<Projection> {
-  const pg = postgresPool(pgAdapter({ connectionString: url }))
+  const pg = postgresPool(pgAdapter({ connectionString: url, poolConfig: { max: 40 } }))
   await pg.start()
   await prepareDatabase(pg)
 
