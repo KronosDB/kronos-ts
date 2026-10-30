@@ -17,7 +17,6 @@ import {
   replayToken,
   isReplayToken,
   isReplaying,
-  advanceToken,
   advanceTokenTo,
 } from "./tracking-token.js"
 import type { EventQuery } from "../event-sourcing/dcb-query.js"
@@ -325,17 +324,19 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
 
   async function processBatch(batch: SequencedEvent[]) {
     let batchEndToken: TrackingToken = token
-    // Whether each event is delivered as part of a replay, read off the token
-    // as it stands BEFORE that event — a replay can end inside a batch.
+    // Whether each event is delivered as part of a replay: the processor is
+    // replaying, and the token just past this event is still within where it
+    // had got to when it was reset. Per event — a replay can end inside a
+    // batch — and read off the EVENT, not the token before it: through a
+    // filtered stream the next event can be well past the reset point.
     const replaying: boolean[] = []
     for (const sequencedEvent of batch) {
-      replaying.push(isReplaying(batchEndToken))
       // Prefer the engine's own cursor token (carries the commit-order key for
       // gap-free resume); fall back to a position+1 token for dense-sequence
       // engines that don't supply one.
-      batchEndToken = sequencedEvent.token
-        ? advanceTokenTo(batchEndToken, sequencedEvent.token)
-        : advanceToken(batchEndToken, sequencedEvent.sequence + 1n)
+      const past = sequencedEvent.token ?? globalSequenceToken(sequencedEvent.sequence + 1n)
+      replaying.push(isReplayToken(batchEndToken) && batchEndToken.tokenAtReset.covers(past))
+      batchEndToken = advanceTokenTo(batchEndToken, past)
     }
 
     // The MINTED handle is the batch's task — see the note in `localCommandBus`
@@ -511,23 +512,33 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       return reprocessor.reprocess(filter)
     },
 
-    async resetTokens(startPosition: bigint = 0n) {
+    async resetTokens(startPosition: bigint = 0n, reset?: (uow: UnitOfWork) => Promise<void> | void) {
       if (isRunning) {
         throw new Error(`Processor "${name}" must be stopped before resetting tokens`)
       }
 
-      const headPosition = await eventStore.getHeadPosition()
+      // ONE unit of work: what `reset` clears and the token that makes the
+      // processor fold it again commit together, and a `reset` that throws
+      // leaves both as they were.
+      let next: TrackingToken = globalSequenceToken(startPosition)
+      const uow = newUoW()
+      await uow.execute(async () => {
+        // The replay runs up to where the processor HAD GOT TO — not the head of
+        // the log: an event it never handled is not a replay, however far
+        // behind it was. Reset again mid-replay and it is still the first
+        // reset's point. Never run, or reset to where it already is or past it,
+        // and nothing is replayed.
+        const stored = await tokenStore.get(name, segment, uow)
+        const reached = stored !== undefined && isReplayToken(stored) ? stored.tokenAtReset : stored
+        if (reached !== undefined && !next.covers(reached)) next = replayToken(reached, next)
+        await reset?.(uow)
+        uow.onPrepareCommit(async () => {
+          await tokenStore.store(name, segment, next, uow)
+        })
+      })
 
-      backlogEnd = headPosition
-      token =
-        headPosition <= startPosition
-          ? globalSequenceToken(startPosition)
-          : replayToken(
-              globalSequenceToken(headPosition),
-              globalSequenceToken(startPosition),
-            )
-
-      await tokenStore.store(name, segment, token)
+      token = next
+      backlogEnd = await eventStore.getHeadPosition().catch(() => undefined)
     },
   }
 }

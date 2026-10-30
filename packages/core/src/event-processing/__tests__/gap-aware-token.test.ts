@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { gapAwareToken, globalSequenceToken, replayToken, isGapAwareToken, advanceTokenTo, serializeToken, deserializeToken } from "../tracking-token.js"
+import { gapAwareToken, globalSequenceToken, replayToken, isGapAwareToken, isReplayToken, advanceTokenTo, serializeToken, deserializeToken, type ReplayToken } from "../tracking-token.js"
 
 describe("gapAwareToken", () => {
   it("exposes the sequence as its position and carries the gapKey", () => {
@@ -40,17 +40,25 @@ describe("serializeToken / deserializeToken", () => {
     expect((back as { gapKey: string }).gapKey).toBe("98765")
   })
 
-  it("preserves the gapKey of a ReplayToken's inner gap-aware token", () => {
-    // A replay-in-progress token whose current position is a gap-aware cursor.
-    const replay = replayToken(globalSequenceToken(100n), gapAwareToken(25n, "555"))
+  it("round-trips a ReplayToken: the replay, where it ends, and the inner gapKey", () => {
+    const replay = replayToken(gapAwareToken(100n, "999"), gapAwareToken(25n, "555"))
     const s = serializeToken(replay)
+    expect(s.type).toBe("ReplayToken")
     const back = deserializeToken(s.type, s.data)
-    // Replay state itself does not survive the wire (flattens to current
-    // position, as before), but the gapKey must survive so live tailing resumes
-    // without skipping events.
-    expect(isGapAwareToken(back!)).toBe(true)
-    expect(back!.position()).toBe(25n)
-    expect((back as { gapKey: string }).gapKey).toBe("555")
+    expect(isReplayToken(back!)).toBe(true)
+    const { currentToken, tokenAtReset } = back as ReplayToken
+    expect(currentToken.position()).toBe(25n)
+    expect((currentToken as { gapKey: string }).gapKey).toBe("555")
+    expect(tokenAtReset.position()).toBe(100n)
+    expect((tokenAtReset as { gapKey: string }).gapKey).toBe("999")
+  })
+
+  it("reads a replay that ends at a plain position", () => {
+    const s = serializeToken(replayToken(globalSequenceToken(100n), globalSequenceToken(10n)))
+    const back = deserializeToken(s.type, s.data) as ReplayToken
+    expect(back.kind).toBe("replay")
+    expect(back.tokenAtReset.kind).toBe("global-sequence")
+    expect(back.position()).toBe(10n)
   })
 
   it("returns undefined for an absent token", () => {

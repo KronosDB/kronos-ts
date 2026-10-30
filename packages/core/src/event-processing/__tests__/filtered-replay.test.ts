@@ -9,7 +9,7 @@ import { inMemoryTokenStore, type TokenStore } from "../token-store.js"
 import type { SequencedEvent, StreamingCondition } from "../source.js"
 import type { EventHandler } from "../handler.js"
 import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
-import { globalSequenceToken, type TrackingToken } from "../tracking-token.js"
+import { deserializeToken, globalSequenceToken, serializeToken, type ReplayToken, type TrackingToken } from "../tracking-token.js"
 
 // ---------------------------------------------------------------------------
 // What a processor asks of its log, and how it moves through a quiet stretch.
@@ -253,6 +253,10 @@ describe("the token through a quiet stretch", () => {
       },
     }
     const processor = run({ log, handlers: [handler] })
+    await processor.start()
+    await until(() => processor.position === 21n, "the first pass to reach the head")
+    processor.stop()
+    seen.length = 0
     await processor.resetTokens(0n)
     expect(processor.replaying).toBe(true)
 
@@ -272,7 +276,14 @@ describe("the token through a quiet stretch", () => {
       ...log,
       open: (condition) => ({ ...log.open(condition), progressToken: () => undefined }),
     } as EventStore
-    const processor = run({ log: stalled, handlers: [handlerFor(Ordered)] })
+    // The first pass, on the stream that DOES report, gets the token past the
+    // noise — so the replay runs up to 2, beyond the one event it will see.
+    const tokens = inMemoryTokenStore()
+    const first = run({ log, handlers: [handlerFor(Ordered)], tokens })
+    await first.start()
+    await until(() => first.position === 2n, "the first pass past the noise")
+    first.stop()
+    const processor = run({ log: stalled, handlers: [handlerFor(Ordered)], tokens })
     await processor.resetTokens(0n)
     await processor.start()
     await until(() => processor.position === 1n, "the matching event")
@@ -285,7 +296,11 @@ describe("the token through a quiet stretch", () => {
   it("still ends a replay on an empty stream when the store reports no progress at all", async () => {
     const log = fakeLog([event(Ordered, 0n), event(Noise, 1n)])
     const processor = run({ log, handlers: [handlerFor(Ordered)] })
+    await processor.start()
+    await until(() => processor.position === 1n, "the first pass")
+    processor.stop()
     await processor.resetTokens(0n)
+    expect(processor.replaying).toBe(true)
     await processor.start()
     await until(() => !processor.replaying, "the replay to end")
     processor.stop()
@@ -412,5 +427,163 @@ describe("the batch size", () => {
     // up to the event that failed, is one event.
     expect(tokens.writes.slice(0, 6)).toEqual([1n, 2n, 3n, 4n, 5n, 6n])
     expect(tokens.writes.at(-1)).toBe(8n)
+  })
+})
+
+describe("resetting a processor", () => {
+  /** A handler that records, per event, whether it was told it is a replay. */
+  function replayRecorder(): { handler: EventHandler<any>; seen: Array<[bigint, boolean]> } {
+    const seen: Array<[bigint, boolean]> = []
+    return {
+      seen,
+      handler: { ...handlerFor(Ordered), handler: ({ sequence }, ctx: any) => void seen.push([sequence, ctx.isReplay()]) },
+    }
+  }
+
+  /** What a persistent store does: every token goes through its stored form. */
+  function serializingTokens(): TokenStore {
+    const inner = inMemoryTokenStore()
+    return {
+      ...inner,
+      store: (name, segment, token, uow) => {
+        const { type, data } = serializeToken(token)
+        return inner.store(name, segment, deserializeToken(type, data)!, uow)
+      },
+    }
+  }
+
+  it("replays up to where the processor had got to, not the head of the log", async () => {
+    const log = fakeLog([event(Ordered, 0n), event(Ordered, 1n)])
+    const { handler, seen } = replayRecorder()
+    const processor = run({ log, handlers: [handler] })
+    await processor.start()
+    await until(() => processor.position === 2n, "the first pass")
+    processor.stop()
+    // Three more arrive while it is stopped: it was never handed them.
+    log.push(event(Ordered, 2n), event(Ordered, 3n), event(Ordered, 4n))
+
+    seen.length = 0
+    await processor.resetTokens(0n)
+    await processor.start()
+    await until(() => processor.position === 5n, "the replay and what came after")
+    processor.stop()
+
+    expect(seen).toEqual([[0n, true], [1n, true], [2n, false], [3n, false], [4n, false]])
+  })
+
+  it("tells each event by its own position: one past the reset point is new, however the stream got there", async () => {
+    // Filtered: the noise at 1–3 never reaches the processor, so the event at 4
+    // comes straight after the one at 0, past a reset point of 2.
+    const log = fakeLog([event(Ordered, 0n), event(Noise, 1n)], { reportsProgress: true })
+    const { handler, seen } = replayRecorder()
+    const processor = run({ log, handlers: [handler], batch: 10 })
+    await processor.start()
+    await until(() => processor.position === 2n, "the first pass past the noise")
+    processor.stop()
+    log.push(event(Noise, 2n), event(Noise, 3n), event(Ordered, 4n))
+
+    seen.length = 0
+    await processor.resetTokens(0n)
+    await processor.start()
+    await until(() => processor.position === 5n, "the replay and the new event")
+    processor.stop()
+
+    expect(seen).toEqual([[0n, true], [4n, false]])
+  })
+
+  it("is still a replay after a restart through a store that keeps only the stored form", async () => {
+    const tokens = serializingTokens()
+    const log = fakeLog([event(Ordered, 0n), event(Ordered, 1n), event(Ordered, 2n)])
+    const first = run({ log, handlers: [handlerFor(Ordered)], tokens })
+    await first.start()
+    await until(() => first.position === 3n, "the first pass")
+    first.stop()
+    await first.resetTokens(0n)
+
+    // A new process: nothing but what the store kept.
+    const { handler, seen } = replayRecorder()
+    const second = run({ log, handlers: [handler], tokens })
+    await second.start()
+    await until(() => second.position === 3n, "the replay")
+    second.stop()
+
+    expect(seen).toEqual([[0n, true], [1n, true], [2n, true]])
+    expect(second.replaying).toBe(false)
+  })
+
+  it("reset again mid-replay, still replays up to the first reset's point", async () => {
+    const tokens = serializingTokens()
+    const log = fakeLog([event(Ordered, 0n), event(Ordered, 1n), event(Ordered, 2n)])
+    const processor = run({ log, handlers: [handlerFor(Ordered)], tokens })
+    await processor.start()
+    await until(() => processor.position === 3n, "the first pass")
+    processor.stop()
+    await processor.resetTokens(2n)
+    await processor.resetTokens(0n)
+
+    const stored = (await tokens.get("p", 0)) as ReplayToken
+    expect(stored.kind).toBe("replay")
+    expect(stored.tokenAtReset.position()).toBe(3n)
+    expect(stored.position()).toBe(0n)
+  })
+
+  it("replays nothing when reset to where the processor already is, or past it, or before it ever ran", async () => {
+    const log = fakeLog([event(Ordered, 0n), event(Ordered, 1n)])
+    const processor = run({ log, handlers: [handlerFor(Ordered)] })
+    await processor.resetTokens(0n)
+    expect(processor.replaying).toBe(false)
+
+    await processor.start()
+    await until(() => processor.position === 2n, "the first pass")
+    processor.stop()
+    await processor.resetTokens(2n)
+    expect(processor.replaying).toBe(false)
+    await processor.resetTokens(5n)
+    expect(processor.replaying).toBe(false)
+    expect(processor.position).toBe(5n)
+  })
+
+  it("runs the reset function in the unit of work that stores the token", async () => {
+    const stores: unknown[] = []
+    const inner = inMemoryTokenStore()
+    const tokens: TokenStore = {
+      ...inner,
+      store: (name, segment, token, uow) => {
+        stores.push(uow)
+        return inner.store(name, segment, token, uow)
+      },
+    }
+    const log = fakeLog([event(Ordered, 0n)])
+    const processor = run({ log, handlers: [handlerFor(Ordered)], tokens })
+    await processor.start()
+    await until(() => processor.position === 1n, "the first pass")
+    processor.stop()
+
+    let resetIn: unknown
+    await processor.resetTokens(0n, (uow) => {
+      resetIn = uow
+    })
+
+    expect(resetIn).toBeDefined()
+    expect(stores.at(-1)).toBe(resetIn)
+  })
+
+  it("leaves the token where it was when the reset function throws", async () => {
+    const log = fakeLog([event(Ordered, 0n)])
+    const tokens = inMemoryTokenStore()
+    const processor = run({ log, handlers: [handlerFor(Ordered)], tokens })
+    await processor.start()
+    await until(() => processor.position === 1n, "the first pass")
+    processor.stop()
+
+    await expect(
+      processor.resetTokens(0n, () => {
+        throw new Error("not today")
+      }),
+    ).rejects.toThrow("not today")
+
+    expect(processor.replaying).toBe(false)
+    expect(processor.position).toBe(1n)
+    expect((await tokens.get("p", 0))!.kind).toBe("global-sequence")
   })
 })

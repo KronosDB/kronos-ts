@@ -656,6 +656,12 @@ type App = { processors: ReadonlyMap<string, RunningProcessor>; stop(): Promise<
 // entries naming one `eventStore` OBJECT share its folds because the lazy cache
 // is keyed on that object, which nobody had to declare.
 // boot errors name the entry: missing eventStore, missing processor, processor field conflicts
+// app.processors.get(name)!.resetTokens(from?, reset?: (uow) => …) — stopped first, started
+// after. The replay runs up to where the processor HAD GOT TO, not the head: an event
+// it was never handed is not a replay. Reset to where it is or past it, or before it
+// ever ran, and nothing is replayed. `reset` runs in the unit of work that stores the
+// new token, so clearing the projection and the reset commit together; it throws, and
+// neither happens. The replay is stored with the token and survives a restart.
 
 // ── decision models ────────────────────────────────────────────────────────
 state({ id, tags: (id) => TagRecord | readonly [TagRecord, ...],

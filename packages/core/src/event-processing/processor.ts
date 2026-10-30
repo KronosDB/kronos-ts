@@ -209,10 +209,19 @@ export type RunningProcessor = {
    */
   status(): EventProcessorStatus
   /**
-   * Reset the processor to replay events from a starting position. The
-   * processor must be stopped before calling this.
+   * Reset the processor to replay events from `startPosition` (default: the
+   * start of the log). The processor must be stopped first, and started again
+   * after.
+   *
+   * The replay runs up to where the processor had got to; `ctx.isReplay()` is
+   * true for those events and false for every event after. A reset to where
+   * the processor already is, or past it, replays nothing.
+   *
+   * `reset` runs in the unit of work that stores the new token — clear what
+   * the processor's handlers wrote there, and the clearing and the reset
+   * commit together. If it throws, neither happens.
    */
-  resetTokens(startPosition?: bigint): Promise<void>
+  resetTokens(startPosition?: bigint, reset?: (uow: UnitOfWork) => Promise<void> | void): Promise<void>
   /**
    * Replay parked dead letters back through the handlers (the oldest matching
    * lane). No-op returning false when no dead-letter queue is configured. Safe

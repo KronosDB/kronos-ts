@@ -160,7 +160,7 @@ export type ReplayToken = TrackingToken & {
  * Once `currentToken.covers(tokenAtReset)`, the replay is complete and the
  * token unwraps to the current position.
  *
- * @param tokenAtReset The head position when reset was triggered
+ * @param tokenAtReset Where the processor had got to when it was reset
  * @param currentToken Where replay is currently reading from
  */
 export function replayToken(
@@ -257,46 +257,60 @@ export type SerializedToken = {
   readonly data: string
 }
 
+type TokenBody = { position: string; gapKey?: string }
+
+function bodyOf(token: TrackingToken): TokenBody {
+  const inner = unwrapToken(token)
+  return isGapAwareToken(inner)
+    ? { position: inner.position().toString(), gapKey: inner.gapKey }
+    : { position: inner.position().toString() }
+}
+
+function tokenOf(body: TokenBody): TrackingToken {
+  return body.gapKey !== undefined
+    ? gapAwareToken(BigInt(body.position), body.gapKey)
+    : globalSequenceToken(BigInt(body.position))
+}
+
 /**
  * Serialize a token for durable storage. The JSON body always carries
  * `position`; when the token (or, for a ReplayToken, its innermost token) is a
  * {@link GapAwareToken}, the `gapKey` is preserved so the cursor resumes
- * exactly on reload. ReplayTokens still flatten to their current position on
- * the wire (replay-in-progress state does not survive a restart, as before),
- * but the gapKey survives so live tailing resumes without skipping events.
+ * exactly on reload.
+ *
+ * A ReplayToken ALSO carries `tokenAtReset` — where the processor had got to
+ * when it was reset — so a replay survives a restart: without it a processor
+ * stopped mid-replay comes back from the store as a plain token, and every
+ * event it redelivers says it is not a replay.
  *
  * `type` is a human-readable label describing the persisted shape — it matches
- * the historical `GlobalSequenceToken` value (so existing rows are unchanged)
- * and is `GapAwareToken` when a gapKey is present. Deserialization ignores it
- * (it keys off the presence of `gapKey` in the body), so it is purely for
+ * the historical `GlobalSequenceToken` value (so existing rows are unchanged),
+ * and is `GapAwareToken` when a gapKey is present and `ReplayToken` mid-replay.
+ * Deserialization ignores it (it keys off the body), so it is purely for
  * diagnostics / readability of the token table.
  */
 export function serializeToken(token: TrackingToken): SerializedToken {
-  const inner = unwrapToken(token)
-  const gapKey = isGapAwareToken(inner) ? inner.gapKey : undefined
-  const payload =
-    gapKey !== undefined
-      ? { position: token.position().toString(), gapKey }
-      : { position: token.position().toString() }
-  const type = gapKey !== undefined ? "GapAwareToken" : "GlobalSequenceToken"
-  return { type, data: JSON.stringify(payload) }
+  const body = bodyOf(token)
+  if (isReplayToken(token)) {
+    return { type: "ReplayToken", data: JSON.stringify({ ...body, tokenAtReset: bodyOf(token.tokenAtReset) }) }
+  }
+  return { type: body.gapKey !== undefined ? "GapAwareToken" : "GlobalSequenceToken", data: JSON.stringify(body) }
 }
 
 /**
- * Reconstruct a token from its persisted form. A body carrying a `gapKey`
- * rehydrates as a {@link GapAwareToken}; otherwise a {@link GlobalSequenceToken}.
- * Returns undefined when there is no stored token.
+ * Reconstruct a token from its persisted form. A body carrying `tokenAtReset`
+ * rehydrates as a {@link ReplayToken}; a body carrying a `gapKey` as a
+ * {@link GapAwareToken}; otherwise a {@link GlobalSequenceToken}. Returns
+ * undefined when there is no stored token.
  */
 export function deserializeToken(
   type: string | null | undefined,
   data: string | null | undefined,
 ): TrackingToken | undefined {
   if (!data) return undefined
-  const parsed = JSON.parse(data) as { position: string; gapKey?: string }
-  if (parsed.gapKey !== undefined) {
-    return gapAwareToken(BigInt(parsed.position), parsed.gapKey)
-  }
-  return globalSequenceToken(BigInt(parsed.position))
+  const parsed = JSON.parse(data) as TokenBody & { tokenAtReset?: TokenBody }
+  const current = tokenOf(parsed)
+  return parsed.tokenAtReset !== undefined ? replayToken(tokenOf(parsed.tokenAtReset), current) : current
 }
 
 /**

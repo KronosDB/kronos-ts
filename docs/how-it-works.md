@@ -1253,8 +1253,24 @@ type App = {
 
 `app.processors` is keyed by that same durable name. A `RunningProcessor` carries
 `running` / `position` / `replaying`, `status()`, `start()` / `stop()`,
-`resetTokens(from?)` and `reprocessDeadLetters(filter?)` — what a control plane
+`resetTokens(from?, reset?)` and `reprocessDeadLetters(filter?)` — what a control plane
 drives and what a test awaits.
+
+A reset replays up to where the processor had got to, not to the head of the log:
+an event it was never handed is new, and `ctx.isReplay()` says so, even in the
+middle of the replay. The processor has to be stopped first and started after.
+`reset` runs in the same unit of work that stores the new token, so what it
+clears and the token that refolds it commit together:
+
+```ts
+const balances = app.processors.get("billing-balances")!
+balances.stop()
+await balances.resetTokens(0n, async (uow) => {
+  const tx = await postgresTransaction(uow)
+  await tx.unwrap<Sql>()`TRUNCATE billing_balances`
+})
+await balances.start()
+```
 
 ---
 
