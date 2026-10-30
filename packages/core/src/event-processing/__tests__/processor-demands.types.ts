@@ -10,9 +10,9 @@
  * - `U` is read off the unit-of-work FACTORY, and the token store and the
  *   dead-letter queue are CHECKED against it: a store keyed on a task the
  *   factory does not mint does not compile.
- * - A dead-letter queue cannot be given without the buckets it parks under.
+ * - A dead-letter queue cannot be given without the sequences it parks under.
  *   That used to be a demand on a config object; `deadLettering(p, queue,
- *   bucketOf)` makes the bucket a required argument, so there is nothing left
+ *   sequenceOf)` makes the sequence a required argument, so there is nothing left
  *   to demand.
  */
 import type { EventMessage } from "../../messaging/messages.js"
@@ -47,8 +47,8 @@ export const wrapped: EventProcessor = deadLettering(
   byCourse,
 )
 
-// @ts-expect-error — a queue without the buckets it parks under
-export const queueWithoutBuckets = deadLettering(plainProjection, deadLetterQueue)
+// @ts-expect-error — a queue without the sequences it parks under
+export const queueWithoutSequences = deadLettering(plainProjection, deadLetterQueue)
 
 // ---------------------------------------------------------------------------
 // `U` comes from the factory; the stores are checked against it.

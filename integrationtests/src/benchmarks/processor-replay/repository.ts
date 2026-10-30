@@ -14,7 +14,7 @@
  * and the batch decides when the table is read and written. `get` answers this
  * batch's copy, else the stored row, else a new row from the table's column
  * defaults. The rows `get`s ask for in one turn of the event loop are read in
- * ONE select, so under `concurrent` — every bucket's first `get` arriving at
+ * ONE select, so under `concurrent` — every sequence's first `get` arriving at
  * once — a batch reads in one statement. `save` only replaces the batch's
  * copy. `upsert` queues its fold; in PREPARE_COMMIT the rows it needs are read
  * in one select and the folds run in order. Then every row saved in the batch is

@@ -62,15 +62,15 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
    */
   readonly batchSize?: number
   /**
-   * Which bucket each event parks under when it fails. Set by
+   * Which sequence each event parks under when it fails. Set by
    * {@link deadLettering}, together with {@link deadLetterQueue}.
    */
   readonly sequence?: Sequence
   /** Where a failing event parks. Absent: the batch fails and is retried. Keyed on `U`. */
   readonly deadLetterQueue?: SequencedDeadLetterQueue<U>
   /**
-   * Which bucket each event belongs to when the batch's buckets run SIDE BY
-   * SIDE. Absent means one event at a time, in log order. Set by
+   * Which sequence each event belongs to when the batch's sequences run SIDE
+   * BY SIDE. Absent means one event at a time, in log order. Set by
    * {@link concurrent}; the same function as {@link sequence} when both are set.
    */
   readonly concurrent?: Sequence
@@ -142,45 +142,46 @@ export function batched<U extends UnitOfWork>(processor: EventProcessor<U>, size
 }
 
 /**
- * Run the batch's buckets side by side. Events `buckets` puts in the same
- * bucket are handled one after another, in log order; events in different
- * buckets are not ordered against each other at all. The batch still commits
- * as ONE unit of work: without a dead-letter queue a failure in any bucket
- * fails the batch once every bucket has settled, and the whole batch is
+ * Run the batch's sequences side by side. Events `sequenceOf` puts in the
+ * same sequence are handled one after another, in log order; events in
+ * different sequences are not ordered against each other at all. The batch
+ * still commits as ONE unit of work: without a dead-letter queue a failure in
+ * any sequence fails the batch once every sequence has settled, and the whole
+ * batch is
  * redelivered.
  *
- * Every handler on this processor runs concurrently across buckets, so a
- * handler must touch only what belongs to its event's bucket. Unrecognised
+ * Every handler on this processor runs concurrently across sequences, so a
+ * handler must touch only what belongs to its event's sequence. Unrecognised
  * events go wherever the function sends them: `e.identifier` gives each a
- * bucket of its own, a constant puts them all in one.
+ * sequence of its own, a constant puts them all in one.
  */
-export function concurrent<U extends UnitOfWork>(processor: EventProcessor<U>, buckets: Sequence): EventProcessor<U> {
-  sameBuckets(processor, processor.sequence, buckets, "concurrent")
-  return { ...processor, concurrent: buckets }
+export function concurrent<U extends UnitOfWork>(processor: EventProcessor<U>, sequenceOf: Sequence): EventProcessor<U> {
+  sameSequence(processor, processor.sequence, sequenceOf, "concurrent")
+  return { ...processor, concurrent: sequenceOf }
 }
 
 /**
- * Park a failing event in `queue`, under its bucket, and everything behind it
- * in that bucket, so the batch commits and the token moves past it. Other
- * buckets go on.
+ * Park a failing event in `queue`, under its sequence, and everything behind
+ * it in that sequence, so the batch commits and the token moves past it. Other
+ * sequences go on.
  *
- * With {@link concurrent} the two must bucket events THE SAME WAY: a bucket
+ * With {@link concurrent} the two must sequence events THE SAME WAY: a sequence
  * that runs side by side with another cannot be parked behind it.
  */
 export function deadLettering<U extends UnitOfWork>(
   processor: EventProcessor<U>,
   queue: SequencedDeadLetterQueue<U>,
-  buckets: Sequence,
+  sequenceOf: Sequence,
 ): EventProcessor<U> {
-  sameBuckets(processor, processor.concurrent, buckets, "deadLettering")
-  return { ...processor, deadLetterQueue: queue, sequence: buckets }
+  sameSequence(processor, processor.concurrent, sequenceOf, "deadLettering")
+  return { ...processor, deadLetterQueue: queue, sequence: sequenceOf }
 }
 
-function sameBuckets(processor: EventProcessor<any>, existing: Sequence | undefined, buckets: Sequence, wrapper: string) {
-  if (existing !== undefined && existing !== buckets) {
+function sameSequence(processor: EventProcessor<any>, existing: Sequence | undefined, sequenceOf: Sequence, wrapper: string) {
+  if (existing !== undefined && existing !== sequenceOf) {
     throw new Error(
-      `${wrapper}("${processor.name}"): this processor already buckets its events with another function. ` +
-        `concurrent and deadLettering must be given the same one — a bucket that runs side by side with ` +
+      `${wrapper}("${processor.name}"): this processor already sequences its events with another function. ` +
+        `concurrent and deadLettering must be given the same one — a sequence that runs side by side with ` +
         `another cannot be parked behind it.`,
     )
   }

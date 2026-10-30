@@ -526,11 +526,11 @@ How it holds together:
   rows die with its unit of work, so nothing is folded twice.
 - **At the head it is as fresh as before.** A batch is only what is ready — one or
   two events — so it writes at once.
-- **Reads are one statement per batch** because `concurrent` starts every bucket
+- **Reads are one statement per batch** because `concurrent` starts every sequence
   together: their first `get`s land in the same turn. Without `concurrent` the
   handler still works, one read per row per batch.
-- **The bucket must cover every row the handler touches.** Buckets run side by
-  side; two buckets writing one row would race.
+- **The sequence must cover every row the handler touches.** Sequences run side
+  by side; two sequences writing one row would race.
 - **Dead letters** park cleanly if the handler throws before `save`.
   `deadLettering(p, queue, byAccount)` takes the same function as `concurrent`.
 
@@ -540,7 +540,7 @@ Variations, all yours to choose:
   can skip `get` and write `total = total + excluded.total`. No read at all.
 - **A fold queued for the end of the batch** — the handler hands over
   `(row) => row` and never waits for it. All of a batch's reads still become one,
-  without `concurrent`, for handlers whose rows cross buckets. The handler cannot
+  without `concurrent`, for handlers whose rows cross sequences. The handler cannot
   see the result, and a throwing fold fails the batch rather than parking.
 
 ---

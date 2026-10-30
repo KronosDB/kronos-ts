@@ -577,7 +577,7 @@ ctx.source(query: EventQuery): Promise<ReadonlyArray<EventMessage>>
 // `correlatingHandler` is the mechanism, and this parameter is where it injects.
 
 // ── event delivery: tracked only; the processor is a value ────────────────
-type Sequence = (event: EventMessage) => string    // TOTAL — (e) => e.identifier = own bucket = no constraint
+type Sequence = (event: EventMessage) => string    // TOTAL — (e) => e.identifier = own sequence = no constraint
 //   by tag, written out: (e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier
 eventProcessor<U extends UnitOfWork = UnitOfWork>(
   name: string, eventStore: EventStore, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive, positional
@@ -601,7 +601,7 @@ eventProcessor<U extends UnitOfWork = UnitOfWork>(
 // (`StreamingCondition.readAhead`).
 // THE PROCESSOR IS WHERE THE COMPILER MEETS THE FACTORY AND THE STORES, and it
 // now enforces TWO things it used to discover at boot:
-//   1. A DEAD-LETTER QUEUE IMPLIES BUCKETS. `deadLettering(p, queue, bucketOf)`
+//   1. A DEAD-LETTER QUEUE IMPLIES SEQUENCES. `deadLettering(p, queue, sequenceOf)`
 //      takes them as an argument, so a queue without them cannot be written. (It
 //      used to be a demand on a config object, and before that a throw at boot.)
 //   2. NO MIXING PERSISTENCE FAMILIES — enforced by the STORES, not by a type
@@ -612,17 +612,17 @@ type EventProcessor<U> · RunningProcessor · EventProcessorStatus
 // WHAT A PROCESSOR DOES WITH ITS BATCH, said as functions over the value. Each
 // returns a new value; the host composes them with whatever `pipe` it uses.
 batched(p, size: number): EventProcessor<U>                     // up to `size` READY events a batch, head and behind alike
-concurrent(p, bucketOf: Sequence): EventProcessor<U>            // the batch's buckets side by side; one bucket in log order
-deadLettering(p, queue: SequencedDeadLetterQueue<U>, bucketOf: Sequence): EventProcessor<U>   // park per bucket
+concurrent(p, sequenceOf: Sequence): EventProcessor<U>         // the batch's sequences side by side; one sequence in log order
+deadLettering(p, queue: SequencedDeadLetterQueue<U>, sequenceOf: Sequence): EventProcessor<U>   // park per sequence
 //   pipe(eventProcessor(name, eventStore, tokenStore, unitOfWork), (p) => batched(p, 1000), (p) => concurrent(p, byAccount))
-// A BUCKET IS ORDERED, BUCKETS ARE NOT. Without `concurrent` the processor hands
-// over one event at a time in log order, whatever the buckets say. With it, every
-// handler on that processor runs concurrently across buckets, so a handler touches
-// only what belongs to its event's bucket. The batch is still ONE unit of work:
-// without a queue a failure fails it once every bucket has SETTLED (the others are
-// running against its transaction); with a queue the failing bucket parks and the
-// rest commit. `concurrent` and `deadLettering` must be given the SAME function —
-// a bucket running beside another cannot be parked behind it — and the second
+// A SEQUENCE IS ORDERED, SEQUENCES ARE NOT. Without `concurrent` the processor
+// hands over one event at a time in log order, whatever the sequences say. With it,
+// every handler on that processor runs concurrently across sequences, so a handler
+// touches only what belongs to its event's sequence. The batch is still ONE unit of
+// work: without a queue a failure fails it once every sequence has SETTLED (the
+// others are running against its transaction); with a queue the failing sequence
+// parks and the rest commit. `concurrent` and `deadLettering` must be given the SAME
+// function — a sequence running beside another cannot be parked behind it — and the second
 // wrapper throws otherwise. `ctx.isReplay()` is fixed per event.
 // BUFFERING IS NOT HERE. A projection that folds a batch in memory and writes it
 // once is app code over the batch's unit of work: a repository on `ctx`, its write

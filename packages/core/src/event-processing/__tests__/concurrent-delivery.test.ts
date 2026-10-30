@@ -15,7 +15,7 @@ import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
 
 const EVENT_NAME = qn("test", "SomethingHappened")
 
-type Payload = { v: string; bucket: string; fail?: boolean; slow?: boolean }
+type Payload = { v: string; sequence: string; fail?: boolean; slow?: boolean }
 
 function makeEvent(payload: Payload, sequence: bigint): SequencedEvent {
   return {
@@ -27,7 +27,7 @@ function makeEvent(payload: Payload, sequence: bigint): SequencedEvent {
       payload,
       metadata: emptyMetadata(),
       timestamp: Date.now(),
-      tags: [{ key: "bucket", value: payload.bucket }],
+      tags: [{ key: "sequence", value: payload.sequence }],
     },
   }
 }
@@ -66,7 +66,7 @@ async function waitForPosition(proc: { position: bigint }, target: bigint, timeo
   if (proc.position < target) throw new Error(`did not reach position ${target} (at ${proc.position})`)
 }
 
-const byBucket = (e: EventMessage) => (e.payload as Payload).bucket
+const bySequence = (e: EventMessage) => (e.payload as Payload).sequence
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 function recordingHandler(log: string[], failures = new Set<string>()): EventHandler<any> {
@@ -98,16 +98,16 @@ const base = (name: string, events: SequencedEvent[], uow: () => ReturnType<type
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("concurrent — buckets side by side, each bucket in log order", () => {
-  it("runs different buckets at the same time and one bucket's events one after another", async () => {
+describe("concurrent — sequences side by side, each sequence in log order", () => {
+  it("runs different sequences at the same time and one sequence's events one after another", async () => {
     const events = [
-      makeEvent({ v: "a1", bucket: "A", slow: true }, 0n),
-      makeEvent({ v: "b1", bucket: "B" }, 1n),
-      makeEvent({ v: "a2", bucket: "A" }, 2n),
+      makeEvent({ v: "a1", sequence: "A", slow: true }, 0n),
+      makeEvent({ v: "b1", sequence: "B" }, 1n),
+      makeEvent({ v: "a2", sequence: "A" }, 2n),
     ]
     const log: string[] = []
     const processor = runEventProcessor({
-      processor: concurrent(batched(base("side-by-side", events), 10), byBucket),
+      processor: concurrent(batched(base("side-by-side", events), 10), bySequence),
       handlers: [{ definition: recordingHandler(log) }],
       pollingIntervalMs: 10,
     })
@@ -121,10 +121,10 @@ describe("concurrent — buckets side by side, each bucket in log order", () => 
     expect(log.indexOf("start a2")).toBeGreaterThan(log.indexOf("end a1"))
   })
 
-  it("without it, delivers one event at a time in log order, whatever the buckets", async () => {
+  it("without it, delivers one event at a time in log order, whatever the sequences", async () => {
     const events = [
-      makeEvent({ v: "a1", bucket: "A", slow: true }, 0n),
-      makeEvent({ v: "b1", bucket: "B" }, 1n),
+      makeEvent({ v: "a1", sequence: "A", slow: true }, 0n),
+      makeEvent({ v: "b1", sequence: "B" }, 1n),
     ]
     const log: string[] = []
     const processor = runEventProcessor({
@@ -140,10 +140,10 @@ describe("concurrent — buckets side by side, each bucket in log order", () => 
     expect(log).toEqual(["start a1", "end a1", "start b1", "end b1"])
   })
 
-  it("fails the batch only once every bucket has settled, and redelivers all of it", async () => {
+  it("fails the batch only once every sequence has settled, and redelivers all of it", async () => {
     const events = [
-      makeEvent({ v: "a1", bucket: "A", fail: true }, 0n),
-      makeEvent({ v: "b1", bucket: "B", slow: true }, 1n),
+      makeEvent({ v: "a1", sequence: "A", fail: true }, 0n),
+      makeEvent({ v: "b1", sequence: "B", slow: true }, 1n),
     ]
     const log: string[] = []
     const uow = () => {
@@ -154,7 +154,7 @@ describe("concurrent — buckets side by side, each bucket in log order", () => 
       return task
     }
     const processor = runEventProcessor({
-      processor: concurrent(batched(base("settle-then-fail", events, uow), 10), byBucket),
+      processor: concurrent(batched(base("settle-then-fail", events, uow), 10), bySequence),
       handlers: [{ definition: recordingHandler(log) }],
       pollingIntervalMs: 5,
     })
@@ -170,18 +170,18 @@ describe("concurrent — buckets side by side, each bucket in log order", () => 
   })
 })
 
-describe("concurrent with deadLettering — the failing bucket parks, the others go on", () => {
-  it("parks the failed event and the rest of its bucket, commits the other buckets, and moves the token past all of it", async () => {
+describe("concurrent with deadLettering — the failing sequence parks, the others go on", () => {
+  it("parks the failed event and the rest of its sequence, commits the other sequences, and moves the token past all of it", async () => {
     const events = [
-      makeEvent({ v: "a1", bucket: "A", fail: true }, 0n),
-      makeEvent({ v: "b1", bucket: "B" }, 1n),
-      makeEvent({ v: "a2", bucket: "A" }, 2n),
-      makeEvent({ v: "b2", bucket: "B" }, 3n),
+      makeEvent({ v: "a1", sequence: "A", fail: true }, 0n),
+      makeEvent({ v: "b1", sequence: "B" }, 1n),
+      makeEvent({ v: "a2", sequence: "A" }, 2n),
+      makeEvent({ v: "b2", sequence: "B" }, 3n),
     ]
     const log: string[] = []
     const dlq = inMemoryDeadLetterQueue()
     const processor = runEventProcessor({
-      processor: deadLettering(concurrent(batched(base("park-one-bucket", events), 10), byBucket), dlq, byBucket),
+      processor: deadLettering(concurrent(batched(base("park-one-sequence", events), 10), bySequence), dlq, bySequence),
       handlers: [{ definition: recordingHandler(log, new Set(["never"])) }],
       pollingIntervalMs: 10,
     })
@@ -191,17 +191,17 @@ describe("concurrent with deadLettering — the failing bucket parks, the others
     processor.stop()
 
     expect(log.filter((line) => line.startsWith("end"))).toEqual(["end b1", "end b2"])
-    const parked = await dlq.deadLetterSequence("park-one-bucket", "A")
+    const parked = await dlq.deadLetterSequence("park-one-sequence", "A")
     expect(parked.map((letter) => (letter.message.payload as Payload).v)).toEqual(["a1", "a2"])
-    expect(await dlq.contains("park-one-bucket", "B")).toBe(false)
+    expect(await dlq.contains("park-one-sequence", "B")).toBe(false)
   })
 
-  it("refuses two different bucket functions on one processor", () => {
+  it("refuses two different sequence functions on one processor", () => {
     const other = (e: EventMessage) => e.identifier
-    expect(() => deadLettering(concurrent(base("two-functions", []), byBucket), inMemoryDeadLetterQueue(), other)).toThrow(
+    expect(() => deadLettering(concurrent(base("two-functions", []), bySequence), inMemoryDeadLetterQueue(), other)).toThrow(
       /concurrent and deadLettering must be given the same one/,
     )
-    expect(() => concurrent(deadLettering(base("two-functions", []), inMemoryDeadLetterQueue(), other), byBucket)).toThrow(
+    expect(() => concurrent(deadLettering(base("two-functions", []), inMemoryDeadLetterQueue(), other), bySequence)).toThrow(
       /concurrent and deadLettering must be given the same one/,
     )
   })

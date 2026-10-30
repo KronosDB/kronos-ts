@@ -1078,33 +1078,33 @@ behind alike. A batch only ever takes the events that are ready, so at the head
 it is the one or two that just arrived. A failed batch is retried one event at a
 time until the token is past it, so a poison event ends up alone.
 
-### Buckets are a function
+### Sequences are a function
 
 ```ts
 type Sequence = (event: EventMessage) => string
 ```
 
-Total: every event has a bucket. Events sharing a bucket are processed in order.
+Total: every event has a sequence. Events sharing a sequence are processed in order.
 
 - **`(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier`** —
-  one bucket per account. Written out, so where an event without the tag goes is
-  visible: here, a bucket of its own.
-- **`(e) => e.identifier`** — every event in a bucket of its own, i.e. no
+  one sequence per account. Written out, so where an event without the tag goes is
+  visible: here, a sequence of its own.
+- **`(e) => e.identifier`** — every event in a sequence of its own, i.e. no
   ordering constraint at all. "No constraint" is not a missing answer; it is a
   function you can write down.
 
 Without `concurrent`, a processor hands over one event at a time in log order,
-whatever the buckets say. `concurrent(p, bucketOf)` runs a batch's buckets side
-by side, each bucket in log order. The batch is still one unit of work: without a
-queue, a failure fails it once every bucket has settled.
+whatever the sequences say. `concurrent(p, sequenceOf)` runs a batch's sequences
+side by side, each in log order. The batch is still one unit of work: without a
+queue, a failure fails it once every sequence has settled.
 
-### Dead-letter queues park buckets
+### Dead-letter queues park sequences
 
-A queue parks the failed event **and everything behind it in the same bucket** —
+A queue parks the failed event **and everything behind it in the same sequence** —
 that is what preserves per-entity order across a poison pill. So
-`deadLettering(p, queue, bucketOf)` takes the buckets as an argument; there is
+`deadLettering(p, queue, sequenceOf)` takes the sequences as an argument; there is
 no queue without them. With `concurrent`, both must be given the same function,
-or the second wrapper throws: a bucket that runs beside another cannot be parked
+or the second wrapper throws: a sequence that runs beside another cannot be parked
 behind it. The honest global-order answer for a projection is *no queue at
 all*: propagate and retry.
 

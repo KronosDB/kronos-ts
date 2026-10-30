@@ -15,7 +15,7 @@
  *   batch        + a replay batch of --replay-batch
  *   bulk         + the projection's writes buffered and flushed once per batch
  *   repository   + the same, through a repository: get, then save
- *   concurrent   + the repository's handler unchanged, the batch's buckets side by side
+ *   concurrent   + the repository's handler unchanged, the batch's sequences side by side
  *   upsert       + a repository handler that hands over a fold instead of reading the row
  */
 import { batched, concurrent, eventProcessor, jsonSerializer, kronos, localCommandBus, localQueryBus, unitOfWork, type EventMessage, type EventStore } from "@kronos-ts/core"
@@ -90,7 +90,7 @@ const configured = batched(
   ),
   stageConfig.batch,
 )
-// A bucket is what a handler touches: the account, or with a row per event the event.
+// A sequence is what a handler touches: the account, or with a row per event the event.
 const byRow = (e: EventMessage) => (uniqueKeys ? e.identifier : e.tags.find((t) => t.key === "account")?.value ?? e.identifier)
 const processor = stageConfig.concurrent ? concurrent(configured, byRow) : configured
 

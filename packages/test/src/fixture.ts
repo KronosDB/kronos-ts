@@ -75,7 +75,7 @@ export const FIXTURE_EPOCH = Date.UTC(2024, 0, 1)
  * reads from belong to the site.
  *
  * This is the slice idiom, typed: the slice closes out the semantics that are
- * its own — its durable name, its buckets, whether it parks poison pills — and
+ * its own — its durable name, its sequences, whether it parks poison pills — and
  * leaves the resources as its parameter list. A shorter parameter list is fine;
  * a projection that wants global order and no queue writes
  * `(eventStore, tokenStore, unitOfWork) => eventProcessor("name", eventStore, tokenStore, unitOfWork)`

@@ -83,7 +83,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   options: RunEventProcessorOptions<U, E>,
 ): RunningProcessor {
   const { processor, handlers } = options
-  const { name, eventStore, tokenStore, unitOfWork: newUoW, deadLetterQueue, sequence, concurrent: buckets } = processor
+  const { name, eventStore, tokenStore, unitOfWork: newUoW, deadLetterQueue, sequence, concurrent: sideBySide } = processor
   // `batched(p, n)` is n at the head and behind it; unwrapped, one at the head
   // and the larger batch only while behind. A retry is one either way.
   const batchSize = processor.batchSize ?? 1
@@ -317,7 +317,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       ...(entry.commandBus !== undefined ? { commandBus: entry.commandBus } : {}),
       ...(entry.queryBus !== undefined ? { queryBus: entry.queryBus } : {}),
     })
-    // Fixed per EVENT, not read off the batch's task: with buckets side by
+    // Fixed per EVENT, not read off the batch's task: with sequences side by
     // side the task's flag is shared by events on both sides of a replay's end.
     return { ...context, isReplay: () => replaying }
   }
@@ -343,14 +343,14 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     // for why it is read here rather than off `execute`'s parameter.
     const uow = newUoW()
     await uow.execute(async () => {
-      if (buckets === undefined) {
+      if (sideBySide === undefined) {
         for (let i = 0; i < batch.length; i++) {
           uow.replaying = replaying[i]!
           await deliverEvent(batch[i]!, uow, replaying[i]!)
         }
       } else {
         uow.replaying = replaying[0] ?? false
-        await deliverSideBySide(batch, replaying, uow, buckets)
+        await deliverSideBySide(batch, replaying, uow, sideBySide)
       }
 
       // Only the token. No claim is ever taken on this path (`claimToken` has
@@ -367,24 +367,24 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   }
 
   /**
-   * The batch's buckets, side by side: each bucket's events one after another
-   * in log order, the buckets all at once. Only events somebody handles are
-   * bucketed — the function is written for those.
+   * The batch's sequences, side by side: each sequence's events one after
+   * another in log order, the sequences all at once. Only events somebody
+   * handles are sequenced — the function is written for those.
    *
-   * Every bucket SETTLES before the batch does. A failure does not cut the
+   * Every sequence SETTLES before the batch does. A failure does not cut the
    * others short: they are still running against the batch's transaction, and
    * rolling it back under them would turn one failure into many. The error
    * that fails the batch is the one at the earliest position.
    */
-  async function deliverSideBySide(batch: SequencedEvent[], replaying: boolean[], uow: U, bucketOf: Sequence) {
+  async function deliverSideBySide(batch: SequencedEvent[], replaying: boolean[], uow: U, sequenceOf: Sequence) {
     const lanes = new Map<string, number[]>()
     for (let i = 0; i < batch.length; i++) {
       const event = batch[i]!.event
       if (!handlerMap.has(qualifiedNameToString(event.name))) continue
-      const bucket = bucketOf(event)
-      const lane = lanes.get(bucket)
+      const id = sequenceOf(event)
+      const lane = lanes.get(id)
       if (lane) lane.push(i)
-      else lanes.set(bucket, [i])
+      else lanes.set(id, [i])
     }
     const failures: Array<{ at: number; error: unknown }> = []
     await Promise.all(
