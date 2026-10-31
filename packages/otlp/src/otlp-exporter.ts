@@ -71,9 +71,9 @@ export type OtlpSpan = TraceContext & {
   /** End with status OK. */
   end(): void
   /**
-   * End with status ERROR. Records the error's TYPE (its constructor name) —
-   * not its message, which may carry user data — unless the exporter was
-   * built with `errors: "message"`.
+   * End with status ERROR. The status message is what the exporter's `errors`
+   * function says about the error — by default its TYPE (its constructor name),
+   * not its message, which may carry user data.
    */
   fail(error: unknown): void
 }
@@ -130,11 +130,13 @@ export type OtlpExporterOptions = {
   /** Log records kept between flushes; same policy. Default 10000. */
   readonly maxBufferedLogs?: number
   /**
-   * What `span.fail(error)` records. `"type"` (default) records only the
-   * error's constructor name; `"message"` also records `error.message`. The
-   * default is the privacy-safe one: an error message can carry anything.
+   * What a failed span's status message says about its error. Default: the
+   * error's TYPE, its constructor name. That is the privacy-safe default, since
+   * an error message can carry anything; pass
+   * `(e) => e instanceof Error ? e.message : String(e)` to record messages, or a
+   * function that redacts them. `error.type` is recorded either way.
    */
-  readonly errors?: "type" | "message"
+  readonly errors?: (error: unknown) => string
   /**
    * Full URLs per signal, for a backend that takes them at different places.
    * A signal not named here goes to `endpoint` + `/v1/<signal>`.
@@ -324,10 +326,6 @@ function errorType(error: unknown): string {
   return typeof error
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 /** A span that records nothing — after `close()`, or under an unsampled trace. It still has ids to propagate. */
 function inertSpan(trace: string): OtlpSpan {
   return {
@@ -376,7 +374,7 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
   const exportTimeoutMs = options.exportTimeoutMs ?? 10_000
   const maxBufferedSpans = options.maxBufferedSpans ?? 10_000
   const maxBufferedLogs = options.maxBufferedLogs ?? 10_000
-  const recordMessages = options.errors === "message"
+  const describeError = options.errors ?? errorType
   const metricsEnabled = options.metrics !== false
   const maxSeriesPerMetric = options.maxSeriesPerMetric ?? 1000
   const base = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint
@@ -618,7 +616,7 @@ export function otlpExporter(options: OtlpExporterOptions): OtlpExporter {
         end: () => finish({ code: StatusCode.OK }),
         fail: (error: unknown) =>
           finish(
-            { code: StatusCode.ERROR, message: recordMessages ? errorMessage(error) : errorType(error) },
+            { code: StatusCode.ERROR, message: describeError(error) },
             { "error.type": errorType(error) },
           ),
       }

@@ -78,7 +78,7 @@ describe("KronosDB scheduler (e2e)", () => {
     // to every claim here: KronosDB appends the fired event SERVER-SIDE, into
     // the log the connection already owns, which is exactly the property this
     // file exists to prove.
-    scheduler = kronosDbSchedulingEventStore(inMemoryEventStore(), connection, { serializer })
+    scheduler = kronosDbSchedulingEventStore(inMemoryEventStore(), { connection, serializer })
   }, 120_000)
 
   afterAll(async () => {

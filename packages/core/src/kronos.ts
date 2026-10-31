@@ -179,7 +179,8 @@ function requireEventStore<E extends EventStore>(
  * Objects and functions compare by IDENTITY, because that is what they mean
  * here: two token stores are the same cursor table only if they are the same
  * object, and two `sequence` functions lane identically only if they are the
- * same function. A batch size compares by value because a number IS its value.
+ * same function. A batch size and an interval compare by value because a number
+ * IS its value.
  */
 function processorConflicts(a: EventProcessor<any>, b: EventProcessor<any>): string[] {
   const conflicts: string[] = []
@@ -188,6 +189,7 @@ function processorConflicts(a: EventProcessor<any>, b: EventProcessor<any>): str
   if (a.unitOfWork !== b.unitOfWork) conflicts.push("unitOfWork")
   if (a.sequence !== b.sequence || a.deadLetterQueue !== b.deadLetterQueue) conflicts.push("deadLettering")
   if (a.batchSize !== b.batchSize) conflicts.push("batched")
+  if (a.pollingIntervalMs !== b.pollingIntervalMs) conflicts.push("polling")
   if (a.concurrent !== b.concurrent) conflicts.push("concurrent")
   if (a.segments?.count !== b.segments?.count || a.segments?.sequenceOf !== b.segments?.sequenceOf) conflicts.push("segmented")
   return conflicts

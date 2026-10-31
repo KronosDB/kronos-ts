@@ -73,9 +73,7 @@ describe("postgresPool", () => {
     await pool.start()
     try {
       const eventStore = postgresEventStore(pool)
-      const cachingStore = postgresSnapshottingEventStore(eventStore, pool, {
-        serializer: jsonSerializer(),
-      })
+      const cachingStore = postgresSnapshottingEventStore(eventStore, pool, jsonSerializer())
       const tokenStore = postgresTokenStore(pool)
       const deadLetters = postgresDeadLetterQueue(pool)
 

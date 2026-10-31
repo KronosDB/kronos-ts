@@ -6,6 +6,7 @@ import {
   correlation,
   interceptingCommandBus,
   localCommandBus,
+  localFirstCommandBus,
   type CommandBus,
 } from "@kronos-ts/core"
 import {
@@ -63,9 +64,10 @@ function busOver(
 }
 
 describe("RabbitMQ command bus", () => {
-  it("prefers local handlers by default", async () => {
+  it("hands a co-located handler its commands under localFirstCommandBus", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, localCommandBus(unitOfWork))
+    const local = localCommandBus(unitOfWork)
+    const bus = localFirstCommandBus(busOver(transport, local), local)
 
     bus.subscribe("test.DoThing", async () => "local-ok")
 
@@ -81,9 +83,9 @@ describe("RabbitMQ command bus", () => {
     expect(dispatched).toHaveLength(0)
   })
 
-  it("routes through transport when distributed routing is forced", async () => {
+  it("routes through the transport even when the handler is co-located", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork))
 
     bus.subscribe("test.DoThing", async () => "local-ok")
 
@@ -101,7 +103,7 @@ describe("RabbitMQ command bus", () => {
 
   it("carries command metadata across the transport envelope", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork))
 
     await bus.dispatch({
       identifier: "cmd-1",
@@ -123,7 +125,7 @@ describe("RabbitMQ command bus", () => {
 
   it("seeds correlation on a root message that carries none", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork))
 
     await bus.dispatch({
       identifier: "cmd-1",
@@ -143,7 +145,7 @@ describe("RabbitMQ command bus", () => {
 
   it("stamps the connection's timeout on the envelope when routing names none", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork))
 
     await bus.dispatch({
       identifier: "cmd-1",
@@ -159,7 +161,6 @@ describe("RabbitMQ command bus", () => {
   it("lets the routing layer override the transport's timeout default", async () => {
     const { transport, dispatched } = recordingTransport()
     const bus = busOver(transport, localCommandBus(unitOfWork), {
-      preferLocal: false,
       timeoutMs: 1_500,
     })
 
@@ -236,7 +237,7 @@ describe("RabbitMQ command bus", () => {
       },
       subscribe() {},
     }
-    const bus = busOver(transport, localCommandBus(unitOfWork), { preferLocal: false })
+    const bus = busOver(transport, localCommandBus(unitOfWork))
 
     await expect(
       bus.dispatch({

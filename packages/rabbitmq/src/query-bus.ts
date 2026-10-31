@@ -98,8 +98,6 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
 ): SubscriptionCapableQueryBus<U> {
   const transport = rabbit.queryTransport
   const registry = rabbit.subscriberRegistry
-  const localHandlers = new Set<string>()
-  const preferLocal = options.preferLocal ?? true
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   // UpdateHandlers for subs owned BY this instance, keyed by subId.
@@ -174,17 +172,11 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
   const bus: SubscriptionCapableQueryBus<U> = {
     async query(unstamped: QueryMessage): Promise<unknown> {
       const queryName = qualifiedNameToString(unstamped.name)
-      if (preferLocal && localHandlers.has(queryName)) {
-        // A co-located handler answers on a task of its own, exactly as a
-        // remote one would — `next` mints it.
-        return next.query(unstamped)
-      }
 
       // A transport is not a task: it has no unit of work, so it has no clock.
       // A message that reaches the wire with no instant yet gets one from system
       // time here — the envelope crosses a process boundary and must be fully
-      // formed. A locally-shortcut message is handed to `next` untouched
-      // instead, so the task that handles it supplies the instant.
+      // formed.
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
 
       const reply = await transport.dispatch({
@@ -198,7 +190,6 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
     },
 
     subscribe(queryName, handler): void {
-      localHandlers.add(queryName)
       next.subscribe(queryName, handler)
 
       // As on the command side: a handling failure is an `ok: false` reply on

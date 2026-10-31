@@ -115,7 +115,6 @@ function loopbackCommandBus(transport: LoopbackTransport, localSegment: CommandB
         }),
         commandTransport: transport,
       },
-      { preferLocal: false },
     ),
     correlation,
   )

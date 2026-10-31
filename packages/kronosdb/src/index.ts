@@ -35,7 +35,6 @@ export {
 } from "./native-transport.js"
 
 export {
-  type KronosDbSchedulingOptions,
   type KronosDbSchedulingControl,
   type PendingSchedule,
   ScheduleAlreadyExistsError,

@@ -8,11 +8,16 @@
  *
  * ```ts
  * const eventStore = postgresSchedulingEventStore(
- *   postgresSnapshottingEventStore(postgresEventStore(pg, { tagResolver }), pg, { serializer }),
+ *   postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer),
  *   pg,
- *   { unitOfWork: uow, tagResolver },
+ *   uow,
  * )
  * ```
+ *
+ * The worker is tuned by wrapping the store, with the same functions that tune
+ * an event processor: `polling(eventStore, 250)` (default 1000ms between ticks)
+ * and `batched(eventStore, 200)` (default 50 rows a tick). `startScheduling()`
+ * reads both off the value it is called on.
  *
  * THE LOG IT WRAPS IS THE LOG IT FIRES INTO. That used to be a config field —
  * `eventStore` — sitting beside an `eventScheduler` field on every entry, and
@@ -84,24 +89,6 @@ import { encodeTag } from "./criteria-sql.js"
 import type { PostgresResource } from "./postgres-pool.js"
 import { sharedPostgresTransaction } from "./postgres-transaction.js"
 
-export type PostgresSchedulingConfig = {
-  /**
-   * Where the worker's per-tick unit of work comes from — must be
-   * `postgresUnitOfWork(unitOfWork, pg)` (or equivalent) so the worker's unit of
-   * work sees the postgres tx.
-   */
-  readonly unitOfWork: () => UnitOfWork
-  /**
-   * Worker poll interval. Defaults to 1000ms — a compromise between
-   * fire-latency and DB chatter. Production users wanting tighter
-   * latency should lower this, ideally combined with LISTEN/NOTIFY
-   * wake-up (not yet wired here).
-   */
-  readonly pollIntervalMs?: number
-  /** Max rows the worker processes per tick. Defaults to 50. */
-  readonly batchSize?: number
-}
-
 /**
  * WHAT THE POSTGRES TIER ADDS BEYOND THE CAPABILITY: the worker's lifecycle.
  *
@@ -112,8 +99,18 @@ export type PostgresSchedulingConfig = {
  * has without a collision.
  */
 export type PostgresSchedulingControl = {
-  /** Begin background polling. Idempotent. */
-  startScheduling(): Promise<void>
+  /**
+   * Time between worker ticks (ms), set by `polling`. Default 1000 — a
+   * compromise between fire latency and database chatter.
+   */
+  readonly pollingIntervalMs?: number
+  /** Most rows the worker fires per tick, set by `batched`. Default 50. */
+  readonly batchSize?: number
+  /**
+   * Begin background polling, tuned by the `pollingIntervalMs` and `batchSize`
+   * of the value it is called on. Idempotent.
+   */
+  startScheduling(this: { readonly pollingIntervalMs?: number; readonly batchSize?: number }): Promise<void>
   /** Stop polling. Resolves once the in-flight tick (if any) has settled. */
   stopScheduling(): Promise<void>
 }
@@ -129,15 +126,21 @@ type ScheduleRow = {
   [key: string]: unknown
 }
 
+/**
+ * `unitOfWork` is where the worker's per-tick unit of work comes from. It must
+ * be `postgresUnitOfWork(unitOfWork, pg)` (or equivalent) so the worker's unit
+ * of work sees the postgres tx.
+ */
 export function postgresSchedulingEventStore<E extends EventStore>(
   next: E,
   pg: PostgresResource,
-  config: PostgresSchedulingConfig,
+  unitOfWork: () => UnitOfWork,
 ): E & ScheduleStoreCapability & PostgresSchedulingControl {
-  const { unitOfWork } = config
   const tables = pg.tables
-  const pollIntervalMs = config.pollIntervalMs ?? 1000
-  const batchSize = config.batchSize ?? 50
+  // Read off the store value when the worker starts, so `polling(store, ms)`
+  // and `batched(store, n)` — which return a copy — tune the copy they return.
+  let pollingIntervalMs = 1000
+  let batchSize = 50
 
   async function insertSchedule(
     tx: PostgresAdapterTransaction,
@@ -276,7 +279,7 @@ export function postgresSchedulingEventStore<E extends EventStore>(
         activeTick = undefined
         scheduleNextTick()
       })
-    }, pollIntervalMs)
+    }, pollingIntervalMs)
   }
 
   return {
@@ -310,8 +313,10 @@ export function postgresSchedulingEventStore<E extends EventStore>(
       return pg.transaction(IsolationLevel.READ_COMMITTED, (tx) => cancelOnTx(tx, token.id))
     },
 
-    async startScheduling(): Promise<void> {
+    async startScheduling(this: { readonly pollingIntervalMs?: number; readonly batchSize?: number }): Promise<void> {
       if (running) return
+      pollingIntervalMs = this.pollingIntervalMs ?? 1000
+      batchSize = this.batchSize ?? 50
       running = true
       scheduleNextTick()
     },

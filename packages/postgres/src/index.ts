@@ -6,8 +6,8 @@
 //   const uow        = postgresUnitOfWork(unitOfWork, pg)
 //   const eventStore = postgresSchedulingEventStore(
 //     postgresSnapshottingEventStore(
-//       postgresEventStore(pg, { tagResolver }), pg, { serializer }),
-//     pg, { unitOfWork: uow, tagResolver })
+//       postgresEventStore(pg), pg, serializer),
+//     pg, uow)
 //   const tokenStore  = postgresTokenStore(pg)
 //   const deadLetters = postgresDeadLetterQueue(pg)
 //
@@ -60,7 +60,6 @@ export {
 
 export {
   postgresSnapshottingEventStore,
-  type PostgresSnapshottingEventStoreConfig,
 } from "./postgres-snapshotting-event-store.js"
 
 export {
@@ -114,7 +113,6 @@ export {
 export {
   postgresSchedulingEventStore,
   type PostgresSchedulingControl,
-  type PostgresSchedulingConfig,
 } from "./postgres-scheduling-event-store.js"
 
 // Schema bootstrap + DDL builders — the migration surface. `postgresPool` runs

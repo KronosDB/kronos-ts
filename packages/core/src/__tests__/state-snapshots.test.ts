@@ -1,7 +1,7 @@
 /**
  * Snapshot configuration, now that it rides on the STATE VALUE.
  *
- * `state({ snapshot })` says how often; the entry's `eventStore` says where —
+ * `snapshot(state, key, when)` says how often; the entry's `eventStore` says where —
  * because a log that caches folds is a log that was WRAPPED.
  * Both halves have to be present for anything to be read or written, and
  * neither is registered anywhere — the state reaches `ctx.load` because the
@@ -16,7 +16,7 @@ import { describe, expect, it } from "bun:test"
 import { emptyMetadata, qn, command, event } from "../messaging/messages.js"
 import {
   afterEvents,
-  noSnapshotPolicy,
+  snapshot,
   snapshotIdentifier,
 } from "../event-sourcing/snapshot.js"
 import { inMemoryEventStore } from "../event-sourcing/in-memory.js"
@@ -58,12 +58,11 @@ const Bump = command({
 })
 
 /** NO `name`: the cache key is derived from this fold's own data. */
-const Counter = state({
+const Counter = snapshot(state({
   id: { counterId: z.string() },
   tags: ({ counterId }) => ({ counterId }),
   evolve: [() => ({ count: 0 }), [Bumped, (s) => ({ ...s, count: s.count + 1 })]],
-  snapshot: { key: "counter-v1", when: afterEvents(1) },
-})
+}), "counter-v1", afterEvents(1))
 
 /**
  * The same fold, the same log, NO policy — the other half of "per state".
@@ -104,12 +103,11 @@ const Tick = command({
 })
 
 /** Different event, different id key — its derived key cannot collide. */
-const Ticker = state({
+const Ticker = snapshot(state({
   id: { tickerId: z.string() },
   tags: ({ tickerId }) => ({ tickerId }),
   evolve: [() => ({ ticks: 0 }), [Ticked, (s) => ({ ...s, ticks: s.ticks + 1 })]],
-  snapshot: { key: "ticker-v1", when: noSnapshotPolicy() },
-})
+}), "ticker-v1", () => false)
 
 const tick = commandHandler(Tick, async ({ payload }, ctx) => {
   await ctx.load(Ticker, { tickerId: payload.tickerId })
@@ -296,12 +294,11 @@ describe("snapshot config on the state value", () => {
   })
 
   it("a snapshotting state declares WHERE and WHEN, and nothing else", () => {
-    const Anonymous = state({
+    const Anonymous = snapshot(state({
       id: { counterId: z.string() },
       tags: ({ counterId }) => ({ counterId }),
       evolve: [() => ({ count: 0 }), [Bumped, (s) => ({ ...s, count: s.count + 1 })]],
-      snapshot: { key: "anon-v1", when: afterEvents(1) },
-    })
+    }), "anon-v1", afterEvents(1))
     // `name` used to be mandatory here, because somebody had to invent the
     // cache key. Nobody does any more: it comes off the id keys, the tag keys
     // and the folded events.
@@ -309,12 +306,11 @@ describe("snapshot config on the state value", () => {
   })
 
   it("a state that folds NOTHING can still declare a key", () => {
-    const Empty = state({
+    const Empty = snapshot(state({
       id: { counterId: z.string() },
       tags: ({ counterId }) => ({ counterId }),
       evolve: [() => ({ count: 0 })],
-      snapshot: { key: "empty-v1", when: afterEvents(1) },
-    })
+    }), "empty-v1", afterEvents(1))
     expect(Empty.snapshot!.key).toBe("empty-v1")
   })
 })

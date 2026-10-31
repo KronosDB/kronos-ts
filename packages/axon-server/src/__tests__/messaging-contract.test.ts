@@ -42,7 +42,6 @@ function message(
 // without being decoded by the adapter. Real-server suites complement this.
 function harness(
   kind: "command" | "query",
-  shortcut = false,
   codec = serializer,
   limits?: MessagingLimits,
   timeoutMs?: number,
@@ -155,7 +154,6 @@ function harness(
     limits,
     timeoutMs,
     flowControl: { permits: 1, refillThreshold: 0 },
-    shortcutQueriesToLocalHandlers: shortcut,
   }
   const bus =
     kind === "command"
@@ -244,7 +242,7 @@ const backend = "axon"
       })
       it("rejects a nested child at saturation and releases the parent's capacity", async () => {
         const snapshots: any[] = []
-        h = harness(kind, false, serializer, {
+        h = harness(kind, serializer, {
           maxConcurrentHandlers: 1,
           observe: (s) => snapshots.push(s),
         })
@@ -259,7 +257,7 @@ const backend = "axon"
       })
       it("correlates a burst of out-of-order responses without exceeding handler capacity", async () => {
         const snapshots: any[] = []
-        h = harness(kind, false, serializer, {
+        h = harness(kind, serializer, {
           maxConcurrentHandlers: 8,
           observe: (s) => snapshots.push(s),
         })
@@ -306,7 +304,7 @@ const backend = "axon"
         expect(await first).toBe(7)
       })
       it("bounds pending callers independently of handler slots", async () => {
-        h = harness(kind, false, serializer, { maxPendingRequests: 1 })
+        h = harness(kind, serializer, { maxPendingRequests: 1 })
         const entered = deferred(),
           release = deferred()
         h.bus.subscribe("qa.Slow", async () => {
@@ -325,7 +323,7 @@ const backend = "axon"
         expect(h.latch.activeCount).toBe(0)
       })
       it("cancels the RPC at its deadline while retaining capacity for a running handler", async () => {
-        h = harness(kind, false, serializer, { maxConcurrentHandlers: 1 }, 20)
+        h = harness(kind, serializer, { maxConcurrentHandlers: 1 }, 20)
         const entered = deferred(),
           release = deferred()
         h.bus.subscribe("qa.Slow", async () => {
@@ -359,7 +357,7 @@ const backend = "axon"
         expect(h.streams).toBe(1)
       })
       it("preserves serializer type and revision on both request and response", async () => {
-        h = harness(kind, false, {
+        h = harness(kind, {
           ...serializer,
           serialize(value, type) {
             return serializer.serialize(value, type, "v1")
@@ -414,7 +412,7 @@ const backend = "axon"
         expect(grants()).toBe(before + 1)
       })
     it("expires orphaned early credits within the bounded table", async () => {
-        h = harness("query", false, serializer, { maxPendingRequests: 1 }, 15)
+        h = harness("query", serializer, { maxPendingRequests: 1 }, 15)
         h.bus.subscribe("qa.Credited", async () => 42)
         h.incoming.send({
           queryFlowControl: { queryReference: { requestId: "orphan" }, permits: 1n },
@@ -524,7 +522,7 @@ const backend = "axon"
         expect(h.latch.activeCount).toBe(0)
       })
     it("times out a stream whose end is lost after a response, without replaying", async () => {
-      h = harness("query", false, serializer, undefined, 20)
+      h = harness("query", serializer, undefined, 20)
       let calls = 0
       h.bus.subscribe("qa.Done", async () => {
         calls++
@@ -545,7 +543,7 @@ const backend = "axon"
       expect(h.completedQueries).toBe(1)
     })
     it("does not retain a subscription when request serialization fails", () => {
-      h = harness("query", false, {
+      h = harness("query", {
         ...serializer,
         serialize(value, type, revision) {
           if ((value as any)?.fail) throw new Error("serialization failed")
@@ -557,24 +555,6 @@ const backend = "axon"
       const sub = h.bus.subscriptionQuery({ ...m, payload: {} })
       sub.close()
       expect(h.subscriptionSignal?.aborted).toBe(true)
-    })
-    it("tracks a local shortcut until its handler settles", async () => {
-      h = harness("query", true)
-      const entered = deferred(),
-        release = deferred()
-      h.bus.subscribe("qa.Slow", async () => {
-        entered.resolve()
-        await release.promise
-        return 7
-      })
-      const result = h.dispatch("Slow")
-      await entered.promise
-      try {
-        expect(h.latch.activeCount).toBe(1)
-      } finally {
-        release.resolve()
-        await result
-      }
     })
     it("rejects an initial result if the subscription stream ends before one arrives", async () => {
       h = harness("query")

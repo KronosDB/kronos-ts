@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, type EventMessage } from "../../messaging/messages.js"
-import { deadLettering, eventProcessor } from "../processor.js"
+import { deadLettering, eventProcessor, polling } from "../processor.js"
 import { runEventProcessor } from "../running-processor.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { inMemoryTokenStore } from "../token-store.js"
@@ -85,13 +85,11 @@ describe("dead-letter reprocessing", () => {
     }
 
     const processor = runEventProcessor({
-      processor: deadLettering(
-        eventProcessor("reproc", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork),
-        dlq,
-        byId,
+      processor: polling(
+        deadLettering(eventProcessor("reproc", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork), dlq, byId),
+        10,
       ),
       handlers: [{ definition: handler }],
-      pollingIntervalMs: 10,
     })
 
     await processor.start()
@@ -128,13 +126,11 @@ describe("dead-letter reprocessing", () => {
     }
 
     const processor = runEventProcessor({
-      processor: deadLettering(
-        eventProcessor("reproc-cap", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork),
-        dlq,
-        byId,
+      processor: polling(
+        deadLettering(eventProcessor("reproc-cap", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork), dlq, byId),
+        10,
       ),
       handlers: [{ definition: handler }],
-      pollingIntervalMs: 10,
     })
 
     await processor.start()

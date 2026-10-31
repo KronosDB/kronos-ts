@@ -228,13 +228,22 @@ localQueryBus  <U extends UnitOfWork = UnitOfWork>(unitOfWork: () => U): QueryBu
 // EDGE DISPATCH IS WHERE THE INSTANT IS SETTLED: the verb builds the message with
 // no timestamp, the bus mints the unit of work and fills it from uow.now(). A
 // nested query takes the instant of the task it joins. A transport, having no
-// task, uses system time at the wire — and hands a locally-shortcut message on
-// untouched, so the task that handles it supplies the instant.
+// task, uses system time at the wire. A message `localFirst…Bus` hands to the
+// local bus goes untouched, so the task that handles it supplies the instant.
 
 // ── interception: one seam, one function ───────────────────────────────────
 type Intercept<M extends Message = Message> = (message: M) => M
 interceptingCommandBus<U>(bus: CommandBus<U>, intercept: Intercept<CommandMessage>): CommandBus<U>
 interceptingQueryBus  <U>(bus: QueryBus<U>,   intercept: Intercept<QueryMessage>):   QueryBus<U>
+
+// ── local first: a co-located handler answers without the transport ────────
+localFirstCommandBus(next: B, local: CommandBus): B   // a command subscribed through it goes to `local`
+localFirstQueryBus  (next: B, local: QueryBus):   B   // likewise for `query`; subscription queries go to `next`
+//   const local = localQueryBus(unitOfWork)
+//   interceptingQueryBus(localFirstQueryBus(kronosDbQueryBus(local, kdb), local), correlation)
+// `local` is the bus the transport subscribes handlers on. Interception goes
+// outside, so both branches are intercepted. Work handed to `local` is local
+// work: a transport's shutdown, request limits and timeouts do not cover it.
 
 // ── upcasting: the SAME seam, one boundary over ────────────────────────────
 // Interception at the LOG boundary. Old events are REINTERPRETED on the way
@@ -270,14 +279,16 @@ type SnapshotStoreCapability = {          // what a wrapper ADDS; the read is al
 }                                    // in `source()`, via `condition.snapshot`
 type SnapshotCapableEventStore = EventStore & SnapshotStoreCapability
 type Snapshot = { state: unknown; position: bigint }        // TWO fields. No version.
-snapshotIdentifier(id: unknown): string                 // the id flattening state() uses
+snapshotIdentifier(id: unknown): string                 // the id flattening a cached state's key uses
 matchesInitialStructure(specimen, candidate): boolean   // the safety net
-afterEvents(n) · whenSourcingTimeExceeds(ms) · noSnapshotPolicy()   // the POLICY, .or()-composable
+snapshot(state, key, when): State<Id, S, true>          // a cached state; the state passed in is untouched
+type SnapshotPolicy = (result: EvolutionResult) => boolean
+afterEvents(n) · whenSourcingTimeExceeds(ms)            // the POLICY is a predicate; combine with ||
 //
 // FOUR WRAPPERS, ONE PER FAMILY, and each is ADDITIVE — `E` in, `E & SnapshotStoreCapability`
 // out, so nothing the inner store carried is thrown away:
 //   inMemorySnapshottingEventStore(next)                                 // core
-//   postgresSnapshottingEventStore(next, pg, { serializer })             // ONE round trip
+//   postgresSnapshottingEventStore(next, pg, serializer)             // ONE round trip
 //   kronosDbSnapshottingEventStore(next, kdb, context)                   // ONE fused call — see its section
 //   axonServerSnapshottingEventStore(next, conn, context)                // two, client-side
 // Postgres fuses the lookup into its own query because it holds the CONNECTION;
@@ -287,10 +298,10 @@ afterEvents(n) · whenSourcingTimeExceeds(ms) · noSnapshotPolicy()   // the POL
 //
 // NO CONTEXT CAPABILITY — and that is the headline. Snapshotting is a STORE
 // tier: a handler has nothing new to call, so nothing on any context names it.
-// `state({ snapshot })` says a state wants caching, the wrapped log serves it
+// `snapshot(state, key, when)` says a state wants caching, the wrapped log serves it
 // through `ctx.load`, and a handler's signature is the bare context:
 //
-//   const Course = state({ …, snapshot: { key: "course-v1", when: afterEvents(100) } })
+//   const Course = snapshot(state({ … }), "course-v1", afterEvents(100))
 //   commandHandler(Open, async (m, ctx: CommandHandlerContext) => {
 //     await ctx.load(Course, id)     // the wired log decides; the handler names nothing
 //   })
@@ -310,7 +321,7 @@ afterEvents(n) · whenSourcingTimeExceeds(ms) · noSnapshotPolicy()   // the POL
 // tier that is fully served by wiring the store underneath is a store tier and
 // the handler never hears of it. `ctx.source` has ONE signature everywhere.
 //
-// THE RAW LAYER IS THE CAPABILITY; state() IS SUGAR OVER IT. Two primitives, off
+// THE RAW LAYER IS THE CAPABILITY; snapshot() IS SUGAR OVER IT. Two primitives, off
 // ONE object, and everything else here is those two with the key composition and
 // the policy written for you:
 //
@@ -383,7 +394,7 @@ afterEvents(n) · whenSourcingTimeExceeds(ms) · noSnapshotPolicy()   // the POL
 // the cache: all three fall back to full sourcing, silently.
 //
 // Composed with upcasting, the documented order is UPCASTING OUTERMOST:
-//   upcastingEventStore(postgresSnapshottingEventStore(store, pg, { serializer }), upcast)
+//   upcastingEventStore(postgresSnapshottingEventStore(store, pg, serializer), upcast)
 // The snapshot layer decides WHICH events are read; the upcast layer decides
 // what each of them means. Both wrappers are capability-preserving, so BOTH
 // orders keep BOTH capabilities in the type — the order is a semantic
@@ -408,8 +419,8 @@ type CancelResult   = { kind: "cancelled" | "already-appended" | "not-found" }
 // THREE WRAPPERS, ONE PER FAMILY THAT HAS ONE, each ADDITIVE — `E` in,
 // `E & ScheduleStoreCapability` out:
 //   inMemorySchedulingEventStore(next, { clock? }?)                        // core; Map + setTimeout
-//   postgresSchedulingEventStore(next, pg, { unitOfWork, tagResolver, … }) // table + polling worker
-//   kronosDbSchedulingEventStore(next, kdb, { serializer })                // SERVER-SIDE; no timer here
+//   postgresSchedulingEventStore(next, pg, unitOfWork)   // table + polling worker; tuned by polling(s, ms) and batched(s, n)
+//   kronosDbSchedulingEventStore(next, kdb)                                // SERVER-SIDE; no timer here
 // Each also adds what only IT can promise, under its own name so a composed
 // store carries them without collision: `stopScheduling()` on the in-memory
 // tier, `startScheduling()`/`stopScheduling()` on postgres, `listSchedules()` on
@@ -565,7 +576,7 @@ ctx.source(query: EventQuery): Promise<ReadonlyArray<EventMessage>>
   // unchanged: fusing narrows which EVENTS come back, not what was READ. Served through the
   // same `SourcingCondition.snapshot` path a wrapped store serves — see snapshotting above.
   // THIS PLUS `eventStore.storeSnapshot(key, …)` IS THE WHOLE CAPABILITY, and BOTH halves
-  // come off the ONE object the entry already carries; `state({ snapshot })` is those four
+  // come off the ONE object the entry already carries; `snapshot(state, key, when)` is those four
   // lines with the key composition and the policy written for you.
 
 // EVERY BIRTH VERB TAKES A TRAILING `metadata?`, mirroring the edge verbs:
@@ -612,6 +623,9 @@ type EventProcessor<U> · RunningProcessor · EventProcessorStatus · SegmentSta
 // WHAT A PROCESSOR DOES WITH ITS BATCH, said as functions over the value. Each
 // returns a new value; the host composes them with whatever `pipe` it uses.
 batched(p, size: number): EventProcessor<U>                     // up to `size` READY events a batch, head and behind alike
+polling(p, ms: number): EventProcessor<U>                       // look again every `ms` when idle (default 500); base of the retry delay
+//   `batched` and `polling` take anything with the field they set, so they tune a
+//   store's polling worker the same way: polling(batched(postgresSchedulingEventStore(…), 200), 250)
 concurrent(p, sequenceOf: Sequence): EventProcessor<U>         // the batch's sequences side by side; one sequence in log order
 deadLettering(p, queue: SequencedDeadLetterQueue<U>, sequenceOf: Sequence): EventProcessor<U>   // park per sequence
 segmented(p, count: number, sequenceOf: Sequence): EventProcessor<U>   // start as `count` segments (a power of two)
@@ -629,7 +643,7 @@ segmented(p, count: number, sequenceOf: Sequence): EventProcessor<U>   // start 
 // A PROCESSOR IS SEGMENTS, each with its own token row and CLAIM. Unwrapped, one
 // segment: one node handles it, the others wait. `segmented` starts it as `count`,
 // an event's segment decided by hashing its sequence id. A node claims every free
-// segment on start and every claim interval (5 s) after, renews what it holds,
+// segment on start and every half claim timeout (5 s) after, renews what it holds,
 // releases on stop; every token write is FENCED on the claim, so a node that lost
 // one fails its batch — handlers' writes included — instead of writing over the
 // new holder. The segments a node holds share ONE read of the log. Balancing and
@@ -681,7 +695,7 @@ type App = { processors: ReadonlyMap<string, RunningProcessor>; stop(): Promise<
 
 // ── decision models ────────────────────────────────────────────────────────
 state({ id, tags: (id) => TagRecord | readonly [TagRecord, ...],
-        evolve: [(id) => S, [EventDescriptor, fold], ...], snapshot?, lifecycle? })
+        evolve: [(id) => S, [EventDescriptor, fold], ...] })
   // FIELD ORDER IS READING ORDER: tags are a function of id; evolve carries its own initial state
   // ELEMENT ZERO IS THE INITIAL STATE — the evolver of nothing; it may read the identity it
   // is folded for. The fold is `cases.reduce(...)` starting from evolve[0](id), so the
@@ -693,16 +707,17 @@ state({ id, tags: (id) => TagRecord | readonly [TagRecord, ...],
   // Destructured once (`const [initial, ...cases] = evolve`); no Array.isArray anywhere.
   // It is also the SPECIMEN the snapshot fitness check is made against — see snapshotting.
   // DCB query DERIVED per event type from tags × evolve.slice(1)
-  // `snapshot` is `{ key, when }` — WHERE entries are filed and WHEN one is written. `key`
-  // is REQUIRED and EXPLICIT: a string YOU wrote, nothing derived and nothing hashed.
-  // state() files entries under `${key}:${snapshotIdentifier(id)}`, so one declared key
-  // serves every id without collision. INVALIDATION IS ONE SENTENCE: changed the fold's
-  // meaning? change the key — greppable, reviewable, and never automatic. There is NO
-  // `name` field on `state()`. The config rides on the state; the CAPABILITY is a SITE fact
-  // riding on the entry's `eventStore`, and writing the config makes wiring it a COMPILE-TIME
-  // obligation — `state()` returns `State<Id, S, true>`, and `ctx.load` refuses that against
-  // a log which cannot serve it. Diagnostics name a state by its process `identity` plus the
-  // events it folds.
+  // There is NO `name` field on `state()`. Diagnostics name a state by its process
+  // `identity` plus the events it folds.
+snapshot(state, key, when)   // the state, cached: returns State<Id, S, true>; `state` is untouched
+  // `key` is WHERE entries are filed and `when` WHEN one is written. `key` is REQUIRED and
+  // EXPLICIT: a string YOU wrote, nothing derived and nothing hashed. Entries are filed under
+  // `${key}:${snapshotIdentifier(id)}`, so one key serves every id without collision.
+  // INVALIDATION IS ONE SENTENCE: changed the fold's meaning? change the key — greppable,
+  // reviewable, and never automatic. The config rides on the state VALUE; the CAPABILITY is a
+  // SITE fact riding on the entry's `eventStore`, and a cached state loaded through a log that
+  // cannot serve it throws on the first load. Takes a state that is not cached yet, so a second
+  // key on top of the first does not compile.
 
 // ── store seams + in-memory implementations ────────────────────────────────
 type EventStore                       // COMPLETE for event sourcing; says nothing about caches or deadlines
@@ -765,8 +780,9 @@ its users — the same rule that moved the transaction glue out.
 ## @kronos-ts/rabbitmq — dumb pipe: client-side routing, configurable
 ```ts
 rabbitMqConnection(url, { serviceName, instanceId, topology?, retry? }): Promise<RabbitMqConnection>  // start()/close()
-rabbitMqCommandBus(next: CommandBus, rabbit, { preferLocal?, timeoutMs? }?): CommandBus
-rabbitMqQueryBus(next: QueryBus, rabbit, { preferLocal?, timeoutMs? }?): SubscriptionCapableQueryBus   // live updates broker-mediated
+rabbitMqCommandBus(next: CommandBus, rabbit, { timeoutMs? }?): CommandBus      // every dispatch over the broker
+rabbitMqQueryBus(next: QueryBus, rabbit, { timeoutMs? }?): SubscriptionCapableQueryBus   // live updates broker-mediated
+// co-located handlers without the broker: localFirstCommandBus / localFirstQueryBus
 ```
 
 ## @kronos-ts/kronosdb — smart hub: server-side routing
@@ -774,7 +790,7 @@ rabbitMqQueryBus(next: QueryBus, rabbit, { preferLocal?, timeoutMs? }?): Subscri
 kronosDbConnection({ host, port, componentName }): Promise<KronosDbConnection>   // ONE native socket for everything; start()/close()
 kronosDbEventStore(kdb, context: string, streaming?: SubscriptionOptions): EventStore   // open(): reads ahead as asked (≥ 500 credits); with a query, Progress every second
 kronosDbSnapshottingEventStore<E>(next: E, kdb, context): E & SnapshotStoreCapability
-kronosDbSchedulingEventStore<E>(next: E, kdb, { serializer }): E & ScheduleStoreCapability & { listSchedules(); scheduleIdempotent(event, at, token) }
+kronosDbSchedulingEventStore<E>(next: E, kdb, context?): E & ScheduleStoreCapability & { listSchedules(); scheduleIdempotent(event, at, token) }
 kronosDbCommandBus(next: CommandBus, kdb, bus?: string): CommandBus   // inbound runs through YOUR local bus
 kronosDbQueryBus(next: QueryBus, kdb, bus?: string): QueryBus
 kronosDbControlPlane(kdb, processors): ControlPlane
@@ -846,14 +862,14 @@ it needs, not everything a backend offers.
 ```ts
 postgresPool(connectionString | adapter): PostgresResource   // start()/close()
 postgresEventStore(pg): EventStore                    // no serializer, no tag seam; knows no snapshots
-postgresSnapshottingEventStore<E>(next: E, pg, { serializer }): E & SnapshotStoreCapability
+postgresSnapshottingEventStore<E>(next: E, pg, serializer): E & SnapshotStoreCapability
 postgresUnitOfWork<U>(next: () => U, pg): () => U     // THING-FIRST; lazy tx — its honest default
-postgresTokenStore(pg): TokenStore                    // joins the SAME tx as your raw-sql writes
+postgresTokenStore(pg, { claimTimeoutMs? }?): TokenStore   // joins the SAME tx as your raw-sql writes; processors renew every half claimTimeoutMs
 postgresDeadLetterQueue(pg): SequencedDeadLetterQueue
 postgresTransaction(uow) · activePostgresTransaction(uow)
 postgresHandler(handler, pg): handler                 // wraps the FUNCTION; ctx gains sql(): Sql | Tx
 type PostgresCapability = { sql(): Sql | Tx }             // a slice writes `ctx: CommandHandlerContext & PostgresCapability`
-postgresSchedulingEventStore<E>(next: E, pg, { unitOfWork, pollIntervalMs?, batchSize? }):
+postgresSchedulingEventStore<E>(next: E, pg, unitOfWork):   // tuned by polling(s, ms) and batched(s, n)
   E & ScheduleStoreCapability & { startScheduling(); stopScheduling() }
 ```
 POSTGRES FUSES THE READ IN ONE ROUND TRIP, and "fused" is not a feature — it is
@@ -934,7 +950,9 @@ naming the entry, the chain and the fix.
 
 ## @kronos-ts/otlp — the protocol, not the ecosystem
 ```ts
-otlpExporter({ endpoint, serviceName, flushIntervalMs? }): OtlpExporter   // resource: batches, close()
+otlpExporter({ endpoint, serviceName, flushIntervalMs?, errors? }): OtlpExporter   // resource: batches, close()
+  // errors?: (error: unknown) => string — what a failed span's status says. ABSENT = the
+  // error's type, never its message; a function can record messages or redact them.
 otlpCommandBus(bus, exporter): CommandBus       // span per dispatch; W3C traceparent into metadata
 otlpQueryBus(bus, exporter): QueryBus
 otlpHandler(handler, exporter, label?): handler        // parents (command/query msgs) / links (event msgs)
@@ -1114,13 +1132,13 @@ generic `snapshottingEventStore` decorator, the `snapshotStore` field on every
 entry, and the whole `snapshotting/` folder — snapshotting is a CAPABILITY TIER
 on the event store now, added by four per-family wrappers, and a snapshot is
 `{ state, position }`. `state({ name })` is gone entirely too — a state that
-caches its fold declares `snapshot: { key, when }` instead. A cache has a current
+caches its fold is wrapped, `snapshot(state, key, when)`, instead. A cache has a current
 entry, so replacing it IS how you invalidate it and there is nothing to delete; a
 cache entry carries no cargo, so there is no metadata to carry; and nobody read
 the timestamp back, so it is a column an operator sorts by rather than a field
 the framework holds. The `unknown` state id is gone with them, and so is the
 `{ name, identifier }` PAIR — the seam takes ONE opaque key string, filed as one
-column, composed by whoever asked for the read. `state()` composes
+column, composed by whoever asked for the read. The repository composes
 `${key}:${snapshotIdentifier(id)}` at the one site that knows the id's shape,
 because six implementations inventing six encodings is six ways for an id to miss
 its own entry ·
@@ -1148,7 +1166,28 @@ list, replaced by function composition), `IntermediateEventRepresentation`,
 `singleEventUpcaster` and `upcastingSerializer` — upcasting moved from the WIRE
 to the LOG, where an upcaster works in the domain form and an in-memory store
 gets it too ·
-zod as a DEPENDENCY of `@kronos-ts/core` and `@kronos-ts/test`.
+zod as a DEPENDENCY of `@kronos-ts/core` and `@kronos-ts/test` ·
+`state({ snapshot })` as a FIELD — a state is cached by wrapping it,
+`snapshot(state, key, when)`, so `state()` only describes the fold ·
+`SnapshotPolicy` as an object (`shouldSnapshot` + `.or`) and `noSnapshotPolicy()` —
+a policy is a predicate, two combine with `||`, and a state that never snapshots
+is simply not wrapped ·
+`state({ lifecycle })` / `StateLifecycle` (`onCreate`, `onStateChange`, `onDelete`,
+`isDeleted`) — hooks that fired while a load folded, so on every load rather than
+when the events happened, and `onCreate` stopped firing once a snapshot existed.
+Reacting to what happened is an event handler.
+`preferLocal` (rabbitmq) and `shortcutQueriesToLocalHandlers` (Axon Server,
+KronosDB) — a switch on each transport for the same routing decision, now
+`localFirstCommandBus` / `localFirstQueryBus` over any of them ·
+`runEventProcessor({ pollingIntervalMs })` — `kronos()` never passed it; the
+interval rides on the processor value as `polling(p, ms)` ·
+`postgresSchedulingEventStore`'s options object — the worker is tuned by
+`batched(store, n)` and `polling(store, ms)` ·
+`runEventProcessor({ claimIntervalMs })` — the claim pace is half the token
+store's `claimTimeoutMs`, so the two cannot be set apart ·
+`PostgresSnapshottingEventStoreConfig` — the serializer is the third argument ·
+`KronosDbSchedulingOptions` — scheduled payloads use the connection's serializer ·
+`otlpExporter({ errors: "type" | "message" })` — a function now, `errors: (error) => string`.
 
 ## Renamed to reach this surface
 `message/` → `messaging/`, and the five declaration files inside it
