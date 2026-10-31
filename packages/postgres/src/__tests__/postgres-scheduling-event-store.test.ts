@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from "bun:test"
-import { qn, type Metadata } from "@kronos-ts/core"
+import { batched, polling, qn, type Metadata } from "@kronos-ts/core"
 import type { EventMessage } from "@kronos-ts/core"
 import {
   unitOfWork,
@@ -199,11 +199,7 @@ function wire(opts: { adapter: PostgresAdapter; store: import("@kronos-ts/core")
   const uowFactory = postgresUnitOfWork(unitOfWork, pool)
   // THE LOG IT WRAPS IS THE LOG IT FIRES INTO — one argument, not a config
   // field pointed at a second object.
-  const scheduler = postgresSchedulingEventStore(opts.store, pool, {
-    unitOfWork: uowFactory,
-    pollIntervalMs: 5,
-    batchSize: 10,
-  })
+  const scheduler = polling(batched(postgresSchedulingEventStore(opts.store, pool, uowFactory), 10), 5)
   return { scheduler, uowFactory }
 }
 
@@ -324,7 +320,7 @@ describe("postgresSchedulingEventStore", () => {
       })
 
       await scheduler.startScheduling()
-      // Wait for at least one tick (pollIntervalMs=5)
+      // Wait for at least one tick (polling every 5ms)
       await new Promise((r) => setTimeout(r, 30))
       await scheduler.stopScheduling()
 

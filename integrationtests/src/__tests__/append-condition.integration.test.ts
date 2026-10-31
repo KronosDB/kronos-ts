@@ -56,7 +56,7 @@ describe("append condition — postgres", () => {
 
   describe("snapshotting", () => {
     appendConditionScenarios({
-      eventStore: () => postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer: jsonSerializer() }),
+      eventStore: () => postgresSnapshottingEventStore(postgresEventStore(pg), pg, jsonSerializer()),
       unitOfWork: () => postgresUnitOfWork(unitOfWork, pg),
       exact: true,
     })

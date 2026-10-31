@@ -55,7 +55,7 @@ async function scheduledAgainst(answer: (received: ReceivedFrame) => Frame) {
     },
   })
   connection = connectToKronosDb({ host: "127.0.0.1", port: server.port, componentName: "scheduling-test" })
-  const scheduler = kronosDbSchedulingEventStore(inMemoryEventStore(), connection, { serializer })
+  const scheduler = kronosDbSchedulingEventStore(inMemoryEventStore(), { connection, serializer })
   const sent = () => server!.connections[0]!.received
   return { scheduler, sent }
 }

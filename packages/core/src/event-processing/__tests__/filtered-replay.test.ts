@@ -3,7 +3,7 @@ import { emptyMetadata, qn, qualifiedNameToString, type QualifiedName } from "..
 import { compileQuery, type EventQuery } from "../../event-sourcing/dcb-query.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
-import { batched, deadLettering, eventProcessor, type EventProcessor } from "../processor.js"
+import { batched, deadLettering, eventProcessor, polling, type EventProcessor } from "../processor.js"
 import { runEventProcessor } from "../running-processor.js"
 import { inMemoryTokenStore, type TokenStore } from "../token-store.js"
 import type { SequencedEvent, StreamingCondition } from "../source.js"
@@ -135,9 +135,8 @@ function run(config: {
   if (config.batch !== undefined) processor = batched(processor, config.batch)
   if (config.withQueue) processor = deadLettering(processor, inMemoryDeadLetterQueue(), (e) => e.tags.find((t) => t.key === "order")?.value ?? qualifiedNameToString(e.name))
   return runEventProcessor({
-    processor,
+    processor: polling(processor, 5),
     handlers: config.handlers.map((definition) => ({ definition })),
-    pollingIntervalMs: 5,
   })
 }
 

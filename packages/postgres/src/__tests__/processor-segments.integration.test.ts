@@ -139,9 +139,11 @@ describe("segments on postgres", () => {
   }, 60_000)
 
   it("roll back a batch whose node lost the claim — rows and token together", async () => {
-    // Claims lapse after 300 ms; a node renews every 5 s, so another can take over between.
+    // Claims lapse after 300 ms. Node a stands in for a node that stalled: it is
+    // told the timeout is 10 s, so it renews only every 5 s and b can take over
+    // in between. The store still expires claims by its own 300 ms.
     const tokens = postgresTokenStore(pool, { claimTimeoutMs: 300 })
-    const a = boot("a", tokens, 1)
+    const a = boot("a", { ...tokens, claimTimeoutMs: 10_000 }, 1)
     await until(() => a.processor.segments().length === 1, "a to claim the segment")
     await append(1, 0, 1)
     await until(async () => (await rows()).length === 1, "a's first event")

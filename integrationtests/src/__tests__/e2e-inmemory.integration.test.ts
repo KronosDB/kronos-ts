@@ -31,6 +31,7 @@ import {
   inMemorySnapshottingEventStore,
   snapshotIdentifier,
   afterEvents,
+  snapshot,
 } from "@kronos-ts/core"
 import {
   kronos,
@@ -240,7 +241,7 @@ type CourseState = {
   closed: boolean
 }
 
-const Course = state({
+const Course = snapshot(state({
   id: { courseId: z.string() },
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
@@ -261,8 +262,7 @@ const Course = state({
   // Where a snapshot LANDS is a SITE fact: an entry whose `eventStore` was
   // WRAPPED can serve one, and the compiler refuses to place this state's load
   // on an entry whose log was not.
-  snapshot: { key: "course-v1", when: afterEvents(3) },
-})
+}), "course-v1", afterEvents(3))
 
 // -- Command handlers --
 

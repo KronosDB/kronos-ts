@@ -231,14 +231,15 @@ order it applies, outermost last:
 
 ```ts
 const local = localCommandBus(unitOfWork)                    // in-process handler map
-const wired = rabbitMqCommandBus(local, rabbit)               // fork: local, else the wire
-const traced = otlpCommandBus(wired, exporter)                // span per dispatch
+const wired = rabbitMqCommandBus(local, rabbit)               // over the broker; inbound runs on `local`
+const routed = localFirstCommandBus(wired, local)             // a handler subscribed here answers in-process
+const traced = otlpCommandBus(routed, exporter)               // span per dispatch
 const commandBus = interceptingCommandBus(traced, correlation)    // correlation over BOTH branches
 ```
 
-`interceptingCommandBus` goes **outside** the transport, always. Inside, only the
-local branch reaches it and everything routed over the wire leaves with no
-correlation.
+`interceptingCommandBus` goes **outside** the transport and `localFirstCommandBus`,
+always. Inside, only the local branch reaches it and everything routed over the
+wire leaves with no correlation.
 
 Swapping infrastructure is swapping resources in this file:
 

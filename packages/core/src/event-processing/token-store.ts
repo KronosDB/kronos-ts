@@ -104,6 +104,14 @@ export type TokenStore<U extends UnitOfWork = UnitOfWork> = {
    * Delete the token for a segment (e.g., after merging).
    */
   deleteToken: (processorName: string, segment: number, uow?: U) => Promise<void>
+
+  /**
+   * How long a claim lasts without being renewed, in ms. A processor renews
+   * the claims it holds, and looks for free segments, every HALF of this, so a
+   * live node never lets a claim lapse and the pace cannot be set apart from
+   * the timeout it must beat. Absent: 10000.
+   */
+  readonly claimTimeoutMs?: number
 }
 
 /**
@@ -145,6 +153,7 @@ export function inMemoryTokenStore(claimTimeoutMs: number = 10000): TokenStore {
   }
 
   return {
+    claimTimeoutMs,
     async store(processorName, segment, token, _uow, owner) {
       const k = key(processorName, segment)
       const entry = entries.get(k)

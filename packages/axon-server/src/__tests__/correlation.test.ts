@@ -27,6 +27,7 @@ import {
   interceptingQueryBus,
   correlation,
   localCommandBus,
+  localFirstQueryBus,
   localQueryBus,
   unitOfWork,
   type CommandBus,
@@ -277,16 +278,15 @@ describe("Axon Server query bus — correlation", () => {
     expect(onTheWire.causationId).toBe("cause-1")
   })
 
-  it("stamps correlation on the LOCAL-SHORTCUT branch too", async () => {
-    // shortcutQueriesToLocalHandlers routes to a co-located handler instead of
-    // the server. Because interception is outside the routing decision, both
-    // branches see identical metadata — the AF property this is modelled on.
-    // The handler is reached THROUGH the local bus, which is where it was
-    // subscribed; the shortcut only decides whether the server is consulted.
+  it("stamps correlation on the LOCAL branch too", async () => {
+    // localFirstQueryBus routes to a co-located handler instead of the server.
+    // Because interception is outside the routing decision, both branches see
+    // identical metadata — the AF property this is modelled on. The handler is
+    // reached THROUGH the local bus, which is where it was subscribed; the
+    // wrapper only decides whether the server is consulted.
     const { source, queryRequests } = capturingConnection()
-    const bus = axonServerQueryBus(correlatedQueryBus(), source, {
-      shortcutQueriesToLocalHandlers: true,
-    })
+    const local = localQueryBus(unitOfWork)
+    const bus = interceptingQueryBus(localFirstQueryBus(axonServerQueryBus(local, source), local), correlation)
 
     let seen: Metadata | undefined
     bus.subscribe("correlation.FindThing", async (message: QueryMessage) => {

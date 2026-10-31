@@ -19,8 +19,10 @@
  * const eventStore = kronosDbSchedulingEventStore(
  *   kronosDbSnapshottingEventStore(kronosDbEventStore(kdb, context), kdb, context),
  *   kdb,
- *   { serializer },
  * )
+ *
+ * A scheduled event's payload is encoded with the connection's serializer —
+ * the same one the log and the snapshot tier use.
  * ```
  *
  * ── THE ONE PLACE IT DIFFERS FROM THE OTHER TIERS ──────────────────────────
@@ -33,10 +35,7 @@
  * about it — but it is now visible on the same object as the log, so a reader
  * comparing the three tiers can see which one is the odd family out.
  */
-import {
-  qualifiedNameToString,
-  type Serializer,
-} from "@kronos-ts/core"
+import { qualifiedNameToString } from "@kronos-ts/core"
 import type {
   CancelResult,
   EventStore,
@@ -45,7 +44,7 @@ import type {
   UnitOfWork,
 } from "@kronos-ts/core"
 import type { EventMessage } from "@kronos-ts/core"
-import type { KronosDbConnection } from "./connection.js"
+import type { KronosDbConnectionHandle } from "./kronosdb.js"
 import { KronosDbRequestError } from "./errors.js"
 import { writeRecord } from "./native-events.js"
 import { contextRequest, unexpected } from "./native-requests.js"
@@ -67,11 +66,6 @@ export type PendingSchedule = {
   dueAt: number
   /** Type name of the event that will be appended. */
   eventName: string
-}
-
-export type KronosDbSchedulingOptions = {
-  /** How a scheduled event's payload is encoded on the way to the server. */
-  readonly serializer: Serializer
 }
 
 /** The token is already in use — usually a retried `schedule()` call. */
@@ -122,12 +116,11 @@ export type KronosDbSchedulingControl = {
  */
 export function kronosDbSchedulingEventStore<E extends EventStore>(
   next: E,
-  connection: KronosDbConnection,
-  options: KronosDbSchedulingOptions,
-  context: string = connection.config.context,
+  kdb: Pick<KronosDbConnectionHandle, "connection" | "serializer">,
+  context: string = kdb.connection.config.context,
 ): E & ScheduleStoreCapability & KronosDbSchedulingControl {
-  const { serializer } = options
-  const link = connection.native
+  const { serializer } = kdb
+  const link = kdb.connection.native
 
   async function arm(event: EventMessage, at: Date, requested: string): Promise<ScheduleToken> {
     const name = qualifiedNameToString(event.name)

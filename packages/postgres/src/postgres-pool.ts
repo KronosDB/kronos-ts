@@ -17,7 +17,7 @@
  * // …only the ones this deployment actually needs.
  *
  * // …and, IF this deployment caches folds, one more line around the log:
- * const cachingStore = postgresSnapshottingEventStore(eventStore, pg, { serializer })
+ * const cachingStore = postgresSnapshottingEventStore(eventStore, pg, serializer)
  *
  * await pg.close()
  * ```

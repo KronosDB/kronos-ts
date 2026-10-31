@@ -20,7 +20,7 @@
  * const eventStore = postgresSchedulingEventStore(
  *   postgresEventStore(pg),
  *   pg,
- *   { unitOfWork: uow },
+ *   uow,
  * )
  * ```
  *

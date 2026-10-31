@@ -5,7 +5,7 @@ import {
   emptyMetadata,
   type EventMessage,
 } from "../../messaging/messages.js"
-import { eventProcessor } from "../processor.js"
+import { eventProcessor, polling } from "../processor.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { runEventProcessor } from "../running-processor.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
@@ -115,17 +115,15 @@ function runOver(config: {
   tokenStore?: TokenStore
   pollingIntervalMs?: number
 }) {
+  const processor = eventProcessor(
+    config.name ?? "test-processor",
+    config.eventSource as unknown as EventStore,
+    config.tokenStore ?? inMemoryTokenStore(),
+    unitOfWork,
+  )
   return runEventProcessor({
-    processor: eventProcessor(
-      config.name ?? "test-processor",
-      config.eventSource as unknown as EventStore,
-      config.tokenStore ?? inMemoryTokenStore(),
-      unitOfWork,
-    ),
+    processor: config.pollingIntervalMs !== undefined ? polling(processor, config.pollingIntervalMs) : processor,
     handlers: config.eventHandlers.map((definition) => ({ definition })),
-    ...(config.pollingIntervalMs !== undefined
-      ? { pollingIntervalMs: config.pollingIntervalMs }
-      : {}),
   })
 }
 

@@ -67,14 +67,6 @@ export type RunEventProcessorOptions<
 > = {
   readonly processor: EventProcessor<U>
   readonly handlers: ReadonlyArray<ProcessorHandlerEntry<U, E>>
-  /** Polling interval when no events are available (ms). Default: 500. */
-  readonly pollingIntervalMs?: number
-  /**
-   * How often a node looks for free segments, renews the claims it holds, and
-   * writes where a quiet segment has got to (ms). Default: 5000 — half the
-   * stores' default claim timeout, so a live node never lets a claim lapse.
-   */
-  readonly claimIntervalMs?: number
 }
 
 /** A segment this node holds and handles. */
@@ -119,8 +111,11 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   // and the larger batch only while behind. A retry is one either way.
   const batchSize = processor.batchSize ?? 1
   const replayBatchSize = processor.batchSize ?? DEFAULT_REPLAY_BATCH_SIZE
-  const pollingIntervalMs = options.pollingIntervalMs ?? 500
-  const claimIntervalMs = options.claimIntervalMs ?? 5000
+  const pollingIntervalMs = processor.pollingIntervalMs ?? 500
+  // How often a node looks for free segments, renews the claims it holds, and
+  // writes where a quiet segment has got to: half the token store's claim
+  // timeout, so a live node never lets a claim lapse.
+  const claimIntervalMs = (tokenStore.claimTimeoutMs ?? 10_000) / 2
   const firstRetryDelayMs = pollingIntervalMs * 2
 
   const initialSegments = processor.segments?.count ?? 1

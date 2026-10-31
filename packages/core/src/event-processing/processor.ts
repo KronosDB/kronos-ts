@@ -62,6 +62,12 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
    */
   readonly batchSize?: number
   /**
+   * How long the processor waits before looking again when the stream has
+   * nothing ready, and the base of its retry delay after a failed batch (ms).
+   * Set by {@link polling}. Absent: 500. New events wake it sooner either way.
+   */
+  readonly pollingIntervalMs?: number
+  /**
    * Which sequence each event parks under when it fails. Set by
    * {@link deadLettering}, together with {@link deadLetterQueue}.
    */
@@ -131,20 +137,40 @@ export function eventProcessor<U extends UnitOfWork = UnitOfWork>(
 // ---------------------------------------------------------------------------
 
 /**
- * Up to `size` events per batch — one unit of work, one token write — at the
- * head and behind it alike. A batch only ever takes the events that are READY,
- * so at the head it is the one or two that just arrived and the read model is
- * as fresh as it ever was; behind, it is `size`. A failed batch is retried one
- * event at a time until the token is past it, so a poison event ends up alone.
+ * Up to `size` items per batch, on anything that works in batches: an event
+ * processor, or a store's polling worker such as `postgresSchedulingEventStore`.
  *
- * THE BOUND IS MEMORY: the batch is held decoded until it commits, and the
- * stream reads ahead by as many.
+ * On a processor: up to `size` events per batch — one unit of work, one token
+ * write — at the head and behind it alike. A batch only ever takes the events
+ * that are READY, so at the head it is the one or two that just arrived and the
+ * read model is as fresh as it ever was; behind, it is `size`. A failed batch is
+ * retried one event at a time until the token is past it, so a poison event
+ * ends up alone. THE BOUND IS MEMORY: the batch is held decoded until it
+ * commits, and the stream reads ahead by as many.
  */
-export function batched<U extends UnitOfWork>(processor: EventProcessor<U>, size: number): EventProcessor<U> {
+export function batched<T extends { readonly batchSize?: number }>(worker: T, size: number): T {
   if (!Number.isInteger(size) || size < 1) {
-    throw new Error(`batched("${processor.name}"): a batch is a whole number of events, at least 1 — got ${size}`)
+    throw new Error(`batched(${nameOf(worker)}): a batch is a whole number, at least 1 — got ${size}`)
   }
-  return { ...processor, batchSize: size }
+  return { ...worker, batchSize: size }
+}
+
+/**
+ * Look again every `ms` when there is nothing to do, on anything that polls:
+ * an event processor, or a store's polling worker such as
+ * `postgresSchedulingEventStore`. A processor's stream wakes it as soon as an
+ * event arrives, so for a processor this is the fallback, and the base of the
+ * delay before a failed batch is retried.
+ */
+export function polling<T extends { readonly pollingIntervalMs?: number }>(worker: T, ms: number): T {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    throw new Error(`polling(${nameOf(worker)}): an interval is a positive number of milliseconds — got ${ms}`)
+  }
+  return { ...worker, pollingIntervalMs: ms }
+}
+
+function nameOf(worker: object): string {
+  return "name" in worker && typeof worker.name === "string" ? `"${worker.name}"` : ""
 }
 
 /**

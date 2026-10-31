@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, type EventMessage } from "../../messaging/messages.js"
-import { batched, concurrent, eventProcessor, segmented, type RunningProcessor } from "../processor.js"
+import { batched, concurrent, eventProcessor, polling, segmented, type RunningProcessor } from "../processor.js"
 import { runEventProcessor } from "../running-processor.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { inMemoryTokenStore, type TokenStore } from "../token-store.js"
@@ -93,15 +93,18 @@ function node(
   log: EventStore,
   tokens: TokenStore,
   handler: (node: string) => EventHandler<any>,
-  options: { segments?: number; claimIntervalMs?: number } = {},
+  options: { segments?: number; renewEveryMs?: number } = {},
 ): RunningProcessor {
-  let processor = batched(eventProcessor("balances", log, tokens, unitOfWork), 10)
+  // The processor paces its claim rounds off `claimTimeoutMs`; the store
+  // expires claims by its own. Telling this node a different timeout makes it
+  // renew every `renewEveryMs` (default 20, so tests see claims move quickly)
+  // without changing when the store lets a claim lapse.
+  const view: TokenStore = { ...tokens, claimTimeoutMs: (options.renewEveryMs ?? 20) * 2 }
+  let processor = batched(eventProcessor("balances", log, view, unitOfWork), 10)
   if (options.segments !== undefined) processor = segmented(concurrent(processor, byAccount), options.segments, byAccount)
   return runEventProcessor({
-    processor,
+    processor: polling(processor, 5),
     handlers: [{ definition: handler(label) }],
-    pollingIntervalMs: 5,
-    claimIntervalMs: options.claimIntervalMs ?? 20,
   })
 }
 
@@ -231,7 +234,7 @@ describe("one segment, two nodes", () => {
     // A claim lapses after 30 ms, and node a renews only every 10 s — so b can take it.
     const tokens = inMemoryTokenStore(30)
     const { seen, handler } = recorder()
-    const a = node("a", log, tokens, handler, { claimIntervalMs: 10_000 })
+    const a = node("a", log, tokens, handler, { renewEveryMs: 10_000 })
     await a.start()
     pushRound(log, ["x"], 0)
     await until(() => seen.length === 1, "a's first event")
@@ -261,7 +264,7 @@ describe("a node that lost its claim while stuck on a failing handler", () => {
         throw new Error("down")
       },
     }
-    const a = node("a", log, tokens, () => failing, { claimIntervalMs: 100 })
+    const a = node("a", log, tokens, () => failing, { renewEveryMs: 100 })
     await a.start()
     pushRound(log, ["x"], 0)
     await until(() => a.status().error !== undefined, "a to fail")

@@ -124,16 +124,6 @@ export type AxonServerQueryBusOptions = {
   /** Flow control for the query stream. */
   flowControl?: FlowControlConfig
   /**
-   * When true, queries are first checked against locally subscribed handlers
-   * before being dispatched through Axon Server. Avoids a network round-trip
-   * when the handler is co-located.
-   *
-   * This is NOT the rabbitmq `preferLocal` fork by another name: it is Java's
-   * `shortcutQueriesToLocalHandlers`, it is off by default, and commands have
-   * no equivalent — Axon Server routes those, always.
-   */
-  shortcutQueriesToLocalHandlers?: boolean
-  /**
    * Default timeout for query dispatch in ms. Default: 30000ms.
    * Aligned with Java's processing instruction timeout.
    */
@@ -455,8 +445,7 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
       // A transport is not a task: it has no unit of work, so it has no clock.
       // A message that reaches the wire with no instant yet gets one from system
       // time here — the envelope crosses a process boundary and must be fully
-      // formed. A locally-shortcut message is handed to `next` untouched
-      // instead, so the task that handles it supplies the instant.
+      // formed.
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const activity = shutdownLatch.registerActivity()
       let admission: ReturnType<typeof outboundAdmission.enter> | undefined
@@ -522,17 +511,14 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
  * so your unit-of-work policy applies to server-routed reads too. `subscribe`
  * registers on `next` and announces the name to the server.
  *
- * The one asymmetry with commands is `shortcutQueriesToLocalHandlers` — Java
- * has it for queries and not for commands, and so do we. When it is on and this
- * node subscribed the name, `query()` goes straight to `next` and the caller's
- * unit of work is passed through, so the next branch nests exactly as the
- * in-process bus does.
+ * A co-located handler answers without the server under
+ * `localFirstQueryBus(bus, local)`, Java's `shortcutQueriesToLocalHandlers`.
  *
  * Correlation, if wanted, is `interceptingQueryBus(bus, correlation)` at the host,
  * matching AF4's `AxonServerQueryBus`, which calls
  * `dispatchInterceptors.intercept(...)` at the top of `query`, `streamingQuery`,
- * `scatterGather` and `subscriptionQuery`. Because the wrap is outside, the
- * shortcut branch gets identical correlation to the remote branch.
+ * `scatterGather` and `subscriptionQuery`. Wrapped outside `localFirstQueryBus`,
+ * the local branch gets identical correlation to the remote one.
  *
  * Subscription queries run the dispatch chain: `interceptingQueryBus` wraps
  * `subscriptionQuery` / `subscribeToUpdates` with the same intercept the
@@ -560,7 +546,6 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
   const PERMITS = BigInt(positiveInteger(options.flowControl?.permits ?? Number(DEFAULT_PERMITS), "flowControl.permits"))
   const THRESHOLD = BigInt(options.flowControl?.refillThreshold ?? Math.floor(Number(PERMITS) / 2))
   if (THRESHOLD < 0n || THRESHOLD >= PERMITS) throw new RangeError("refillThreshold must be between zero and permits - 1")
-  const shortcutQueriesToLocalHandlers = options.shortcutQueriesToLocalHandlers ?? false
   const queryTimeoutMs = options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS
   const { serializePayload, deserializePayload } = createPayloadHelpers(serializer)
 
@@ -834,18 +819,10 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
         deadline = messagingDeadline(requestTimeoutMs)
         const queryName = qualifiedNameToString(unstamped.name)
 
-        // Local shortcut — handle locally if a handler is co-located. The
-        // co-located handler answers on a task of its own, exactly as a remote
-        // one would — `next` mints it.
-        if (shortcutQueriesToLocalHandlers && subscribedNames.has(queryName)) {
-          return await next.query(unstamped)
-        }
-
       // A transport is not a task: it has no unit of work, so it has no clock.
       // A message that reaches the wire with no instant yet gets one from system
       // time here — the envelope crosses a process boundary and must be fully
-      // formed. A locally-shortcut message is handed to `next` untouched
-      // instead, so the task that handles it supplies the instant.
+      // formed.
         const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
 
         const responseStream = connection.queries.query(

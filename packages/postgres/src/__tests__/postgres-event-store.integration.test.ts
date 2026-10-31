@@ -233,7 +233,7 @@ describe("Concurrency — advisory-lock taxonomy", () => {
 
 describe("postgresSnapshottingEventStore — the fused strategy, in one round trip", () => {
   const caching = () =>
-    postgresSnapshottingEventStore(store, pool, { serializer: NOOP_SERIALIZER })
+    postgresSnapshottingEventStore(store, pool, NOOP_SERIALIZER)
 
   beforeEach(async () => {
     await adapter.query(`TRUNCATE TABLE ${DEFAULT_TABLE_NAMES.snapshots}`)

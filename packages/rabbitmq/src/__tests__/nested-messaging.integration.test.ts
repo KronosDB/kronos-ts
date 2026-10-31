@@ -27,11 +27,9 @@ describe("RabbitMQ nested messaging without local shortcuts", () => {
       const bus: any =
         kind === "command"
           ? rabbitMqCommandBus(localCommandBus(unitOfWork), connection, {
-              preferLocal: false,
               timeoutMs: 1000,
             })
           : rabbitMqQueryBus(localQueryBus(unitOfWork), connection, {
-              preferLocal: false,
               timeoutMs: 1000,
             })
       const call = (depth: number) =>
@@ -67,11 +65,9 @@ describe("RabbitMQ nested messaging without local shortcuts", () => {
       const bus: any =
         kind === "command"
           ? rabbitMqCommandBus(localCommandBus(unitOfWork), connection, {
-              preferLocal: false,
               timeoutMs: 2000,
             })
           : rabbitMqQueryBus(localQueryBus(unitOfWork), connection, {
-              preferLocal: false,
               timeoutMs: 2000,
             })
       bus.subscribe("qa.Load", async (message: any) => {
@@ -120,10 +116,9 @@ describe("RabbitMQ nested messaging without local shortcuts", () => {
       const makeBus = (c: typeof connection): any =>
         kind === "command"
           ? rabbitMqCommandBus(localCommandBus(unitOfWork), c, {
-              preferLocal: false,
               timeoutMs: 2000,
             })
-          : rabbitMqQueryBus(localQueryBus(unitOfWork), c, { preferLocal: false, timeoutMs: 2000 })
+          : rabbitMqQueryBus(localQueryBus(unitOfWork), c, { timeoutMs: 2000 })
       const bus = makeBus(connection)
       let entered!: () => void, release!: () => void
       const started = new Promise<void>((r) => {
@@ -180,11 +175,9 @@ describe("RabbitMQ nested messaging without local shortcuts", () => {
       const bus =
         kind === "command"
           ? rabbitMqCommandBus(localCommandBus(unitOfWork), connection, {
-              preferLocal: false,
               timeoutMs: 1000,
             })
           : rabbitMqQueryBus(localQueryBus(unitOfWork), connection, {
-              preferLocal: false,
               timeoutMs: 1000,
             })
       const call = (depth: number, fail = false): Promise<unknown> => {

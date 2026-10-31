@@ -109,7 +109,7 @@ export type EventStore = StreamableEventSource & {
  * const eventStore = postgresSnapshottingEventStore(
  *   postgresEventStore(pg),
  *   pg,
- *   { serializer },
+ *   serializer,
  * )
  * ```
  *

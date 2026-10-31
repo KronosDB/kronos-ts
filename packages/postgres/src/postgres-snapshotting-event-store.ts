@@ -36,30 +36,18 @@ import type { PostgresResource } from "./postgres-pool.js"
 import { sharedPostgresTransaction } from "./postgres-transaction.js"
 import { decodeSnapshot, encodeSnapshot } from "./snapshot-codec.js"
 
-export type PostgresSnapshottingEventStoreConfig = {
-  /**
-   * How a state's fold becomes bytes, and back. Required, not defaulted: the
-   * `payload` column is BYTEA and what goes into it is the application's
-   * choice — `jsonSerializer()` for the common case, something else when the
-   * cached shape is expensive to encode.
-   *
-   * ONE SERIALIZER, ONE OBJECT. It used to be possible to hand the writing side
-   * and the reading side different ones, because they were different functions;
-   * that class of mistake does not exist any more.
-   */
-  readonly serializer: Serializer
-}
-
 /**
  * Add the snapshotting capability to a postgres-backed log.
  *
  * ```ts
- * const eventStore = postgresSnapshottingEventStore(
- *   postgresEventStore(pg),
- *   pg,
- *   { serializer: jsonSerializer() },
- * )
+ * const eventStore = postgresSnapshottingEventStore(postgresEventStore(pg), pg, jsonSerializer())
  * ```
+ *
+ * `serializer` turns a state's fold into the bytes of the BYTEA `payload`
+ * column and back. Required, not defaulted: what goes into it is the
+ * application's choice — `jsonSerializer()` for the common case, something
+ * else when the cached shape is expensive to encode. One serializer serves
+ * both the write and the read, so the two cannot disagree.
  *
  * ADDITIVE, NOT COLLAPSING. It returns `E & SnapshotStoreCapability` — the store you
  * passed in, plus the write — so nothing the inner store carried is laundered
@@ -84,10 +72,9 @@ export type PostgresSnapshottingEventStoreConfig = {
 export function postgresSnapshottingEventStore<E extends EventStore>(
   next: E,
   pg: PostgresResource,
-  config: PostgresSnapshottingEventStoreConfig,
+  serializer: Serializer,
 ): E & SnapshotStoreCapability {
   const adapter = pg
-  const { serializer } = config
   const tables = pg.tables
 
   /**

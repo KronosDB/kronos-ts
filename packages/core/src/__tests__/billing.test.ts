@@ -15,6 +15,7 @@ import {
   unitOfWork,
   localCommandBus,
   localQueryBus,
+  polling,
   type UnitOfWork,
 } from "../index.js"
 import { state } from "../event-sourcing/state.js"
@@ -322,6 +323,19 @@ describe("boot errors", () => {
         ],
       }),
     ).toThrow(/disagree on eventStore[\s\S]*opened-view[\s\S]*lines-view/)
+  })
+
+  it("the same NAME polled at different intervals is a boot error", () => {
+    const buses = inMemoryBuses()
+    const base = eventProcessor("bill-projection", inMemoryEventStore(), inMemoryTokenStore(), unitOfWork)
+    expect(() =>
+      kronos({
+        eventHandlers: [
+          { ...onOpened, ...buses, processor: polling(base, 100) },
+          { ...eventHandler(LineBilled, async () => {}), ...buses, processor: polling(base, 250) },
+        ],
+      }),
+    ).toThrow(/disagree on polling/)
   })
 
   it("a command handler with no event store is named", () => {

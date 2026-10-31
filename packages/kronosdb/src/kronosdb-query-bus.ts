@@ -74,8 +74,6 @@ import { shutdownLatch as shutdownLatchValue, type ActivityHandle } from "./shut
 /** Per-bus knobs for queries. */
 export type KronosDbQueryBusOptions = {
   flowControl?: FlowControlConfig
-  /** Answer from a co-located handler instead of going out to the server. */
-  shortcutQueriesToLocalHandlers?: boolean
   /** Client and server query timeout. Default: 30000ms. */
   timeoutMs?: number
   /** Per-extension resilience config (D-100 / D-101). */
@@ -113,9 +111,9 @@ type ProvidedSubscription = {
  *
  * Correlation, if wanted, is `interceptingQueryBus(bus, correlation)` at the host, for the same reason
  * {@link kronosDbCommandBus} is wrapped — AF runs dispatch interception at the
- * top of `query` / `subscriptionQuery`, before anything is sent. `query()` below
- * can also shortcut to a co-located handler, and wrapping outside means
- * correlation is stamped identically on both branches.
+ * top of `query` / `subscriptionQuery`, before anything is sent. A co-located
+ * handler answers without the server under `localFirstQueryBus(bus, local)`;
+ * wrapping correlation outside that stamps both branches identically.
  *
  * `bus` is the same server-scoped namespace string the command side takes (see
  * {@link kronosDbCommandBus}: bound to an id on the connection, `"default"`
@@ -131,7 +129,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
   bus: string = "default",
   options: KronosDbQueryBusOptions = {},
 ): SubscriptionCapableQueryBus<U> {
-  const { flowControl, shortcutQueriesToLocalHandlers, resilience } = options
+  const { flowControl, resilience } = options
   const serializer = kdb.serializer
   const connection = kdb.connection
   const link = connection.native
@@ -527,18 +525,10 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
         admission = outboundAdmission.enter(unstamped.identifier)
         const queryName = qualifiedNameToString(unstamped.name)
 
-        if (shortcutQueriesToLocalHandlers && localHandlers.has(queryName)) {
-          // A co-located handler answers on a task of its own, exactly as a
-          // remote one would — `next` mints it. The shortcut and the wire
-          // branch therefore behave identically.
-          return await next.query(unstamped)
-        }
-
         // A transport is not a task: it has no unit of work, so it has no clock.
         // A message that reaches the wire with no instant yet gets one from system
         // time here — the envelope crosses a process boundary and must be fully
-        // formed. A locally-shortcut message is handed to `next` untouched
-        // instead, so the task that handles it supplies the instant.
+        // formed.
         return await request({
           messageId: unstamped.identifier,
           name: queryName,

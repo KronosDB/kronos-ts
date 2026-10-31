@@ -44,9 +44,7 @@ const uow         = postgresUnitOfWork(unitOfWork, pg)
 // …and IF this deployment caches folds, one more line AROUND the log. The base
 // store has never heard of snapshots; wrapping it adds the capability, and the
 // wrapper serves a cached read in ONE round trip because it owns the query.
-const cachingStore = postgresSnapshottingEventStore(eventStore, pg, {
-  serializer: jsonSerializer(),
-})
+const cachingStore = postgresSnapshottingEventStore(eventStore, pg, jsonSerializer())
 
 const commandBus = localCommandBus(uow)
 // …

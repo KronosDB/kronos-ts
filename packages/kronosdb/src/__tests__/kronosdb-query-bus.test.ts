@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import {
-  localQueryBus, payloadEquals, qn, unitOfWork,
+  localFirstQueryBus, localQueryBus, payloadEquals, qn, unitOfWork,
   type QueryMessage, type SubscriptionQueryResult,
 } from "@kronos-ts/core"
 import { KronosDbError, KronosDbRequestError, QueryExecutionError } from "../errors.js"
@@ -113,9 +113,10 @@ describe("kronosDbQueryBus — asking", () => {
     await until(() => r.server.connections.some((c) => c.received.some((f) => f.frame.name === "Cancel")), "the Cancel")
   })
 
-  it("answers from a co-located handler when told to, without going out", async () => {
+  it("answers from a co-located handler under localFirstQueryBus, without going out", async () => {
     r = await rig()
-    const both = bus(r.client, { shortcutQueriesToLocalHandlers: true })
+    const local = localQueryBus(unitOfWork)
+    const both = localFirstQueryBus(kronosDbQueryBus(local, r.client.host, "default"), local)
     both.subscribe(Watch, async () => "local")
     expect(await both.query(query(Watch, 1))).toBe("local")
     expect(r.server.dispatchedQueries).toHaveLength(0)

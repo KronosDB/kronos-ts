@@ -70,7 +70,7 @@ import { decodeEvent, type EventRow, EVENT_COLUMNS } from "./event-row.js"
  * IT HAS NEVER HEARD OF SNAPSHOTS. There is no `serializer` in its config any
  * more and no snapshot branch in its `source`: the base contract is complete
  * for event sourcing, and a host that wants a cache over the fold WRAPS this —
- * `postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer })` — which is the one place the snapshots table is mentioned
+ * `postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer)` — which is the one place the snapshots table is mentioned
  * and the one place a serializer is needed.
  */
 export function postgresEventStore(pg: PostgresResource): EventStore {

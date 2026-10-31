@@ -2,7 +2,7 @@
  * THE TYPE TEST FOR SNAPSHOTTING — and what it pins is an ABSENCE.
  *
  * Snapshotting is a STORE tier with no context capability. A handler has
- * nothing new to call: `state({ snapshot })` says a state wants caching, the
+ * nothing new to call: `snapshot(state, key, when)` says a state wants caching, the
  * wrapped log serves it through `ctx.load`, and nothing on any context changes
  * shape when a host wraps the log. So the claims here are:
  *
@@ -34,7 +34,7 @@ import { inMemoryEventStore } from "../in-memory.js"
 import { inMemorySnapshottingEventStore } from "../in-memory-snapshotting-event-store.js"
 import type { EventStore, SnapshotCapableEventStore } from "../event-store.js"
 import { state } from "../state.js"
-import { afterEvents } from "../snapshot.js"
+import { afterEvents, snapshot } from "../snapshot.js"
 
 const Bumped = event({
   name: qn("probe", "Bumped"),
@@ -47,12 +47,11 @@ const Bump = command({
   payload: z.object({ counterId: z.string() }),
 })
 
-const Caching = state({
+const Caching = snapshot(state({
   id: { counterId: z.string() },
   tags: ({ counterId }) => ({ counterId }),
   evolve: [() => ({ count: 0 }), [Bumped, (s) => ({ count: s.count + 1 })]],
-  snapshot: { key: "counter-v1", when: afterEvents(100) },
-})
+}), "counter-v1", afterEvents(100))
 
 const Plain = state({
   id: { counterId: z.string() },
@@ -61,8 +60,9 @@ const Plain = state({
 })
 
 // ---------------------------------------------------------------------------
-// (0) `state()` STILL INFERS THE THIRD PARAMETER. The repository reads it at
-// runtime to decide whether to ask the log for a snapshot.
+// (0) `snapshot()` SETS THE THIRD PARAMETER; `state()` leaves it false. The
+// repository reads the config at runtime to decide whether to ask the log for
+// a snapshot.
 // ---------------------------------------------------------------------------
 
 export const cachingSaysTrue: typeof Caching extends { snapshot?: infer C }
@@ -76,6 +76,10 @@ export const plainSaysUndefined: typeof Plain extends { snapshot?: infer C }
     ? true
     : false
   : false = true
+
+// A state is cached once: a second key on top of the first does not compile.
+// @ts-expect-error — `snapshot` takes a state that is not cached yet
+export const cachedTwice = snapshot(Caching, "counter-v2", afterEvents(1))
 
 // ---------------------------------------------------------------------------
 // (a) ctx.load — NO DEMAND. A bare context loads either state; the store the

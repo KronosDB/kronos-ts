@@ -63,20 +63,6 @@ export type TagRecord = Record<string, string>
 export type StateTags = TagRecord | readonly [TagRecord, ...TagRecord[]]
 
 /**
- * Lifecycle hooks for state transitions.
- */
-export type StateLifecycle<Id = unknown, S = unknown> = {
-  /** Called when the first event transitions from initial state. */
-  onCreate?: (state: S, id: Id) => void | Promise<void>
-  /** Called when the state transitions to a deleted state. */
-  onDelete?: (state: S, id: Id) => void | Promise<void>
-  /** Called after each evolver application when state changes. */
-  onStateChange?: (from: S, to: S, event: EventMessage, id: Id) => void | Promise<void>
-  /** Predicate that detects deleted state. */
-  isDeleted?: (state: S) => boolean
-}
-
-/**
  * One `evolve` entry: an event descriptor paired with the function that folds
  * it into state. The pairing is DATA, not a builder call — the same
  * correlated-tuple technique `ContextAppendFunction` uses for its batch form
@@ -165,10 +151,10 @@ export type EvolveTuple<E extends EvolveShape, Id = unknown, S = InitialState<E>
  * and it is not a second field: it is what {@link State.snapshot} is typed BY,
  * so `State<Id, S, true>` is a state that carries a `SnapshotConfig` and
  * `State<Id, S>` is one whose config is `undefined` and can never be anything
- * else. `state()` reads it off the definition you wrote — pass a `snapshot`
- * config and you get `true` back — and `ctx.load` reads it off the value you
- * hand it, which is what the repository reads to decide whether to ask the
- * wired log for a snapshot. Nothing on a handler's context names the tier.
+ * else. `state()` returns `false`; {@link snapshot} wraps a state and returns
+ * `true`. `ctx.load` reads it off the value you hand it, which is what the
+ * repository reads to decide whether to ask the wired log for a snapshot.
+ * Nothing on a handler's context names the tier.
  */
 export type State<
   Id = unknown,
@@ -205,10 +191,11 @@ export type State<
   readonly evolvers: ReadonlyArray<EvolverEntry<S, any>>
   /**
    * Where this state's snapshots are filed and when one is written — `{ key,
-   * when }`. Absent means this state is never cached.
+   * when }`, put there by {@link snapshot}. Absent means this state is never
+   * cached.
    *
-   * It rides on the STATE because both halves are properties of the fold: which
-   * cache this fold reads, and how often caching it pays. Where a snapshot
+   * It rides on the STATE VALUE because both halves are properties of the fold:
+   * which cache this fold reads, and how often caching it pays. Where a snapshot
    * LANDS is a site fact — the entry's `eventStore`, which must have been
    * wrapped in its family's `…SnapshottingEventStore` for anything to be read
    * or written.
@@ -220,7 +207,6 @@ export type State<
    * not is waved through without ever meeting the concept.
    */
   readonly snapshot?: Snap extends true ? SnapshotConfig : undefined
-  readonly lifecycle?: StateLifecycle<Id, S>
 }
 
 /**
@@ -439,12 +425,13 @@ const BOOT_PROBE_ID_VALUE = "kronos:boot-probe"
  * form of `event({ tags })` does for free. See {@link StateTags} for the array
  * override, and the keys of `EventDescriptor.tags` for the event's half.
  *
- * THE FIELD ORDER IS THE READING ORDER — `id · tags · evolve · snapshot? ·
- * lifecycle?`. NOTHING NAMES A STATE: a state that caches its fold says WHERE
- * under `snapshot: { key, when }`, in a string you wrote, and diagnostics name a
- * state by its process identity and the events it folds. Each field is a
- * function of what came before it: tags are derived from the id, and `evolve`
- * carries its own initial state at position zero.
+ * THE FIELD ORDER IS THE READING ORDER — `id · tags · evolve`. NOTHING NAMES A
+ * STATE: diagnostics name a state by its process identity and the events it
+ * folds. Each field is a function of what came before it: tags are derived from
+ * the id, and `evolve` carries its own initial state at position zero.
+ *
+ * A state that caches its fold is this state wrapped:
+ * `snapshot(Course, "course-v1", afterEvents(100))` — see {@link snapshot}.
  *
  * ```typescript
  * const Course = state({
@@ -466,12 +453,6 @@ export function state<
   // default reads `S` back off element zero instead. Both routes end at the
   // same place: the fold's type comes from the fold.
   S = InitialState<E>,
-  // WHETHER THIS FOLD IS CACHED, read off the definition. Writing a `snapshot`
-  // config gives `C` that config's type and the return says `State<…, true>`;
-  // writing none leaves `C` at its default and the return says `State<…,
-  // false>`. The repository reads that inference at runtime to decide whether
-  // to ask the wired log for a snapshot, and a host writes nothing to get it.
-  C extends SnapshotConfig | undefined = undefined,
 >(def: {
   id: IS
   tags: (id: InferIdFromSchema<IS>) => StateTags
@@ -481,19 +462,7 @@ export function state<
    * from `evolve[0](id)`, and the initial state is the evolver of nothing.
    */
   evolve: EvolveTuple<E, InferIdFromSchema<IS>, S>
-  /**
-   * Where snapshots of this state are filed, and when one is written —
-   * `{ key, when }`. Absent = never cached. Changing `key` orphans every old
-   * entry, which is the whole invalidation story.
-   *
-   * WRITING THIS FIELD IS AN OBLIGATION ON YOUR WIRING. Every entry whose
-   * handler loads this state must carry a log that can serve a cached fold —
-   * an `eventStore` wrapped in its family's `…SnapshottingEventStore` — and the
-   * compiler holds you to it at the `ctx.load` call rather than at run time.
-   */
-  snapshot?: C
-  lifecycle?: StateLifecycle<InferIdFromSchema<IS>, S>
-}): State<InferIdFromSchema<IS>, S, C extends SnapshotConfig ? true : false> {
+}): State<InferIdFromSchema<IS>, S> {
   // ONE destructure, and the shapes are settled for good. No `Array.isArray`
   // anywhere downstream: position zero IS the initial state, by grammar.
   const [initial, ...cases] = def.evolve as unknown as readonly [
@@ -537,11 +506,6 @@ export function state<
   }
   if (probeScope !== undefined) deriveQuery(label, probeScope, evolvers)
 
-  // The one cast in this function, and it is the conditional return type meeting
-  // the plain record that satisfies it: `snapshot` is `C`, and the declared
-  // return types it as `SnapshotConfig` exactly when `C` is one. TypeScript
-  // cannot check a value against an unresolved conditional, so the equivalence
-  // is asserted here and PINNED by the type probe.
   return {
     kind: "state-module",
     identity,
@@ -550,7 +514,5 @@ export function state<
     tags: def.tags,
     query: (id) => deriveQuery(label, def.tags(id), evolvers),
     evolvers,
-    snapshot: def.snapshot,
-    lifecycle: def.lifecycle,
-  } as State<InferIdFromSchema<IS>, S, C extends SnapshotConfig ? true : false>
+  }
 }

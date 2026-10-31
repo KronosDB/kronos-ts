@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { qn, emptyMetadata, type EventMessage } from "../../messaging/messages.js"
-import { batched, concurrent, deadLettering, eventProcessor } from "../processor.js"
+import { batched, concurrent, deadLettering, eventProcessor, polling } from "../processor.js"
 import { runEventProcessor } from "../running-processor.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { inMemoryTokenStore } from "../token-store.js"
@@ -107,9 +107,8 @@ describe("concurrent — sequences side by side, each sequence in log order", ()
     ]
     const log: string[] = []
     const processor = runEventProcessor({
-      processor: concurrent(batched(base("side-by-side", events), 10), bySequence),
+      processor: polling(concurrent(batched(base("side-by-side", events), 10), bySequence), 10),
       handlers: [{ definition: recordingHandler(log) }],
-      pollingIntervalMs: 10,
     })
 
     await processor.start()
@@ -128,9 +127,8 @@ describe("concurrent — sequences side by side, each sequence in log order", ()
     ]
     const log: string[] = []
     const processor = runEventProcessor({
-      processor: batched(base("one-at-a-time", events), 10),
+      processor: polling(batched(base("one-at-a-time", events), 10), 10),
       handlers: [{ definition: recordingHandler(log) }],
-      pollingIntervalMs: 10,
     })
 
     await processor.start()
@@ -154,9 +152,8 @@ describe("concurrent — sequences side by side, each sequence in log order", ()
       return task
     }
     const processor = runEventProcessor({
-      processor: concurrent(batched(base("settle-then-fail", events, uow), 10), bySequence),
+      processor: polling(concurrent(batched(base("settle-then-fail", events, uow), 10), bySequence), 5),
       handlers: [{ definition: recordingHandler(log) }],
-      pollingIntervalMs: 5,
     })
 
     await processor.start()
@@ -181,9 +178,8 @@ describe("concurrent with deadLettering — the failing sequence parks, the othe
     const log: string[] = []
     const dlq = inMemoryDeadLetterQueue()
     const processor = runEventProcessor({
-      processor: deadLettering(concurrent(batched(base("park-one-sequence", events), 10), bySequence), dlq, bySequence),
+      processor: polling(deadLettering(concurrent(batched(base("park-one-sequence", events), 10), bySequence), dlq, bySequence), 10),
       handlers: [{ definition: recordingHandler(log, new Set(["never"])) }],
-      pollingIntervalMs: 10,
     })
 
     await processor.start()
@@ -212,5 +208,20 @@ describe("batched", () => {
     expect(() => batched(base("no-batch", []), 0)).toThrow(/at least 1/)
     expect(() => batched(base("half-batch", []), 1.5)).toThrow(/at least 1/)
     expect(batched(base("thousand", []), 1000)).toMatchObject({ batchSize: 1000 })
+  })
+
+  it("tunes anything that works in batches, keeping what it carried", () => {
+    const worker = { startScheduling: async () => {} }
+    const tuned = batched(worker, 200)
+    expect(tuned).toMatchObject({ batchSize: 200 })
+    expect(tuned.startScheduling).toBe(worker.startScheduling)
+  })
+})
+
+describe("polling", () => {
+  it("takes a positive number of milliseconds", () => {
+    expect(() => polling(base("no-wait", []), 0)).toThrow(/positive number of milliseconds/)
+    expect(() => polling(base("never", []), Number.NaN)).toThrow(/positive number of milliseconds/)
+    expect(polling(base("quick", []), 25)).toMatchObject({ pollingIntervalMs: 25 })
   })
 })

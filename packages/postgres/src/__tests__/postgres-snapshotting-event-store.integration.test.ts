@@ -41,7 +41,7 @@ beforeAll(async () => {
   store = postgresSnapshottingEventStore(
     postgresEventStore(pool),
     pool,
-    { serializer: COUNTING_SERIALIZER },
+    COUNTING_SERIALIZER,
   )
 }, 60_000)
 

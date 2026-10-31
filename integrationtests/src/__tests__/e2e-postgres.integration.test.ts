@@ -33,6 +33,7 @@ import { state } from "@kronos-ts/core"
 import {
   type EventStore,
   afterEvents,
+  snapshot,
 } from "@kronos-ts/core"
 import {
   kronos,
@@ -169,7 +170,7 @@ function postgresStack(pool: PostgresResource) {
   const eventStore = postgresSnapshottingEventStore(
     postgresEventStore(pool),
     pool,
-    { serializer: jsonSerializer() },
+    jsonSerializer(),
   )
   return {
     eventStore,
@@ -224,7 +225,7 @@ const EnrollmentClosed = event({
 
 type CourseState = { created: boolean; name: string; capacity: number; enrolled: string[]; closed: boolean }
 
-const Course = state({
+const Course = snapshot(state({
   id: { courseId: z.string() },
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
@@ -238,8 +239,7 @@ const Course = state({
   // Where a snapshot LANDS is a SITE fact: the entries below that carry a
   // WRAPPED `eventStore` can serve one, and the compiler refuses this state's
   // load on an entry whose log was not wrapped.
-  snapshot: { key: "course-v1", when: afterEvents(1) },
-})
+}), "course-v1", afterEvents(1))
 
 const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
   const course = await ctx.load(Course, { courseId: cmd.courseId })

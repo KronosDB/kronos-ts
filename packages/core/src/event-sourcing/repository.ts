@@ -171,35 +171,10 @@ export function eventSourcedRepository<Id, S>(
     // optimization, and it is one line because the condition did the work.
     let state = snapshot !== undefined ? (snapshot.state as S) : zeroth
 
-    const lifecycle = module.lifecycle
-    let isFirstEvent = snapshot === undefined // first event only if no snapshot
-    let wasDeleted = lifecycle?.isDeleted?.(state) ?? false
-
     let eventsApplied = 0
     for (const event of events) {
-      const previousState = state
       state = await applyEvent(module, state, event)
       eventsApplied++
-
-      // Lifecycle hooks
-      if (lifecycle && state !== previousState) {
-        // onCreate: first event transitions from the initial state
-        if (isFirstEvent && eventsApplied === 1) {
-          await lifecycle.onCreate?.(state, id)
-        }
-
-        // onStateChange: after each evolving event
-        await lifecycle.onStateChange?.(previousState, state, event, id)
-
-        // onDelete: when isDeleted transitions from false to true
-        if (lifecycle.isDeleted) {
-          const nowDeleted = lifecycle.isDeleted(state)
-          if (nowDeleted && !wasDeleted) {
-            await lifecycle.onDelete?.(state, id)
-          }
-          wasDeleted = nowDeleted
-        }
-      }
     }
 
     const sourcingTimeMs = performance.now() - startTime
@@ -213,7 +188,7 @@ export function eventSourcedRepository<Id, S>(
     // already cached.
     if (snapshots && snapshotPolicy && eventsApplied > 0) {
       const result: EvolutionResult = { eventsApplied, sourcingTimeMs }
-      if (snapshotPolicy.shouldSnapshot(result)) {
+      if (snapshotPolicy(result)) {
         const key = keyFor(id)
         snapshots
           .storeSnapshot(key, { state, position: marker.position })
@@ -243,8 +218,7 @@ export function eventSourcedRepository<Id, S>(
  * away. `State<Id, S, any>` types the field as the config or nothing, and this
  * is that, named once so the destructure above reads.
  */
-type SnapshotConfigOf = { readonly key: string; readonly when: EvolutionPolicy } | undefined
-type EvolutionPolicy = { shouldSnapshot(result: EvolutionResult): boolean }
+type SnapshotConfigOf = { readonly key: string; readonly when: (result: EvolutionResult) => boolean } | undefined
 
 /**
  * THE DEFENSIVE ASSERTION — the entire runtime footprint of the compile-time

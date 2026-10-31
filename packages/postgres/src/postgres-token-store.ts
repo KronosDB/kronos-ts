@@ -29,7 +29,8 @@ export type PostgresTokenStoreOptions = {
   /**
    * How long a claim survives without being extended, ms. Default 10000 —
    * the same figure the other families use, so a mixed fleet does not
-   * disagree about when a dead node's segment becomes available.
+   * disagree about when a dead node's segment becomes available. Processors
+   * renew their claims every half of it.
    */
   readonly claimTimeoutMs?: number
 }
@@ -107,6 +108,7 @@ export function postgresTokenStore(
   }
 
   return {
+    claimTimeoutMs,
     async store(processorName, segment, token, uow, owner) {
       const { type, data } = serializeTokenData(token)
       if (owner !== undefined) {

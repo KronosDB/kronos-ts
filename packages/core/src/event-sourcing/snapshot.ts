@@ -6,8 +6,8 @@
 // the log — it is a CAPABILITY TIER on the log, added by wrapping an event
 // store in its family's `…SnapshottingEventStore`. What lives here is the
 // VOCABULARY the fold and the wrappers share: what one cached fold IS
-// ({@link Snapshot}), when one is due ({@link SnapshotPolicy}), what a state
-// declares ({@link SnapshotConfig}) and how an id becomes part of a key. The
+// ({@link Snapshot}), when one is due ({@link SnapshotPolicy}), how a state is
+// made cached ({@link snapshot}) and how an id becomes part of a key. The
 // CAPABILITY is `SnapshotStoreCapability` in `event-store.ts` — a STORE tier
 // with no context face, consumed by the repository; the runtime refusal for a
 // policy against a bare log is `capableOrThrow` in `repository.ts`; the
@@ -31,11 +31,10 @@
 //
 // THE KEY IS YOURS. A snapshot is filed under a STRING YOU WROTE — at the raw
 // store layer you pass it to `eventStore.source(sourcingCondition(query,
-// undefined, { key }))` and to `eventStore.storeSnapshot(key, …)`; through
-// `state()` you declare it once as
-// `snapshot: { key, when }`. Nothing is derived from your code, nothing is
-// hashed, and nothing about the framework's opinion of your fold enters into
-// it.
+// undefined, { key }))` and to `eventStore.storeSnapshot(key, …)`; for a
+// state you say it once, as `snapshot(state, key, when)`. Nothing is derived
+// from your code, nothing is hashed, and nothing about the framework's opinion
+// of your fold enters into it.
 //
 // WHICH MAKES INVALIDATION ONE SENTENCE: CHANGED THE FOLD'S MEANING? CHANGE THE
 // KEY. Rename `"course-v1"` to `"course-v2"` and every old entry becomes
@@ -48,6 +47,8 @@
 // filed under it. Deciding when two folds are the same fold is a judgement
 // about meaning, and meaning is not derivable.
 // ---------------------------------------------------------------------------
+
+import type { State } from "./state.js"
 
 /**
  * What a load actually cost — the input a {@link SnapshotPolicy} judges.
@@ -62,46 +63,21 @@ export type EvolutionResult = {
 /**
  * When a snapshot of a state is due — the WRITE trigger, and nothing else.
  *
- * It rides on the STATE value (`state({ snapshot: { key, when } })`) because how
- * often a state is worth caching is a property of its event volume, not of the
- * log it happens to be written to. At the raw layer there is no policy at all —
- * you call `eventStore.storeSnapshot(...)` when you decide one is due.
+ * A plain predicate over what the load cost. Two of them combine the way any
+ * two predicates do: `(r) => afterEvents(100)(r) || whenSourcingTimeExceeds(50)(r)`.
+ * At the raw layer there is no policy at all — you call
+ * `eventStore.storeSnapshot(...)` when you decide one is due.
  */
-export type SnapshotPolicy = {
-  /** Whether this load earned a new cache entry. */
-  shouldSnapshot(result: EvolutionResult): boolean
+export type SnapshotPolicy = (result: EvolutionResult) => boolean
 
-  /** Combine with another policy — the result triggers if either does. */
-  or(other: SnapshotPolicy): SnapshotPolicy
-}
-
-/** Triggers once a load has folded more than `threshold` events. */
+/** Due once a load has folded more than `threshold` events. */
 export function afterEvents(threshold: number): SnapshotPolicy {
-  return createPolicy((result) => result.eventsApplied > threshold)
+  return (result) => result.eventsApplied > threshold
 }
 
-/** Triggers once a load has spent at least `thresholdMs` sourcing. */
+/** Due once a load has spent at least `thresholdMs` sourcing. */
 export function whenSourcingTimeExceeds(thresholdMs: number): SnapshotPolicy {
-  return createPolicy((result) => result.sourcingTimeMs >= thresholdMs)
-}
-
-/** A policy that never triggers. No snapshots are written. */
-export function noSnapshotPolicy(): SnapshotPolicy {
-  return createPolicy(() => false)
-}
-
-function createPolicy(
-  predicate: (result: EvolutionResult) => boolean,
-): SnapshotPolicy {
-  const policy: SnapshotPolicy = {
-    shouldSnapshot: predicate,
-    or(other: SnapshotPolicy): SnapshotPolicy {
-      return createPolicy(
-        (result) => predicate(result) || other.shouldSnapshot(result),
-      )
-    },
-  }
-  return policy
+  return (result) => result.sourcingTimeMs >= thresholdMs
 }
 
 /**
@@ -121,19 +97,8 @@ export type Snapshot = {
 }
 
 /**
- * A state's snapshotting configuration: WHERE entries are filed, and WHEN one
- * is written.
- *
- * Both are FIELDS rather than a pipeline because neither happens before the
- * other in any meaningful sense — one governs reads, one governs writes.
- *
- * ```ts
- * snapshot: { key: "course-v1", when: afterEvents(100) }
- * ```
- *
- * `key` is REQUIRED. A state that snapshots must say where, because "where" is
- * a decision about MEANING that only you can make: two folds are the same
- * cache exactly when you say they are.
+ * What {@link snapshot} records on a state: WHERE entries are filed, and WHEN
+ * one is written. The repository reads it off the state value it is handed.
  */
 export type SnapshotConfig = {
   /**
@@ -148,7 +113,7 @@ export type SnapshotConfig = {
    * You do not have to change it for a refactor that preserves meaning, and
    * nothing will change it behind your back for one that does not.
    *
-   * `state()` files entries under `"<key>:<flattened id>"` — see
+   * The repository files entries under `"<key>:<flattened id>"` — see
    * {@link snapshotIdentifier} — so one key serves every instance of the state
    * without them colliding.
    */
@@ -187,4 +152,33 @@ export function snapshotIdentifier(id: unknown): string {
     return value
   })
   return encoded ?? String(id)
+}
+
+/**
+ * Cache a state's fold. Loads of the returned state start from the latest
+ * snapshot filed under `key`, and write a new one when `when` says the load
+ * earned it.
+ *
+ * ```ts
+ * export const Course = pipe(
+ *   state({ id, tags, evolve }),
+ *   (s) => snapshot(s, "course-v1", afterEvents(100)),
+ * )
+ * ```
+ *
+ * `key` is REQUIRED because "where" is a decision about MEANING that only you
+ * can make: two folds are the same cache exactly when you say they are. Change
+ * it when the fold's meaning changes (see {@link SnapshotConfig.key}).
+ *
+ * WRAPPING IS AN OBLIGATION ON YOUR WIRING. Every entry whose handler loads the
+ * returned state must carry a log that can serve a cached fold — an
+ * `eventStore` wrapped in its family's `…SnapshottingEventStore`. Loading it
+ * through a bare log throws on the first load, naming the wrapper. The state
+ * you wrapped is untouched: loading it never reads or writes a snapshot.
+ *
+ * A state is cached once. Wrapping a cached state again is a type error rather
+ * than a quiet second key.
+ */
+export function snapshot<Id, S>(state: State<Id, S, false>, key: string, when: SnapshotPolicy): State<Id, S, true> {
+  return { ...state, snapshot: { key, when } }
 }
