@@ -17,7 +17,7 @@ import type { EventQuery } from "./dcb-query.js"
  * folds into, decides whether to start from it. See `structural-fitness.ts`.
  *
  * IT IS SET BY WHOEVER ASKED FOR IT — a direct `eventStore.source(…)` caller,
- * or a `ctx.load` whose state declared `snapshot: { key, when }`. `ctx.source`
+ * or a `ctx.load` of a state wrapped in `snapshot(state, key, when)`. `ctx.source`
  * never sets it and always reads the whole history.
  */
 export type SnapshotKey = {

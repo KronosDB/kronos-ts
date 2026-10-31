@@ -5,6 +5,7 @@ import { query, payloadEquals, unitOfWork } from "@kronos-ts/core"
 import {
   correlation,
   interceptingQueryBus,
+  localFirstQueryBus,
   localQueryBus,
   type QueryBus,
 } from "@kronos-ts/core"
@@ -77,9 +78,10 @@ function busOver(params: {
 }
 
 describe("RabbitMQ query bus", () => {
-  it("prefers local handlers by default", async () => {
+  it("asks a co-located handler under localFirstQueryBus", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver({ transport })
+    const local = localQueryBus(unitOfWork)
+    const bus = localFirstQueryBus(busOver({ transport, localSegment: local }), local)
 
     bus.subscribe("test.GetThing", async () => "local-ok")
 
@@ -95,9 +97,9 @@ describe("RabbitMQ query bus", () => {
     expect(dispatched).toHaveLength(0)
   })
 
-  it("routes through transport when distributed routing is forced", async () => {
+  it("routes through the transport even when the handler is co-located", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver({ transport, options: { preferLocal: false } })
+    const bus = busOver({ transport, options: {} })
 
     bus.subscribe("test.GetThing", async () => "local-ok")
 
@@ -115,7 +117,7 @@ describe("RabbitMQ query bus", () => {
 
   it("carries query metadata across the transport envelope", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver({ transport, options: { preferLocal: false } })
+    const bus = busOver({ transport, options: {} })
 
     await bus.query({
       identifier: "qry-1",
@@ -135,7 +137,7 @@ describe("RabbitMQ query bus", () => {
 
   it("stamps the connection's timeout on the envelope when routing names none", async () => {
     const { transport, dispatched } = recordingTransport()
-    const bus = busOver({ transport, options: { preferLocal: false } })
+    const bus = busOver({ transport, options: {} })
 
     await bus.query({
       identifier: "qry-1",
@@ -159,7 +161,7 @@ describe("RabbitMQ query bus", () => {
       },
       subscribe() {},
     }
-    const bus = busOver({ transport, options: { preferLocal: false } })
+    const bus = busOver({ transport, options: {} })
 
     await expect(
       bus.query({
@@ -220,7 +222,7 @@ describe("RabbitMQ query bus", () => {
   })
 
   it("returns initial result via the existing query transport when starting a subscription", async () => {
-    const { transport } = recordingTransport()
+    const { transport, dispatched } = recordingTransport()
     const bus = busOver({ transport })
 
     bus.subscribe("test.GetThing", async () => "initial")
@@ -233,7 +235,8 @@ describe("RabbitMQ query bus", () => {
       timestamp: Date.now(),
     })
 
-    expect(await sub.initialResult).toBe("initial")
+    expect(await sub.initialResult).toBe("remote-ok")
+    expect(dispatched).toHaveLength(1)
     sub.close()
   })
 

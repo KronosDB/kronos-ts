@@ -112,13 +112,19 @@ describe("otlpExporter — trace envelope", () => {
     expect(JSON.stringify(span)).not.toContain("4242")
   })
 
-  it("records the error message only when asked to", async () => {
+  it("records what the errors function says about the error", async () => {
     fetchStub = stubFetch()
-    const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc", errors: "message" })
-    exporter.startSpan({ name: "s", kind: SpanKind.INTERNAL }).fail(new Error("boom"))
+    const exporter = otlpExporter({
+      endpoint: "http://c:4318",
+      serviceName: "svc",
+      errors: (e) => (e instanceof Error ? e.message.replace(/\d{4}/g, "****") : String(e)),
+    })
+    exporter.startSpan({ name: "s", kind: SpanKind.INTERNAL }).fail(new Error("card 4242 declined"))
     await exporter.close()
 
-    expect(fetchStub.spans()[0].status).toEqual({ code: 2, message: "boom" })
+    const span = fetchStub.spans()[0]
+    expect(span.status).toEqual({ code: 2, message: "card **** declined" })
+    expect(attribute(span.attributes, "error.type")).toEqual({ stringValue: "Error" })
   })
 
   it("emits a linked span as its own trace root with a links entry", async () => {

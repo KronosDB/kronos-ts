@@ -80,7 +80,7 @@ export const inMemoryCapable: SnapshotCapableEventStore = inMemorySnapshottingEv
 export const postgresCapable: SnapshotCapableEventStore = postgresSnapshottingEventStore(
   postgresEventStore(pg),
   pg,
-  { serializer },
+  serializer,
 )
 
 export const kronosDbCapable: SnapshotCapableEventStore = kronosDbSnapshottingEventStore(
@@ -114,14 +114,14 @@ export const axonBaseIsNotCapable: SnapshotCapableEventStore = axonServerEventSt
 // ---------------------------------------------------------------------------
 
 export const upcastOutsideSnapshots: SnapshotCapableEventStore = upcastingEventStore(
-  postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
+  postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer),
   (e) => e,
 )
 
 export const snapshotsOutsideUpcast: SnapshotCapableEventStore = postgresSnapshottingEventStore(
   upcastingEventStore(postgresEventStore(pg), (e) => e),
   pg,
-  { serializer },
+  serializer,
 )
 
 /** Three deep, in the order a real host writes it. */
@@ -144,30 +144,26 @@ export const threeDeep: SnapshotCapableEventStore = upcastingEventStore(
 
 /** The postgres pair, scheduling outermost — the arrangement a host writes. */
 const postgresBoth = postgresSchedulingEventStore(
-  postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
+  postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer),
   pg,
-  { unitOfWork: postgresUnitOfWork(unitOfWork, pg) },
+  postgresUnitOfWork(unitOfWork, pg),
 )
 export const postgresBothSchedules: ScheduleCapableEventStore = postgresBoth
 export const postgresBothSnapshots: SnapshotCapableEventStore = postgresBoth
 
 /** The same pair, the other way up. Order is a preference, never a constraint. */
 const postgresBothReversed = postgresSnapshottingEventStore(
-  postgresSchedulingEventStore(postgresEventStore(pg), pg, {
-    unitOfWork: postgresUnitOfWork(unitOfWork, pg),
-  }),
+  postgresSchedulingEventStore(postgresEventStore(pg), pg, postgresUnitOfWork(unitOfWork, pg)),
   pg,
-  { serializer },
+  serializer,
 )
 export const reversedSchedules: ScheduleCapableEventStore = postgresBothReversed
 export const reversedSnapshots: SnapshotCapableEventStore = postgresBothReversed
 
 /** The KronosDB pair — where the schedules ride the log server-side already. */
-declare const kdbConnection: Parameters<typeof kronosDbSchedulingEventStore>[1]
 const kronosDbBoth = kronosDbSchedulingEventStore(
   kronosDbSnapshottingEventStore(kronosDbEventStore(kdb, "default"), kdb, "default"),
-  kdbConnection,
-  { serializer },
+  kdb,
 )
 export const kronosDbBothSchedules: ScheduleCapableEventStore = kronosDbBoth
 export const kronosDbBothSnapshots: SnapshotCapableEventStore = kronosDbBoth
@@ -186,7 +182,7 @@ export const everythingSnapshots: SnapshotCapableEventStore = everything
 /** And neither tier grants the other, so none of the above is vacuous. */
 // @ts-expect-error — the postgres snapshotting wrapper adds no scheduling
 export const pgSnapshotIsNotSchedulable: ScheduleCapableEventStore =
-  postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer })
+  postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer)
 
 // @ts-expect-error — and the base postgres store is neither
 export const pgBaseIsNotSchedulable: ScheduleCapableEventStore = postgresEventStore(pg, {
@@ -285,7 +281,7 @@ export const deeplyWrappedStillSatisfiesTheDemand = (
 export const proof = deeplyWrappedStillSatisfiesTheDemand(
   recordingEventStore(
     upcastingEventStore(
-      postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
+      postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer),
       (e) => e,
     ),
   ),
@@ -298,9 +294,9 @@ export const scheduleProof = deeplyWrappedStillSchedules(
   recordingEventStore(
     upcastingEventStore(
       postgresSchedulingEventStore(
-        postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
+        postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer),
         pg,
-        { unitOfWork: postgresUnitOfWork(unitOfWork, pg) },
+        postgresUnitOfWork(unitOfWork, pg),
       ),
       (e) => e,
     ),

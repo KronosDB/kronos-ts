@@ -37,6 +37,7 @@ import {
 import { state } from "@kronos-ts/core"
 import {
   afterEvents,
+  snapshot,
 } from "@kronos-ts/core"
 import { kronos } from "@kronos-ts/core"
 import {
@@ -102,7 +103,7 @@ const StudentEnrolled = event({
 })
 
 type CourseState = { opened: boolean; capacity: number; enrolled: string[] }
-const Course = state({
+const Course = snapshot(state({
   id: { courseId: z.string() },
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
@@ -110,11 +111,10 @@ const Course = state({
     [CourseOpened, (s, { payload: e }) => ({ ...s, opened: true, capacity: e.capacity })],
     [StudentEnrolled, (s, { payload: e }) => ({ ...s, enrolled: [...s.enrolled, e.studentId] })],
   ],
-  snapshot: { key: "course-v1", when: afterEvents(1) },
-})
+}), "course-v1", afterEvents(1))
 
 type StudentState = { registered: boolean; maxCourses: number; courses: string[] }
-const Student = state({
+const Student = snapshot(state({
   id: { studentId: z.string() },
   tags: (id) => ({ studentId: id.studentId }),
   evolve: [
@@ -122,8 +122,7 @@ const Student = state({
     [StudentRegistered, (s, { payload: e }) => ({ ...s, registered: true, maxCourses: e.maxCourses })],
     [StudentEnrolled, (s, { payload: e }) => ({ ...s, courses: [...s.courses, e.courseId] })],
   ],
-  snapshot: { key: "student-v1", when: afterEvents(1) },
-})
+}), "student-v1", afterEvents(1))
 
 // Commands -------------------------------------------------------------------
 
@@ -279,7 +278,7 @@ async function main(): Promise<void> {
     const eventStore = postgresSnapshottingEventStore(
       postgresEventStore(pg),
       pg,
-      { serializer: jsonSerializer() },
+      jsonSerializer(),
     )
 
     // THE TASK, named once. The postgres decorator gives it a transaction.

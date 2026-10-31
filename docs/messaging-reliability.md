@@ -118,7 +118,7 @@ bun run test:messaging:integration
 bun run test:integration
 ```
 
-Both integration commands run each suite in a fresh process. `test:messaging:integration` selects the messaging suites; `test:integration` discovers all integration suites. It covers RabbitMQ 3.13, Axon Server 2025.2.5, KronosDB 0.11.0 (or a local build through `KRONOSDB_SERVER_BIN`, or another image through `KRONOSDB_IMAGE`), in-memory execution, and transactional PostgreSQL behavior using the existing testcontainer fixtures. The tests exercise the wire path with local shortcuts disabled where relevant.
+Both integration commands run each suite in a fresh process. `test:messaging:integration` selects the messaging suites; `test:integration` discovers all integration suites. It covers RabbitMQ 3.13, Axon Server 2025.2.5, KronosDB 0.11.0 (or a local build through `KRONOSDB_SERVER_BIN`, or another image through `KRONOSDB_IMAGE`), in-memory execution, and transactional PostgreSQL behavior using the existing testcontainer fixtures. The tests exercise the wire path; a transport only skips it under `localFirstCommandBus` / `localFirstQueryBus`.
 
 Regression coverage includes nested success and failure, nested saturation, fresh units of work, out-of-order response correlation, duplicate pending identifiers, isolated codec errors, bounded caller/handler counts, client deadlines, subscription commit/rollback, cancelled initial results, iterator cleanup, shutdown draining and expiry, broker returns, publisher backpressure, channel loss, explicit connection replacement, and bursts of 128 synthetic / 256 real RabbitMQ requests. Real gRPC subscription tests consume 384 updates through a one-item buffer, crossing multiple refill boundaries.
 

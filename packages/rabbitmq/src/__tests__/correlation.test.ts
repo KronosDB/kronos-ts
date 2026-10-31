@@ -38,6 +38,7 @@ import {
   correlation,
   interceptingCommandBus,
   interceptingQueryBus,
+  localFirstCommandBus,
   unitOfWork,
   localCommandBus,
   localQueryBus,
@@ -129,19 +130,15 @@ function busOver(
   localSegment: CommandBus,
   options?: { preferLocalHandlers?: boolean },
 ): CommandBus {
-  const preferLocal = options?.preferLocalHandlers ?? false
+  const wire = rabbitMqCommandBus(localSegment, {
+    config: resolveRabbitMqConfig({
+      identity: { serviceName: "correlation-test", instanceId: "inst-1" },
+      url: "amqp://loopback",
+    }),
+    commandTransport: transport,
+  })
   return interceptingCommandBus(
-    rabbitMqCommandBus(
-      localSegment,
-      {
-        config: resolveRabbitMqConfig({
-          identity: { serviceName: "correlation-test", instanceId: "inst-1" },
-          url: "amqp://loopback",
-        }),
-        commandTransport: transport,
-      },
-      { preferLocal },
-    ),
+    options?.preferLocalHandlers ? localFirstCommandBus(wire, localSegment) : wire,
     correlation,
   )
 }

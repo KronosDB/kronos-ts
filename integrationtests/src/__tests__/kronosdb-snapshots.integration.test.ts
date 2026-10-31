@@ -26,6 +26,7 @@ import {
   event,
   state,
   afterEvents,
+  snapshot,
   snapshotIdentifier,
   repositoryFor,
   emptyMetadata,
@@ -61,7 +62,7 @@ const StudentSubscribed = event({
 
 type CourseState = { created: boolean; capacity: number; enrolled: string[] }
 
-const Course = state({
+const Course = snapshot(state({
   id: { courseId: z.string() },
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
@@ -71,8 +72,7 @@ const Course = state({
   ],
   // Two events folded is enough to earn an entry — this suite is about the
   // wire path, not about tuning a policy.
-  snapshot: { key: "course-v1", when: afterEvents(2) },
-})
+}), "course-v1", afterEvents(2))
 
 /** One event, built at the raw layer — no command bus, no unit of work. */
 function fact(descriptor: EventDescriptor<any>, payload: any): EventMessage {
@@ -288,7 +288,7 @@ describe("KronosDB native snapshots — one fused RPC", () => {
   }, 60_000)
 
   it("a declared snapshot policy writes through AppendSnapshot, and the next load seeds from it", async () => {
-    // The state value carries `snapshot: { key, when: afterEvents(2) }`, so the
+    // The state value is wrapped in `snapshot(…, key, afterEvents(2))`, so the
     // repository writes the entry itself — fire-and-forget, hence the poll.
     const courseId = "policy-101"
     const key = `course-v1:${snapshotIdentifier({ courseId })}`

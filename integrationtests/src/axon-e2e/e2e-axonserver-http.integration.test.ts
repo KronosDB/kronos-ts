@@ -36,7 +36,7 @@ import {
   type TokenStore,
 } from "@kronos-ts/core"
 import { state } from "@kronos-ts/core"
-import { type EventStore, type SnapshotCapableEventStore, afterEvents, snapshotIdentifier } from "@kronos-ts/core"
+import { type EventStore, type SnapshotCapableEventStore, afterEvents, snapshot, snapshotIdentifier } from "@kronos-ts/core"
 import {
   kronos,
   type App,
@@ -225,7 +225,7 @@ type CourseState = {
   closed: boolean
 }
 
-const Course = state({
+const Course = snapshot(state({
   id: { courseId: z.string() },
   tags: (id) => ({ courseId: id.courseId }),
   evolve: [
@@ -243,8 +243,7 @@ const Course = state({
   // Where a snapshot LANDS is a SITE fact: the entries below that carry a
   // WRAPPED `eventStore` can serve one, and the compiler refuses this state's
   // load on an entry whose log was not wrapped.
-  snapshot: { key: "course-v1", when: afterEvents(1) },
-})
+}), "course-v1", afterEvents(1))
 
 const createCourse = commandHandler(CreateCourse, async ({ payload: cmd }, ctx) => {
   const course = await ctx.load(Course, { courseId: cmd.courseId })
@@ -597,7 +596,7 @@ describe("E2E: Axon Server full stack", () => {
   }, 60_000)
 
   it("the declared snapshot policy writes to Axon's snapshot store", async () => {
-    // `Course` carries `snapshot: { key: "course-v1", when: afterEvents(1) }`
+    // `Course` is wrapped in `snapshot(…, "course-v1", afterEvents(1))`
     // on the state value itself — nothing was registered, and there is no
     // repository to reach into. The store it writes to is the one the SITE
     // named, which is Axon Server's.

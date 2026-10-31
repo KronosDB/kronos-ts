@@ -17,7 +17,7 @@ import { sourcingCondition } from "../../event-sourcing/sourcing-condition.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { upcastingEventStore } from "../../upcasting/upcasting-event-store.js"
 import type { SnapshotCapableEventStore } from "../../event-sourcing/event-store.js"
-import { afterEvents, snapshotIdentifier } from "../snapshot.js"
+import { afterEvents, snapshot, snapshotIdentifier } from "../snapshot.js"
 import { inMemorySnapshottingEventStore } from "../in-memory-snapshotting-event-store.js"
 
 // ---------------------------------------------------------------------------
@@ -36,13 +36,13 @@ type CounterState = { count: number }
 let folds = 0
 
 /**
- * NO `name` ANYWHERE. A state that snapshots declares WHERE and WHEN —
- * `snapshot: { key, when }` — and `key` is a string this file wrote. Entries
+ * NO `name` ANYWHERE. A state that snapshots is wrapped with WHERE and WHEN —
+ * `snapshot(state, key, when)` — and `key` is a string this file wrote. Entries
  * land under `"<key>:<flattened id>"`, so the tests below compose that same
  * string by hand: there is nothing to ask the framework for.
  */
 const counter = (initial: () => CounterState = () => ({ count: 0 })) =>
-  state({
+  snapshot(state({
     id: { counterId: z.string() },
     tags: ({ counterId }) => ({ counterId }),
     evolve: [
@@ -52,8 +52,7 @@ const counter = (initial: () => CounterState = () => ({ count: 0 })) =>
         return { count: s.count + payload.by }
       }],
     ],
-    snapshot: { key: "counter-v1", when: afterEvents(2) },
-  })
+  }), "counter-v1", afterEvents(2))
 
 const Counter = counter()
 const KEY = "counter-v1"
@@ -273,15 +272,14 @@ describe("inMemorySnapshottingEventStore — the capability, client-side", () =>
 
     // when — the fold's meaning changed, so the author changed the key. One
     // character in a diff; no migration, no version column, no heuristic.
-    const renamed = state({
+    const renamed = snapshot(state({
       id: { counterId: z.string() },
       tags: ({ counterId }) => ({ counterId }),
       evolve: [
         (): CounterState => ({ count: 0 }),
         [Bumped, (st, { payload }) => { folds++; return { count: st.count + payload.by } }],
       ],
-      snapshot: { key: "counter-v2", when: afterEvents(2) },
-    })
+    }), "counter-v2", afterEvents(2))
 
     folds = 0
     const result = await eventSourcedRepository(renamed, eventStore)

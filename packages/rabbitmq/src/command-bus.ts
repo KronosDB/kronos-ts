@@ -33,14 +33,12 @@ export type RabbitMqCommandTransport = {
   ): void | Promise<void>
 }
 
-/** Routing policy. Broker mechanics are the connection's, not knobs here. */
+/**
+ * Per-bus knobs. Broker mechanics are the connection's, not knobs here. Every
+ * dispatch goes over the broker; `localFirstCommandBus` / `localFirstQueryBus`
+ * hand a co-located handler its messages without it.
+ */
 export type RabbitMqBusOptions = {
-  /**
-   * Handle locally when this instance subscribed a handler for the message.
-   * Default: true. Set false to force every dispatch over the broker, which is
-   * how you exercise the wire in a single-process test.
-   */
-  readonly preferLocal?: boolean
   /** How long to wait for a remote handler's reply. Default: 30000. */
   readonly timeoutMs?: number
 }
@@ -102,22 +100,16 @@ export function rabbitMqCommandBus<U extends UnitOfWork = UnitOfWork>(
   options: RabbitMqBusOptions = {},
 ): CommandBus<U> {
   const transport = rabbit.commandTransport
-  const localHandlers = new Set<string>()
-  const preferLocal = options.preferLocal ?? true
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   return {
     async dispatch(unstamped: CommandMessage): Promise<unknown> {
       const commandName = qualifiedNameToString(unstamped.name)
-      if (preferLocal && localHandlers.has(commandName)) {
-        return next.dispatch(unstamped)
-      }
 
       // A transport is not a task: it has no unit of work, so it has no clock.
       // A message that reaches the wire with no instant yet gets one from system
       // time here — the envelope crosses a process boundary and must be fully
-      // formed. A locally-shortcut message is handed to `next` untouched
-      // instead, so the task that handles it supplies the instant.
+      // formed.
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
 
       const reply = await transport.dispatch({
@@ -132,7 +124,6 @@ export function rabbitMqCommandBus<U extends UnitOfWork = UnitOfWork>(
     },
 
     subscribe(commandName, handler): void {
-      localHandlers.add(commandName)
       next.subscribe(commandName, handler)
 
       // A handling failure comes back as `ok: false` on the reply, NOT as a

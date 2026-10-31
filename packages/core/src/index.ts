@@ -131,19 +131,19 @@ export {
 // WRAPPING, once, in the family that owns the query:
 //
 //   inMemorySnapshottingEventStore(inMemoryEventStore())
-//   postgresSnapshottingEventStore(postgresEventStore(pg, …), pg, { serializer })
+//   postgresSnapshottingEventStore(postgresEventStore(pg, …), pg, serializer)
 //   kronosDbSnapshottingEventStore(kronosDbEventStore(kdb, ctx), kdb, ctx)
 //   axonServerSnapshottingEventStore(axonServerEventStore(axon, ctx), axon, ctx)
 //
-// AND THE COMPILER MAKES YOU. `state({ snapshot: { key, when } })` types the
-// state as snapshotting. Nothing on a handler's context names the tier: the
+// AND THE COMPILER MAKES YOU. `snapshot(state, key, when)` types the state as
+// snapshotting. Nothing on a handler's context names the tier: the
 // repository behind `ctx.load` asks the wired log for the fused read, and a
 // policy loaded through a bare log is refused at runtime, loudly, on the first
 // load (`capableOrThrow` in `repository.ts`).
 //
 // THE KEY IS YOURS, and it is the whole invalidation story: `ctx.source(query,
-// { snapshot })` at the raw layer, `state({ snapshot: { key, when } })` through
-// the sugar. Changed the fold's meaning? Change the key, and every old entry is
+// { snapshot })` at the raw layer, `snapshot(state, key, when)` through the
+// sugar. Changed the fold's meaning? Change the key, and every old entry is
 // unreachable that instant — no migration, no version column, and no heuristic
 // guessing on your behalf. Nothing is derived from your code.
 //
@@ -156,7 +156,7 @@ export {
   type EvolutionResult,
   afterEvents,
   whenSourcingTimeExceeds,
-  noSnapshotPolicy,
+  snapshot,
   snapshotIdentifier,
 } from "./event-sourcing/snapshot.js"
 export { matchesInitialStructure } from "./event-sourcing/structural-fitness.js"
@@ -257,6 +257,9 @@ export { type EmitUpdateFunction } from "./query-handling/emit-update.js"
 // bus and returns a bus of the same shape (`rabbitMqCommandBus(local, rabbit)`,
 // `kronosDbCommandBus(local, kdb)`), so the routing lives with the wire format
 // that determines it and core never learns the word "remote".
+
+// ── local first: a co-located handler answers without the transport ────────
+export { localFirstCommandBus, localFirstQueryBus } from "./local-first/local-first-bus.js"
 
 // ── interception: one seam, one function ───────────────────────────────────
 export {
@@ -364,7 +367,6 @@ export { inMemoryEventStore, AppendConditionError } from "./event-sourcing/in-me
 // Decision models — the fold side of the same events.
 export {
   type State,
-  type StateLifecycle,
   type EvolverEntry,
   type EvolveShape,
   type EvolveTuple,
@@ -410,6 +412,7 @@ export {
   type SegmentStatus,
   eventProcessor,
   batched,
+  polling,
   concurrent,
   deadLettering,
   segmented,
@@ -510,7 +513,7 @@ export type {
 // ── assembly: three lists ──────────────────────────────────────────────────
 // Behaviour is registered; data is not. There is no `states` list and no
 // `StateEntry`/`StateOptions` to describe one — a state is a value a handler
-// closes over, and its snapshot policy rides on that value.
+// closes over, and `snapshot(state, key, when)` puts its policy on that value.
 export {
   kronos,
   type App,

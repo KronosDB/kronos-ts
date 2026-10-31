@@ -103,7 +103,7 @@ describe("commit-order gaps", () => {
   })
 
   it("a snapshotted read with nothing after the snapshot is not anchored to the log head", async () => {
-    const snapshots = postgresSnapshottingEventStore(store, pool, { serializer: jsonSerializer() })
+    const snapshots = postgresSnapshottingEventStore(store, pool, jsonSerializer())
     const seeded = await store.append([tagged("Seed", A)])
     await snapshots.storeSnapshot("gap-v1:a", { state: { seen: 1 }, position: seeded.position })
 

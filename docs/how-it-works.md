@@ -166,9 +166,16 @@ A transport is not a bus implementation you select. It is a function that takes
 **your** local segment and returns a bus of the same shape:
 
 ```ts
-rabbitMqCommandBus(local, rabbit)   // fork: local handler? go local. else the wire.
+rabbitMqCommandBus(local, rabbit)   // over the broker; inbound runs through YOUR local bus
 kronosDbCommandBus(local, kdb)      // inbound from the server runs through YOUR local bus
 ```
+
+A transport sends everything over the wire. To let a handler that is subscribed
+in this process answer without it, wrap the transport in
+`localFirstCommandBus(transport, local)` or `localFirstQueryBus(transport, local)`,
+where `local` is the bus the transport subscribes handlers on. Work handed to
+`local` is local work: the transport's shutdown, request limits and timeouts do
+not cover it.
 
 Core never learns the word "remote". Routing lives with the wire format that
 determines it.
@@ -200,8 +207,8 @@ It takes the whole message, not its metadata, because `causationId` is the
 message's *identifier* and that does not appear in metadata.
 
 The wrap goes on the **outside** of a transport —
-`interceptingCommandBus(rabbitMqCommandBus(local, rabbit), correlation)` — so it
-covers both branches of the transport's local/remote fork. Wrapping on the
+`interceptingCommandBus(localFirstCommandBus(rabbitMqCommandBus(local, rabbit), local), correlation)`
+— so it covers both the local branch and the wire. Wrapping on the
 inside is the classic correlation defect: commands that leave over the wire carry no
 correlation at all.
 
@@ -388,7 +395,7 @@ gets; the other two are what the entry's *log* and *bus* contribute, and against
 a log or bus that was never wrapped they resolve to `unknown` and vanish. So the
 three scheduling verbs and `emitUpdate` are structurally *absent* rather than
 present-and-failing — the diagnostic is "property does not exist", at the call
-site. Snapshotting adds no context member at all: `state({ snapshot })` says a
+site. Snapshotting adds no context member at all: `snapshot(state, key, when)` says a
 state wants caching, `ctx.load` asks the entry's log for it, and a policy loaded
 through a log that cannot serve it throws at runtime, on the first load — see
 [Snapshotting](#snapshotting-a-cache-over-the-fold).
@@ -502,14 +509,14 @@ same inferred record `tags` takes. An initial state that does not care *declines
 argument by writing none — `() => ({ … })` stays assignable to `(id) => S` by
 TypeScript's arity rule, which is why most folds never mention one.
 
-A state that snapshots says so on the value — `state({ …, snapshot: { key:
-"course-v1", when: afterEvents(50) } })`. `key` is a string *you* wrote: it is
-where entries are filed, and changing it is how you throw them away. Where the
-snapshot lands is a site fact: the entry's `eventStore`, which must have been
-wrapped in its family's `…SnapshottingEventStore`. Both halves have to be
-present — and **the compiler makes sure they are**: writing the config types the
-state as snapshotting, and `ctx.load` refuses it against a log that cannot serve
-one. See [Snapshotting](#snapshotting-a-cache-over-the-fold).
+A state that snapshots is the state wrapped — `snapshot(Course, "course-v1",
+afterEvents(50))`. `key` is a string *you* wrote: it is where entries are filed,
+and changing it is how you throw them away. `when` is a plain predicate over what
+the load cost. Where the snapshot lands is a site fact: the entry's `eventStore`,
+which must have been wrapped in its family's `…SnapshottingEventStore`. Both
+halves have to be present, and a cached state loaded through a log that cannot
+serve one throws on the first load, naming the wrapper. See
+[Snapshotting](#snapshotting-a-cache-over-the-fold).
 
 You never write the query. It is derived, **per event type**, from tags × evolve:
 for each folded type, the state's tag record is intersected with the tag keys
@@ -645,7 +652,7 @@ every rule of the mechanism falls out of that one word, **cache**.
 Start here, because this *is* the capability — seen at the layer that actually
 runs it, the **store**, not the context. Two primitives — a source that takes a
 key, and a write that takes the same key — **and both come off the one object a
-wrapped log is.** `state({ snapshot })` is sugar over exactly this; there is no
+wrapped log is.** `snapshot(state, key, when)` is sugar over exactly this; there is no
 handler-facing equivalent, because `ctx.source` has one signature and never
 carries a key (see above).
 
@@ -661,7 +668,7 @@ Four lines, and every decision in them belongs to the repository behind
 `snapshot.key` and the id. **It** runs the fold. **It** judges whether the
 cached value was worth starting from — the store hands it over without an
 opinion, because it does not know what the fold folds into. **It** decides a
-snapshot was due, from the `when` policy on `state({ snapshot })`; the `if` is
+snapshot was due, from the `when` policy `snapshot()` put on the state; the `if` is
 the policy, and there is no other kind. And `marker.position` is the consistency
 marker the read reached, which is exactly what the new entry records as its own.
 
@@ -685,7 +692,7 @@ key.** Rename `"course-v1"` to `"course-v2"` and every old entry becomes
 unreachable in the same instant — no migration, no backfill, no version column.
 
 ```ts
-snapshot: { key: "course-v1", when: afterEvents(100) }   // ← one character in a diff
+snapshot(Course, "course-v1", afterEvents(100))   // ← one character in a diff
 ```
 
 It is user-space, greppable and reviewable; it happens exactly when you decide it
@@ -727,7 +734,7 @@ const eventStore = inMemorySnapshottingEventStore(inMemoryEventStore())
 const eventStore = kronosDbSnapshottingEventStore(kronosDbEventStore(kdb, ctx), kdb, ctx)
 const eventStore = axonServerSnapshottingEventStore(axonServerEventStore(axon, ctx), axon, ctx)
 const eventStore = postgresSnapshottingEventStore(
-  postgresEventStore(pool), pool, { serializer },
+  postgresEventStore(pool), pool, serializer,
 )
 ```
 
@@ -749,7 +756,7 @@ way the scheduling tier below is. A handler has nothing new to *call* for
 snapshotting, so there is nothing for a context type to gate:
 
 ```ts
-const Course = state({ /* … */, snapshot: { key: "course-v1", when: afterEvents(100) } })
+const Course = snapshot(state({ /* … */ }), "course-v1", afterEvents(100))
 
 // this typechecks against a BARE EventStore — ctx.load's signature never
 // mentions snapshotting
@@ -815,22 +822,26 @@ const { events, marker, snapshot } = await store.source(sourcingCondition(query,
 let   state = snapshot ? snapshot.state as S : initial(id)
 ```
 
-### `state()`'s snapshot config is sugar over exactly those primitives
+### `snapshot()` is sugar over exactly those primitives
 
-Everything above is four lines a handler can write. `state({ snapshot })` is
-those four lines with the key composition and the policy written for you:
+Everything above is four lines a handler can write. `snapshot(state, key, when)`
+is those four lines with the key composition and the policy written for you:
 
 ```ts
-const Course = state({
-  id: { courseId: z.string() },
-  tags: (id) => ({ courseId: id.courseId }),
-  evolve: [ /* … */ ],
-  snapshot: { key: "course-v1", when: afterEvents(100) },   // .or(…) composes
-})
+const Course = snapshot(
+  state({
+    id: { courseId: z.string() },
+    tags: (id) => ({ courseId: id.courseId }),
+    evolve: [ /* … */ ],
+  }),
+  "course-v1",
+  (r) => afterEvents(100)(r) || whenSourcingTimeExceeds(50)(r),   // a policy is a predicate
+)
 ```
 
 `key` is **required**. A state that snapshots must say where, because "where" is
-a decision about meaning that only you can make.
+a decision about meaning that only you can make. A state is cached once:
+wrapping a cached state again does not compile.
 
 The load stamps the key on the condition, seeds from a fitting snapshot, and
 writes through the site's store when the policy fires. **The composed key is
@@ -845,7 +856,7 @@ The **capability** is a site fact, and it rides on the log:
 
 ```ts
 const eventStore = postgresSnapshottingEventStore(
-  postgresEventStore(pg), pg, { serializer },
+  postgresEventStore(pg), pg, serializer,
 )
 kronos({ commandHandlers: handlers.map((h) => ({ ...h, eventStore })) })
 ```
@@ -909,7 +920,7 @@ Both wrap the log. The documented order is **upcasting outermost**:
 
 ```ts
 upcastingEventStore(
-  postgresSnapshottingEventStore(postgresEventStore(pg), pg, { serializer }),
+  postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer),
   upcast,
 )
 ```
@@ -962,9 +973,9 @@ Three wrappers, one per family that has one, each **additive**:
 ```ts
 const eventStore = inMemorySchedulingEventStore(inMemoryEventStore())
 const eventStore = postgresSchedulingEventStore(
-  postgresEventStore(pool), pool, { unitOfWork: uow },
+  postgresEventStore(pool), pool, uow,
 )
-const eventStore = kronosDbSchedulingEventStore(kronosDbEventStore(kdb, ctx), kdb, { serializer })
+const eventStore = kronosDbSchedulingEventStore(kronosDbEventStore(kdb, ctx), kdb)
 ```
 
 Axon Server gets none, and the absence is deliberate: its generated protobuf
@@ -1029,8 +1040,8 @@ The store-tier category has two members now, and they compose:
 ```ts
 const eventStore = upcastingEventStore(
   postgresSchedulingEventStore(
-    postgresSnapshottingEventStore(postgresEventStore(pool), pool, { serializer }),
-    pool, { unitOfWork: uow },
+    postgresSnapshottingEventStore(postgresEventStore(pool), pool, serializer),
+    pool, uow,
   ),
   upcast,
 )
@@ -1077,6 +1088,12 @@ Unwrapped, a processor takes one event per unit of work at the head and up to
 behind alike. A batch only ever takes the events that are ready, so at the head
 it is the one or two that just arrived. A failed batch is retried one event at a
 time until the token is past it, so a poison event ends up alone.
+
+`polling(p, ms)` sets how long an idle processor waits before it looks again
+(default 500ms), and the base of the delay before a failed batch is retried. New
+events wake it sooner either way. Both functions take anything with the field
+they set, so the Postgres scheduling store's worker is tuned the same way:
+`polling(batched(postgresSchedulingEventStore(next, pg, uow), 200), 250)`.
 
 ### Sequences are a function
 
@@ -1127,10 +1144,12 @@ pipe(
 
 Unwrapped, a processor is one segment. Either way:
 
-- **A node claims every free segment** when it starts and every 5 seconds after,
-  renews the claims it holds, and releases them on stop. The first node to start
-  holds everything; another waits, and takes over a segment when it is released
-  or its claim lapses (10 seconds, the token stores' default).
+- **A node claims every free segment** when it starts and again every half claim
+  timeout, renews the claims it holds on the same beat, and releases them on
+  stop. The first node to start holds everything; another waits, and takes over
+  a segment when it is released or its claim lapses. The timeout is the token
+  store's `claimTimeoutMs` (10 seconds by default, so a 5-second beat); it is
+  the one setting, so the renewal pace can never fall behind the expiry.
 - **Every token write is fenced on the claim.** A node that paused long enough to
   lose a claim fails its next batch — its handlers' writes roll back with it —
   rather than writing over the node that took over.

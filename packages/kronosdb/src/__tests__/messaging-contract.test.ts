@@ -32,7 +32,7 @@ function message(name: string, payload: unknown = 0, kind: "command" | "query" =
 function harness(
   r: Rig,
   kind: "command" | "query",
-  options: { shortcut?: boolean; codec?: Serializer; limits?: MessagingLimits; timeoutMs?: number } = {},
+  options: { codec?: Serializer; limits?: MessagingLimits; timeoutMs?: number } = {},
 ) {
   r.server.holdUnhandled = 1000
   const client = options.codec === undefined ? r.client : r.another({}, options.codec)
@@ -40,7 +40,6 @@ function harness(
     limits: options.limits,
     timeoutMs: options.timeoutMs,
     flowControl: { permits: 1, refillThreshold: 0 },
-    shortcutQueriesToLocalHandlers: options.shortcut ?? false,
   }
   const bus: any =
     kind === "command"
@@ -320,25 +319,6 @@ describe("kronos query lifecycle", () => {
     sub.close()
     await until(() => r.server.connections.some((c) => c.received.some((f) => f.frame.name === "Cancel")), "the Cancel")
     expect(r.server.subscriptions).toHaveLength(1)
-  })
-
-  it("tracks a local shortcut until its handler settles", async () => {
-    r = await rig()
-    const h = queries({ shortcut: true })
-    const entered = deferred(), release = deferred()
-    h.bus.subscribe("qa.Slow", async () => {
-      entered.resolve()
-      await release.promise
-      return 7
-    })
-    const result = h.dispatch("Slow")
-    await entered.promise
-    try {
-      expect(h.latch.activeCount).toBe(1)
-    } finally {
-      release.resolve()
-      await result
-    }
   })
 
   it("shutdown settles active subscriptions and refuses new registrations", async () => {

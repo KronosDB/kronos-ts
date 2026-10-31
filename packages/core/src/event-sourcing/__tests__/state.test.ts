@@ -45,7 +45,7 @@ describe("state()", () => {
 
     expect(Course.kind).toBe("state-module")
     // Nothing names a state. Where its snapshots are filed is something the
-    // author writes down in `snapshot: { key, when }`, and its process identity
+    // author writes down in `snapshot(state, key, when)`, and its process identity
     // is what a diagnostic prints.
     expect("name" in Course).toBe(false)
     expect(Course.snapshot).toBeUndefined()

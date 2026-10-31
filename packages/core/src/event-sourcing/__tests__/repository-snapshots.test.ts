@@ -23,7 +23,7 @@ import type { Snapshot } from "../snapshot.js"
 import {
   snapshotIdentifier,
   afterEvents,
-  noSnapshotPolicy,
+  snapshot,
   type SnapshotPolicy,
 } from "../snapshot.js"
 
@@ -48,8 +48,7 @@ type CourseState = { created: boolean; name: string; capacity: number }
  * so "this state snapshots after N events" is said where the state is declared
  * rather than where the repository is built.
  */
-const courseWith = (when?: SnapshotPolicy) =>
-  state({
+const CourseFold = state({
     id: { courseId: z.string() },
     tags: (id) => ({ courseId: id.courseId }),
     evolve: [
@@ -61,8 +60,8 @@ const courseWith = (when?: SnapshotPolicy) =>
         ...state, capacity: e.capacity,
       })],
     ],
-    ...(when ? { snapshot: { key: "course-v1", when } } : {}),
   })
+const courseWith = (when: SnapshotPolicy) => snapshot(CourseFold, "course-v1", when)
 
 /** A state that snapshots at all — the read half needs a policy too. */
 const Course = courseWith(afterEvents(2))
@@ -159,7 +158,7 @@ describe("the repository ASKS for the snapshot strategy", () => {
   it("sets NO key when the state has no policy — the state half is missing", async () => {
     // given
     const log = recordingLog()
-    const repo = eventSourcedRepository(courseWith(), log.store)
+    const repo = eventSourcedRepository(CourseFold, log.store)
 
     // when
     await repo.load(cs101)
@@ -209,7 +208,7 @@ describe("the repository STARTS from a leading snapshot", () => {
     await eventStore.append([
       eventMsg(CourseCreated, { courseId: "cs-101", name: "CS 101", capacity: 30 }),
     ])
-    const repo = eventSourcedRepository(courseWith(), eventStore)
+    const repo = eventSourcedRepository(CourseFold, eventStore)
 
     // when
     const result = await repo.load(cs101)
@@ -281,13 +280,13 @@ describe("the repository WRITES the cache entry — the fold's own bookkeeping",
     expect(log.written.get(KEY)).toBeUndefined()
   })
 
-  it("does not write under noSnapshotPolicy", async () => {
+  it("does not write under a policy that is never due", async () => {
     // given
     const log = capableLog()
     await log.append([
       eventMsg(CourseCreated, { courseId: "cs-101", name: "CS 101", capacity: 30 }),
     ])
-    const repo = eventSourcedRepository(courseWith(noSnapshotPolicy()), log.store)
+    const repo = eventSourcedRepository(courseWith(() => false), log.store)
 
     // when
     await repo.load(cs101)
