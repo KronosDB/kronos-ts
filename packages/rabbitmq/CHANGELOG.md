@@ -1,5 +1,27 @@
 # @kronos-ts/rabbitmq
 
+## 0.9.0
+
+### Minor Changes
+
+- 8600eef: `localFirstCommandBus(next, local)` and `localFirstQueryBus(next, local)` hand a message whose handler was subscribed through them to `local` instead of `next`. They replace `preferLocal` on the RabbitMQ buses and `shortcutQueriesToLocalHandlers` on the Axon Server and KronosDB query buses.
+
+  - RabbitMQ buses send every dispatch over the broker unless wrapped. `preferLocal` defaulted to `true`, so wrap `rabbitMqCommandBus(local, rabbit)` in `localFirstCommandBus(…, local)`, and the query bus likewise, to keep local handling.
+  - `shortcutQueriesToLocalHandlers: true` becomes `localFirstQueryBus(axonServerQueryBus(local, conn), local)` or `localFirstQueryBus(kronosDbQueryBus(local, kdb), local)`.
+  - A message handled locally is no longer counted by the transport: its shutdown does not wait for it, and its request limit and timeout do not apply.
+  - A RabbitMQ subscription query fetches its initial result over the broker, even when the handler is in this process.
+
+### Patch Changes
+
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [b8ecc48]
+- Updated dependencies [d4565ea]
+- Updated dependencies [62c4e0c]
+- Updated dependencies [8600eef]
+  - @kronos-ts/core@0.8.0
+
 ## 0.8.4
 
 ### Patch Changes

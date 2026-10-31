@@ -1,5 +1,22 @@
 # @kronos-ts/otlp
 
+## 0.7.0
+
+### Minor Changes
+
+- 8600eef: `otlpExporter({ errors })` takes a function, `(error: unknown) => string`, that gives a failed span's status message. Without it the message is the error's type, as before. `errors: "message"` becomes `errors: (e) => (e instanceof Error ? e.message : String(e))`.
+
+### Patch Changes
+
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [b8ecc48]
+- Updated dependencies [d4565ea]
+- Updated dependencies [62c4e0c]
+- Updated dependencies [8600eef]
+  - @kronos-ts/core@0.8.0
+
 ## 0.6.4
 
 ### Patch Changes
