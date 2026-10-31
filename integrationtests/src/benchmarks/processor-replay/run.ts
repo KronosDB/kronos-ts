@@ -5,6 +5,7 @@
  *   BENCH_EVENTS=1000000 BENCH_REPS=3 BENCH_RUNTIMES=bun,node BENCH_PROJECTIONS=memory,drizzle bun run.ts
  *   BENCH_STAGES=today,filters,batch,bulk,repository,concurrent,upsert BENCH_REPLAY_BATCH=1000 bun run.ts
  *   BENCH_SEGMENTS=0,4,16 bun run.ts   (0: not segmented)
+ *   BENCH_NODES=1,2 bun run.ts         (segmented runs split over that many processes)
  *
  * One server, seeded once; one Postgres container (named for this run, removed
  * at the end) when a drizzle projection is asked for. Every run is a child
@@ -15,7 +16,7 @@
  * (BENCH_PREFIXES) and is marked `extrapolated`: its rate is real, its 1M
  * figure is rate × size.
  */
-import { spawnSync, execFileSync } from "node:child_process"
+import { spawn, spawnSync, execFileSync } from "node:child_process"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -36,6 +37,7 @@ const projections = list("BENCH_PROJECTIONS", "memory,drizzle")
 const stages = list("BENCH_STAGES", "today,filters,batch,bulk")
 const replayBatch = process.env.BENCH_REPLAY_BATCH ?? "1000"
 const segmentCounts = list("BENCH_SEGMENTS", "0").map(Number)
+const nodeCounts = list("BENCH_NODES", "1").map(Number)
 // "--all": a processor that handles every type, not one in ten.
 const extra = [process.env.BENCH_ARGS, process.env.BENCH_HEARTBEAT_MS ? `--heartbeat ${process.env.BENCH_HEARTBEAT_MS}` : ""].filter(Boolean).join(" ")
 // "projection:stage=events": stages too slow to read the whole log (drizzle at batch 1
@@ -93,6 +95,49 @@ function postgres(): { url: string; stop(): void } {
   }
 }
 
+/**
+ * One run split over `nodes` processes sharing the processor. They are started
+ * half a second apart, so two never create the schema at once, and all begin
+ * handling at the same moment.
+ */
+async function runNodes(command: string[], args: string[], nodes: number, name: string): Promise<{ row?: Omit<Row, "extrapolated">; failure?: string }> {
+  const startAt = Date.now() + 2000 + nodes * 500
+  const runs: Array<Promise<{ stdout: string; stderr: string; status: number | null }>> = []
+  for (let i = 0; i < nodes; i++) {
+    runs.push(
+      new Promise((resolve) => {
+        const child = spawn(command[0]!, [...command.slice(1), ...args, "--name", name, "--node", `${i}/${nodes}`, "--start-at", String(startAt)])
+        let stdout = ""
+        let stderr = ""
+        child.stdout.on("data", (d) => (stdout += d))
+        child.stderr.on("data", (d) => (stderr += d))
+        child.on("close", (status) => resolve({ stdout, stderr, status }))
+      }),
+    )
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  const results = await Promise.all(runs)
+  const parsed: Array<Omit<Row, "extrapolated"> & { startedAt: number; endedAt: number }> = []
+  for (const r of results) {
+    const line = r.stdout.trim().split("\n").at(-1)
+    if (!line?.startsWith("{") || r.status !== 0) return { failure: `${r.status}:\n${r.stdout}\n${r.stderr}` }
+    parsed.push(JSON.parse(line))
+  }
+  const first = parsed[0]!
+  const ms = Math.max(...parsed.map((p) => p.endedAt)) - Math.min(...parsed.map((p) => p.startedAt))
+  return {
+    row: {
+      ...first,
+      handled: Math.max(...parsed.map((p) => p.handled)),
+      ms,
+      scannedPerSecond: Math.round(first.limit / (ms / 1000)),
+      handledPerSecond: Math.round(first.expectedHandled / (ms / 1000)),
+      cpuMs: parsed.reduce((sum, p) => sum + p.cpuMs, 0),
+      rssMb: Math.max(...parsed.map((p) => p.rssMb)),
+    },
+  }
+}
+
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
   return sorted[Math.floor(sorted.length / 2)]!
@@ -122,14 +167,28 @@ try {
 
   for (const runtime of runtimes) {
     for (const projection of projections) {
-      for (const stage of stages) for (const segments of segmentCounts) {
+      for (const stage of stages) for (const segments of segmentCounts) for (const nodes of nodeCounts) {
         if (projection === "memory" && ["bulk", "repository", "concurrent", "upsert"].includes(stage)) continue
+        // Several processes share segments, and only a table they all write to adds up.
+        if (nodes > 1 && (segments < nodes || projection === "memory")) continue
         const prefix = prefixes.get(`${projection}:${stage}`)
         const slow = prefix !== undefined && prefix < events
         const limit = slow ? prefix : events
         const samples: Row[] = []
         for (let rep = 0; rep < reps; rep++) {
           const command = runtime === "bun" ? [process.execPath, join(here, "replay.ts")] : ["node", bundle]
+          if (nodes > 1) {
+            const args = ["--port", String(server.port), "--projection", projection, "--stage", stage, "--limit", String(limit), "--replay-batch", replayBatch, "--segments", String(segments), ...(db ? ["--pg", db.url] : []), ...(extra ? extra.split(" ") : [])]
+            const { row, failure } = await runNodes(command, args, nodes, `replay-${stage}-${segments}x${nodes}-${rep}-${Date.now().toString(36)}`)
+            if (!row) {
+              console.error(`${runtime} ${projection} ${stage} x${nodes} failed (${failure})`)
+              continue
+            }
+            if (row.handled !== row.expectedHandled) console.error(`${runtime} ${projection} ${row.stage}: WRONG RESULT handled ${row.handled} of ${row.expectedHandled}`)
+            samples.push({ ...row, extrapolated: slow })
+            console.error(`${row.runtime} ${projection} ${row.stage}: ${row.ms} ms, ${row.scannedPerSecond}/s scanned, ${row.handledPerSecond}/s handled, cpu ${row.cpuMs} ms (all processes), rss ${row.rssMb} MB`)
+            continue
+          }
           const ran = spawnSync(
             command[0]!,
             [...command.slice(1), "--port", String(server.port), "--projection", projection, "--stage", stage, "--limit", String(limit), "--replay-batch", replayBatch, ...(slow ? [] : ["--exact"]), ...(segments > 0 ? ["--segments", String(segments)] : []), ...(db ? ["--pg", db.url] : []), ...(extra ? extra.split(" ") : [])],

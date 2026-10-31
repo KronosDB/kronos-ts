@@ -19,7 +19,9 @@
  *   upsert       + a repository handler that hands over a fold instead of reading the row
  *
  * `--segments N` splits any stage's processor into N segments by the same
- * sequence, all held by this one process.
+ * sequence, all held by this one process. With `--node i/n` it is one of n
+ * processes sharing the processor (same `--name`), holding the segments whose
+ * id is i modulo n, and starting at `--start-at` (epoch ms) with the others.
  */
 import { batched, concurrent, eventProcessor, segmented, jsonSerializer, kronos, localCommandBus, localQueryBus, unitOfWork, type EventMessage, type EventStore } from "@kronos-ts/core"
 import { kronosDbConnection, kronosDbEventStore } from "@kronos-ts/kronosdb"
@@ -50,6 +52,8 @@ const uniqueKeys = process.argv.includes("--unique-keys")
 // kindest thing that can be said for that code.
 const heartbeat = Number(arg("heartbeat", "0"))
 const segments = Number(arg("segments", "0"))
+const [nodeIndex, nodeCount] = arg("node", "0/1").split("/").map(Number) as [number, number]
+const startAt = Number(arg("start-at", "0"))
 if (heartbeat > 0) setInterval(() => {}, heartbeat)
 const pgUrl = projectionName === "memory" ? "" : arg("pg")
 
@@ -84,14 +88,20 @@ const projection: Projection =
         ? await repositoryProjection(pgUrl, uniqueKeys, stageConfig.writes === "upsert" ? "upsert" : "get-save")
         : await drizzleProjection(pgUrl, uniqueKeys)
 
-const name = `replay-${stage}-${Date.now().toString(36)}`
+const name = arg("name", `replay-${stage}-${Date.now().toString(36)}`)
+const sharedTokens = projection.tokenStore ?? (await import("@kronos-ts/core")).inMemoryTokenStore()
+// Which segments this process takes: a fixed share, said by the host through its
+// token store. The framework does no balancing; this is one way a host can.
+const tokenStore: typeof sharedTokens =
+  nodeCount > 1
+    ? {
+        ...sharedTokens,
+        fetchAvailableSegments: async (processorName, uow) =>
+          (await sharedTokens.fetchAvailableSegments(processorName, uow)).filter((id) => id % nodeCount === nodeIndex),
+      }
+    : sharedTokens
 const configured = batched(
-  eventProcessor(
-    name,
-    stageConfig.filter ? base : everything,
-    projection.tokenStore ?? (await import("@kronos-ts/core")).inMemoryTokenStore(),
-    projection.unitOfWork,
-  ),
+  eventProcessor(name, stageConfig.filter ? base : everything, tokenStore, projection.unitOfWork),
   stageConfig.batch,
 )
 // A sequence is what a handler touches: the account, or with a row per event the event.
@@ -113,20 +123,37 @@ const handlers = projection.handlers.map((definition) => ({
   },
 }))
 
+if (startAt > Date.now()) await new Promise((r) => setTimeout(r, startAt - Date.now()))
 const cpu0 = process.cpuUsage()
+const startedAt = Date.now()
 const t0 = performance.now()
 const app = kronos({
   eventHandlers: handlers.map((h) => ({ ...h, commandBus: localCommandBus(unitOfWork), queryBus: localQueryBus(unitOfWork), processor }) as any),
 })
 const running = app.processors.get(name)!
 
-await Promise.race([reached, new Promise((_, fail) => setTimeout(() => fail(new Error("gave up waiting for the last event")), 20 * 60_000).unref())])
-// Handled is not committed: the token moves when the batch has.
-while (running.position < lastToken) {
-  if (running.status().error) throw running.status().error
-  await new Promise((r) => setTimeout(r, 0))
+if (nodeCount > 1) {
+  // Only one process sees the last event. Each is done when every segment it
+  // holds has got past it; the parent takes the first start and the last end.
+  const share = segments / nodeCount
+  const done = () => {
+    const mine = running.segments()
+    return mine.length === share && mine.every((s) => s.position >= lastToken)
+  }
+  while (!done()) {
+    if (running.status().error) throw running.status().error
+    await new Promise((r) => setTimeout(r, 5))
+  }
+} else {
+  await Promise.race([reached, new Promise((_, fail) => setTimeout(() => fail(new Error("gave up waiting for the last event")), 20 * 60_000).unref())])
+  // Handled is not committed: the token moves when the batch has.
+  while (running.position < lastToken) {
+    if (running.status().error) throw running.status().error
+    await new Promise((r) => setTimeout(r, 0))
+  }
 }
 const ms = performance.now() - t0
+const endedAt = Date.now()
 const cpu = process.cpuUsage(cpu0)
 
 await app.stop()
@@ -134,7 +161,7 @@ const handled = await projection.handled()
 const result = {
   runtime: process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`,
   projection: projectionName,
-  stage: `${stage}${all ? "+all" : ""}${uniqueKeys ? "+unique-keys" : ""}${segments > 0 ? `+segments${segments}` : ""}`,
+  stage: `${stage}${all ? "+all" : ""}${uniqueKeys ? "+unique-keys" : ""}${segments > 0 ? `+segments${segments}` : ""}${nodeCount > 1 ? `+nodes${nodeCount}` : ""}`,
   limit,
   expectedHandled,
   handled,
@@ -143,9 +170,12 @@ const result = {
   handledPerSecond: Math.round(expectedHandled / (ms / 1000)),
   cpuMs: Math.round((cpu.user + cpu.system) / 1000),
   rssMb: Math.round(process.memoryUsage().rss / 1048576),
+  startedAt,
+  endedAt,
 }
 console.log(JSON.stringify(result))
 await projection.close()
 await kdb.close()
 // A prefix run keeps reading until it is stopped, so it may have handled a few more.
-process.exit(exact ? (handled === expectedHandled ? 0 : 3) : handled >= expectedHandled ? 0 : 3)
+// A process that shares the processor may finish before the others have: the parent checks the total.
+process.exit(nodeCount > 1 ? 0 : exact ? (handled === expectedHandled ? 0 : 3) : handled >= expectedHandled ? 0 : 3)
