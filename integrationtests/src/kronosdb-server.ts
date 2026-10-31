@@ -9,14 +9,14 @@
  *                                                  deleted afterwards
  *   (unset)                                        a container, from
  *                                                  KRONOSDB_IMAGE (default
- *                                                  ghcr.io/kronosdb/kronosdb:0.11.0)
+ *                                                  ghcr.io/kronosdb/kronosdb:0.12.0)
  *
  * KRONOSDB_SERVER_ARGS adds command-line arguments to the binary (split on
  * spaces), e.g. `--ack-mode written` to take fsync out of a measurement. A
  * test's own arguments (`startKronosDb({ args })`) go to either.
  *
  * Everything — the event store, the buses, the platform — speaks the native
- * protocol on `port`, which KronosDB serves from 0.11.0 on.
+ * protocol on `port`, which KronosDB serves from 0.12.0 on.
  *
  * `startKronosDbCluster` starts a Raft cluster the same way: three local
  * processes with the binary, three containers on a network otherwise.
@@ -39,7 +39,7 @@ export type KronosDbServer = {
   stop(): Promise<void>
 }
 
-const DEFAULT_IMAGE = "ghcr.io/kronosdb/kronosdb:0.11.0"
+const DEFAULT_IMAGE = "ghcr.io/kronosdb/kronosdb:0.12.0"
 const READY_TIMEOUT_MS = 60_000
 
 async function freePort(): Promise<number> {
