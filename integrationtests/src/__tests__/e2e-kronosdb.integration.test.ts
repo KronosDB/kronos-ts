@@ -136,12 +136,7 @@ function sitedOn(
         if (!handlerSite.eventStore) {
           throw new Error("sitedOn: an event handler needs an `eventStore` on the site")
         }
-        processor = eventProcessor({
-          name: processorName,
-          eventStore: handlerSite.eventStore,
-          tokenStore,
-          unitOfWork: uow,
-        })
+        processor = eventProcessor(processorName, handlerSite.eventStore, tokenStore, uow)
       }
       eventHandlers.push({ ...item, commandBus, queryBus, processor })
     }

@@ -98,8 +98,7 @@ export const billingSlice = slice({
   eventHandlers: [
     {
       handler: projectCharged,
-      processor: (eventStore, tokenStore, uow) =>
-        eventProcessor({ name: "billing-balances", eventStore, tokenStore, unitOfWork: uow }),
+      processor: (eventStore, tokenStore, uow) => eventProcessor("billing-balances", eventStore, tokenStore, uow),
     },
   ],
 })
@@ -114,12 +113,11 @@ export const settlementSlice = slice({
     {
       handler: settleCharge,
       processor: (eventStore, tokenStore, uow, deadLetterQueue) =>
-        eventProcessor({
-          name: "billing-settlement",
-          eventStore, tokenStore, unitOfWork: uow,
-          sequence: sequentialPerTag("accountId"),
+        deadLettering(
+          eventProcessor("billing-settlement", eventStore, tokenStore, uow),
           deadLetterQueue,
-        }),
+          (e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier,
+        ),
     },
   ],
 })
@@ -127,7 +125,7 @@ export const settlementSlice = slice({
 
 The parameter list *is* the semantic declaration. A reader sees at a glance that
 the projection takes no queue and therefore runs in global order, and that the
-automation lanes per account. Nothing checks a flag at boot.
+automation parks per account. Nothing checks a flag at boot.
 
 ## 2. A module is your grouping function
 
@@ -381,6 +379,169 @@ next year — one file changes.
 separate files rather than separate trees means the wire edge for a behaviour is
 next to the behaviour, not in a distant `routes/` directory that has to be kept
 in sync by hand.
+
+## 6. Recipe: a projection that writes once per batch
+
+**House style, not the framework.** Nothing below is exported by kronos-ts. It is
+one way to build it out of what is: a batch is one unit of work, the unit of work
+is on `ctx`, and `onPrepareCommit` runs before the processor stores its token.
+Rename it, cut it down, or write it differently.
+
+The handler reads and saves a row as if it were the table:
+
+```ts
+type Ctx = EventHandlerContext & Repositories<{ balances: typeof balances }>
+
+export const balanceHandlers = [
+  eventHandler(Deposited, async ({ payload }, ctx: Ctx) => {
+    const b = await ctx.balances.get(payload.accountId)
+    await ctx.balances.save({ ...b, total: b.total + payload.amount })
+  }),
+  eventHandler(Withdrawn, async ({ payload, timestamp }, ctx: Ctx) => {
+    const b = await ctx.balances.get(payload.accountId)
+    const total = b.total - payload.amount
+    await ctx.balances.save({ ...b, total, overdrawnSince: total < 0 ? (b.overdrawnSince ?? timestamp) : null })
+  }),
+]
+```
+
+and the batch decides when the table is read and written:
+
+```ts
+const byAccount = (e: EventMessage) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier
+
+export const balancesProcessor = pipe(
+  eventProcessor("balances", eventStore, postgresTokenStore(pg), postgresUnitOfWork(unitOfWork, pg)),
+  (p) => batched(p, 1000),          // up to 1000 ready events per unit of work
+  (p) => concurrent(p, byAccount),  // the batch's accounts side by side, so their gets arrive together
+)
+
+const projection = (h) => pipe(h, (x) => repositoryHandler(x, { balances }), (x) => postgresHandler(x, pg))
+```
+
+The repository, next to your `drizzleHandler`:
+
+```ts
+// app/repository.ts
+import { getTableColumns, inArray, is, sql, SQL } from "drizzle-orm"
+import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js"
+import type { PgColumn, PgTable } from "drizzle-orm/pg-core"
+import type { Sql } from "postgres"
+import type { UnitOfWork } from "@kronos-ts/core"
+import type { PostgresCapability } from "@kronos-ts/postgres"
+
+type Row<T extends PgTable> = T["$inferSelect"]
+type Key<T extends PgTable> = {
+  [K in keyof T["_"]["columns"]]: T["_"]["columns"][K]["_"]["isPrimaryKey"] extends true ? T["_"]["columns"][K]["_"]["data"] : never
+}[keyof T["_"]["columns"]]
+
+export type Repository<T extends PgTable> = {
+  /** This batch's row, else the stored one, else a new one from the table's column defaults. */
+  get(id: Key<T>): Promise<Row<T>>
+  /** Replaces this batch's row; written with the token when the batch commits. */
+  save(row: Row<T>): Promise<void>
+}
+export type Repositories<T extends Record<string, PgTable>> = { readonly [K in keyof T]: Repository<T[K]> }
+
+type Kept = { rows: Map<unknown, any>; changed: Set<unknown>; asked: Map<unknown, Array<[(row: any) => void, (error: unknown) => void]>> }
+
+const batches = new WeakMap<UnitOfWork, Map<PgTable, Kept>>()
+
+export const repositoryHandler =
+  <T extends Record<string, PgTable>, M, C extends Repositories<T>>(next: (message: M, ctx: C) => Promise<void>, tables: T) =>
+  async (message: M, ctx: Omit<C, keyof T> & PostgresCapability & { unitOfWork: UnitOfWork }) => {
+    const db = drizzle(ctx.sql().unwrap<Sql>())
+    let kept = batches.get(ctx.unitOfWork)
+    if (!kept) {
+      const batch = new Map(Object.values(tables).map((t) => [t, { rows: new Map(), changed: new Set(), asked: new Map() }]))
+      batches.set(ctx.unitOfWork, (kept = batch))
+      // Before the token, in the same transaction. A failed batch never gets here.
+      ctx.unitOfWork.onPrepareCommit(async () => {
+        for (const [table, { rows, changed }] of batch) {
+          if (changed.size === 0) continue
+          const { key, set } = shape(table)
+          await db.insert(table).values([...changed].map((id) => rows.get(id))).onConflictDoUpdate({ target: key, set })
+        }
+      })
+    }
+    const repositories = Object.fromEntries(Object.entries(tables).map(([name, t]) => [name, repository(db, t, kept.get(t)!)]))
+    return next(message, { ...ctx, ...repositories } as unknown as C)
+  }
+
+function repository(db: PostgresJsDatabase, table: PgTable, kept: Kept): Repository<PgTable> {
+  const { key, keyName, fresh } = shape(table)
+  return {
+    async get(id) {
+      if (kept.rows.has(id)) return kept.rows.get(id)
+      return new Promise((answer, fail) => {
+        const first = kept.asked.size === 0
+        kept.asked.set(id, [...(kept.asked.get(id) ?? []), [answer, fail]])
+        // Every get asked in this turn of the event loop, in one select.
+        if (first) setImmediate(async () => {
+          const asked = new Map(kept.asked)
+          kept.asked.clear()
+          try {
+            const found = await db.select().from(table).where(inArray(key, [...asked.keys()]))
+            for (const row of found) if (!kept.rows.has(row[keyName])) kept.rows.set(row[keyName], row)
+            for (const [id, waiting] of asked) {
+              if (!kept.rows.has(id)) kept.rows.set(id, { ...fresh, [keyName]: id })
+              for (const [done] of waiting) done(kept.rows.get(id))
+            }
+          } catch (error) {
+            for (const waiting of asked.values()) for (const [, failed] of waiting) failed(error)
+          }
+        })
+      })
+    },
+    async save(row) {
+      kept.rows.set(row[keyName], row)
+      kept.changed.add(row[keyName])
+    },
+  }
+}
+
+/** The key, the conflict update, and what a new row starts as — read off the table. */
+function shape(table: PgTable) {
+  const columns = Object.entries(getTableColumns(table)) as Array<[string, PgColumn]>
+  const [keyName, key] = columns.find(([, c]) => c.primary)!
+  const others = columns.filter(([, c]) => c !== key)
+  const fresh = Object.fromEntries(others.map(([name, c]) => {
+    if (c.default !== undefined && !is(c.default, SQL)) return [name, c.default]
+    if (!c.notNull) return [name, null]
+    throw new Error(`a new row has nothing to start at: "${c.name}" is NOT NULL without a default`)
+  }))
+  const set = Object.fromEntries(others.map(([name, c]) => [name, sql`excluded.${sql.identifier(c.name)}`]))
+  return { key, keyName, fresh, set }
+}
+```
+
+Left out for length: one-column primary keys only, and a batch over 65,535
+parameters needs its insert split (the replay benchmark's
+`integrationtests/src/benchmarks/processor-replay/repository.ts` does both).
+
+How it holds together:
+
+- **Rows and token commit together.** The write is in `onPrepareCommit`, which the
+  processor's own token write follows. A failed batch rolls both back, and its
+  rows die with its unit of work, so nothing is folded twice.
+- **At the head it is as fresh as before.** A batch is only what is ready — one or
+  two events — so it writes at once.
+- **Reads are one statement per batch** because `concurrent` starts every sequence
+  together: their first `get`s land in the same turn. Without `concurrent` the
+  handler still works, one read per row per batch.
+- **The sequence must cover every row the handler touches.** Sequences run side
+  by side; two sequences writing one row would race.
+- **Dead letters** park cleanly if the handler throws before `save`.
+  `deadLettering(p, queue, byAccount)` takes the same function as `concurrent`.
+
+Variations, all yours to choose:
+
+- **Deltas.** A fold that never needs the old row (a counter, last-write-wins)
+  can skip `get` and write `total = total + excluded.total`. No read at all.
+- **A fold queued for the end of the batch** — the handler hands over
+  `(row) => row` and never waits for it. All of a batch's reads still become one,
+  without `concurrent`, for handlers whose rows cross sequences. The handler cannot
+  see the result, and a throwing fold fails the batch rather than parking.
 
 ---
 

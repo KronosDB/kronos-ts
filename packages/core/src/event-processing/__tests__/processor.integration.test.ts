@@ -86,12 +86,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
         {
           ...onStudentEnrolled,
           ...buses,
-          processor: eventProcessor({
-            name: "student-projection",
-            eventStore,
-            tokenStore,
-            unitOfWork,
-          }),
+          processor: eventProcessor("student-projection", eventStore, tokenStore, unitOfWork),
         },
       ],
     })
@@ -128,12 +123,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
         {
           ...onStudentEnrolled,
           ...buses,
-          processor: eventProcessor({
-            name: "student-projection",
-            eventStore,
-            tokenStore,
-            unitOfWork,
-          }),
+          processor: eventProcessor("student-projection", eventStore, tokenStore, unitOfWork),
         },
       ],
     })
@@ -177,12 +167,7 @@ describe("Full flow: command -> event -> processor -> projection -> query", () =
     const eventStore = inMemoryEventStore()
     const tokenStore = inMemoryTokenStore()
     const buses = inMemoryBuses()
-    const multiSlice = eventProcessor({
-      name: "multi-slice-projection",
-      eventStore,
-      tokenStore,
-      unitOfWork,
-    })
+    const multiSlice = eventProcessor("multi-slice-projection", eventStore, tokenStore, unitOfWork)
     const app = kronos({
       commandHandlers: [
         { ...enrollStudent, ...buses, eventStore },

@@ -298,12 +298,7 @@ async function main(): Promise<void> {
     // THE DELIVERY. `postgresTokenStore` is the SAME family as `uow`, so the
     // token update writes through the transaction the projection wrote in —
     // mixing families here is a compile error naming the factory to call.
-    const projection = eventProcessor({
-      name: "course-projection",
-      eventStore,
-      tokenStore: postgresTokenStore(pg),
-      unitOfWork: uow,
-    })
+    const projection = eventProcessor("course-projection", eventStore, postgresTokenStore(pg), uow)
 
     // THE ARROWS, written out by the host — one entry per handler, each
     // pointing at the shared objects above. A `.map` over these would have to

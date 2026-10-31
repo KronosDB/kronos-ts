@@ -252,7 +252,7 @@ export const COURSE_PROJECTION = "course-projection"
  */
 export function courses({ eventStore }: FixtureResources): FixtureLists {
   const projection: PartialProcessor = (log, tokenStore, unitOfWork) =>
-    eventProcessor({ name: COURSE_PROJECTION, eventStore: log, tokenStore, unitOfWork })
+    eventProcessor(COURSE_PROJECTION, log, tokenStore, unitOfWork)
 
   return {
     commandHandlers: courseSlice.commandHandlers.map((h) => ({ ...h, eventStore })),

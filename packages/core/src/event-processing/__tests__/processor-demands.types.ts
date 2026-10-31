@@ -1,98 +1,67 @@
 /**
- * THE TYPE TEST FOR THE PROCESSOR'S OWN DEMAND: A QUEUE IMPLIES A LANE.
+ * THE TYPE TEST FOR THE PROCESSOR'S OWN DEMANDS.
  *
  * Every claim here is a compile-time one, so the test IS the typecheck: this
  * file is listed in the root `tsconfig.json` `files` array, which is not subject
  * to `exclude`, so it is judged by `tsc --noEmit`. A `@ts-expect-error` that
  * stops erroring turns that gate red.
  *
- * What it pins: `eventProcessor({ deadLetterQueue })` WITHOUT a `sequence` does
- * not compile. Parking is a lane operation — the queue holds a failed event and
- * everything behind it in the same lane — so "which lane" stops being optional
- * the moment there is a queue.
- *
- * This used to be a `throw` in the constructor. It was honest, and it was late:
- * a composition root runs at boot, so the mistake was found by starting the
- * process rather than by building it. The throw is still there for JavaScript
- * callers, one line, exactly as `repository.ts` keeps its one line.
+ * What it pins:
+ * - `U` is read off the unit-of-work FACTORY, and the token store and the
+ *   dead-letter queue are CHECKED against it: a store keyed on a task the
+ *   factory does not mint does not compile.
+ * - A dead-letter queue cannot be given without the sequences it parks under.
+ *   That used to be a demand on a config object; `deadLettering(p, queue,
+ *   sequenceOf)` makes the sequence a required argument, so there is nothing left
+ *   to demand.
  */
+import type { EventMessage } from "../../messaging/messages.js"
 import { inMemoryEventStore } from "../../event-sourcing/in-memory.js"
-import { inMemoryTokenStore } from "../token-store.js"
-import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
-import { eventProcessor } from "../processor.js"
-import { sequentialPerTag } from "../sequence.js"
-import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
+import { inMemoryTokenStore, type TokenStore } from "../token-store.js"
+import { inMemoryDeadLetterQueue, type SequencedDeadLetterQueue } from "../dead-letter-queue.js"
+import { batched, concurrent, deadLettering, eventProcessor, type EventProcessor } from "../processor.js"
+import { unitOfWork, type UnitOfWork } from "../../unit-of-work/unit-of-work.js"
 
 const eventStore = inMemoryEventStore()
 const tokenStore = inMemoryTokenStore()
 const deadLetterQueue = inMemoryDeadLetterQueue()
-const lane = sequentialPerTag("courseId")
+const byCourse = (e: EventMessage) => e.tags.find((t) => t.key === "courseId")?.value ?? e.identifier
+
+/** A task that carries something the bare one does not — a family's, say. */
+type FamilyUnitOfWork = UnitOfWork & { readonly family: "postgres" }
+declare const familyUnitOfWork: () => FamilyUnitOfWork
+declare const familyTokenStore: TokenStore<FamilyUnitOfWork>
+declare const familyQueue: SequencedDeadLetterQueue<FamilyUnitOfWork>
 
 // ---------------------------------------------------------------------------
-// ALL FOUR QUADRANTS of (queue?) × (lane?).
+// The four parts, and the wrappers over them.
 // ---------------------------------------------------------------------------
 
-/** NEITHER ✓ — a projection in global stream order, which is most of them. */
-export const plainProjection = eventProcessor({
-  name: "courses",
-  eventStore,
-  tokenStore,
-  unitOfWork,
-})
+/** ✓ A projection in global stream order, which is most of them. */
+export const plainProjection: EventProcessor = eventProcessor("courses", eventStore, tokenStore, unitOfWork)
 
-/** LANE ONLY ✓ — ordered per entity, failures propagate and retry. */
-export const lanedNoQueue = eventProcessor({
-  name: "courses",
-  eventStore,
-  tokenStore,
-  unitOfWork,
-  sequence: lane,
-})
-
-/** BOTH ✓ — the arrangement the demand exists to require. */
-export const lanedWithQueue = eventProcessor({
-  name: "courses",
-  eventStore,
-  tokenStore,
-  unitOfWork,
-  sequence: lane,
+/** ✓ Every wrapper, composed. */
+export const wrapped: EventProcessor = deadLettering(
+  concurrent(batched(eventProcessor("courses", eventStore, tokenStore, unitOfWork), 1000), byCourse),
   deadLetterQueue,
-})
-
-/**
- * QUEUE ONLY ✗ — THE HEADLINE.
- *
- * The demand adds a REQUIRED `sequence` whose type is an anonymous ERROR/FIX
- * record, so the compiler reports a missing property and prints its structure —
- * which means the keys ARE the message and they arrive at the wiring site. The
- * wording is GENERAL, because core is certain about the rule and about nothing
- * else; `sequentialPerTag` is core's own export, so naming it is not core
- * guessing at anybody's stack.
- */
-export const queueWithoutLane = eventProcessor(
-  // @ts-expect-error — a deadLetterQueue without a sequence: parking is a lane operation
-  {
-    name: "courses",
-    eventStore,
-    tokenStore,
-    unitOfWork,
-    deadLetterQueue,
-  },
+  byCourse,
 )
 
-/**
- * AND THE DEMAND READS THE CONFIG, NOT THE TYPE. A queue arriving through a
- * variable is still a queue, so the refusal does not depend on the property
- * being written inline.
- */
-const queue = deadLetterQueue
-export const queueViaVariable = eventProcessor(
-  // @ts-expect-error — same mistake, one indirection later
-  {
-    name: "courses",
-    eventStore,
-    tokenStore,
-    unitOfWork,
-    deadLetterQueue: queue,
-  },
-)
+// @ts-expect-error — a queue without the sequences it parks under
+export const queueWithoutSequences = deadLettering(plainProjection, deadLetterQueue)
+
+// ---------------------------------------------------------------------------
+// `U` comes from the factory; the stores are checked against it.
+// ---------------------------------------------------------------------------
+
+/** ✓ The family's store with the family's factory: `U` is the family's task. */
+export const family: EventProcessor<FamilyUnitOfWork> = eventProcessor("courses", eventStore, familyTokenStore, familyUnitOfWork)
+
+/** ✓ A store that takes any task lives with a family's factory too. */
+export const anyStore: EventProcessor<FamilyUnitOfWork> = eventProcessor("courses", eventStore, tokenStore, familyUnitOfWork)
+
+// @ts-expect-error — a family's token store with a bare factory: the store cannot live with the tasks
+export const mixedToken = eventProcessor("courses", eventStore, familyTokenStore, unitOfWork)
+
+// @ts-expect-error — a family's queue on a processor whose factory mints bare tasks
+export const mixedQueue = deadLettering(plainProjection, familyQueue, byCourse)

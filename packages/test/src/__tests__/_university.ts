@@ -200,7 +200,7 @@ const getCourseView = queryHandler(GetCourseView, async ({ payload: q }) => {
  * free projection has no honest place to park.
  */
 const projection: PartialProcessor = (eventStore, tokenStore, unitOfWork) =>
-  eventProcessor({ name: "courses", eventStore, tokenStore, unitOfWork })
+  eventProcessor("courses", eventStore, tokenStore, unitOfWork)
 
 /**
  * The whole university, as a function of the resources it runs on.

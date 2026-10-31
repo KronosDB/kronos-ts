@@ -160,7 +160,7 @@ export type ReplayToken = TrackingToken & {
  * Once `currentToken.covers(tokenAtReset)`, the replay is complete and the
  * token unwraps to the current position.
  *
- * @param tokenAtReset The head position when reset was triggered
+ * @param tokenAtReset Where the processor had got to when it was reset
  * @param currentToken Where replay is currently reading from
  */
 export function replayToken(
@@ -199,6 +199,63 @@ export function replayToken(
 }
 
 // ---------------------------------------------------------------------------
+// MergedToken
+// ---------------------------------------------------------------------------
+
+/** One half of a merged segment: its id under the halves' mask, and how far it had got. */
+export type MergedHalf = { readonly segment: number; readonly token: TrackingToken }
+
+/**
+ * The token of a segment just merged from two halves that had got to different
+ * places. The segment reads from the half that is behind; an event belonging to
+ * the half that is ahead, and already handled by it, is passed over. Once both
+ * halves have got to the same place it is a plain token again.
+ */
+export type MergedToken = TrackingToken & {
+  readonly kind: "merged"
+  /** The halves' mask: an event's half is the one whose id is `hash & mask`. */
+  readonly mask: number
+  readonly halves: readonly [MergedHalf, MergedHalf]
+}
+
+export function mergedToken(mask: number, halves: readonly [MergedHalf, MergedHalf]): TrackingToken {
+  const [a, b] = halves
+  if (a.token.samePositionAs(b.token)) return a.token
+  const behind = a.token.position() <= b.token.position() ? a.token : b.token
+  const merged: MergedToken = {
+    kind: "merged",
+    mask,
+    halves,
+    position: () => behind.position(),
+    covers: (other) => behind.covers(other),
+    lowerBound: (other) => behind.lowerBound(other),
+    upperBound: (other) => behind.upperBound(other),
+    samePositionAs: (other) => behind.samePositionAs(other),
+  }
+  return merged
+}
+
+export function isMergedToken(token: TrackingToken): token is MergedToken {
+  return token.kind === "merged"
+}
+
+/** Whether the half of a merged token this sequence hash belongs to has already handled the event ending at `past`. */
+export function handledByMergedHalf(token: MergedToken, hash: number, past: TrackingToken): boolean {
+  const half = token.halves.find((h) => (hash & token.mask) === h.segment)
+  return half !== undefined && half.token.covers(past)
+}
+
+/** The furthest a token had got: past the halves of a merged one, past the reset point of a replay. */
+export function reachedBy(token: TrackingToken): TrackingToken {
+  if (isReplayToken(token)) return token.tokenAtReset
+  if (isMergedToken(token)) {
+    const [a, b] = token.halves
+    return a.token.position() >= b.token.position() ? a.token : b.token
+  }
+  return token
+}
+
+// ---------------------------------------------------------------------------
 // Type guards
 // ---------------------------------------------------------------------------
 
@@ -226,6 +283,10 @@ export function isGapAwareToken(token: TrackingToken): token is GapAwareToken {
  * collapsed to a bare position.
  */
 export function advanceTokenTo(token: TrackingToken, next: TrackingToken): TrackingToken {
+  if (isMergedToken(token)) {
+    const [a, b] = token.halves.map((half) => (half.token.covers(next) ? half : { ...half, token: next }))
+    return mergedToken(token.mask, [a!, b!])
+  }
   if (!isReplayToken(token)) {
     return next
   }
@@ -257,46 +318,74 @@ export type SerializedToken = {
   readonly data: string
 }
 
+type TokenBody = { position: string; gapKey?: string }
+
+function bodyOf(token: TrackingToken): TokenBody {
+  const inner = unwrapToken(token)
+  return isGapAwareToken(inner)
+    ? { position: inner.position().toString(), gapKey: inner.gapKey }
+    : { position: inner.position().toString() }
+}
+
+function tokenOf(body: TokenBody): TrackingToken {
+  return body.gapKey !== undefined
+    ? gapAwareToken(BigInt(body.position), body.gapKey)
+    : globalSequenceToken(BigInt(body.position))
+}
+
 /**
  * Serialize a token for durable storage. The JSON body always carries
  * `position`; when the token (or, for a ReplayToken, its innermost token) is a
  * {@link GapAwareToken}, the `gapKey` is preserved so the cursor resumes
- * exactly on reload. ReplayTokens still flatten to their current position on
- * the wire (replay-in-progress state does not survive a restart, as before),
- * but the gapKey survives so live tailing resumes without skipping events.
+ * exactly on reload.
+ *
+ * A MergedToken carries both halves, with the mask that tells them apart.
+ *
+ * A ReplayToken ALSO carries `tokenAtReset` — where the processor had got to
+ * when it was reset — so a replay survives a restart: without it a processor
+ * stopped mid-replay comes back from the store as a plain token, and every
+ * event it redelivers says it is not a replay.
  *
  * `type` is a human-readable label describing the persisted shape — it matches
- * the historical `GlobalSequenceToken` value (so existing rows are unchanged)
- * and is `GapAwareToken` when a gapKey is present. Deserialization ignores it
- * (it keys off the presence of `gapKey` in the body), so it is purely for
+ * the historical `GlobalSequenceToken` value (so existing rows are unchanged),
+ * and is `GapAwareToken` when a gapKey is present, `ReplayToken` mid-replay and
+ * `MergedToken` while a merged segment's halves catch up with each other.
+ * Deserialization ignores it (it keys off the body), so it is purely for
  * diagnostics / readability of the token table.
  */
 export function serializeToken(token: TrackingToken): SerializedToken {
-  const inner = unwrapToken(token)
-  const gapKey = isGapAwareToken(inner) ? inner.gapKey : undefined
-  const payload =
-    gapKey !== undefined
-      ? { position: token.position().toString(), gapKey }
-      : { position: token.position().toString() }
-  const type = gapKey !== undefined ? "GapAwareToken" : "GlobalSequenceToken"
-  return { type, data: JSON.stringify(payload) }
+  const body = bodyOf(token)
+  if (isMergedToken(token)) {
+    const merged = { mask: token.mask, halves: token.halves.map((h) => ({ segment: h.segment, ...bodyOf(h.token) })) }
+    return { type: "MergedToken", data: JSON.stringify({ ...body, merged }) }
+  }
+  if (isReplayToken(token)) {
+    return { type: "ReplayToken", data: JSON.stringify({ ...body, tokenAtReset: bodyOf(token.tokenAtReset) }) }
+  }
+  return { type: body.gapKey !== undefined ? "GapAwareToken" : "GlobalSequenceToken", data: JSON.stringify(body) }
 }
 
 /**
- * Reconstruct a token from its persisted form. A body carrying a `gapKey`
- * rehydrates as a {@link GapAwareToken}; otherwise a {@link GlobalSequenceToken}.
- * Returns undefined when there is no stored token.
+ * Reconstruct a token from its persisted form. A body carrying `tokenAtReset`
+ * rehydrates as a {@link ReplayToken}; a body carrying a `gapKey` as a
+ * {@link GapAwareToken}; otherwise a {@link GlobalSequenceToken}. Returns
+ * undefined when there is no stored token.
  */
 export function deserializeToken(
   type: string | null | undefined,
   data: string | null | undefined,
 ): TrackingToken | undefined {
   if (!data) return undefined
-  const parsed = JSON.parse(data) as { position: string; gapKey?: string }
-  if (parsed.gapKey !== undefined) {
-    return gapAwareToken(BigInt(parsed.position), parsed.gapKey)
+  const parsed = JSON.parse(data) as TokenBody & {
+    tokenAtReset?: TokenBody
+    merged?: { mask: number; halves: Array<TokenBody & { segment: number }> }
   }
-  return globalSequenceToken(BigInt(parsed.position))
+  if (parsed.merged !== undefined) {
+    const [a, b] = parsed.merged.halves.map((h) => ({ segment: h.segment, token: tokenOf(h) }))
+    return mergedToken(parsed.merged.mask, [a!, b!])
+  }
+  const current = tokenOf(parsed)
+  return parsed.tokenAtReset !== undefined ? replayToken(tokenOf(parsed.tokenAtReset), current) : current
 }
 
 /**

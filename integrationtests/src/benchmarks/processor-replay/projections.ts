@@ -45,19 +45,19 @@ export function memoryProjection(all = false): Projection {
 
 export const balances = pgTable("replay_balances", {
   account: text("account").primaryKey(),
-  total: bigint("total", { mode: "number" }).notNull(),
-  count: integer("count").notNull(),
+  total: bigint("total", { mode: "number" }).notNull().default(0),
+  count: integer("count").notNull().default(0),
 })
 
 /** The table every drizzle run writes into. */
 export async function prepareDatabase(pg: PostgresResource): Promise<void> {
-  await pg.query(`CREATE TABLE IF NOT EXISTS replay_balances (account text PRIMARY KEY, total bigint NOT NULL, count integer NOT NULL)`)
+  await pg.query(`CREATE TABLE IF NOT EXISTS replay_balances (account text PRIMARY KEY, total bigint NOT NULL DEFAULT 0, count integer NOT NULL DEFAULT 0)`)
   await pg.query(`TRUNCATE replay_balances`)
 }
 
 /** One upsert per event, in the batch's transaction: what a projection written today does. */
 export async function drizzleProjection(url: string, uniqueKeys = false): Promise<Projection & { readonly pg: PostgresResource }> {
-  const pg = postgresPool(pgAdapter({ connectionString: url }))
+  const pg = postgresPool(pgAdapter({ connectionString: url, poolConfig: { max: 40 } }))
   await pg.start()
   await prepareDatabase(pg)
 

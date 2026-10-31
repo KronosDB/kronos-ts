@@ -87,12 +87,7 @@ function sitedCourses(site: HandlerSite & {
 }) {
   const { tokenStore = inMemoryTokenStore(), unitOfWork: uow = unitOfWork, commandBus, queryBus, ...handlerSite } = site
   if (!handlerSite.eventStore) throw new Error("sitedCourses: needs an `eventStore` on the site")
-  const processor = eventProcessor({
-    name: COURSE_PROJECTION,
-    eventStore: handlerSite.eventStore,
-    tokenStore,
-    unitOfWork: uow,
-  })
+  const processor = eventProcessor(COURSE_PROJECTION, handlerSite.eventStore, tokenStore, uow)
   return {
     commandHandlers: courseSlice.commandHandlers.map(
       (h) => ({ ...h, ...handlerSite, commandBus, queryBus }) as CommandHandlerEntry,

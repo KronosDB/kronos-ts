@@ -1048,7 +1048,7 @@ A processor is a **value** — a record you can hold, compare, and hand to as ma
 event handlers as belong to it.
 
 ```ts
-const projection = eventProcessor({ name: "course-views", eventStore, tokenStore, unitOfWork })
+const projection = eventProcessor("course-views", eventStore, tokenStore, unitOfWork)
 ```
 
 `name` is the durable identity: the tracking token is stored under it, so the
@@ -1058,52 +1058,100 @@ every restart, and a non-transactional unit of work commits the projection write
 and the token update as two unrelated effects. Both surface much later as a read
 model nobody can explain.
 
-### Sequencing is a function
+What the processor does with its batch is said by wrapping the value, and the
+wrappers compose through whatever `pipe` the host uses:
+
+```ts
+const balances = pipe(
+  eventProcessor("balances", eventStore, tokenStore, postgresUnitOfWork(unitOfWork, pg)),
+  (p) => batched(p, 1000),
+  (p) => concurrent(p, byAccount),
+  (p) => deadLettering(p, postgresDeadLetterQueue(pg), byAccount),
+)
+```
+
+### Batches
+
+Unwrapped, a processor takes one event per unit of work at the head and up to
+1000 while it is behind. `batched(p, n)` makes it up to `n` at the head and
+behind alike. A batch only ever takes the events that are ready, so at the head
+it is the one or two that just arrived. A failed batch is retried one event at a
+time until the token is past it, so a poison event ends up alone.
+
+### Sequences are a function
 
 ```ts
 type Sequence = (event: EventMessage) => string
 ```
 
-Total: every event has a lane. Events sharing a lane are processed in order.
+Total: every event has a sequence. Events sharing a sequence are processed in order.
 
-- **Absent** — global stream order, one lane. What a projection wants.
-- **`sequentialPerTag("accountId")`** — one lane per account; different accounts
-  proceed concurrently. The helper is one line, and its fallback is visible: an
-  event without that tag lanes under its own event name.
-- **`(e) => e.identifier`** — every event in a lane of its own, i.e. no ordering
-  constraint at all. "No constraint" is not a missing answer; it is a lane
+- **`(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier`** —
+  one sequence per account. Written out, so where an event without the tag goes is
+  visible: here, a sequence of its own.
+- **`(e) => e.identifier`** — every event in a sequence of its own, i.e. no
+  ordering constraint at all. "No constraint" is not a missing answer; it is a
   function you can write down.
 
-### Dead-letter queues park lanes
+Without `concurrent`, a processor hands over one event at a time in log order,
+whatever the sequences say. `concurrent(p, sequenceOf)` runs a batch's sequences
+side by side, each in log order. The batch is still one unit of work: without a
+queue, a failure fails it once every sequence has settled.
+
+### Dead-letter queues park sequences
+
+A queue parks the failed event **and everything behind it in the same sequence** —
+that is what preserves per-entity order across a poison pill. So
+`deadLettering(p, queue, sequenceOf)` takes the sequences as an argument; there is
+no queue without them. With `concurrent`, both must be given the same function,
+or the second wrapper throws: a sequence that runs beside another cannot be parked
+behind it. The honest global-order answer for a projection is *no queue at
+all*: propagate and retry.
+
+### Segments: several nodes, one processor
+
+A processor's work is split into **segments**, each with its own token row and its
+own claim. An event's segment is decided by its sequence: the sequence id is
+hashed, and a segment takes the sequences whose hash, masked, equals its id. A
+sequence therefore stays in one segment and keeps its order; different segments
+are handled independently, each committing its own batches.
 
 ```ts
-const balances = eventProcessor({
-  name: "balances",
-  eventStore, tokenStore,
-  unitOfWork: postgresUnitOfWork(unitOfWork, pg),
-  sequence: sequentialPerTag("accountId"),
-  deadLetterQueue: postgresDeadLetterQueue(pg),
-})
+pipe(
+  eventProcessor("balances", eventStore, tokenStore, unitOfWork),
+  (p) => batched(p, 1000),
+  (p) => concurrent(p, byAccount),
+  (p) => segmented(p, 16, byAccount),   // the same function as concurrent's
+)
 ```
 
-A queue parks the failed event **and everything behind it in the same lane** —
-that is what preserves per-entity order across a poison pill. So "which lane" is
-not optional once there is a queue, and a `deadLetterQueue` without a `sequence`
-**does not compile**:
+Unwrapped, a processor is one segment. Either way:
 
-```
-Property 'sequence' is missing in type '{ name: string; eventStore: …; deadLetterQueue: … }'
-  but required in type '{ readonly sequence: {
-    readonly ERROR: "this processor has a deadLetterQueue but no sequence, and parking is a lane operation";
-    readonly FIX: "add `sequence: sequentialPerTag(\"<tagKey>\")`, or drop the queue and let failures propagate and retry";
-  }; }'.
+- **A node claims every free segment** when it starts and every 5 seconds after,
+  renews the claims it holds, and releases them on stop. The first node to start
+  holds everything; another waits, and takes over a segment when it is released
+  or its claim lapses (10 seconds, the token stores' default).
+- **Every token write is fenced on the claim.** A node that paused long enough to
+  lose a claim fails its next batch — its handlers' writes roll back with it —
+  rather than writing over the node that took over.
+- **The segments a node holds share one read of the log.** The furthest-behind
+  segment sets where it reads from, and the slowest sets the pace.
+
+`segmented(p, count, sequenceOf)` says what the processor *starts* with; from
+then on the token rows are the truth. Balancing and scaling are not in the
+framework. The running processor has the controls, and whoever operates the
+system decides when to use them:
+
+```ts
+const balances = app.processors.get("balances")!
+balances.segments()                 // what this node holds, and how each is doing
+await balances.releaseSegment(3)    // let another node claim it
+await balances.splitSegment(0)      // 0 becomes 0 and 1 (or 0 and 16, deeper down)
+await balances.mergeSegment(1)      // back together with its other half
 ```
 
-The keys *are* the message, which is why the refusal is spelled inline rather than
-behind a named type: give TypeScript a name and it prints the name. This used to
-be a `throw` at construction — honest, and late, because a composition root runs at
-boot. The throw survives as one defensive assert for JavaScript callers. The honest
-global-order answer for a projection is *no queue at all*: propagate and retry.
+A merge of two halves that had got to different places reads from the one
+behind, and passes over what the other half had already handled.
 
 **Never mix persistence families within one processor — and the stores enforce
 that themselves.** A token store or dead-letter queue handed a unit of work that
@@ -1121,7 +1169,6 @@ projection's transaction is the entire reason it exists — so absence is an err
 rather than a default.
 
 Absent a queue, a handler failure propagates and the batch retries.
-`batchSize` (default 1) is how many events share one unit of work.
 
 A parked lane is replayed whenever something calls `reprocessDeadLetters`. The
 lane is walked head to tail with a unit of work per letter: a letter that
@@ -1251,8 +1298,25 @@ type App = {
 
 `app.processors` is keyed by that same durable name. A `RunningProcessor` carries
 `running` / `position` / `replaying`, `status()`, `start()` / `stop()`,
-`resetTokens(from?)` and `reprocessDeadLetters(filter?)` — what a control plane
+`resetTokens(from?, reset?)`, `reprocessDeadLetters(filter?)`, `segments()`,
+`releaseSegment(id)`, `splitSegment(id)` and `mergeSegment(id)` — what a control plane
 drives and what a test awaits.
+
+A reset replays up to where the processor had got to, not to the head of the log:
+an event it was never handed is new, and `ctx.isReplay()` says so, even in the
+middle of the replay. The processor has to be stopped first and started after.
+`reset` runs in the same unit of work that stores the new token, so what it
+clears and the token that refolds it commit together:
+
+```ts
+const balances = app.processors.get("billing-balances")!
+balances.stop()
+await balances.resetTokens(0n, async (uow) => {
+  const tx = await postgresTransaction(uow)
+  await tx.unwrap<Sql>()`TRUNCATE billing_balances`
+})
+await balances.start()
+```
 
 ---
 

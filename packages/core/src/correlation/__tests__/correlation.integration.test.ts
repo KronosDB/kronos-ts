@@ -110,12 +110,7 @@ describe("correlation: command -> event -> processor -> command", () => {
         {
           ...carrying(onEnrolled),
           ...buses,
-          processor: eventProcessor({
-            name: "registry-automation",
-            eventStore,
-            tokenStore,
-            unitOfWork: uow,
-          }),
+          processor: eventProcessor("registry-automation", eventStore, tokenStore, uow),
         },
       ],
     })

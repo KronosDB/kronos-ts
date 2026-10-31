@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
-import { qn, emptyMetadata } from "../../messaging/messages.js"
-import { eventProcessor } from "../processor.js"
+import { qn, emptyMetadata, type EventMessage } from "../../messaging/messages.js"
+import { deadLettering, eventProcessor } from "../processor.js"
 import { runEventProcessor } from "../running-processor.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { inMemoryTokenStore } from "../token-store.js"
@@ -10,7 +10,8 @@ import type { EventHandler } from "../handler.js"
 import { deadLetter, inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
 import { deadLetterReprocessor } from "../dead-letter-reprocessor.js"
 import type { UnitOfWork } from "../../unit-of-work/unit-of-work.js"
-import { sequentialPerTag } from "../sequence.js"
+
+const byId = (e: EventMessage) => e.tags.find((t) => t.key === "id")?.value ?? e.identifier
 
 const EVENT_NAME = qn("test", "SomethingHappened")
 
@@ -84,14 +85,11 @@ describe("dead-letter reprocessing", () => {
     }
 
     const processor = runEventProcessor({
-      processor: eventProcessor({
-        name: "reproc",
-        eventStore: createInMemoryEventSource(events) as unknown as EventStore,
-        tokenStore: inMemoryTokenStore(),
-        unitOfWork,
-        deadLetterQueue: dlq,
-        sequence: sequentialPerTag("id"),
-      }),
+      processor: deadLettering(
+        eventProcessor("reproc", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork),
+        dlq,
+        byId,
+      ),
       handlers: [{ definition: handler }],
       pollingIntervalMs: 10,
     })
@@ -130,14 +128,11 @@ describe("dead-letter reprocessing", () => {
     }
 
     const processor = runEventProcessor({
-      processor: eventProcessor({
-        name: "reproc-cap",
-        eventStore: createInMemoryEventSource(events) as unknown as EventStore,
-        tokenStore: inMemoryTokenStore(),
-        unitOfWork,
-        deadLetterQueue: dlq,
-        sequence: sequentialPerTag("id"),
-      }),
+      processor: deadLettering(
+        eventProcessor("reproc-cap", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork),
+        dlq,
+        byId,
+      ),
       handlers: [{ definition: handler }],
       pollingIntervalMs: 10,
     })

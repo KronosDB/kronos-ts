@@ -63,12 +63,12 @@ function runOver(config: {
   tokenStore?: ReturnType<typeof inMemoryTokenStore>
 }) {
   return runEventProcessor({
-    processor: eventProcessor({
-      name: config.name,
-      eventStore: config.eventStore,
-      tokenStore: config.tokenStore ?? inMemoryTokenStore(),
+    processor: eventProcessor(
+      config.name,
+      config.eventStore,
+      config.tokenStore ?? inMemoryTokenStore(),
       unitOfWork,
-    }),
+    ),
     handlers: config.eventHandlers.map((definition) => ({ definition })),
   })
 }

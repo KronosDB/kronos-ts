@@ -95,12 +95,7 @@ describe("Transactional event processing — tokenStore + transactionManager com
         {
           ...onThingCreated,
           ...buses,
-          processor: eventProcessor({
-            name: "transactional-projection",
-            eventStore,
-            tokenStore: probe,
-            unitOfWork,
-          }),
+          processor: eventProcessor("transactional-projection", eventStore, probe, unitOfWork),
         },
       ],
     })
@@ -140,12 +135,7 @@ describe("Transactional event processing — tokenStore + transactionManager com
           {
             ...makeOnThingCreated(sink),
             ...buses,
-            processor: eventProcessor({
-              name: "transactional-projection",
-              eventStore,
-              tokenStore: probe,
-              unitOfWork,
-            }),
+            processor: eventProcessor("transactional-projection", eventStore, probe, unitOfWork),
           },
         ],
       })
@@ -189,12 +179,7 @@ describe("Transactional event processing — tokenStore + transactionManager com
         {
           ...makeOnThingCreated(seenThird),
           ...thirdBuses,
-          processor: eventProcessor({
-            name: "module-scoped-projection",
-            eventStore: thirdLog,
-            tokenStore: moduleScoped,
-            unitOfWork,
-          }),
+          processor: eventProcessor("module-scoped-projection", thirdLog, moduleScoped, unitOfWork),
         },
       ],
     })

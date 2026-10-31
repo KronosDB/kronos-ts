@@ -402,16 +402,17 @@ export {
   eventHandlerContext,
 } from "./event-processing/context.js"
 
-export { type Sequence, sequentialPerTag } from "./event-processing/sequence.js"
+export { type Sequence } from "./event-processing/sequence.js"
 export {
   type EventProcessor,
-  type EventProcessorConfig,
-  type EventProcessorSite,
-  type EventProcessorLane,
   type EventProcessorStatus,
   type RunningProcessor,
-  type SequenceDemand,
+  type SegmentStatus,
   eventProcessor,
+  batched,
+  concurrent,
+  deadLettering,
+  segmented,
 } from "./event-processing/processor.js"
 
 // Event source (what a processor reads)
@@ -428,6 +429,7 @@ export {
   type GlobalSequenceToken,
   type GapAwareToken,
   type ReplayToken,
+  type MergedToken,
   type SerializedToken,
   globalSequenceToken,
   gapAwareToken,
@@ -437,6 +439,7 @@ export {
   isReplayToken,
   isGlobalSequenceToken,
   isGapAwareToken,
+  isMergedToken,
   advanceToken,
   advanceTokenTo,
   serializeToken,

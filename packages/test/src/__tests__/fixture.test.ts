@@ -810,12 +810,7 @@ describe("the scope", () => {
       eventHandlers: [
         {
           ...withAutomation(resources).eventHandlers![0]!,
-          processor: eventProcessor({
-            name: "foreign",
-            eventStore: foreignStore,
-            tokenStore: inMemoryTokenStore(),
-            unitOfWork,
-          }),
+          processor: eventProcessor("foreign", foreignStore, inMemoryTokenStore(), unitOfWork),
         },
       ],
     }))

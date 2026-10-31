@@ -14,12 +14,21 @@
  *   filters      the handlers' types sent to the server
  *   batch        + a replay batch of --replay-batch
  *   bulk         + the projection's writes buffered and flushed once per batch
+ *   repository   + the same, through a repository: get, then save
+ *   concurrent   + the repository's handler unchanged, the batch's sequences side by side
+ *   upsert       + a repository handler that hands over a fold instead of reading the row
+ *
+ * `--segments N` splits any stage's processor into N segments by the same
+ * sequence, all held by this one process. With `--node i/n` it is one of n
+ * processes sharing the processor (same `--name`), holding the segments whose
+ * id is i modulo n, and starting at `--start-at` (epoch ms) with the others.
  */
-import { eventProcessor, jsonSerializer, kronos, localCommandBus, localQueryBus, unitOfWork, type EventStore } from "@kronos-ts/core"
+import { batched, concurrent, eventProcessor, segmented, jsonSerializer, kronos, localCommandBus, localQueryBus, unitOfWork, type EventMessage, type EventStore } from "@kronos-ts/core"
 import { kronosDbConnection, kronosDbEventStore } from "@kronos-ts/kronosdb"
 import { expected } from "./domain.js"
 import { drizzleProjection, memoryProjection, type Projection } from "./projections.js"
 import { bulkDrizzleProjection } from "./bulk.js"
+import { repositoryProjection } from "./repository.js"
 
 function arg(name: string, fallback?: string): string {
   const at = process.argv.indexOf(`--${name}`)
@@ -42,6 +51,9 @@ const uniqueKeys = process.argv.includes("--unique-keys")
 // never takes it. `--heartbeat 1` puts a 1 ms timer on the loop, which is the
 // kindest thing that can be said for that code.
 const heartbeat = Number(arg("heartbeat", "0"))
+const segments = Number(arg("segments", "0"))
+const [nodeIndex, nodeCount] = arg("node", "0/1").split("/").map(Number) as [number, number]
+const startAt = Number(arg("start-at", "0"))
 if (heartbeat > 0) setInterval(() => {}, heartbeat)
 const pgUrl = projectionName === "memory" ? "" : arg("pg")
 
@@ -54,12 +66,15 @@ const everything: EventStore = {
   open: (condition) => base.open({ position: condition.position, ...(condition.token ? { token: condition.token } : {}) }),
 }
 
-const config: Record<string, { filter: boolean; batchSize: number; replayBatchSize: number; bulk: boolean }> = {
-  today: { filter: false, batchSize: 1, replayBatchSize: 1, bulk: false },
-  "today-tuned": { filter: false, batchSize: 100, replayBatchSize: 100, bulk: false },
-  filters: { filter: true, batchSize: 1, replayBatchSize: 1, bulk: false },
-  batch: { filter: true, batchSize: 1, replayBatchSize: replayBatch, bulk: false },
-  bulk: { filter: true, batchSize: 1, replayBatchSize: replayBatch, bulk: true },
+const config: Record<string, { filter: boolean; batch: number; writes: "each" | "bulk" | "repository" | "upsert"; concurrent?: boolean }> = {
+  today: { filter: false, batch: 1, writes: "each" },
+  "today-tuned": { filter: false, batch: 100, writes: "each" },
+  filters: { filter: true, batch: 1, writes: "each" },
+  batch: { filter: true, batch: replayBatch, writes: "each" },
+  bulk: { filter: true, batch: replayBatch, writes: "bulk" },
+  repository: { filter: true, batch: replayBatch, writes: "repository" },
+  concurrent: { filter: true, batch: replayBatch, writes: "repository", concurrent: true },
+  upsert: { filter: true, batch: replayBatch, writes: "upsert" },
 }
 const stageConfig = config[stage]
 if (!stageConfig) throw new Error(`unknown stage ${stage}`)
@@ -67,19 +82,32 @@ if (!stageConfig) throw new Error(`unknown stage ${stage}`)
 const projection: Projection =
   projectionName === "memory"
     ? memoryProjection(all)
-    : stageConfig.bulk
+    : stageConfig.writes === "bulk"
       ? await bulkDrizzleProjection(pgUrl, uniqueKeys)
-      : await drizzleProjection(pgUrl, uniqueKeys)
+      : stageConfig.writes === "repository" || stageConfig.writes === "upsert"
+        ? await repositoryProjection(pgUrl, uniqueKeys, stageConfig.writes === "upsert" ? "upsert" : "get-save")
+        : await drizzleProjection(pgUrl, uniqueKeys)
 
-const name = `replay-${stage}-${Date.now().toString(36)}`
-const processor = eventProcessor({
-  name,
-  eventStore: stageConfig.filter ? base : everything,
-  tokenStore: projection.tokenStore ?? (await import("@kronos-ts/core")).inMemoryTokenStore(),
-  unitOfWork: projection.unitOfWork,
-  batchSize: stageConfig.batchSize,
-  replayBatchSize: stageConfig.replayBatchSize,
-} as any)
+const name = arg("name", `replay-${stage}-${Date.now().toString(36)}`)
+const sharedTokens = projection.tokenStore ?? (await import("@kronos-ts/core")).inMemoryTokenStore()
+// Which segments this process takes: a fixed share, said by the host through its
+// token store. The framework does no balancing; this is one way a host can.
+const tokenStore: typeof sharedTokens =
+  nodeCount > 1
+    ? {
+        ...sharedTokens,
+        fetchAvailableSegments: async (processorName, uow) =>
+          (await sharedTokens.fetchAvailableSegments(processorName, uow)).filter((id) => id % nodeCount === nodeIndex),
+      }
+    : sharedTokens
+const configured = batched(
+  eventProcessor(name, stageConfig.filter ? base : everything, tokenStore, projection.unitOfWork),
+  stageConfig.batch,
+)
+// A sequence is what a handler touches: the account, or with a row per event the event.
+const byRow = (e: EventMessage) => (uniqueKeys ? e.identifier : e.tags.find((t) => t.key === "account")?.value ?? e.identifier)
+const sideBySide = stageConfig.concurrent ? concurrent(configured, byRow) : configured
+const processor = segments > 0 ? segmented(sideBySide, segments, byRow) : sideBySide
 
 const { handled: expectedHandled, lastToken } = expected(limit, all)
 
@@ -95,20 +123,37 @@ const handlers = projection.handlers.map((definition) => ({
   },
 }))
 
+if (startAt > Date.now()) await new Promise((r) => setTimeout(r, startAt - Date.now()))
 const cpu0 = process.cpuUsage()
+const startedAt = Date.now()
 const t0 = performance.now()
 const app = kronos({
   eventHandlers: handlers.map((h) => ({ ...h, commandBus: localCommandBus(unitOfWork), queryBus: localQueryBus(unitOfWork), processor }) as any),
 })
 const running = app.processors.get(name)!
 
-await Promise.race([reached, new Promise((_, fail) => setTimeout(() => fail(new Error("gave up waiting for the last event")), 20 * 60_000).unref())])
-// Handled is not committed: the token moves when the batch has.
-while (running.position < lastToken) {
-  if (running.status().error) throw running.status().error
-  await new Promise((r) => setTimeout(r, 0))
+if (nodeCount > 1) {
+  // Only one process sees the last event. Each is done when every segment it
+  // holds has got past it; the parent takes the first start and the last end.
+  const share = segments / nodeCount
+  const done = () => {
+    const mine = running.segments()
+    return mine.length === share && mine.every((s) => s.position >= lastToken)
+  }
+  while (!done()) {
+    if (running.status().error) throw running.status().error
+    await new Promise((r) => setTimeout(r, 5))
+  }
+} else {
+  await Promise.race([reached, new Promise((_, fail) => setTimeout(() => fail(new Error("gave up waiting for the last event")), 20 * 60_000).unref())])
+  // Handled is not committed: the token moves when the batch has.
+  while (running.position < lastToken) {
+    if (running.status().error) throw running.status().error
+    await new Promise((r) => setTimeout(r, 0))
+  }
 }
 const ms = performance.now() - t0
+const endedAt = Date.now()
 const cpu = process.cpuUsage(cpu0)
 
 await app.stop()
@@ -116,7 +161,7 @@ const handled = await projection.handled()
 const result = {
   runtime: process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`,
   projection: projectionName,
-  stage: `${stage}${all ? "+all" : ""}${uniqueKeys ? "+unique-keys" : ""}`,
+  stage: `${stage}${all ? "+all" : ""}${uniqueKeys ? "+unique-keys" : ""}${segments > 0 ? `+segments${segments}` : ""}${nodeCount > 1 ? `+nodes${nodeCount}` : ""}`,
   limit,
   expectedHandled,
   handled,
@@ -125,9 +170,12 @@ const result = {
   handledPerSecond: Math.round(expectedHandled / (ms / 1000)),
   cpuMs: Math.round((cpu.user + cpu.system) / 1000),
   rssMb: Math.round(process.memoryUsage().rss / 1048576),
+  startedAt,
+  endedAt,
 }
 console.log(JSON.stringify(result))
 await projection.close()
 await kdb.close()
 // A prefix run keeps reading until it is stopped, so it may have handled a few more.
-process.exit(exact ? (handled === expectedHandled ? 0 : 3) : handled >= expectedHandled ? 0 : 3)
+// A process that shares the processor may finish before the others have: the parent checks the total.
+process.exit(nodeCount > 1 ? 0 : exact ? (handled === expectedHandled ? 0 : 3) : handled >= expectedHandled ? 0 : 3)

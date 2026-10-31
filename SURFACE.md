@@ -577,16 +577,11 @@ ctx.source(query: EventQuery): Promise<ReadonlyArray<EventMessage>>
 // `correlatingHandler` is the mechanism, and this parameter is where it injects.
 
 // ── event delivery: tracked only; the processor is a value ────────────────
-type Sequence = (event: EventMessage) => string    // TOTAL — (e) => e.identifier = own lane = no constraint
-sequentialPerTag(key: string): Sequence            // one-line transparent helper
-eventProcessor<U extends UnitOfWork = UnitOfWork, L extends EventProcessorLane<U> = …>({
-  name: string,
-  eventStore: EventStore, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive
-  sequence?: Sequence,                             // absent = global stream order (projection-safe)
-  deadLetterQueue?: SequencedDeadLetterQueue<U>,   // absent = propagate & retry
-  batchSize?: number,                              // events per unit of work; default 1
-  replayBatchSize?: number,                        // …while BEHIND the head; default 1000, never below batchSize
-}): EventProcessor<U>          // `U` threads to the event handler's ctx.unitOfWork
+type Sequence = (event: EventMessage) => string    // TOTAL — (e) => e.identifier = own sequence = no constraint
+//   by tag, written out: (e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier
+eventProcessor<U extends UnitOfWork = UnitOfWork>(
+  name: string, eventStore: EventStore, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive, positional
+): EventProcessor<U>          // `U` is read off the factory and threads to the event handler's ctx.unitOfWork
 // WHAT A PROCESSOR ASKS OF ITS LOG. It opens its stream with the union of its
 // handlers' event types as the query, and a store that can filter (KronosDB on the
 // server, Postgres in its WHERE clause) sends nothing else. The query is a
@@ -597,24 +592,53 @@ eventProcessor<U extends UnitOfWork = UnitOfWork, L extends EventProcessorLane<U
 // token when it has nothing to do — otherwise a processor of rare events sits at
 // its last match, a restart reads the quiet stretch again, a monitor sees it
 // behind forever, and a replay whose last events are quiet never ends.
-// BEHIND THE HEAD (replaying, or short of where the log ended when it started, or
-// its last batch left events waiting) a batch is up to `replayBatchSize` events;
-// at the head it is `batchSize`, and so is the retry of a failed batch until the
-// token is past the failure, so a poison event ends up alone. THE BOUND IS MEMORY:
+// UNWRAPPED, a batch is one event at the head and up to 1000 BEHIND it (replaying,
+// or short of where the log ended when it started, or its last batch left events
+// waiting); `batched(p, n)` makes it up to n in both. The retry of a failed batch is
+// one event at a time until the token is past the failure, so a poison event ends
+// up alone. THE BOUND IS MEMORY:
 // the batch is held decoded until it commits, and the stream reads ahead that far
 // (`StreamingCondition.readAhead`).
 // THE PROCESSOR IS WHERE THE COMPILER MEETS THE FACTORY AND THE STORES, and it
 // now enforces TWO things it used to discover at boot:
-//   1. A DEAD-LETTER QUEUE IMPLIES A LANE. `deadLetterQueue` without `sequence`
-//      does not compile — the demand adds a required `sequence` whose type is an
-//      anonymous ERROR/FIX record, so the compiler prints the keys at the wiring
-//      site. The construction-time throw survives as ONE defensive assert, for
-//      JavaScript callers.
+//   1. A DEAD-LETTER QUEUE IMPLIES SEQUENCES. `deadLettering(p, queue, sequenceOf)`
+//      takes them as an argument, so a queue without them cannot be written. (It
+//      used to be a demand on a config object, and before that a throw at boot.)
 //   2. NO MIXING PERSISTENCE FAMILIES — enforced by the STORES, not by a type
 //      here: a token store or DLQ handed a task carrying no transaction of its
 //      own throws, naming the factory to build `unitOfWork` with. See the
 //      persistence section for why that beats the brand it replaced.
-type EventProcessorSite<U> · EventProcessorLane<U> · EventProcessorConfig<U> · SequenceDemand<C>
+type EventProcessor<U> · RunningProcessor · EventProcessorStatus · SegmentStatus
+// WHAT A PROCESSOR DOES WITH ITS BATCH, said as functions over the value. Each
+// returns a new value; the host composes them with whatever `pipe` it uses.
+batched(p, size: number): EventProcessor<U>                     // up to `size` READY events a batch, head and behind alike
+concurrent(p, sequenceOf: Sequence): EventProcessor<U>         // the batch's sequences side by side; one sequence in log order
+deadLettering(p, queue: SequencedDeadLetterQueue<U>, sequenceOf: Sequence): EventProcessor<U>   // park per sequence
+segmented(p, count: number, sequenceOf: Sequence): EventProcessor<U>   // start as `count` segments (a power of two)
+//   pipe(eventProcessor(name, eventStore, tokenStore, unitOfWork), (p) => batched(p, 1000), (p) => concurrent(p, byAccount))
+// A SEQUENCE IS ORDERED, SEQUENCES ARE NOT. Without `concurrent` the processor
+// hands over one event at a time in log order, whatever the sequences say. With it,
+// every handler on that processor runs concurrently across sequences, so a handler
+// touches only what belongs to its event's sequence. The batch is still ONE unit of
+// work: without a queue a failure fails it once every sequence has SETTLED (the
+// others are running against its transaction); with a queue the failing sequence
+// parks and the rest commit. `concurrent`, `deadLettering` and `segmented` must be
+// given the SAME function — a sequence running beside another cannot be parked behind
+// it, and one spread over two segments loses its order — and a second wrapper with
+// another function throws. `ctx.isReplay()` is fixed per event.
+// A PROCESSOR IS SEGMENTS, each with its own token row and CLAIM. Unwrapped, one
+// segment: one node handles it, the others wait. `segmented` starts it as `count`,
+// an event's segment decided by hashing its sequence id. A node claims every free
+// segment on start and every claim interval (5 s) after, renews what it holds,
+// releases on stop; every token write is FENCED on the claim, so a node that lost
+// one fails its batch — handlers' writes included — instead of writing over the
+// new holder. The segments a node holds share ONE read of the log. Balancing and
+// scaling are NOT HERE: the controls are on the running processor, and whoever
+// operates the system decides when to call them.
+// BUFFERING IS NOT HERE. A projection that folds a batch in memory and writes it
+// once is app code over the batch's unit of work: a repository on `ctx`, its write
+// in `onPrepareCommit`, which runs before the token is stored. With `concurrent`,
+// the `get`s of a batch arrive together and can be read in one statement.
 
 // ── assembly: three lists. Nothing else. ──────────────────────────────────
 kronos<U extends UnitOfWork = UnitOfWork>({
@@ -643,6 +667,17 @@ type App = { processors: ReadonlyMap<string, RunningProcessor>; stop(): Promise<
 // entries naming one `eventStore` OBJECT share its folds because the lazy cache
 // is keyed on that object, which nobody had to declare.
 // boot errors name the entry: missing eventStore, missing processor, processor field conflicts
+// app.processors.get(name)!.resetTokens(from?, reset?: (uow) => …) — stopped first, started
+// after. The replay runs up to where the processor HAD GOT TO, not the head: an event
+// it was never handed is not a replay. Reset to where it is or past it, or before it
+// ever ran, and nothing is replayed. `reset` runs in the unit of work that stores the
+// new token, so clearing the projection and the reset commit together; it throws, and
+// neither happens. The replay is stored with the token and survives a restart.
+// Every segment is reset; a segment another node holds refuses it.
+// .segments() — what this node holds · .releaseSegment(id, forMs?) — let another
+// node claim it · .splitSegment(id) · .mergeSegment(id) — this node must hold, or be
+// able to claim, what it changes. A merged segment reads from the half that was
+// behind and passes over what the other half had already handled.
 
 // ── decision models ────────────────────────────────────────────────────────
 state({ id, tags: (id) => TagRecord | readonly [TagRecord, ...],
@@ -1025,7 +1060,8 @@ interfaces + `SubscriptionRegistry` · `correlatingCommandBus`/`correlatingQuery
 `amqpConnection` name · the `postgres()` bundle · `SpanFactory`/`MetricsRecorder`
 seams + `tracingHandler`/`meteringHandler` in core · `@kronos-ts/opentelemetry`
 package · `trackingProcessor`/`subscribingProcessor` builders + `SequencingPolicy`
-objects · processors as a kronos list · on-commit delivery + any eventBus ·
+objects · `sequentialPerTag` and the processor's config fields (`batchSize`, `replayBatchSize`,
+`sequence`, `deadLetterQueue`) with `SequenceDemand` · processors as a kronos list · on-commit delivery + any eventBus ·
 `drizzleCommandHandler`×3 (one generic) · the ENTRY level of the handler wrappers
 (same names, now taking `h.handler`) and the entry-constraint types they needed
 (`DrizzleHandlerEntry`, `WithDrizzleSupplied`, `PostgresHandlerDefinition`, `Supplied`,

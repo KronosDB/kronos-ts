@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { emptyMetadata, qn } from "../messaging/messages.js"
 import { inMemoryEventStore } from "../event-sourcing/in-memory.js"
-import { inMemoryDeadLetterQueue } from "../event-processing/dead-letter-queue.js"
 import {
   command,
   commandHandler,
@@ -261,21 +260,6 @@ describe("correlation", () => {
 describe("boot errors", () => {
   const onOpened = eventHandler(BillOpened, async () => {})
 
-  it("a dead-letter queue without a sequence is rejected where the processor is built", () => {
-    // Parking is a LANE operation — the queue parks a failed event AND
-    // everything behind it in the same lane — so a queue with no lane is not a
-    // configuration the framework can honour.
-    expect(() =>
-      eventProcessor({
-        name: "bill-projection",
-        eventStore: inMemoryEventStore(),
-        tokenStore: inMemoryTokenStore(),
-        unitOfWork,
-        deadLetterQueue: inMemoryDeadLetterQueue(),
-      }),
-    ).toThrow(/deadLetterQueue was given without a sequence/)
-  })
-
   it("an event handler with no processor is named, not silently undelivered", () => {
     const buses = inMemoryBuses()
     expect(() =>
@@ -286,12 +270,7 @@ describe("boot errors", () => {
   it("two handlers naming one processor share ONE delivery", async () => {
     const buses = inMemoryBuses()
     const eventStore = inMemoryEventStore()
-    const projection = eventProcessor({
-      name: "bill-projection",
-      eventStore,
-      tokenStore: inMemoryTokenStore(),
-      unitOfWork,
-    })
+    const projection = eventProcessor("bill-projection", eventStore, inMemoryTokenStore(), unitOfWork)
     const onLine = eventHandler(LineBilled, async () => {})
     const app = kronos({
       eventHandlers: [
@@ -308,11 +287,14 @@ describe("boot errors", () => {
     const buses = inMemoryBuses()
     const eventStore = inMemoryEventStore()
     const tokenStore = inMemoryTokenStore()
-    const config = { name: "bill-projection", eventStore, tokenStore, unitOfWork } as const
     const app = kronos({
       eventHandlers: [
-        { ...onOpened, ...buses, processor: eventProcessor({ ...config }) },
-        { ...eventHandler(LineBilled, async () => {}), ...buses, processor: eventProcessor({ ...config }) },
+        { ...onOpened, ...buses, processor: eventProcessor("bill-projection", eventStore, tokenStore, unitOfWork) },
+        {
+          ...eventHandler(LineBilled, async () => {}),
+          ...buses,
+          processor: eventProcessor("bill-projection", eventStore, tokenStore, unitOfWork),
+        },
       ],
     })
     expect(app.processors.size).toBe(1)
@@ -322,7 +304,6 @@ describe("boot errors", () => {
   it("the same NAME with a CONFLICTING config is a boot error naming both entries", () => {
     const buses = inMemoryBuses()
     const tokenStore = inMemoryTokenStore()
-    const shared = { name: "bill-projection", tokenStore, unitOfWork }
     expect(() =>
       kronos({
         eventHandlers: [
@@ -330,13 +311,13 @@ describe("boot errors", () => {
             ...onOpened,
             ...buses,
             name: "opened-view",
-            processor: eventProcessor({ ...shared, eventStore: inMemoryEventStore() }),
+            processor: eventProcessor("bill-projection", inMemoryEventStore(), tokenStore, unitOfWork),
           },
           {
             ...eventHandler(LineBilled, async () => {}),
             ...buses,
             name: "lines-view",
-            processor: eventProcessor({ ...shared, eventStore: inMemoryEventStore() }),
+            processor: eventProcessor("bill-projection", inMemoryEventStore(), tokenStore, unitOfWork),
           },
         ],
       }),

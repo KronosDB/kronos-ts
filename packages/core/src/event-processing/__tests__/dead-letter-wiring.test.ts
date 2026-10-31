@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
-import { qn, type QualifiedName, emptyMetadata } from "../../messaging/messages.js"
-import { eventProcessor } from "../processor.js"
+import { qn, type QualifiedName, emptyMetadata, type EventMessage } from "../../messaging/messages.js"
+import { deadLettering, eventProcessor } from "../processor.js"
 import { runEventProcessor } from "../running-processor.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { inMemoryTokenStore } from "../token-store.js"
@@ -8,7 +8,8 @@ import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
 import type { StreamableEventSource, SequencedEvent } from "../source.js"
 import type { EventHandler } from "../handler.js"
 import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
-import { sequentialPerTag } from "../sequence.js"
+
+const byId = (e: EventMessage) => e.tags.find((t) => t.key === "id")?.value ?? e.identifier
 
 // ---------------------------------------------------------------------------
 // Test helpers (mirrors tracking-event-processor.test.ts, with tags)
@@ -107,14 +108,11 @@ describe("dead-letter wiring — park the pill, advance the token", () => {
     }
 
     const processor = runEventProcessor({
-      processor: eventProcessor({
-        name: "dlq-proc",
-        eventStore: eventSource as unknown as EventStore,
-        tokenStore: inMemoryTokenStore(),
-        unitOfWork,
-        deadLetterQueue: dlq,
-        sequence: sequentialPerTag("id"),
-      }),
+      processor: deadLettering(
+        eventProcessor("dlq-proc", eventSource as unknown as EventStore, inMemoryTokenStore(), unitOfWork),
+        dlq,
+        byId,
+      ),
       handlers: [{ definition: handler }],
       pollingIntervalMs: 10,
     })
@@ -151,14 +149,11 @@ describe("dead-letter wiring — park the pill, advance the token", () => {
     }
 
     const processor = runEventProcessor({
-      processor: eventProcessor({
-        name: "dlq-proc-clean",
-        eventStore: createInMemoryEventSource(events) as unknown as EventStore,
-        tokenStore: inMemoryTokenStore(),
-        unitOfWork,
-        deadLetterQueue: dlq,
-        sequence: sequentialPerTag("id"),
-      }),
+      processor: deadLettering(
+        eventProcessor("dlq-proc-clean", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork),
+        dlq,
+        byId,
+      ),
       handlers: [{ definition: handler }],
       pollingIntervalMs: 10,
     })

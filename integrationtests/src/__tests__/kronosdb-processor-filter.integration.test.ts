@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import {
   emptyMetadata,
   globalSequenceToken,
+  batched,
   eventProcessor,
   generateIdentifier,
   inMemoryTokenStore,
@@ -91,13 +92,7 @@ describe("a processor over KronosDB, with the filter on the server", () => {
    */
   const apps: Array<{ stop(): Promise<void> }> = []
   function run(config: { name: string; eventStore: EventStore; tokenStore: TokenStore; handlers: EventHandler<any>[] }): RunningProcessor {
-    const processor = eventProcessor({
-      name: config.name,
-      eventStore: config.eventStore,
-      tokenStore: config.tokenStore,
-      unitOfWork,
-      batchSize: 10,
-    })
+    const processor = batched(eventProcessor(config.name, config.eventStore, config.tokenStore, unitOfWork), 10)
     const commandBus = localCommandBus(unitOfWork)
     const queryBus = localQueryBus(unitOfWork)
     const app = kronos({ eventHandlers: config.handlers.map((h) => ({ ...h, commandBus, queryBus, processor })) })
