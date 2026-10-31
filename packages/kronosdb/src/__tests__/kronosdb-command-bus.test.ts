@@ -93,7 +93,7 @@ describe("kronosDbCommandBus — concurrent inbound wire handling", () => {
     } finally { await app.stop() }
   })
 
-  it("refills receive credits while parents wait, including nesting deeper than the permit window", async () => {
+  it("refills receive permits while parents wait, including nesting deeper than the permit window", async () => {
     r = await rig()
     const w = wire(r, { flowControl: { permits: 1, refillThreshold: 0 } })
     w.bus.subscribe("test.Parent", async (message) => {
@@ -103,31 +103,31 @@ describe("kronosDbCommandBus — concurrent inbound wire handling", () => {
     expect(await send(w.bus, Parent, 8)).toBe(8)
     expect(r.server.dispatchedCommands).toHaveLength(9)
     expect(w.responses()).toHaveLength(9)
-    const credits = r.server.handlerStreams[0]!.credits
-    expect(credits.length).toBeGreaterThanOrEqual(9)
-    expect(credits.every((grant) => grant === 1)).toBe(true)
+    const grants = r.server.handlerStreams[0]!.grants
+    expect(grants.length).toBeGreaterThanOrEqual(9)
+    expect(grants.every((grant) => grant === 1)).toBe(true)
   })
 
   it("grants one window per stream, shared by every command name it handles", async () => {
     r = await rig()
     const w = wire(r, { flowControl: { permits: 4, refillThreshold: 1 } })
     w.bus.subscribe("test.Parent", async () => 1)
-    await until(() => r.server.handlerStreams[0]?.credits.length === 1, "the first grant")
+    await until(() => r.server.handlerStreams[0]?.grants.length === 1, "the first grant")
     w.bus.subscribe("test.Child", async () => 2)
     await until(() => r.server.handlerStreams[0]?.names.size === 2, "both names")
     const stream = r.server.handlerStreams[0]!
     // A second name needs no grant of its own: the window is the stream's.
-    expect(stream.credits).toEqual([4])
-    expect(stream.credit).toBe(4)
+    expect(stream.grants).toEqual([4])
+    expect(stream.permits).toBe(4)
 
     // Commands of either name spend the one window, which is refilled when
     // it runs low.
     expect(await send(w.bus, Parent, 0)).toBe(1)
     expect(await send(w.bus, Child, 1)).toBe(2)
     expect(await send(w.bus, Child, 2)).toBe(2)
-    await until(() => stream.credits.length === 2, "the refill")
-    expect(stream.credits).toEqual([4, 4])
-    expect(stream.credit).toBe(5)
+    await until(() => stream.grants.length === 2, "the refill")
+    expect(stream.grants).toEqual([4, 4])
+    expect(stream.permits).toBe(5)
   })
 
   it("propagates child failures to the parent and keeps unrelated work running", async () => {
@@ -309,7 +309,7 @@ describe("kronosDbCommandBus — what goes on the wire", () => {
     const handlerBus = kronosDbCommandBus(localCommandBus(unitOfWork), other.host)
     const received = deferred()
     handlerBus.subscribe("test.Child", async () => { received.resolve(); await new Promise(() => {}) })
-    await until(() => r.server.handlerStreams.some((h) => h.names.has("test.Child") && h.credit > 0), "the handler")
+    await until(() => r.server.handlerStreams.some((h) => h.names.has("test.Child") && h.permits > 0), "the handler")
     const call = send(w.bus, Child, 1).then(() => undefined, (e) => e)
     await received.promise
     other.connection.close()
@@ -367,7 +367,7 @@ describe("kronosDbCommandBus — the handler stream comes back", () => {
   let r: Rig
   afterEach(() => r?.close())
 
-  it("announces every name again, with credit, on a new connection after the old one is lost", async () => {
+  it("announces every name again, with permits, on a new connection after the old one is lost", async () => {
     r = await rig()
     const w = wire(r)
     w.bus.subscribe("test.Parent", async ({ payload }) => payload)
@@ -379,7 +379,7 @@ describe("kronosDbCommandBus — the handler stream comes back", () => {
     const again = r.server.handlerStreams[1]!
     expect(again.connection).not.toBe(r.server.handlerStreams[0]!.connection)
     expect([...again.names.keys()].sort()).toEqual(["test.Child", "test.Parent"])
-    expect(again.credits).toEqual([5000])
+    expect(again.grants).toEqual([5000])
     expect(await send(w.bus, Child, 9)).toBe(9)
   })
 

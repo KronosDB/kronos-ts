@@ -32,7 +32,7 @@ import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
 import type { BusHost } from "./kronosdb.js"
 import { handlerClientId, handlerStream, type HandlerSession } from "./native-handlers.js"
 import {
-  creditWindow,
+  permitWindow,
   deserializeResult,
   instructionBytes,
   metadataFromEntries,
@@ -54,8 +54,8 @@ import {
   decodeSubscriptionEvent,
   decodeSubscriptionQueryPermits,
   decodeCancelSubscriptionQuery,
-  encodeCredit,
   encodeOpenQueryHandlers,
+  encodePermits,
   encodeQueryDone,
   encodeSubscribeQuery,
   encodeSubscriptionQueryHandled,
@@ -84,7 +84,7 @@ export type KronosDbQueryBusOptions = {
   limits?: MessagingLimits
 }
 
-/** Updates a provider holds for a subscriber that has no credit left, before it gives the subscription up. */
+/** Updates a provider holds for a subscriber that has no permits left, before it gives the subscription up. */
 const MAX_HELD_UPDATES = 1024
 const MAX_SUBSCRIPTIONS = 1024
 
@@ -102,7 +102,7 @@ type ProvidedSubscription = {
   readonly session: HandlerSession
   /** Updates the subscriber will take before it grants more. */
   permits: number
-  /** Updates waiting for credit, oldest first. */
+  /** Updates waiting for permits, oldest first. */
   readonly held: SerializedObject[]
   /** A terminal event waiting behind the held updates. */
   ending: SubscriptionEvent | undefined
@@ -143,7 +143,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
   const outboundAdmission = messagingAdmission("pending requests", options.limits?.maxPendingRequests ?? 1024, options.limits?.observe)
   kdb.registerShutdownLatch(shutdownLatch)
 
-  const { permits: PERMITS, threshold: THRESHOLD } = creditWindow(flowControl)
+  const { permits: PERMITS, threshold: THRESHOLD } = permitWindow(flowControl)
   const queryInstructions = instructionBytes({ timeoutMs: requestTimeoutMs, nrOfResults: 1 })
 
   // As on the command side: names announced to the server, kept so a reconnect
@@ -169,11 +169,11 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
 
   // The permits the server holds for this stream incarnation; undefined
   // until the first grant. Permits belong to the stream, not to a name.
-  let credit: number | undefined
+  let outstanding: number | undefined
 
   function grant(session: HandlerSession): void {
-    session.send(FrameKind.Credit, (w) => encodeCredit(w, { credits: PERMITS }))
-    credit = (credit ?? 0) + PERMITS
+    session.send(FrameKind.Permits, (w) => encodePermits(w, { count: PERMITS }))
+    outstanding = (outstanding ?? 0) + PERMITS
   }
 
   function subscribeOn(session: HandlerSession, queryName: string): void {
@@ -184,11 +184,11 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
 
   /** A query or subscription arrived: one permit spent, and the window refilled when it runs low. */
   function spend(session: HandlerSession): void {
-    if (credit === undefined) return
-    credit -= 1
-    // Receive credits cannot depend on handler completion: all admitted
+    if (outstanding === undefined) return
+    outstanding -= 1
+    // Receive permits cannot depend on handler completion: all admitted
     // parents could be waiting for children on this same stream.
-    if (credit <= THRESHOLD && !shutdownLatch.shuttingDown) grant(session)
+    if (outstanding <= THRESHOLD && !shutdownLatch.shuttingDown) grant(session)
   }
 
   const stream = handlerStream({
@@ -203,7 +203,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       connection.state !== "reconnecting",
     resilience,
     announce(session) {
-      credit = undefined
+      outstanding = undefined
       for (const queryName of localHandlers) subscribeOn(session, queryName)
       if (localHandlers.size > 0) grant(session)
     },
@@ -253,7 +253,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       }
     },
     onEnded() {
-      credit = undefined
+      outstanding = undefined
       provided.clear()
     },
   })
@@ -354,7 +354,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
     },
   })
 
-  /** Send what credit allows of the held updates, then the terminal event if it was waiting behind them. */
+  /** Send what permits allow of the held updates, then the terminal event if it was waiting behind them. */
   function drain(subscriptionId: string, sub: ProvidedSubscription): void {
     while (sub.permits > 0 && sub.held.length > 0) {
       sub.permits--
@@ -373,7 +373,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       sendEvent(sub.session, subscriptionId, updateEvent(update))
     } else if (sub.held.length >= MAX_HELD_UPDATES) {
       // The subscriber is not taking updates. Say so instead of dropping them silently.
-      sendEvent(sub.session, subscriptionId, failureEvent("Subscription update buffer overflow: the subscriber is not granting credit"))
+      sendEvent(sub.session, subscriptionId, failureEvent("Subscription update buffer overflow: the subscriber is not granting permits"))
       provided.delete(subscriptionId)
     } else {
       sub.held.push(update)
@@ -564,7 +564,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       }
       subscribeOn(session, queryName)
       // The stream's window covers this name too.
-      if (credit === undefined) grant(session)
+      if (outstanding === undefined) grant(session)
     },
 
     subscriptionQuery(unstamped: QueryMessage, bufferSize?: number): SubscriptionQueryResult {
@@ -588,9 +588,9 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       }
       const handler = updateHandler(unstamped, bufferSize, () => subscriptions.delete(queryId))
 
-      // CREDIT-BASED FLOW CONTROL, AND THE SUBSCRIBER OWES THE REFILL.
+      // PERMIT-BASED FLOW CONTROL, AND THE SUBSCRIBER OWES THE REFILL.
       //
-      // The subscription opens with an initial window of credit. The server
+      // The subscription opens with an initial grant of permits. The server
       // decrements it per update and drops updates once it hits zero. Granting
       // a window and never refilling is therefore a subscription that works
       // for exactly `window` updates and then stops. We top the window back up
@@ -676,7 +676,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
               if (!handler.offer(value)) throw new Error("Subscription query update buffer overflow")
               if (++consumedSinceRefill >= refillBatch) {
                 const granted = consumedSinceRefill
-                native?.send(FrameKind.Credit, (w) => encodeCredit(w, { credits: granted }))
+                native?.send(FrameKind.Permits, (w) => encodePermits(w, { count: granted }))
                 consumedSinceRefill = 0
               }
               break

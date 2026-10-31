@@ -1,11 +1,13 @@
 // ---------------------------------------------------------------------------
-// A SUBSCRIPTION — a live read of the log, with credits.
+// A SUBSCRIPTION — a live read of the log, paced by the stream's window.
 //
 // `Subscribe` opens a stream the server fills as matching events become
-// durable. It never sends more events than it has been granted credits for, and
-// a credit is granted back when the consumer TAKES an event, not when it
-// arrives — so the batches waiting here are bounded by what was granted, and a
-// slow consumer holds back the server instead of growing a queue.
+// durable. The request says everything there is to say (the client sends
+// nothing in the stream afterwards), and the server sends at most a window of
+// bytes ahead of this reader. A frame's bytes are granted back when the consumer
+// has TAKEN its events, not when the frame arrives — so the batches waiting here
+// are bounded by the window, and a slow consumer holds back the server instead
+// of growing a queue or being failed for it.
 //
 // Batches wait as the bytes they arrived in and an event is decoded at `next()`
 // (see native-events.ts). A subscription whose criteria rarely match can ask for
@@ -22,6 +24,7 @@ import { contextStream, unexpected } from "./native-requests.js"
 import type { NativeStream } from "./native-transport.js"
 import {
   FLAG_END,
+  FRAME_HEADER_LEN,
   FrameKind,
   decodeProgress,
   reader,
@@ -33,8 +36,6 @@ import {
 } from "./protocol/kronosdb-protocol.js"
 
 export type SubscriptionOptions = {
-  /** Events the server may send ahead of the consumer. Default: 500. */
-  readonly credits?: number
   /**
    * Ask for a Progress frame at most this often (milliseconds) while nothing
    * matches; 0 asks for none. Default: 0.
@@ -57,8 +58,12 @@ export type ProgressingStream = MessageStream<SequencedEvent> & {
   progress(): bigint | undefined
 }
 
-export const DEFAULT_CREDITS = 500
-const REFILL_THRESHOLD = 0.25
+/** An Events frame kept as its bytes, and the window it will give back once spent. */
+type Waiting = {
+  readonly batch: RawBatch
+  /** The frame's size on the wire; 0 for the frame that ends the stream, which spends no window. */
+  readonly bytes: number
+}
 
 export function subscription(
   link: NativeLink,
@@ -67,20 +72,17 @@ export function subscription(
   condition: StreamingCondition,
   options: SubscriptionOptions = {},
 ): ProgressingStream {
-  const credits = options.credits ?? DEFAULT_CREDITS
-  if (!Number.isInteger(credits) || credits < 1 || credits > 0xffffffff) throw new RangeError("credits must be a positive integer")
   const criteria = condition.query ? criteriaToWire(compileQuery(condition.query)) : []
   const exclude = options.excludeNames ?? []
   const progressIntervalMs = options.progressIntervalMs ?? 0
 
-  let batches: RawBatch[] = []
+  let batches: Waiting[] = []
   // Events across the waiting batches, kept so `hasNextAvailable` is a compare.
   let queued = 0
   let peeked: SequencedEvent | undefined
   let completed = false
   let streamError: Error | undefined
   let availableCallback: (() => void) | null = null
-  let outstanding = credits
   // Progress the server reported waits here, with the number of events that had
   // arrived when it did, until that many have been taken: it says everything
   // matching before it was DELIVERED, and the reader must not move its token
@@ -90,6 +92,16 @@ export function subscription(
   let received = 0
   let taken = 0
   let stream: NativeStream | undefined
+  // Window the consumer has used that the stream could not take yet, because
+  // the transport had not handed it over: given back as soon as it does.
+  let unreported = 0
+
+  /** The consumer took a frame of `bytes`: the stream may send that much more. */
+  function release(bytes: number): void {
+    if (bytes === 0) return
+    if (stream === undefined) unreported += bytes
+    else stream.consumed(bytes)
+  }
 
   function finish(error?: Error): void {
     if (completed) return
@@ -113,15 +125,22 @@ export function subscription(
 
   function pull(): SequencedEvent | undefined {
     try {
-      // Batches are few (credits bound them), so dropping a spent one off the
-      // front is cheap.
+      // Batches are few (the window bounds them), so dropping a spent one off
+      // the front is cheap.
       while (batches.length > 0) {
-        const item = batches[0]!.take()
+        const front = batches[0]!
+        const item = front.batch.take()
         if (item !== undefined) {
           queued--
+          // The last event of a frame is the moment its bytes are given back.
+          if (front.batch.remaining() === 0) {
+            batches.shift()
+            release(front.bytes)
+          }
           return item
         }
         batches.shift()
+        release(front.bytes)
       }
       return undefined
     } catch (error) {
@@ -135,17 +154,24 @@ export function subscription(
 
   function onFrame(kind: number, flags: number, buf: Uint8Array, start: number, end: number): void {
     if (completed) return
+    // What the frame costs the window: all of it, except the frame that ends the stream.
+    const bytes = (flags & FLAG_END) !== 0 ? 0 : FRAME_HEADER_LEN + end - start
     if (kind === FrameKind.Events) {
       const next = rawBatch(buf, start, end, serializer)
       const count = next.remaining()
       if (count > 0) {
-        batches.push(next)
+        batches.push({ batch: next, bytes })
         queued += count
         received += count
         availableCallback?.()
+      } else {
+        release(bytes)
       }
     } else if (kind === FrameKind.Progress) {
       held.push({ position: decodeProgress(reader(buf, start, end)).position, after: received })
+      // A position holds no events, so nothing is waiting on this frame: its
+      // few bytes go back at once rather than whenever somebody asks `progress()`.
+      release(bytes)
       // A reader that has taken everything is idle and would never look.
       availableCallback?.()
     } else {
@@ -164,41 +190,37 @@ export function subscription(
       writeCriteria(w, criteria)
       writeLen16(w, exclude.length, "excluded names")
       for (const name of exclude) writeStr16(w, name, "excluded name")
-      writeU32(w, credits)
-      // Events per frame: 0 lets the server choose. It never sends more than
-      // the credits outstanding, so the batch cap is min(its default, credits).
+      // Events per frame: 0 lets the server choose.
       writeU32(w, 0)
       writeU32(w, progressIntervalMs)
     },
-    false,
+    // The request carries END: a subscription has nothing to say in its stream,
+    // only Window and Cancel about it. Frames are consumed as `next()` takes them.
+    true,
     onFrame,
     (error) => finish(error),
+    { manualWindow: true },
   ).then(
     (opened) => {
-      if (completed) opened.cancel()
-      else stream = opened
+      if (completed) {
+        opened.cancel()
+        return
+      }
+      stream = opened
+      if (unreported > 0) {
+        opened.consumed(unreported)
+        unreported = 0
+      }
     },
     (error) => finish(error instanceof Error ? error : new Error(String(error))),
   )
-
-  function onConsumed(): void {
-    outstanding--
-    if (outstanding <= Math.floor(credits * REFILL_THRESHOLD) && !completed) {
-      const grant = credits - outstanding
-      outstanding += grant
-      stream?.send(FrameKind.Credit, (w) => writeU32(w, grant))
-    }
-  }
 
   return {
     next() {
       let item = peeked
       if (item === undefined) item = pull()
       else peeked = undefined
-      if (item !== undefined) {
-        taken++
-        onConsumed()
-      }
+      if (item !== undefined) taken++
       return item
     },
 

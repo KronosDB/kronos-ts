@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import {
   NO_INSTRUCTIONS,
-  creditWindow,
+  permitWindow,
   deserializeResult,
   instructionBytes,
   metadataFromEntries,
@@ -206,12 +206,12 @@ describe("messages on the native wire", () => {
 })
 
 describe("what both buses share", () => {
-  it("validates the credit window", () => {
-    expect(creditWindow(undefined)).toEqual({ permits: 5000, threshold: 2500 })
-    expect(creditWindow({ permits: 1, refillThreshold: 0 })).toEqual({ permits: 1, threshold: 0 })
-    expect(() => creditWindow({ permits: 0 })).toThrow(RangeError)
-    expect(() => creditWindow({ permits: 4, refillThreshold: 4 })).toThrow(/refillThreshold/)
-    expect(() => creditWindow({ permits: 2 ** 32 })).toThrow(/Credit frame/)
+  it("validates the permit window", () => {
+    expect(permitWindow(undefined)).toEqual({ permits: 5000, threshold: 2500 })
+    expect(permitWindow({ permits: 1, refillThreshold: 0 })).toEqual({ permits: 1, threshold: 0 })
+    expect(() => permitWindow({ permits: 0 })).toThrow(RangeError)
+    expect(() => permitWindow({ permits: 4, refillThreshold: 4 })).toThrow(/refillThreshold/)
+    expect(() => permitWindow({ permits: 2 ** 32 })).toThrow(/Permits frame/)
   })
 
   it("validates the request deadline", () => {

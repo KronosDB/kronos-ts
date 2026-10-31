@@ -14,7 +14,7 @@
 
 import { KronosDbError, KronosDbErrorCode } from "./errors.js"
 import type { NativeLink } from "./native-link.js"
-import type { FrameSink, NativeStream, NativeTransport, ReplyParser } from "./native-transport.js"
+import type { FrameSink, NativeStream, NativeTransport, ReplyParser, StreamOptions } from "./native-transport.js"
 import { type Writer } from "./protocol/kronosdb-protocol.js"
 
 /** A live transport, and the id of the context or bus called `name` on it. */
@@ -57,9 +57,10 @@ export async function contextStream(
   end: boolean,
   sink: FrameSink,
   fail: (error: Error) => void,
+  options?: StreamOptions,
 ): Promise<NativeStream> {
   const { transport, id } = await bound(link, "context", context)
-  return transport.open(kind, (w) => body(w, id), end, sink, fail)
+  return transport.open(kind, (w) => body(w, id), end, sink, fail, options)
 }
 
 /** The reply was not the frame this request is answered with. */

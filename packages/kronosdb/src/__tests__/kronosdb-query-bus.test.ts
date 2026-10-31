@@ -31,7 +31,7 @@ describe("kronosDbQueryBus — asking", () => {
   async function answering(handler: (m: QueryMessage) => Promise<unknown>) {
     const server = bus(r.another())
     server.subscribe(Watch, async (m) => handler(m))
-    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.credit > 0)), "the handler")
+    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.permits > 0)), "the handler")
     return server
   }
 
@@ -127,7 +127,7 @@ describe("kronosDbQueryBus — asking", () => {
     const handler = r.another()
     const server = bus(handler)
     server.subscribe(Watch, async () => { entered.resolve(); await new Promise(() => {}) })
-    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.credit > 0)), "the handler")
+    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.permits > 0)), "the handler")
     const call = bus(r.client, { timeoutMs: 40 }).query(query(Watch, 1)).then(() => undefined, (e) => e)
     await entered.promise
     expect((await call).message).toMatch(/deadline/i)
@@ -143,7 +143,7 @@ describe("kronosDbQueryBus — subscription queries, asking", () => {
     const handler = r.another()
     const handlerBus = bus(handler)
     handlerBus.subscribe(Watch, async () => handlerResult)
-    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.credit > 0)), "the handler")
+    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.permits > 0)), "the handler")
     await run(handlerBus)
     return handlerBus
   }
@@ -166,7 +166,7 @@ describe("kronosDbQueryBus — subscription queries, asking", () => {
     expect(await take(updates)).toEqual({ value: undefined, done: true })
   })
 
-  it("asks for an initial window of credit, mirroring what the server will grant", async () => {
+  it("asks for an initial grant of permits, mirroring what the server will grant", async () => {
     r = await rig()
     await watching()
     open(r.client, { id: "a" }, 5000).close()
@@ -176,7 +176,7 @@ describe("kronosDbQueryBus — subscription queries, asking", () => {
     expect(r.server.subscriptions[0]!.query.instructions.map((i) => i.key)).toEqual([ProcessingKey.timeout, ProcessingKey.nr_of_results])
   })
 
-  it("grants more credit as updates are taken, in batches of a quarter window", async () => {
+  it("grants more permits as updates are taken, in batches of a quarter window", async () => {
     r = await rig()
     const handlerBus = await watching()
     const sub = open()
@@ -184,9 +184,9 @@ describe("kronosDbQueryBus — subscription queries, asking", () => {
     for (let i = 0; i < 130; i++) await handlerBus.emitUpdate(Watch, () => true, i)
     const iterator = sub.updates[Symbol.asyncIterator]()
     for (let i = 0; i < 130; i++) expect((await take(iterator)).value).toBe(i)
-    const credits = () => serverSide(r.server, r.client).received.flatMap((f) => (f.frame.name === "Credit" ? [f.frame.body.credits] : []))
-    await until(() => credits().length === 2, "two refills")
-    expect(credits()).toEqual([64, 64])
+    const grants = () => serverSide(r.server, r.client).received.flatMap((f) => (f.frame.name === "Permits" ? [f.frame.body.count] : []))
+    await until(() => grants().length === 2, "two refills")
+    expect(grants()).toEqual([64, 64])
     sub.close()
   })
 
@@ -195,7 +195,7 @@ describe("kronosDbQueryBus — subscription queries, asking", () => {
     const handler = r.another()
     const handlerBus = bus(handler)
     handlerBus.subscribe(Watch, async () => { throw new Error("cannot start") })
-    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.credit > 0)), "the handler")
+    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.permits > 0)), "the handler")
     const sub = open()
     const error = await sub.initialResult.then(() => undefined, (e) => e)
     expect(error).toBeInstanceOf(KronosDbError)
@@ -259,7 +259,7 @@ describe("kronosDbQueryBus — subscription queries, serving", () => {
   async function serving() {
     const handlerBus = bus(r.another())
     handlerBus.subscribe(Watch, async () => "initial")
-    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.credit > 0)), "the handler")
+    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.permits > 0)), "the handler")
     return handlerBus
   }
 
@@ -287,7 +287,7 @@ describe("kronosDbQueryBus — subscription queries, serving", () => {
     r = await rig()
     const handlerBus = bus(r.another())
     handlerBus.subscribe(Watch, async () => "initial")
-    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.credit > 0)), "the handler")
+    await until(() => r.server.handlerStreams.some((h) => (h.names.has(Watch) && h.permits > 0)), "the handler")
     // Pretend the server routes a name this bus never subscribed (a stale registration).
     const stream = r.server.handlerStreams[0]!
     stream.connection.reply(stream.stream, 0, {
@@ -304,7 +304,7 @@ describe("kronosDbQueryBus — subscription queries, serving", () => {
     expect(answered.name === "SubscriptionQueryHandled" && answered.body.event.kind === "initialResult" && answered.body.event.value.errorCode).toBe("KRONOS-5000")
   })
 
-  it("holds updates the subscriber has no credit for, and sends them as credit arrives", async () => {
+  it("holds updates the subscriber has no permits for, and sends them as permits arrive", async () => {
     r = await rig()
     const handlerBus = await serving()
     const sub = await rawSubscriber(r.client, "slow", { id: "x" }, 2n)
@@ -314,9 +314,9 @@ describe("kronosDbQueryBus — subscription queries, serving", () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(sub.events.map((e) => e.value)).toEqual([undefined, "u1", "u2"])
 
-    sub.credit(2)
+    sub.grant(2)
     await until(() => sub.events.length === 5, "two more")
-    sub.credit(10)
+    sub.grant(10)
     await until(() => sub.events.length === 6, "the last")
     expect(sub.events.map((e) => e.value)).toEqual([undefined, "u1", "u2", "u3", "u4", "u5"])
   })
@@ -332,12 +332,12 @@ describe("kronosDbQueryBus — subscription queries, serving", () => {
     await until(() => sub.events.length === 2, "the first update")
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(sub.events.map((e) => e.kind)).toEqual(["initialResult", "update"])
-    sub.credit(5)
+    sub.grant(5)
     expect(await sub.ended).toBeUndefined()
     expect(sub.events.map((e) => e.kind)).toEqual(["initialResult", "update", "update", "complete"])
   })
 
-  it("fails a subscriber that never grants credit, rather than hold updates without bound", async () => {
+  it("fails a subscriber that never grants permits, rather than hold updates without bound", async () => {
     r = await rig()
     const handlerBus = await serving()
     const sub = await rawSubscriber(r.client, "stuck", { id: "x" }, 1n)

@@ -37,6 +37,8 @@ export type NativeLinkOptions = {
   readonly clientId: string
   readonly token: string
   readonly connectTimeoutMs?: number
+  /** Bytes the server may send on each stream ahead of the client; see {@link NativeTransportOptions.window}. */
+  readonly window?: number
 }
 
 export type NativeLink = {
@@ -122,6 +124,7 @@ export function nativeLink(options: NativeLinkOptions): NativeLink {
           clientId: options.clientId,
           token: options.token,
           connectTimeoutMs: options.connectTimeoutMs,
+          window: options.window,
         })
         if (closedForGood) {
           opened.close()

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs"
 import { nativeLink, type NativeLink } from "./native-link.js"
+import { validWindow } from "./native-transport.js"
 
 /**
  * Configuration for connecting to KronosDB.
@@ -29,6 +30,14 @@ export type KronosDbConnectionConfig = {
   maxReconnectAttempts?: number
   /** Time allowed to connect and complete the handshake, per server, in ms. Default: 10000. */
   connectTimeoutMs?: number
+  /**
+   * Bytes the server may send on each stream ahead of this client, in total
+   * frame bytes (length prefix included). The client grants consumed bytes
+   * back as its consumers take frames, so a consumer that falls behind slows its
+   * own stream and nothing else. At least 65536. Default: 8388608 (8 MiB),
+   * enough to keep a fast link a millisecond or two away full.
+   */
+  window?: number
 
   /**
    * TLS configuration. The server expects the TLS handshake first on its
@@ -89,6 +98,7 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
     reconnectIntervalMs: config.reconnectIntervalMs ?? 2000,
     maxReconnectAttempts: config.maxReconnectAttempts ?? 0,
     connectTimeoutMs: config.connectTimeoutMs ?? 10_000,
+    window: validWindow(config.window),
     servers: config.servers,
     ssl: config.ssl,
   }
@@ -110,6 +120,7 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
     clientId: resolvedConfig.clientId,
     token: resolvedConfig.token,
     connectTimeoutMs: resolvedConfig.connectTimeoutMs,
+    window: resolvedConfig.window,
   })
 
   let state: ConnectionState = "connected"

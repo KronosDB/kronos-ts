@@ -22,7 +22,7 @@ import type { BusHost } from "./kronosdb.js"
 import { handlerClientId, handlerStream, type HandlerSession } from "./native-handlers.js"
 import {
   NO_INSTRUCTIONS,
-  creditWindow,
+  permitWindow,
   deserializeResult,
   instructionBytes,
   requestTimeout,
@@ -39,8 +39,8 @@ import { busStream, unexpected } from "./native-requests.js"
 import type { FrameSink, NativeStream } from "./native-transport.js"
 import {
   FrameKind,
-  encodeCredit,
   encodeOpenCommandHandlers,
+  encodePermits,
   encodeSubscribeCommand,
   reader,
   writeU16,
@@ -54,7 +54,7 @@ import type { MessagingLimits } from "@kronos-ts/core"
 export type KronosDbCommandBusOptions = {
   /** Client-side request deadline. Default: 30000ms. */
   timeoutMs?: number
-  /** Receive credits, refilled on receipt; these do not cap running handlers. */
+  /** Receive permits, refilled on receipt; these do not cap running handlers. */
   flowControl?: FlowControlConfig
   /** Relative share of routed work this instance advertises. Default: 100. */
   loadFactor?: number
@@ -136,7 +136,7 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
   const outboundAdmission = messagingAdmission("pending requests", options.limits?.maxPendingRequests ?? 1024, options.limits?.observe)
   kdb.registerShutdownLatch(shutdownLatch)
 
-  const { permits: PERMITS, threshold: THRESHOLD } = creditWindow(flowControl)
+  const { permits: PERMITS, threshold: THRESHOLD } = permitWindow(flowControl)
   const loadFactor = commandLoadFactor ?? 100
 
   // Names this instance announced. Kept so a reconnect can re-announce them and
@@ -156,11 +156,11 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
   // The permits the server holds for this stream incarnation, as far as this
   // side can tell; undefined until the first grant. Permits belong to the
   // stream, not to a name: one is one command of any name it handles.
-  let credit: number | undefined
+  let outstanding: number | undefined
 
   function grant(session: HandlerSession): void {
-    session.send(FrameKind.Credit, (w) => encodeCredit(w, { credits: PERMITS }))
-    credit = (credit ?? 0) + PERMITS
+    session.send(FrameKind.Permits, (w) => encodePermits(w, { count: PERMITS }))
+    outstanding = (outstanding ?? 0) + PERMITS
   }
 
   function subscribeOn(session: HandlerSession, commandName: string): void {
@@ -181,26 +181,26 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
       connection.state !== "reconnecting",
     resilience,
     announce(session) {
-      credit = undefined
+      outstanding = undefined
       for (const commandName of localHandlers) subscribeOn(session, commandName)
       if (localHandlers.size > 0) grant(session)
     },
     onFrame(session, kind, buf, start, end) {
       if (kind !== FrameKind.HandleCommand) return
       const incoming = readMessage(reader(buf, start, end))
-      // Credits bound delivery batches, not unfinished handlers. Replenish on
-      // receipt: completion-based credits or a fixed handler semaphore can
+      // Permits bound delivery batches, not unfinished handlers. Replenish on
+      // receipt: completion-based permits or a fixed handler semaphore can
       // deadlock when every admitted parent is waiting for a queued child.
-      if (credit !== undefined) {
-        credit -= 1
-        if (credit <= THRESHOLD && !shutdownLatch.shuttingDown) grant(session)
+      if (outstanding !== undefined) {
+        outstanding -= 1
+        if (outstanding <= THRESHOLD && !shutdownLatch.shuttingDown) grant(session)
       }
       void handleInbound(incoming, session).catch((err) => {
         console.error("KronosDB command bus: inbound response failed", err)
       })
     },
     onEnded() {
-      credit = undefined
+      outstanding = undefined
     },
   })
 
@@ -371,7 +371,7 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
       subscribeOn(session, commandName)
       // The stream's window covers this name too; only a stream that has
       // none yet needs one.
-      if (credit === undefined) grant(session)
+      if (outstanding === undefined) grant(session)
     },
   }
 }

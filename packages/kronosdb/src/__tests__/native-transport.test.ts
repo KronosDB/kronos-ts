@@ -51,14 +51,43 @@ describe("native transport — handshake", () => {
   it("sends the preface and Hello, and reports what Welcome says", async () => {
     const { transport, connection } = await connected({ principal: "token:ci", maxFrame: 4096, heartbeatMs: 5000 }, "secret")
     expect(connection.hello).toMatchObject({
-      version: 1,
+      version: 2,
       recordFormat: 3,
       clientName: "transport-test",
       clientId: "client-1",
       credential: "secret",
     })
     expect(connection.hello.credentialKind).toBe(1)
-    expect(transport.welcome).toEqual({ version: 1, serverName: "fake", principal: "token:ci", maxFrame: 4096, heartbeatMs: 5000 })
+    expect(transport.welcome).toEqual({ version: 2, serverName: "fake", principal: "token:ci", maxFrame: 4096, heartbeatMs: 5000 })
+  })
+
+  it("grants each stream a window in Hello: 8 MiB unless told otherwise", async () => {
+    const { connection } = await connected()
+    expect(connection.hello.window).toBe(8 * 1024 * 1024)
+    await transport?.close()
+    const custom = await fakeNativeServer()
+    const next = custom.nextConnection()
+    const opened = await openNativeTransport({
+      host: "127.0.0.1",
+      port: custom.port,
+      clientName: "x",
+      clientId: "y",
+      token: "",
+      window: 256 * 1024,
+    })
+    expect((await next).hello.window).toBe(256 * 1024)
+    opened.close()
+    await custom.close()
+  })
+
+  it("refuses a window the server would refuse", async () => {
+    for (const window of [65535, 0, -1, 1.5, 2 ** 32]) {
+      const failure = await openNativeTransport({ host: "127.0.0.1", port: 1, clientName: "x", clientId: "y", token: "", window }).then(
+        () => undefined,
+        (e) => e,
+      )
+      expect(failure).toBeInstanceOf(RangeError)
+    }
   })
 
   it("sends no credential when there is no token", async () => {
@@ -291,15 +320,15 @@ describe("native transport — streams", () => {
   it("lets the client send more frames on an open stream", async () => {
     const { transport, connection } = await connected()
     const stream = transport.open(FrameKind.GetHead, (w) => encodeGetHead(w, { context: 0 }), false, () => {}, () => {})
-    stream.send(FrameKind.Credit, (w) => {
+    stream.send(FrameKind.Permits, (w) => {
       ensure(w, 4)
       w.view.setUint32(w.pos, 5, true)
       w.pos += 4
     })
     await Bun.sleep(20)
-    expect(connection.received.map((r) => r.frame.name)).toEqual(["GetHead", "Credit"])
+    expect(connection.received.map((r) => r.frame.name)).toEqual(["GetHead", "Permits"])
     expect(connection.received[1]!.stream).toBe(connection.received[0]!.stream)
-    expect(connection.received[1]!.frame).toEqual({ name: "Credit", body: { credits: 5 } })
+    expect(connection.received[1]!.frame).toEqual({ name: "Permits", body: { count: 5 } })
   })
 
   it("survives a sink that throws: that stream fails, the connection does not", async () => {
@@ -427,5 +456,126 @@ describe("native transport — the connection", () => {
     )
     expect(refused.message).toBe("context not found: ghost")
     expect(await transport.contextId("ghost")).toBe(2)
+  })
+})
+
+// A frame of exactly `total` bytes on the wire (length prefix included) that the
+// transport hands to a stream's sink and does not look inside.
+function sized(stream: number, flags: number, total: number): Uint8Array {
+  const out = new Uint8Array(total)
+  const view = new DataView(out.buffer)
+  view.setUint32(0, total - 4, true)
+  view.setUint16(4, FrameKind.Events, true)
+  out[6] = flags
+  view.setUint32(7, stream, true)
+  return out
+}
+
+const windows = (connection: { received: ReadonlyArray<{ stream: number; flags: number; frame: Frame }> }) =>
+  connection.received.flatMap((r) => (r.frame.name === "Window" ? [{ stream: r.stream, flags: r.flags, bytes: r.frame.body.bytes }] : []))
+
+describe("native transport — windows", () => {
+  const SMALL = 64 * 1024
+
+  async function windowed() {
+    server = await fakeNativeServer()
+    const next = server.nextConnection()
+    transport = await openNativeTransport({ host: "127.0.0.1", port: server.port, clientName: "w", clientId: "w", token: "", window: SMALL })
+    return { transport, connection: await next }
+  }
+
+  it("grants a stream's bytes back once half the window is consumed, counting whole frames", async () => {
+    const { transport, connection } = await windowed()
+    let delivered = 0
+    transport.open(FrameKind.GetHead, (w) => encodeGetHead(w, { context: 0 }), true, () => delivered++, () => {})
+    await Bun.sleep(20)
+    const stream = connection.received[0]!.stream
+
+    // Three frames of 10000 bytes are 30000 of the 32768 that make half.
+    for (let i = 0; i < 3; i++) connection.raw(sized(stream, 0, 10_000))
+    await Bun.sleep(30)
+    expect(delivered).toBe(3)
+    expect(windows(connection)).toEqual([])
+
+    // The fourth crosses it: everything consumed since is granted, in one frame.
+    connection.raw(sized(stream, 0, 10_000))
+    await Bun.sleep(30)
+    // The client's END does not stop it granting; the grant is about the stream, not in it.
+    expect(windows(connection)).toEqual([{ stream, flags: 0, bytes: 40_000 }])
+
+    // The count starts over.
+    connection.raw(sized(stream, 0, 30_000))
+    await Bun.sleep(30)
+    expect(windows(connection)).toHaveLength(1)
+    connection.raw(sized(stream, 0, 3_000))
+    await Bun.sleep(30)
+    expect(windows(connection).map((w) => w.bytes)).toEqual([40_000, 33_000])
+  })
+
+  it("spends no window on the frame that ends a stream, nor on a failure", async () => {
+    const { transport, connection } = await windowed()
+    const done: number[] = []
+    transport.open(FrameKind.GetHead, (w) => encodeGetHead(w, { context: 0 }), true, () => done.push(1), () => {})
+    transport.open(FrameKind.GetHead, (w) => encodeGetHead(w, { context: 0 }), true, () => {}, () => done.push(2))
+    await Bun.sleep(20)
+    const [a, b] = connection.received.map((r) => r.stream)
+    connection.raw(sized(a!, 0, 10_000))
+    connection.raw(sized(a!, FLAG_END, 60_000))
+    connection.reply(b!, FLAG_END, { name: "RequestFailed", body: { code: ErrorCode.cancelled, message: "cancelled" } })
+    await Bun.sleep(30)
+    expect(done).toEqual([1, 1, 2])
+    expect(windows(connection)).toEqual([])
+  })
+
+  it("keeps a window per stream", async () => {
+    const { transport, connection } = await windowed()
+    for (let i = 0; i < 2; i++) transport.open(FrameKind.GetHead, (w) => encodeGetHead(w, { context: 0 }), true, () => {}, () => {})
+    await Bun.sleep(20)
+    const [a, b] = connection.received.map((r) => r.stream)
+    for (let i = 0; i < 3; i++) {
+      connection.raw(sized(a!, 0, 20_000))
+      connection.raw(sized(b!, 0, 10_000))
+    }
+    await Bun.sleep(30)
+    expect(windows(connection)).toEqual([{ stream: a!, flags: 0, bytes: 40_000 }])
+  })
+
+  it("leaves a frame unconsumed until the receiver says so, when it keeps frames for later", async () => {
+    const { transport, connection } = await windowed()
+    let delivered = 0
+    const stream = transport.open(FrameKind.GetHead, (w) => encodeGetHead(w, { context: 0 }), true, () => delivered++, () => {}, {
+      manualWindow: true,
+    })
+    await Bun.sleep(20)
+    const id = connection.received[0]!.stream
+    for (let i = 0; i < 6; i++) connection.raw(sized(id, 0, 10_000))
+    await Bun.sleep(30)
+    // Everything arrived and nothing was taken: a slow consumer is not failed, and not granted.
+    expect(delivered).toBe(6)
+    expect(windows(connection)).toEqual([])
+
+    stream.consumed(20_000)
+    await Bun.sleep(20)
+    expect(windows(connection)).toEqual([])
+    stream.consumed(20_000)
+    await Bun.sleep(20)
+    expect(windows(connection)).toEqual([{ stream: id, flags: 0, bytes: 40_000 }])
+
+    // A cancelled stream has nothing to grant, and consumed() is still safe to call.
+    stream.consumed(10_000)
+    stream.cancel()
+    stream.consumed(40_000)
+    await Bun.sleep(20)
+    expect(windows(connection)).toHaveLength(1)
+  })
+
+  it("grants nothing for a request answered by one frame", async () => {
+    const { transport, connection } = await windowed()
+    const pending = getHead(transport)
+    await Bun.sleep(20)
+    connection.raw(sized(connection.received[0]!.stream, FLAG_END, 60_000))
+    await pending.catch(() => {})
+    await Bun.sleep(20)
+    expect(windows(connection)).toEqual([])
   })
 })

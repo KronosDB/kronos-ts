@@ -138,7 +138,7 @@ export async function fakeNativeServer(options: FakeNativeServerOptions = {}): P
             send(0, 0, {
               name: "Welcome",
               body: {
-                version: 1,
+                version: 2,
                 features: 0n,
                 recordFormat: 3,
                 serverName: "fake",

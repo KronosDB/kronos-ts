@@ -2,8 +2,8 @@
 // A HANDLER STREAM — the long-lived stream a command or query bus serves on.
 //
 // The client opens it with OpenCommandHandlers / OpenQueryHandlers, subscribes
-// to names on it, grants the server credits, and the server sends one command
-// or query per credit. It lives as long as the handler does, so it is the one
+// to names on it, grants the server permits, and the server sends one command
+// or query per permit. It lives as long as the handler does, so it is the one
 // request in the protocol that has to come back by itself: this file owns
 // that, and nothing about what the frames MEAN.
 //
@@ -11,7 +11,7 @@
 //   dispatches never opens one.
 //
 //   WHAT COMES BACK. Every incarnation announces itself from scratch —
-//   `announce` re-sends the names and the credits — because the server forgot
+//   `announce` re-sends the names and the permits — because the server forgot
 //   the old stream's registrations the moment it ended. Each incarnation is its
 //   own object, so a frame, a failure or a response that belongs to an old one
 //   is recognised and dropped instead of being taken for the new one's.
@@ -76,7 +76,7 @@ export type HandlerStreamOptions = {
   /** Whether the owner may retry now: not shutting down, connection not closed or mid-reconnect. */
   readonly canReconnect: () => boolean
   readonly resilience?: Partial<ResilienceConfig>
-  /** A stream is open: subscribe to every name and grant credits. */
+  /** A stream is open: subscribe to every name and grant permits. */
   readonly announce: (session: HandlerSession) => void
   /**
    * A frame from the server (never ServerAck). `view` is the received chunk;

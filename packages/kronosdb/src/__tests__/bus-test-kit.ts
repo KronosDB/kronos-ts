@@ -5,7 +5,7 @@ import { jsonSerializer, type Serializer } from "@kronos-ts/core"
 import { connectToKronosDb, type KronosDbConnection, type KronosDbConnectionConfig } from "../connection.js"
 import type { BusHost } from "../kronosdb.js"
 import type { ShutdownLatch } from "../shutdown-latch.js"
-import { FLAG_END, FrameKind, decodeSubscriptionQueryEvent, encodeCredit, encodeOpenSubscriptionQuery, reader } from "../protocol/kronosdb-protocol.js"
+import { FLAG_END, FrameKind, decodeSubscriptionQueryEvent, encodePermits, encodeOpenSubscriptionQuery, reader } from "../protocol/kronosdb-protocol.js"
 import { fakeBusServer, type FakeBusOptions, type FakeBusServer } from "./fake-bus-server.js"
 
 export type Client = {
@@ -112,7 +112,7 @@ export async function until(probe: () => boolean, what = "condition", timeoutMs 
 }
 
 /**
- * A subscriber that speaks the wire itself, so a test controls its credit and
+ * A subscriber that speaks the wire itself, so a test controls its permits and
  * sees every event, whatever the bus would have made of it.
  */
 export async function rawSubscription(client: Client, id: string, name: string, payload: unknown, permits: bigint) {
@@ -153,7 +153,7 @@ export async function rawSubscription(client: Client, id: string, name: string, 
   return {
     events,
     ended: ended.promise,
-    credit: (n: number) => stream.send(FrameKind.Credit, (w) => encodeCredit(w, { credits: n })),
+    grant: (n: number) => stream.send(FrameKind.Permits, (w) => encodePermits(w, { count: n })),
     cancel: () => stream.cancel(),
   }
 }

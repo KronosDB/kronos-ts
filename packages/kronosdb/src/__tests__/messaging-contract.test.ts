@@ -26,7 +26,7 @@ function message(name: string, payload: unknown = 0, kind: "command" | "query" =
 }
 
 // Both buses cross the real wire to a hub that does what the server does where
-// a bus can tell: handler streams with credit, answers routed back to the
+// a bus can tell: handler streams with permits, answers routed back to the
 // stream that dispatched. No call reaches `next` without being decoded by the
 // adapter. The real-server suites complement this.
 function harness(
@@ -411,14 +411,14 @@ describe("kronos query lifecycle", () => {
 describe("kronos subscription query — the subscriber's stream", () => {
   let fake: FakeNativeServer
   let client: Client
-  const subscriptions: Array<{ connection: FakeConnection; stream: number; credits: number[]; cancelled: boolean }> = []
+  const subscriptions: Array<{ connection: FakeConnection; stream: number; grants: number[]; cancelled: boolean }> = []
 
   async function setup() {
     subscriptions.length = 0
     fake = await fakeNativeServer({
       onFrame(connection, { stream, frame }) {
-        if (frame.name === "OpenSubscriptionQuery") subscriptions.push({ connection, stream, credits: [], cancelled: false })
-        else if (frame.name === "Credit") subscriptions.find((s) => s.stream === stream)?.credits.push(frame.body.credits)
+        if (frame.name === "OpenSubscriptionQuery") subscriptions.push({ connection, stream, grants: [], cancelled: false })
+        else if (frame.name === "Permits") subscriptions.find((s) => s.stream === stream)?.grants.push(frame.body.count)
         else if (frame.name === "Cancel") {
           const s = subscriptions.find((s) => s.stream === stream)
           if (s) s.cancelled = true
