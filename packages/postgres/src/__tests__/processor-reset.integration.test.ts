@@ -3,6 +3,7 @@
  * token and survives a restart, and what the reset function clears commits —
  * or rolls back — with the reset token.
  */
+import assert from "node:assert/strict"
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import {
   correlation,
@@ -128,12 +129,13 @@ describe("resetting a processor on postgres", () => {
     await until(async () => (await rows()).length === 3, "the processor to catch up")
     processor.stop()
 
-    await expect(
+    await assert.rejects(
       processor.resetTokens(0n, async (uow) => {
         await truncate(uow)
         throw new Error("not today")
       }),
-    ).rejects.toThrow("not today")
+      /not today/,
+    )
 
     expect((await rows()).length).toBe(3)
     expect(processor.replaying).toBe(false)
