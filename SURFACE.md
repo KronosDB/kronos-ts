@@ -981,7 +981,7 @@ otlpHandler(handler, exporter, label?): handler        // parents (command/query
 Zero `@opentelemetry/*` dependencies. No SDK, no global tracer, no patching.
 otel-js interop = the consumer writes wrappers over the same public shapes.
 
-## @kronos-ts/test — a test is a VALUE, run at a SITE
+## @kronos-ts/test — scenarios in the shapes a model is written in
 ```ts
 // ── the vocabulary: one constructor per message kind, doubling as the expectation
 event(descriptor, payload, metadata?): EventValue        // a fact, an arrival, or an expectation
@@ -991,86 +991,76 @@ query(descriptor, payload, metadata?): QueryValue        // the act (a read is n
 any(schema?: StandardSchemaV1): Any                      // the positional payload hole — renders as `*`
 type Duration = number                                   // ms, the unit a clock reads
 
-// ── assertion values for `then` (each CATEGORY judged only if mentioned)
-result(value)                     // command → handler return · query → the answer · event act = fixture error
-error(matcher: string | RegExp | ((e: unknown) => boolean))    // thrown only; asserting it DECLINES the throw
-noEvents() · noCommands()         // the empty case of the list, said out loud
-scheduled(event(...), after: Duration) · cancelled(event(...))
+// ── the grammar
+scenario(subject, options?): ScenarioStart               // subject: a slice's three lists, or a Scope
+  .given(...events)          → ScenarioStart             // history; repeatable, accumulates in order
+  .advance(duration)         → same shape                // at any joint, repeatable
+  .when(command | query | event) → ScenarioActed         // the act
+  .then(...assertions)       → Judged                    // RUNS; resolves with the Outcome
+type Judged = Promise<Outcome> & { and: ScenarioStart }  // `and`: the same world, continued
+storyline(subject, query(Q, p), options?)                // one read model walked through its states
+  .shows(expected | assertion) · .after(...events)       // awaited as it is — a PromiseLike
+type Subject = { commandHandlers?, queryHandlers?, eventHandlers? }   // unwrapped, un-sited
+type Scope = (resources: SiteResources) => Subject       // a composition root over the resources
 
-// ── the grammar: order is real, so the joints are a pipe
-given(...events): ScenarioStart          // free-standing entry; given() empty ≡ scenario()
-scenario(): ScenarioStart
-  .wait(duration)  → same shape          // chainable at any joint, repeatable
-  .when(action)    → ScenarioActed       // EXACTLY ONE command | query | event (singular)
-  .wait(duration)  → ScenarioActed
-  .then(...assertions) → Scenario        // terminal
-type Scenario = { steps · then · description }      // "given X, wait 1000ms, when Y, then Z"
-  // pure and immutable: each step returns a NEW value, so one prefix finishes many ways,
-  // and one finished Scenario runs against as many fixtures as you like
+// ── the claims: functions of what happened
+type Assertion = ((outcome: Outcome) => void | Promise<void>) & { label?: string; claimsError?: boolean }
+type Outcome = { act; result; threw; error; events; commands; schedules; app }
+events(...eventValues) · noEvents()      // the EXACT, ORDERED list the act appended
+commands(...commandValues) · noCommands()// the same over dispatches, the act's own command excluded
+result(value)                            // deep-strict, `any()` holes; refused for an event act
+error(matcher: string | RegExp | ((e: unknown) => boolean))   // claims the throw
+scheduled(event(...), after) · cancelled(event(...))
 
-// ── the site
-testFixture(
-  scope: (eventStore: FixtureEventStore) => lists,   // ONE store · THREE lists — no `states`
-  opts?: { within?: Duration; clock?: () => number; realTime?: boolean },
-): { run(scenario, opts?): Promise<{ result, events, commands }> }
-FIXTURE_EPOCH                     // where the clock starts when nobody says otherwise
-type PartialProcessor = (eventStore, tokenStore, unitOfWork, deadLetterQueue) => EventProcessor
-type FixtureUnitOfWork = CorrelatingUnitOfWork    // what the site mints, named
-ScenarioAssertionError            // message IS the diff
+// ── where it runs
+configure(options)                       // once per test run (a preload), replaces the defaults
+type ScenarioOptions = { infrastructure?: InfrastructureFactory; clock?: () => number; within?: Duration }
+type InfrastructureFactory = (unitOfWork, clock) => Infrastructure | Promise<Infrastructure>
+type Infrastructure = { unitOfWork?; eventStore?; commandBus?; queryBus?; tokenStore?; deadLetterQueue?;
+                        wrap?(handler, kind); close?(); [extra]: unknown }   // extras ride on `outcome.app`
+advanceableClock(from?) · FIXTURE_EPOCH · PartialProcessor
+ScenarioAssertionError                   // message IS the diff, under the scenario's own sentence
 ```
-The fixture is a COMPOSITION ROOT, so it composes like one: its tasks are
-`() => correlating(unitOfWork(clock))` and every handler the scope hands it is
-wrapped with the id pair as cargo (its own two lines, the documented idiom) — the id pair is the
-fixture's cargo choice, because a causal chain is what a scenario is about and
-what a `then` can meaningfully assert. A scope wanting other cargo wraps its own
-handlers first.
 
-The fixture CREATES the resources and hands them to the scope, which is a
-function of them — the same function a process deploys. It owns
+An assertion is a plain function — the built-ins are nothing more — so a
+convention lives where it belongs, beside the code that has it:
+
 ```ts
-recordingEventStore(
-  controllableSchedulingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), clock),
-)
+const rejected = (code: string) => ({ result }: Outcome) =>
+  expect(result).toMatchObject({ ok: false, rejection: code })
 ```
-— the fixture composes what a host composes, BOTH STORE TIERS included, with the
-recorder outermost so `appended` is what left the fixture (all three wrappers are
-ADDITIVE, so every capability survives every layer above it) —
-`inMemoryTokenStore()`, `inMemoryDeadLetterQueue()`,
-`recordingCommandBus(localCommandBus(uow))` and
-`recordingQueryBus(localQueryBus(uow))`, calls the scope FULL-HANDED (a shorter
-parameter list declines the rest), completes any `PartialProcessor` on an
-event-handler entry with its own resources, and wires the result kronos-style.
 
-ONE RESOURCE, NOT THREE. The scope's single `eventStore` parameter is now the log,
-the fold cache AND the schedule book; there is no scheduler to accept and no field
-to put it in, and a scope that arms a deadline typechecks against the fixture for
-the same reason a scope that caches a fold does. `foreign` detection collapsed with
-it: bringing a foreign scheduler IS bringing a foreign store, so there is one check
-where there were two.
+Each scenario OPENS ITS OWN WORLD: the site creates the resources (or takes them
+from the infrastructure), wraps what it needs to judge a `then` around them, wires
+the subject against them kronos-style — `correlatingHandler` around every handler,
+inside it the infrastructure's `wrap` — and closes it once the scenario is judged.
+In memory that is `recordingEventStore(controllableSchedulingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), clock))`,
+`inMemoryTokenStore()`, `inMemoryDeadLetterQueue()` and the local buses, recorded.
+What the infrastructure brings replaces its part and nothing else; a Postgres read
+model typically brings the unit of work, the token store and `wrap`, and keeps the
+log in memory, so scenarios stay deterministic.
 
 Semantics, pinned:
-- `given` events APPEND straight to the log; every processor FAST-FORWARDS its
-  cursor past them WITHOUT invoking a handler. History is history — the
-  automations that would have fired already fired, long ago.
+- `given` events are HISTORY. They are appended, then handed to every processor as
+  a REPLAY (two token resets: to the head, then back to where the history began),
+  so a projection folds them with `ctx.isReplay()` true — the same signal a
+  production replay gives. While they are folded nothing an event handler would set
+  in motion gets out: a command it dispatches is not dispatched (`send` resolves to
+  `undefined`), a deadline it arms is not armed. The automations that would have
+  fired already fired, long ago. None of it is in the outcome.
 - `when(command | query)` dispatches through the real bus. `when(event)` means the
-  event ARRIVES: appended, and the processors DO react. That is the automation
-  shape.
-- After the act and after each `wait`: QUIESCE — drain dispatched commands, drive
-  every processor to the head of the log IT reads, settle, repeat until nothing
-  moves. Deterministic; no sleeps.
-- `wait(d)` jumps the fixture clock, fires the schedules now due (in FIRE-TIME
-  order, each event stamped with the instant it fires), then quiesces. If the
-  scope brought resources the fixture does not own, `wait` throws a clear error
-  unless `opts.realTime`, where it genuinely elapses (`setTimeout d`).
-- `then`: `event()`/`noEvents()` ⇒ the EXACT ORDERED list of new events, nothing
-  missing or extra; `command()`/`noCommands()` the same over dispatches (the act's
-  own command excluded). `result()` is deep-strict with `any()` holes. `error()`
-  matches the throw. `metadata` on a then-value is a SUBSET claim over the keys it
-  names. Against a real-infrastructure scope the claims are re-judged until
-  `opts.within` (default 5s); an all-fixture scope is judged once, because
-  determinism makes waiting theatre.
-- A fixture instance is ONE timeline: consecutive `run` calls continue it (sagas),
-  and each reports only what it caused.
+  event ARRIVES: appended, and the processors DO react.
+- After the act and after each `advance`: QUIESCE — drive every processor to the head
+  of the log IT reads, settle, repeat until nothing moves. Deterministic; no sleeps.
+- `advance(d)` jumps the scenario's clock, fires the schedules now due, then
+  quiesces. A scenario on a plain clock, or on a log the infrastructure brought,
+  cannot move time and says so.
+- `then` judges every claim and reports every failure. A throw no claim declares
+  (`error()`, or `claimsError: true`) surfaces as itself. In memory the claims are
+  judged once; on a FOREIGN site (a brought log, or a processor over a store of its
+  own) they are re-judged until `within` (default 5s).
+- Awaiting a builder without `then` runs it with no claims — `then` makes the
+  builder thenable, so this is defined rather than a hang.
 
 ```ts
 // recorders: thing-first decorators, same shape + a readable log + reset()
@@ -1079,13 +1069,8 @@ recordingCommandBus(bus):   CommandBus & { dispatched; reset() }
 recordingQueryBus(bus):     QueryBus   & { queried;    reset() }
 controllableSchedulingEventStore<E>(next: E, clock: () => number):
   E & ScheduleStoreCapability & { schedules; due(); resetSchedules() }   // no timer, no sink
-  // `due()` HANDS BACK the fired events rather than appending them, so the fixture
-  // puts them in through the OUTERMOST store and the recorder sees a fired deadline
-  // exactly as it sees a handler's append. `resetSchedules()`, not `reset()`: the
-  // recorder above owns that name, and two different resets on one object under one
-  // name was a collision waiting to be found at midnight.
 ```
-Unit level needs no fixture at all: folds are reduces over evolve tuples;
+Unit level needs no scenario at all: folds are reduces over evolve tuples;
 handlers are functions called with an inline ctx record.
 
 ## Deleted to reach this surface (from the current worktree)

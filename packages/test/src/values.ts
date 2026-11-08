@@ -1,11 +1,31 @@
+import { qualifiedNameToString } from "@kronos-ts/core"
 import type {
+  CommandBus,
   CommandDescriptor,
+  CommandMessage,
   EventDescriptor,
+  EventMessage,
+  EventStore,
   InferOutput,
   Metadata,
   QueryDescriptor,
+  SequencedDeadLetterQueue,
   StandardSchemaV1,
+  SubscriptionCapableQueryBus,
+  TokenStore,
+  UnitOfWork,
 } from "@kronos-ts/core"
+import {
+  compare,
+  indent,
+  judgeCancelled,
+  judgeError,
+  judgeMessages,
+  judgeScheduled,
+  preview,
+  ScenarioAssertionError,
+} from "./diff.js"
+import type { ScheduleRecord } from "./recording.js"
 
 // ---------------------------------------------------------------------------
 // The vocabulary a scenario is written in.
@@ -159,76 +179,176 @@ export function query<P extends StandardSchemaV1, R extends StandardSchemaV1 | u
     : { kind: "query", descriptor, payload, metadata }
 }
 
-/** The one thing a scenario does. Exactly one of the three. */
+/** The act a scenario performs: a command, a query, or an event arriving. */
 export type Action = CommandValue<any, any> | QueryValue<any, any> | EventValue<any>
 
-// ── assertion values ───────────────────────────────────────────────────────
-
-/** The act's answer: a command handler's return, or a query's result. */
-export type ResultAssertion = {
-  readonly kind: "result"
-  readonly value: unknown
-}
+// ── the outcome ────────────────────────────────────────────────────────────
 
 /**
- * What the act answered — deep, with {@link any} holes.
+ * What a scenario's act did, and the world it did it in — the one argument every
+ * assertion takes.
  *
- * Meaningless for an event act (an event that arrives answers nobody), and the
- * fixture says so rather than comparing against `undefined`.
+ * `events`, `commands` and `schedules` cover THE ACT ONLY: `given` is history and
+ * is never in them, and the act's own command is not among `commands`.
  */
-export function result(value: unknown): ResultAssertion {
-  return { kind: "result", value }
+export type Outcome = {
+  /** What the act was. */
+  readonly act: "command" | "query" | "event"
+  /** A command handler's return, or a query's answer. `undefined` for an event act or a throw. */
+  readonly result: unknown
+  /** Whether the act threw. */
+  readonly threw: boolean
+  /** What it threw, when it did. */
+  readonly error: unknown
+  /** Events appended during the act, automations included. */
+  readonly events: ReadonlyArray<EventMessage>
+  /** Commands dispatched during the act, the act's own command excluded. */
+  readonly commands: ReadonlyArray<CommandMessage>
+  /** Schedules armed, fired or cancelled during the act. */
+  readonly schedules: ReadonlyArray<ScheduleRecord>
+  /**
+   * The running world: the resources the scenario ran on, plus whatever the
+   * infrastructure factory returned besides them (a pool, a database client).
+   * What a check reaches for when the built-ins are not enough.
+   */
+  readonly app: App
+}
+
+/** The resources a scenario runs on, as its handlers saw them. */
+export type Resources = {
+  readonly eventStore: EventStore
+  readonly commandBus: CommandBus
+  readonly queryBus: SubscriptionCapableQueryBus
+  readonly unitOfWork: () => UnitOfWork
+  readonly tokenStore: TokenStore
+  readonly deadLetterQueue: SequencedDeadLetterQueue
+}
+
+/** The resources, plus everything else the infrastructure brought. */
+export type App = Resources & { readonly [extra: string]: unknown }
+
+// ── assertions ─────────────────────────────────────────────────────────────
+
+/**
+ * Anything `then` accepts: a function of the {@link Outcome}. It returns when the
+ * claim holds and throws when it does not.
+ *
+ * The built-ins below are exactly this, and so is anything you write — an
+ * assertion is not a special kind of value, which is the whole extension story:
+ *
+ * ```ts
+ * const rejected = (code: string) => ({ result }: Outcome) =>
+ *   expect(result).toMatchObject({ ok: false, rejection: code })
+ *
+ * .then(rejected("CART_FULL"), noEvents())
+ * .then(async ({ app }) => expect(await app.db.select().from(carts)).toHaveLength(1))
+ * ```
+ *
+ * Two optional properties a function may carry: `label`, the words it adds to
+ * the scenario's sentence, and `claimsError: true`, which says it judges a
+ * throw — without one, a throw nobody claimed surfaces as itself, because the
+ * real error is what the reader needs.
+ */
+export type Assertion = ((outcome: Outcome) => void | Promise<void>) & {
+  readonly label?: string
+  readonly claimsError?: boolean
+}
+
+function assertion(label: string, check: (outcome: Outcome) => void, claimsError = false): Assertion {
+  return Object.assign(check, claimsError ? { label, claimsError } : { label })
+}
+
+function fail(text: string | undefined): void {
+  if (text !== undefined) throw new ScenarioAssertionError(text)
+}
+
+const nameOf = (descriptor: { name: { namespace: string; name: string } }) => qualifiedNameToString(descriptor.name)
+const localName = (descriptor: { name: { name: string } }) => descriptor.name.name
+
+/**
+ * Exactly these events were appended, in this order — nothing missing, nothing
+ * extra. Payloads are deep-strict with {@link any} holes; metadata, when an
+ * expectation names some, is a subset claim.
+ */
+export function events(...expected: EventValue<any>[]): Assertion {
+  const label = expected.length === 0 ? "no events" : expected.map((e) => localName(e.descriptor)).join(", ")
+  return assertion(label, ({ events }) =>
+    fail(
+      judgeMessages(
+        "events",
+        "appended",
+        expected.map((e) => ({ value: e, name: nameOf(e.descriptor) })),
+        events.map((e) => ({ name: qualifiedNameToString(e.name), payload: e.payload, metadata: e.metadata })),
+      ),
+    ),
+  )
+}
+
+/** Nothing was appended. The empty case of {@link events}, said out loud. */
+export function noEvents(): Assertion {
+  return events()
+}
+
+/** Exactly these commands were dispatched by the act's handlers, in this order. */
+export function commands(...expected: CommandValue<any, any>[]): Assertion {
+  const label = expected.length === 0 ? "no commands" : expected.map((c) => localName(c.descriptor)).join(", ")
+  return assertion(label, ({ commands }) =>
+    fail(
+      judgeMessages(
+        "commands",
+        "dispatched",
+        expected.map((c) => ({ value: c, name: nameOf(c.descriptor) })),
+        commands.map((c) => ({ name: qualifiedNameToString(c.name), payload: c.payload, metadata: c.metadata })),
+      ),
+    ),
+  )
+}
+
+/** Nothing was dispatched — what an automation test is often about. */
+export function noCommands(): Assertion {
+  return commands()
 }
 
 /**
- * How `error` claims the throw.
+ * What the act answered: a command handler's return, or a query's answer —
+ * deep-strict, with {@link any} holes.
+ *
+ * Meaningless for an event act (an event that arrives answers nobody), and it
+ * says so rather than comparing against `undefined`.
+ */
+export function result(value: unknown): Assertion {
+  return assertion("a result", ({ act, result: actual }) => {
+    if (act === "event") {
+      throw new Error(
+        "@kronos-ts/test: `result(…)` claims the act's answer, but the act is an EVENT arriving — " +
+          "an event answers nobody. Assert what it CAUSED instead: the events it led to, or the " +
+          "commands its automations dispatched.",
+      )
+    }
+    const differences = compare(value, actual, "")
+    if (differences.length === 0) return
+    fail(
+      `the ${act === "query" ? "query's answer" : "command's result"} is not what \`result()\` claimed.\n` +
+        `  expected: ${preview(value)}\n` +
+        `  actual:   ${preview(actual)}\n` +
+        `  differences:\n${indent(differences, 4)}`,
+    )
+  })
+}
+
+/**
+ * How {@link error} claims the throw.
  *
  * - `string` — the message CONTAINS it. A substring, not an equality: messages
  *   carry ids and counts and a test should not pin those.
  * - `RegExp` — the message matches it.
  * - a predicate — anything else, `(e) => e instanceof CourseFull` included.
- *   One escape hatch instead of a list of special cases.
  */
 export type ErrorMatcher = string | RegExp | ((error: unknown) => boolean)
 
-export type ErrorAssertion = {
-  readonly kind: "error"
-  readonly matcher: ErrorMatcher
-}
-
-/**
- * The act threw, and this is how.
- *
- * Asserting an error also DECLINES the throw: without it, a throw the scenario
- * did not claim surfaces as itself rather than as an events diff, because the
- * real error is what the reader needs.
- */
-export function error(matcher: ErrorMatcher): ErrorAssertion {
-  return { kind: "error", matcher }
-}
-
-export type NoEventsAssertion = {
-  readonly kind: "no-events"
-}
-
-/** Nothing was appended. The empty case of the event list, said out loud. */
-export function noEvents(): NoEventsAssertion {
-  return { kind: "no-events" }
-}
-
-export type NoCommandsAssertion = {
-  readonly kind: "no-commands"
-}
-
-/** Nothing was dispatched — the assertion an automation test is usually about. */
-export function noCommands(): NoCommandsAssertion {
-  return { kind: "no-commands" }
-}
-
-export type ScheduledAssertion = {
-  readonly kind: "scheduled"
-  readonly event: EventValue<any>
-  readonly after: Duration
+/** The act threw, and this is how. Claiming the throw is what declines it. */
+export function error(matcher: ErrorMatcher): Assertion {
+  return assertion("an error", ({ threw, error: thrown }) => fail(judgeError(matcher, { threw, thrown })), true)
 }
 
 /**
@@ -238,34 +358,13 @@ export type ScheduledAssertion = {
  * from now", and it does not know — and should not have to compute — which
  * absolute millisecond the handler ran at.
  */
-export function scheduled(event: EventValue<any>, after: Duration): ScheduledAssertion {
-  return { kind: "scheduled", event, after }
-}
-
-export type CancelledAssertion = {
-  readonly kind: "cancelled"
-  readonly event: EventValue<any>
+export function scheduled(event: EventValue<any>, after: Duration): Assertion {
+  return assertion(`${localName(event.descriptor)} scheduled after ${after}ms`, ({ schedules }) =>
+    fail(judgeScheduled(event, after, schedules)),
+  )
 }
 
 /** A schedule for this event was cancelled before it fired. */
-export function cancelled(event: EventValue<any>): CancelledAssertion {
-  return { kind: "cancelled", event }
+export function cancelled(event: EventValue<any>): Assertion {
+  return assertion(`${localName(event.descriptor)} cancelled`, ({ schedules }) => fail(judgeCancelled(event, schedules)))
 }
-
-/**
- * Anything `then` accepts.
- *
- * Each CATEGORY is judged only if the scenario mentions it: events, commands,
- * the result, the throw, the schedules. Say nothing about a category and it is
- * not looked at — which is what lets one scenario be about an automation and
- * another about a return value without either restating the other's world.
- */
-export type Assertion =
-  | EventValue<any>
-  | CommandValue<any, any>
-  | ResultAssertion
-  | ErrorAssertion
-  | NoEventsAssertion
-  | NoCommandsAssertion
-  | ScheduledAssertion
-  | CancelledAssertion

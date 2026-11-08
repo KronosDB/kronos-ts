@@ -17,7 +17,7 @@ import type {
  */
 type EmittingContext = EventHandlerContext & SubscriptionCapability
 import { eventProcessor } from "@kronos-ts/core"
-import type { FixtureLists, FixtureResources, PartialProcessor } from "@kronos-ts/test"
+import type { PartialProcessor, SiteResources, Subject } from "@kronos-ts/test"
 import { z } from "zod"
 import { withNamespace, commandHandler, eventHandler, queryHandler } from "@kronos-ts/core"
 import { state } from "@kronos-ts/core"
@@ -239,7 +239,7 @@ export const COURSE_PROJECTION = "course-projection"
 /**
  * The course slice as a COMPOSITION ROOT: a function of the resources it runs on.
  *
- * This is what a process deploys and what `testFixture` runs — the same function,
+ * This is what a process deploys and what `scenario` runs — the same function,
  * called the same way. The projection is left PARTIAL: the slice closes out its
  * own semantics (its durable name, global stream order, no dead-letter queue for
  * a lane-free projection) and leaves its resources in the parameter list, so the
@@ -250,7 +250,7 @@ export const COURSE_PROJECTION = "course-projection"
  * a site that caches folds hands in a log that CAN, and the entries point at
  * the one object.
  */
-export function courses({ eventStore }: FixtureResources): FixtureLists {
+export function courses({ eventStore }: SiteResources): Subject {
   const projection: PartialProcessor = (log, tokenStore, unitOfWork) =>
     eventProcessor(COURSE_PROJECTION, log, tokenStore, unitOfWork)
 

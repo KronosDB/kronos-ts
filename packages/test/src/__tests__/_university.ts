@@ -8,7 +8,7 @@ import {
 } from "@kronos-ts/core"
 import type { EventStore } from "@kronos-ts/core"
 import { z } from "zod"
-import type { FixtureLists, FixtureResources, PartialProcessor } from "../fixture.js"
+import type { PartialProcessor, SiteResources, Subject } from "../site.js"
 
 // ---------------------------------------------------------------------------
 // A university, written the way a slice is written: descriptors, one state, the
@@ -205,11 +205,11 @@ const projection: PartialProcessor = (eventStore, tokenStore, unitOfWork) =>
 /**
  * The whole university, as a function of the resources it runs on.
  *
- * `testFixture(university)` and a production composition root call this the same
+ * `scenario(university)` and a production composition root call this the same
  * way — which is the point of taking the resources as parameters instead of
  * reaching for them.
  */
-export function university({ eventStore }: FixtureResources): FixtureLists {
+export function university({ eventStore }: SiteResources): Subject {
   return {
     commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
       ...h,
@@ -228,7 +228,7 @@ export function university({ eventStore }: FixtureResources): FixtureLists {
 }
 
 /** Decisions only — no automations, so `then` is exactly what the command decided. */
-export function decisions({ eventStore }: FixtureResources): FixtureLists {
+export function decisions({ eventStore }: SiteResources): Subject {
   return {
     commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
       ...h,
@@ -238,7 +238,7 @@ export function decisions({ eventStore }: FixtureResources): FixtureLists {
 }
 
 /** Decisions plus the seat automation, with no scheduler and no read model. */
-export function withAutomation(resources: FixtureResources): FixtureLists {
+export function withAutomation(resources: SiteResources): Subject {
   return {
     ...decisions(resources),
     eventHandlers: [{ ...closeWhenFull, processor: projection }],
@@ -279,7 +279,7 @@ const armReminder = commandHandler(ArmReminder, async ({ payload: cmd }, ctx) =>
 })
 
 /** Reminders on their own — one command, one state, one schedule. */
-export function reminders({ eventStore }: FixtureResources): FixtureLists {
+export function reminders({ eventStore }: SiteResources): Subject {
   return {
     commandHandlers: [{ ...armReminder, eventStore }],
   }

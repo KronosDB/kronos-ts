@@ -7,64 +7,60 @@ export {
   type CommandValue,
   type QueryValue,
   type Action,
-  type ErrorMatcher,
-  type ResultAssertion,
-  type ErrorAssertion,
-  type NoEventsAssertion,
-  type NoCommandsAssertion,
-  type ScheduledAssertion,
-  type CancelledAssertion,
-  type Assertion,
   any,
   isAny,
   event,
   command,
   query,
+} from "./values.js"
+
+// ── the claims: functions of what happened ─────────────────────────────────
+export {
+  type Outcome,
+  type Resources,
+  type App,
+  type Assertion,
+  type ErrorMatcher,
+  events,
+  noEvents,
+  commands,
+  noCommands,
   result,
   error,
-  noEvents,
-  noCommands,
   scheduled,
   cancelled,
 } from "./values.js"
 
-// ── the grammar: given → when → then, with waits at the joints ─────────────
+// ── the grammar: given → when → then, and storylines ───────────────────────
 export {
-  type Step,
-  type Scenario,
   type ScenarioStart,
   type ScenarioActed,
-  type Judgement,
-  type Advances,
+  type Judged,
+  type Storyline,
   scenario,
-  given,
+  storyline,
 } from "./scenario.js"
 
-// ── the site ───────────────────────────────────────────────────────────────
+// ── where it runs: set once, override per scenario ─────────────────────────
 export {
+  type Subject,
+  type Scope,
+  type SiteResources,
+  type SiteEventStore,
   type PartialProcessor,
-  type FixtureUnitOfWork,
-  type FixtureEventHandler,
-  type FixtureLists,
-  advanceableClock,
-  type AdvanceableClock,
-  type IfAdvanceable,
-  type FixtureResources,
-  type FixtureScope,
-  type FixtureInfrastructure,
+  type Infrastructure,
   type InfrastructureFactory,
-  type EventRecording,
-  type FixtureOptions,
-  type RunOutcome,
-  type TestFixture,
+  type ScenarioOptions,
+  type AdvanceableClock,
+  advanceableClock,
+  configure,
   FIXTURE_EPOCH,
-  testFixture,
-} from "./fixture.js"
+} from "./site.js"
 
 // ── the failure, which is the product ──────────────────────────────────────
 export { ScenarioAssertionError } from "./diff.js"
 
-// ── recorders: thing-first decorators, usable outside a fixture ────────────
+// ── recorders: thing-first decorators, usable on their own ─────────────────
 export {
   type RecordingEventStore,
   type RecordingCommandBus,

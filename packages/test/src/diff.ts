@@ -1,8 +1,7 @@
 import { qualifiedNameToString } from "@kronos-ts/core"
 import type { CommandMessage, EventMessage, Metadata } from "@kronos-ts/core"
-import type { Scenario } from "./scenario.js"
 import { isAny } from "./values.js"
-import type { Assertion, CommandValue, EventValue } from "./values.js"
+import type { CommandValue, EventValue } from "./values.js"
 import type { ScheduleRecord } from "./recording.js"
 
 // ---------------------------------------------------------------------------
@@ -25,116 +24,11 @@ export class ScenarioAssertionError extends Error {
   }
 }
 
-/** What one act actually did. */
-export type Observed = {
-  readonly result: unknown
-  readonly threw: boolean
-  readonly thrown: unknown
-  readonly events: ReadonlyArray<EventMessage>
-  readonly commands: ReadonlyArray<CommandMessage>
-  readonly schedules: ReadonlyArray<ScheduleRecord>
-}
-
-/**
- * Judge a scenario's claims against what happened.
- *
- * Returns the failure text, or `undefined` when everything asserted held. It
- * does not throw, because a real-infrastructure scope is judged REPEATEDLY until
- * it settles or the patience runs out — and "not yet" and "wrong" have to be the
- * same answer for that loop to be writable.
- */
-export function evaluate(
-  scenario: Scenario,
-  observed: Observed,
-  actKind: "command" | "query" | "event",
-): string | undefined {
-  const sections: string[] = []
-
-  const expectedEvents = scenario.then.filter(isEventValue)
-  const expectedCommands = scenario.then.filter(isCommandValue)
-  const noEvents = scenario.then.some((a) => a.kind === "no-events")
-  const noCommands = scenario.then.some((a) => a.kind === "no-commands")
-  const resultAssertion = scenario.then.find((a) => a.kind === "result")
-  const errorAssertion = scenario.then.find((a) => a.kind === "error")
-
-  // The throw comes first: everything downstream of a handler that blew up is
-  // noise, and an events diff over an act that never ran is a lie about what
-  // went wrong.
-  if (errorAssertion !== undefined) {
-    const failure = judgeError(errorAssertion.matcher, observed)
-    if (failure !== undefined) return headed(scenario, [failure])
-  }
-
-  if (noEvents || expectedEvents.length > 0) {
-    const failure = judgeMessages(
-      "events",
-      "appended",
-      expectedEvents.map((e) => ({ value: e, name: qualifiedNameToString(e.descriptor.name) })),
-      observed.events.map((e) => ({
-        name: qualifiedNameToString(e.name),
-        payload: e.payload,
-        metadata: e.metadata,
-      })),
-    )
-    if (failure !== undefined) sections.push(failure)
-  }
-
-  if (noCommands || expectedCommands.length > 0) {
-    const failure = judgeMessages(
-      "commands",
-      "dispatched",
-      expectedCommands.map((c) => ({ value: c, name: qualifiedNameToString(c.descriptor.name) })),
-      observed.commands.map((c) => ({
-        name: qualifiedNameToString(c.name),
-        payload: c.payload,
-        metadata: c.metadata,
-      })),
-    )
-    if (failure !== undefined) sections.push(failure)
-  }
-
-  if (resultAssertion !== undefined) {
-    const differences = compare(resultAssertion.value, observed.result, "")
-    if (differences.length > 0) {
-      sections.push(
-        `the ${actKind === "query" ? "query's answer" : "command's result"} is not what \`result()\` claimed.\n` +
-          `  expected: ${preview(resultAssertion.value)}\n` +
-          `  actual:   ${preview(observed.result)}\n` +
-          `  differences:\n${indent(differences, 4)}`,
-      )
-    }
-  }
-
-  for (const assertion of scenario.then) {
-    if (assertion.kind === "scheduled") {
-      const failure = judgeScheduled(assertion.event, assertion.after, observed.schedules)
-      if (failure !== undefined) sections.push(failure)
-    } else if (assertion.kind === "cancelled") {
-      const failure = judgeCancelled(assertion.event, observed.schedules)
-      if (failure !== undefined) sections.push(failure)
-    }
-  }
-
-  return sections.length === 0 ? undefined : headed(scenario, sections)
-}
-
-function headed(scenario: Scenario, sections: ReadonlyArray<string>): string {
-  return [`${scenario.description}\n`, ...sections].join("\n")
-}
-
-function isEventValue(assertion: Assertion): assertion is EventValue<any> {
-  return assertion.kind === "event"
-}
-
-function isCommandValue(assertion: Assertion): assertion is CommandValue<any, any> {
-  return assertion.kind === "command"
-}
-
 // ── the throw ──────────────────────────────────────────────────────────────
 
-function judgeError(
+export function judgeError(
   matcher: string | RegExp | ((error: unknown) => boolean),
-  observed: Observed,
+  observed: { readonly threw: boolean; readonly thrown: unknown },
 ): string | undefined {
   if (!observed.threw) {
     return `expected the act to throw ${describeMatcher(matcher)}, but it completed successfully.`
@@ -163,12 +57,12 @@ function describeMatcher(matcher: string | RegExp | ((error: unknown) => boolean
 
 // ── the message lists ──────────────────────────────────────────────────────
 
-type ExpectedMessage = {
+export type ExpectedMessage = {
   readonly value: EventValue<any> | CommandValue<any, any>
   readonly name: string
 }
 
-type ActualMessage = {
+export type ActualMessage = {
   readonly name: string
   readonly payload: unknown
   readonly metadata: Metadata | undefined
@@ -181,7 +75,7 @@ type ActualMessage = {
  * no separate code path: it is the empty list, and an empty expectation against
  * something appended reports the something as unexpected.
  */
-function judgeMessages(
+export function judgeMessages(
   what: string,
   verb: string,
   expected: ReadonlyArray<ExpectedMessage>,
@@ -237,7 +131,7 @@ function listing(names: ReadonlyArray<string>): string {
   return names.map((name, i) => `    [${i}] ${name}`).join("\n")
 }
 
-function indent(lines: ReadonlyArray<string>, spaces: number): string {
+export function indent(lines: ReadonlyArray<string>, spaces: number): string {
   const pad = " ".repeat(spaces)
   return lines.map((line) => `${pad}${line}`).join("\n")
 }
@@ -285,7 +179,7 @@ function align(expected: ReadonlyArray<string>, actual: ReadonlyArray<string>): 
 
 // ── schedules ──────────────────────────────────────────────────────────────
 
-function judgeScheduled(
+export function judgeScheduled(
   expected: EventValue<any>,
   after: number,
   schedules: ReadonlyArray<ScheduleRecord>,
@@ -307,7 +201,7 @@ function judgeScheduled(
   )
 }
 
-function judgeCancelled(
+export function judgeCancelled(
   expected: EventValue<any>,
   schedules: ReadonlyArray<ScheduleRecord>,
 ): string | undefined {
