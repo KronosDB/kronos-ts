@@ -1,5 +1,36 @@
 # @kronos-ts/postgres
 
+## 0.19.0
+
+### Minor Changes
+
+- 8600eef: `runEventProcessor` no longer takes `claimIntervalMs`. A processor now looks for free segments and renews its claims every half of its token store's claim timeout, read from the new optional `TokenStore.claimTimeoutMs` field. `inMemoryTokenStore(ms)` and `postgresTokenStore(pg, { claimTimeoutMs })` set it; a store without it is treated as 10000 ms, so the default pace stays 5 seconds.
+- 8600eef: `postgresSchedulingEventStore(next, pg, unitOfWork)` takes its unit-of-work factory as the third argument and has no options. Its worker is tuned by wrapping the store: `batched(store, n)` for rows a tick (default 50) and `polling(store, ms)` for the interval (default 1000). `startScheduling()` reads both off the value it is called on. `PostgresSchedulingConfig` is removed.
+- d4565ea: A processor is now one or more segments, each with its own token and claim, so several nodes can run the same processor without handling an event twice.
+
+  - Unwrapped, a processor is one segment: one node handles it and the others wait, taking over when it stops or its claim lapses.
+  - `segmented(p, count, sequenceOf)` starts a processor as `count` segments (a power of two). An event's segment is decided by hashing its sequence id, so a sequence stays in one segment and keeps its order. `concurrent`, `deadLettering` and `segmented` must be given the same function.
+  - A node claims every free segment on start and every 5 seconds after, renews what it holds, and releases on stop. The segments a node holds share one read of the log.
+  - Token writes are fenced on the claim: `TokenStore.store` takes an optional trailing `owner`, and writes only while that owner holds the claim. Both the in-memory and Postgres stores implement it.
+  - The running processor has `segments()`, `releaseSegment(id, forMs?)`, `splitSegment(id)` and `mergeSegment(id)`. Balancing and scaling are left to whoever operates the system.
+  - `RunningProcessor.stop()` now returns a promise, resolved once in-flight batches have finished and the claims are released.
+  - `resetTokens` resets every segment, and refuses while another node holds one.
+
+- 8600eef: `postgresSnapshottingEventStore` takes the serializer as its third argument: `postgresSnapshottingEventStore(next, pg, serializer)`. `PostgresSnapshottingEventStoreConfig` is removed.
+
+  `kronosDbSchedulingEventStore` encodes scheduled payloads with the connection's serializer and no longer takes an options argument: `kronosDbSchedulingEventStore(next, kdb, context?)`. `KronosDbSchedulingOptions` is removed.
+
+### Patch Changes
+
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [b8ecc48]
+- Updated dependencies [d4565ea]
+- Updated dependencies [62c4e0c]
+- Updated dependencies [8600eef]
+  - @kronos-ts/core@0.8.0
+
 ## 0.18.0
 
 ### Minor Changes

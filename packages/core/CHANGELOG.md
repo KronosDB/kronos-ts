@@ -1,5 +1,57 @@
 # @kronos-ts/core
 
+## 0.8.0
+
+### Minor Changes
+
+- 8600eef: `runEventProcessor` no longer takes `claimIntervalMs`. A processor now looks for free segments and renews its claims every half of its token store's claim timeout, read from the new optional `TokenStore.claimTimeoutMs` field. `inMemoryTokenStore(ms)` and `postgresTokenStore(pg, { claimTimeoutMs })` set it; a store without it is treated as 10000 ms, so the default pace stays 5 seconds.
+- 8600eef: `localFirstCommandBus(next, local)` and `localFirstQueryBus(next, local)` hand a message whose handler was subscribed through them to `local` instead of `next`. They replace `preferLocal` on the RabbitMQ buses and `shortcutQueriesToLocalHandlers` on the Axon Server and KronosDB query buses.
+
+  - RabbitMQ buses send every dispatch over the broker unless wrapped. `preferLocal` defaulted to `true`, so wrap `rabbitMqCommandBus(local, rabbit)` in `localFirstCommandBus(…, local)`, and the query bus likewise, to keep local handling.
+  - `shortcutQueriesToLocalHandlers: true` becomes `localFirstQueryBus(axonServerQueryBus(local, conn), local)` or `localFirstQueryBus(kronosDbQueryBus(local, kdb), local)`.
+  - A message handled locally is no longer counted by the transport: its shutdown does not wait for it, and its request limit and timeout do not apply.
+  - A RabbitMQ subscription query fetches its initial result over the broker, even when the handler is in this process.
+
+- 8600eef: `polling(p, ms)` sets how long an idle processor waits before it looks again, and the base of its retry delay. It replaces `runEventProcessor({ pollingIntervalMs })`, which `kronos()` never passed, so processors started by `kronos()` can now be tuned. Two entries naming one processor with different intervals are a boot error.
+
+  - `batched` and `polling` take anything with the field they set, so they also tune a store's polling worker.
+
+- b8ecc48: A reset now replays up to where the processor had got to instead of the head of the log, so events it was never handed are not replays. Resetting to the current position or past it, or before the processor ever ran, replays nothing; resetting again mid-replay keeps the first reset's point.
+
+  `ctx.isReplay()` is decided from each event's own position, so an event past the reset point is not a replay even when a filtered stream skips straight to it.
+
+  A replay in progress is stored with the token and survives a restart: the token row holds `ReplayToken` with the reset point, and existing rows read as before.
+
+  `resetTokens(from?, reset?)` takes an optional function that runs in the unit of work that stores the new token. Clearing the projection's tables there commits together with the reset; if it throws, neither happens.
+
+- d4565ea: A processor is now one or more segments, each with its own token and claim, so several nodes can run the same processor without handling an event twice.
+
+  - Unwrapped, a processor is one segment: one node handles it and the others wait, taking over when it stops or its claim lapses.
+  - `segmented(p, count, sequenceOf)` starts a processor as `count` segments (a power of two). An event's segment is decided by hashing its sequence id, so a sequence stays in one segment and keeps its order. `concurrent`, `deadLettering` and `segmented` must be given the same function.
+  - A node claims every free segment on start and every 5 seconds after, renews what it holds, and releases on stop. The segments a node holds share one read of the log.
+  - Token writes are fenced on the claim: `TokenStore.store` takes an optional trailing `owner`, and writes only while that owner holds the claim. Both the in-memory and Postgres stores implement it.
+  - The running processor has `segments()`, `releaseSegment(id, forMs?)`, `splitSegment(id)` and `mergeSegment(id)`. Balancing and scaling are left to whoever operates the system.
+  - `RunningProcessor.stop()` now returns a promise, resolved once in-flight batches have finished and the claims are released.
+  - `resetTokens` resets every segment, and refuses while another node holds one.
+
+- 62c4e0c: A processor is built from its four parts as arguments, and what it does with its batch is said by wrapping it: `batched`, `concurrent` and `deadLettering`.
+
+  - `eventProcessor(name, eventStore, tokenStore, unitOfWork)` replaces `eventProcessor({ ... })`. The `batchSize`, `replayBatchSize`, `sequence` and `deadLetterQueue` fields are gone, and so are `EventProcessorSite`, `EventProcessorLane`, `EventProcessorConfig` and `SequenceDemand`.
+  - `batched(p, size)`: up to `size` ready events per batch, at the head and behind it. Unwrapped, a processor takes one event at the head and up to 1000 behind, as before.
+  - A failed batch is retried one event at a time until the token is past it, whatever the batch size.
+  - `concurrent(p, sequenceOf)`: the batch's sequences run side by side. Events in one sequence are handled in log order; events in different sequences are not ordered against each other. The batch still commits as one unit of work, and a failure fails it once every sequence has settled.
+  - `deadLettering(p, queue, sequenceOf)`: parks a failing event and the rest of its sequence under that sequence. With `concurrent` both must be given the same function, or the second wrapper throws.
+  - `ctx.isReplay()` is fixed per event, read off the token before that event, rather than read off the batch's unit of work.
+  - Two processors with the same name merge only if they were wrapped the same way.
+  - `sequentialPerTag` is gone. A sequence per tag value is written out: `(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier`.
+
+- 8600eef: A state is cached by wrapping it: `snapshot(state, key, when)` returns the state with a snapshot policy. `state()` no longer takes `snapshot` or `lifecycle`.
+
+  - `state({ …, snapshot: { key, when } })` becomes `snapshot(state({ … }), key, when)`. The state passed in is unchanged, and wrapping a cached state again does not compile.
+  - `SnapshotPolicy` is a function, `(result: EvolutionResult) => boolean`. `afterEvents` and `whenSourcingTimeExceeds` return one. `.or` is removed; combine two with `(r) => a(r) || b(r)`.
+  - `noSnapshotPolicy()` is removed. A state that should not snapshot is not wrapped.
+  - `state({ lifecycle })` and `StateLifecycle` are removed. The hooks ran while a load folded, so on every load rather than once per event.
+
 ## 0.7.0
 
 ### Minor Changes

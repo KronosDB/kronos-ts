@@ -1,5 +1,40 @@
 # @kronos-ts/kronosdb
 
+## 0.11.0
+
+### Minor Changes
+
+- 8600eef: `localFirstCommandBus(next, local)` and `localFirstQueryBus(next, local)` hand a message whose handler was subscribed through them to `local` instead of `next`. They replace `preferLocal` on the RabbitMQ buses and `shortcutQueriesToLocalHandlers` on the Axon Server and KronosDB query buses.
+
+  - RabbitMQ buses send every dispatch over the broker unless wrapped. `preferLocal` defaulted to `true`, so wrap `rabbitMqCommandBus(local, rabbit)` in `localFirstCommandBus(…, local)`, and the query bus likewise, to keep local handling.
+  - `shortcutQueriesToLocalHandlers: true` becomes `localFirstQueryBus(axonServerQueryBus(local, conn), local)` or `localFirstQueryBus(kronosDbQueryBus(local, kdb), local)`.
+  - A message handled locally is no longer counted by the transport: its shutdown does not wait for it, and its request limit and timeout do not apply.
+  - A RabbitMQ subscription query fetches its initial result over the broker, even when the handler is in this process.
+
+- 8600eef: `postgresSnapshottingEventStore` takes the serializer as its third argument: `postgresSnapshottingEventStore(next, pg, serializer)`. `PostgresSnapshottingEventStoreConfig` is removed.
+
+  `kronosDbSchedulingEventStore` encodes scheduled payloads with the connection's serializer and no longer takes an options argument: `kronosDbSchedulingEventStore(next, kdb, context?)`. `KronosDbSchedulingOptions` is removed.
+
+- 470b38a: The KronosDB client speaks native protocol version 2 (KronosDB 0.12), where every stream has a byte window.
+
+  A server may send a stream only a window of bytes ahead of the client, and the client grants bytes back as its consumer takes the frames. The transport does it, so nothing above it sees a window. A consumer that falls behind now holds back its own stream and nothing else, and is never failed for it. Reads and subscriptions both stop at the window, so a subscription's backlog in memory is bounded by it in bytes, whatever the size of its events. Cancelling a read now stops the server at once, instead of letting it send the rest of the log.
+
+  - New: `KronosDbConnectionConfig.window`, the bytes the server may send on each stream ahead of the client (at least 65536; default 8388608, 8 MiB). It is sent in Hello and applies to every stream of the connection.
+  - `SubscriptionOptions.credits` is gone (it was accepted by `kronosDbSubscription` and the `streaming` argument of `kronosDbEventStore`). A subscription's read-ahead is the connection's `window`; `StreamingCondition.readAhead` no longer changes what is asked of the server.
+  - A subscription is opened with a request that carries END, and sends no credits.
+  - Handler streams (commands and queries) and subscription queries grant `Permits` where they granted `Credit`. `flowControl.permits` and `refillThreshold` mean what they did.
+
+### Patch Changes
+
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [b8ecc48]
+- Updated dependencies [d4565ea]
+- Updated dependencies [62c4e0c]
+- Updated dependencies [8600eef]
+  - @kronos-ts/core@0.8.0
+
 ## 0.10.0
 
 ### Minor Changes
