@@ -1,5 +1,18 @@
 # @kronos-ts/test
 
+## 0.6.5
+
+### Patch Changes
+
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [8600eef]
+- Updated dependencies [b8ecc48]
+- Updated dependencies [d4565ea]
+- Updated dependencies [62c4e0c]
+- Updated dependencies [8600eef]
+  - @kronos-ts/core@0.8.0
+
 ## 0.6.4
 
 ### Patch Changes
