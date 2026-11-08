@@ -50,6 +50,13 @@ export type EventRecording = {
   readonly appended: ReadonlyArray<EventMessage>
   /** Forget the log. The STORE keeps its events; only the recording is cleared. */
   reset(): void
+  /**
+   * HOLD what is set in motion through this store: while held, `schedule` arms
+   * nothing (it answers a token that matches no schedule) and `cancelSchedule`
+   * cancels nothing. A fixture holds while it folds history — the deadlines the
+   * past armed are already in the book, or already fired.
+   */
+  hold(held: boolean): void
 }
 
 /**
@@ -65,10 +72,13 @@ export type EventRecording = {
  */
 export function recordingEventStore<E extends EventStore>(store: E): E & EventRecording {
   const log: EventMessage[] = []
+  const scheduling = store as E & Partial<ScheduleStoreCapability>
+  let held = false
 
-  return {
-    ...store,
-
+  // DESCRIPTORS, not a spread: a spread reads every getter once and freezes the
+  // value, and a tier under this one (the controllable scheduler's `schedules`)
+  // is a live view that has to stay one.
+  const own = {
     get appended(): ReadonlyArray<EventMessage> {
       return log
     },
@@ -76,6 +86,20 @@ export function recordingEventStore<E extends EventStore>(store: E): E & EventRe
     reset(): void {
       log.length = 0
     },
+
+    hold(on: boolean): void {
+      held = on
+    },
+
+    // The scheduling tier is held only where the wrapped store claims it.
+    ...(typeof scheduling.schedule === "function"
+      ? {
+          schedule: (event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> =>
+            held ? Promise.resolve({ id: `held-${generateIdentifier()}` }) : scheduling.schedule!(event, at, uow),
+          cancelSchedule: (token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult> =>
+            held ? Promise.resolve({ kind: "not-found" }) : scheduling.cancelSchedule!(token, uow),
+        }
+      : {}),
 
     async append(
       events: ReadonlyArray<EventMessage>,
@@ -101,7 +125,11 @@ export function recordingEventStore<E extends EventStore>(store: E): E & EventRe
         },
       }
     },
-  } as E & EventRecording
+  }
+  return Object.defineProperties(
+    {},
+    { ...Object.getOwnPropertyDescriptors(store), ...Object.getOwnPropertyDescriptors(own) },
+  ) as E & EventRecording
 }
 
 /**
@@ -123,6 +151,12 @@ export type RecordingCommandBus<U extends UnitOfWork = UnitOfWork> = CommandBus<
 export type CommandRecording = {
   readonly dispatched: ReadonlyArray<CommandMessage>
   reset(): void
+  /**
+   * HOLD what is dispatched: while held, `dispatch` neither records nor sends,
+   * and resolves to `undefined`. A fixture holds while it folds history, so an
+   * automation that reacts to the past sets nothing in motion.
+   */
+  hold(held: boolean): void
 }
 
 /**
@@ -134,6 +168,7 @@ export function recordingCommandBus<B extends CommandBus<any>>(
   bus: B,
 ): B & CommandRecording {
   const log: Array<CommandMessage> = []
+  let held = false
 
   return {
     ...bus,
@@ -146,7 +181,12 @@ export function recordingCommandBus<B extends CommandBus<any>>(
       log.length = 0
     },
 
+    hold(on: boolean): void {
+      held = on
+    },
+
     async dispatch(message: CommandMessage): Promise<unknown> {
+      if (held) return undefined
       log.push(message)
       return bus.dispatch(message)
     },

@@ -1,19 +1,13 @@
 import { qualifiedNameToString } from "@kronos-ts/core"
 import type {
-  CommandBus,
   CommandDescriptor,
   CommandMessage,
   EventDescriptor,
   EventMessage,
-  EventStore,
   InferOutput,
   Metadata,
   QueryDescriptor,
-  SequencedDeadLetterQueue,
   StandardSchemaV1,
-  SubscriptionCapableQueryBus,
-  TokenStore,
-  UnitOfWork,
 } from "@kronos-ts/core"
 import {
   compare,
@@ -25,6 +19,7 @@ import {
   preview,
   ScenarioAssertionError,
 } from "./diff.js"
+import type { FixtureParts } from "./fixture.js"
 import type { ScheduleRecord } from "./recording.js"
 
 // ---------------------------------------------------------------------------
@@ -207,25 +202,12 @@ export type Outcome = {
   /** Schedules armed, fired or cancelled during the act. */
   readonly schedules: ReadonlyArray<ScheduleRecord>
   /**
-   * The running world: the resources the scenario ran on, plus whatever the
-   * infrastructure factory returned besides them (a pool, a database client).
-   * What a check reaches for when the built-ins are not enough.
+   * The running world: what the fixture was handed — the app, its log and buses,
+   * and anything else that rode along (a pool, a database client). What a check
+   * reaches for when the built-ins are not enough.
    */
-  readonly app: App
+  readonly app: FixtureParts
 }
-
-/** The resources a scenario runs on, as its handlers saw them. */
-export type Resources = {
-  readonly eventStore: EventStore
-  readonly commandBus: CommandBus
-  readonly queryBus: SubscriptionCapableQueryBus
-  readonly unitOfWork: () => UnitOfWork
-  readonly tokenStore: TokenStore
-  readonly deadLetterQueue: SequencedDeadLetterQueue
-}
-
-/** The resources, plus everything else the infrastructure brought. */
-export type App = Resources & { readonly [extra: string]: unknown }
 
 // ── assertions ─────────────────────────────────────────────────────────────
 

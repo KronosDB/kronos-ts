@@ -1,5 +1,5 @@
 import { ScenarioAssertionError } from "./diff.js"
-import { openSite, resolveOptions, type ScenarioOptions, type Scope, type Site, type Subject } from "./site.js"
+import { type FixtureParts, openWorld, type World } from "./fixture.js"
 import {
   type Action,
   type Assertion,
@@ -19,8 +19,8 @@ import {
 //   storyline:  a read model, shown → after(events) → shown → …
 //
 // `given` is history: projections fold it, automations do not act on it. The
-// builders are VALUES — every step returns a new one, so a half-built scenario
-// can be named and finished several ways — and `then` is where one runs.
+// builders are VALUES — every step returns a new one — and `then` is where one
+// runs, in the world its fixture was handed.
 // ---------------------------------------------------------------------------
 
 type Step =
@@ -60,7 +60,7 @@ export type ScenarioActed = {
  * what the previous ones left behind:
  *
  * ```ts
- * await scenario(courses)
+ * await fixture(parts)
  *   .when(command(SubscribeStudent, first)).then(events(event(StudentSubscribed, first)))
  *   .and.when(command(SubscribeStudent, second)).then(error("full"))
  * ```
@@ -71,33 +71,83 @@ export type Judged = Promise<Outcome> & {
 }
 
 /**
- * A scenario about `subject` — a slice's three lists, or a composition root
- * that is a function of the resources.
+ * One read model walked through its states: what it shows, the events that
+ * happen, what it shows then — each state judged once the events before it are
+ * handled. A storyline is awaited as it is; there is no `then` to write.
+ *
+ * `shows` takes the expected answer (deep-strict, `any()` holes) or any
+ * {@link Assertion}, judged with the query as the act.
+ */
+export type Storyline = PromiseLike<void> & {
+  shows(expected: unknown): Storyline
+  after(...events: EventValue<any>[]): Storyline
+}
+
+/** A fixture: the scenario start, plus storylines. */
+export type Fixture = ScenarioStart & {
+  /** A storyline of the read model this query asks for. */
+  storyline(read: QueryValue<any, any>): Storyline
+}
+
+/**
+ * Scenarios against a running app — built the way `main.ts` builds it, with the
+ * objects the fixture should observe wrapped in recorders:
  *
  * ```ts
- * await scenario(addItem)
+ * const clock = advanceableClock()
+ * const uow = () => unitOfWork(clock)
+ * const eventStore = recordingEventStore(controllableSchedulingEventStore(inMemoryEventStore(), clock))
+ * const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(uow), correlation))
+ * const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
+ * const app = kronos({ commandHandlers: […], queryHandlers: […], eventHandlers: […] })
+ *
+ * await fixture({ app, eventStore, commandBus, queryBus, clock })
  *   .given(event(ItemAdded, a))
  *   .when(command(AddItem, b))
  *   .then(events(event(ItemAdded, b)))
  * ```
  *
- * `options` overrides what `configure` set for this scenario only.
+ * A fixture is ONE WORLD: its first scenario takes the app over, `.and`
+ * continues it, and once that is judged the app is stopped and `close` called.
+ * Build a fresh app and fixture per scenario. The parts may be handed as a
+ * promise, for an app whose resources are opened asynchronously.
  */
-export function scenario(subject: Subject | Scope, options?: ScenarioOptions): ScenarioStart {
-  return start({ subject, options, prior: undefined }, [])
+export function fixture(parts: FixtureParts | Promise<FixtureParts>): Fixture {
+  const home: Home = { parts, claimed: false }
+  const lineage: Lineage = { home, prior: undefined }
+  return {
+    ...start(lineage, []),
+    storyline: (read) => beats(home, read, []),
+  }
 }
 
-/** Where a builder's run happens: a fresh site, or the one a previous step left behind. */
+/** The world a fixture stands for, claimed by its first run. */
+type Home = {
+  readonly parts: FixtureParts | Promise<FixtureParts>
+  claimed: boolean
+}
+
+/** Where a builder's run happens: its fixture's world, or the one a previous step left behind. */
 type Lineage = {
-  readonly subject: Subject | Scope
-  readonly options: ScenarioOptions | undefined
+  readonly home: Home
   readonly prior: Run | undefined
 }
 
-/** A step that has run (or is running), with the site it ran on. */
+/** A step that has run (or is running), with the world it ran in. */
 type Run = {
-  readonly done: Promise<Site>
+  readonly done: Promise<World>
   continued: boolean
+}
+
+async function claim(home: Home): Promise<World> {
+  if (home.claimed) {
+    throw new Error(
+      "@kronos-ts/test: this fixture's world was already used by another scenario. A fixture is one world — " +
+        "build a fresh app and fixture per scenario, or continue the same world with `.and`.",
+    )
+  }
+  home.claimed = true
+  return openWorld(await home.parts)
 }
 
 function start(lineage: Lineage, steps: ReadonlyArray<Step>): ScenarioStart {
@@ -127,32 +177,31 @@ function acted(lineage: Lineage, steps: ReadonlyArray<Step>): ScenarioActed {
 }
 
 function runJudged(lineage: Lineage, steps: ReadonlyArray<Step>, assertions: ReadonlyArray<Assertion>): Judged {
+  let resolveWorld!: (world: World) => void
+  let rejectWorld!: (error: unknown) => void
   const run: Run = {
-    done: undefined as unknown as Promise<Site>,
+    done: new Promise<World>((resolve, reject) => {
+      resolveWorld = resolve
+      rejectWorld = reject
+    }),
     continued: false,
   }
-  let resolveSite!: (site: Site) => void
-  let rejectSite!: (error: unknown) => void
-  ;(run as { done: Promise<Site> }).done = new Promise<Site>((resolve, reject) => {
-    resolveSite = resolve
-    rejectSite = reject
-  })
   // A step after a failed one never runs; nobody has to handle this rejection.
   run.done.catch(() => {})
 
   const outcome = (async (): Promise<Outcome> => {
-    let site: Site | undefined
+    let world: World | undefined
     try {
-      site = lineage.prior ? await lineage.prior.done : await openSite(lineage.subject, resolveOptions(lineage.options))
-      const judged = await perform(site, steps, assertions)
+      world = lineage.prior ? await lineage.prior.done : await claim(lineage.home)
+      const judged = await perform(world, steps, assertions)
       // Hand the world on if a step was chained onto this one, close it if not.
       // The chain is built synchronously, so by now `continued` is settled.
-      if (run.continued) resolveSite(site)
-      else await site.close()
+      if (run.continued) resolveWorld(world)
+      else await world.close()
       return judged
     } catch (error) {
-      rejectSite(error)
-      if (site !== undefined) await site.close().catch(() => {})
+      rejectWorld(error)
+      if (world !== undefined) await world.close().catch(() => {})
       throw error
     }
   })()
@@ -171,29 +220,26 @@ function runJudged(lineage: Lineage, steps: ReadonlyArray<Step>, assertions: Rea
   }) as Judged
 }
 
-/** Drive the site through the steps, then judge the claims. */
-async function perform(site: Site, steps: ReadonlyArray<Step>, assertions: ReadonlyArray<Assertion>): Promise<Outcome> {
-  site.window()
-  let acted:
-    | {
-        result: unknown
-        threw: boolean
-        thrown: unknown
-        actIdentifier: string | undefined
-      }
-    | undefined
+/** Drive the world through the steps, then judge the claims. */
+async function perform(
+  world: World,
+  steps: ReadonlyArray<Step>,
+  assertions: ReadonlyArray<Assertion>,
+): Promise<Outcome> {
+  world.window()
+  let acted: Awaited<ReturnType<World["act"]>> | undefined
   let act: Action | undefined
   for (const step of steps) {
     if (step.kind === "given") {
       if (act !== undefined) {
         throw new Error("@kronos-ts/test: `given` after `when` — history comes before the act.")
       }
-      await site.history(step.events)
+      await world.history(step.events)
     } else if (step.kind === "advance") {
-      await site.advance(step.duration)
+      await world.advance(step.duration)
     } else {
       act = step.action
-      acted = await site.act(step.action)
+      acted = await world.act(step.action)
     }
   }
   if (act === undefined || acted === undefined) {
@@ -204,25 +250,24 @@ async function perform(site: Site, steps: ReadonlyArray<Step>, assertions: Reado
   if (acted.threw && !claimsError) throw acted.thrown
 
   const description = describe(steps, assertions)
-  const deadline = Date.now() + site.within
+  const within = world.parts.within
+  const deadline = Date.now() + (within ?? 0)
   for (;;) {
     const outcome: Outcome = {
       act: act.kind,
       result: acted.result,
       threw: acted.threw,
       error: acted.thrown,
-      ...site.observe(acted.actIdentifier),
-      app: site.app,
+      ...world.observe(acted.actIdentifier),
+      app: world.parts,
     }
     const failures = await judge(assertions, outcome)
     if (failures.length === 0) return outcome
-    // In memory the world is settled: what is not true now will not become true.
-    // A foreign site keeps working where it cannot be watched, so it gets `within`.
-    if (!site.foreign || Date.now() > deadline) {
+    if (within === undefined || Date.now() > deadline) {
       throw new ScenarioAssertionError([`${description}\n`, ...failures].join("\n"))
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 20))
-    await site.quiesce()
+    await world.quiesce()
   }
 }
 
@@ -246,58 +291,25 @@ type Beat =
   | { readonly kind: "shows"; readonly expected: unknown }
   | { readonly kind: "after"; readonly events: ReadonlyArray<EventValue<any>> }
 
-/**
- * One read model walked through its states: what it shows, the events that
- * happen, what it shows then — each state judged once the events before it are
- * handled. A storyline is awaited as it is; there is no `then` to write.
- *
- * ```ts
- * await storyline(cartItems, query(GetCartItems, { aggregateId }))
- *   .shows({ ok: true, aggregateId, items: [], totalPrice: 0 })
- *   .after(event(ItemAdded, a)).shows({ ok: true, aggregateId, items: [a], totalPrice: 10 })
- * ```
- *
- * `shows` takes the expected answer (deep-strict, `any()` holes) or any
- * {@link Assertion}, judged with the query as the act.
- */
-export type Storyline = PromiseLike<void> & {
-  shows(expected: unknown): Storyline
-  after(...events: EventValue<any>[]): Storyline
-}
-
-export function storyline(subject: Subject | Scope, read: QueryValue<any, any>, options?: ScenarioOptions): Storyline {
-  return beats(subject, read, options, [])
-}
-
-function beats(
-  subject: Subject | Scope,
-  read: QueryValue<any, any>,
-  options: ScenarioOptions | undefined,
-  so_far: ReadonlyArray<Beat>,
-): Storyline {
+function beats(home: Home, read: QueryValue<any, any>, so_far: ReadonlyArray<Beat>): Storyline {
   return {
-    shows: (expected) => beats(subject, read, options, [...so_far, { kind: "shows", expected }]),
-    after: (...events) => beats(subject, read, options, [...so_far, { kind: "after", events }]),
+    shows: (expected) => beats(home, read, [...so_far, { kind: "shows", expected }]),
+    after: (...events) => beats(home, read, [...so_far, { kind: "after", events }]),
     then(onFulfilled, onRejected) {
-      return tell(subject, read, options, so_far).then(onFulfilled, onRejected)
+      return tell(home, read, so_far).then(onFulfilled, onRejected)
     },
   }
 }
 
-async function tell(
-  subject: Subject | Scope,
-  read: QueryValue<any, any>,
-  options: ScenarioOptions | undefined,
-  story: ReadonlyArray<Beat>,
-): Promise<void> {
-  const site = await openSite(subject, resolveOptions(options))
+async function tell(home: Home, read: QueryValue<any, any>, story: ReadonlyArray<Beat>): Promise<void> {
+  const world = await claim(home)
   try {
     const told: string[] = []
     for (const [index, beat] of story.entries()) {
       if (beat.kind === "after") {
         for (const e of beat.events) {
-          site.window()
-          const arrived = await site.act(e)
+          world.window()
+          const arrived = await world.act(e)
           if (arrived.threw) throw arrived.thrown
         }
         told.push(`after ${beat.events.map((e) => e.descriptor.name.name).join(", ")}`)
@@ -305,22 +317,23 @@ async function tell(
       }
       const check: Assertion =
         typeof beat.expected === "function" ? (beat.expected as Assertion) : resultOf(beat.expected)
-      const deadline = Date.now() + site.within
+      const within = world.parts.within
+      const deadline = Date.now() + (within ?? 0)
       for (;;) {
-        site.window()
-        const asked = await site.act(read)
+        world.window()
+        const asked = await world.act(read)
         if (asked.threw) throw asked.thrown
         const outcome: Outcome = {
           act: "query",
           result: asked.result,
           threw: false,
           error: undefined,
-          ...site.observe(asked.actIdentifier),
-          app: site.app,
+          ...world.observe(asked.actIdentifier),
+          app: world.parts,
         }
         const failures = await judge([check], outcome)
         if (failures.length === 0) break
-        if (!site.foreign || Date.now() > deadline) {
+        if (within === undefined || Date.now() > deadline) {
           const where = told.length === 0 ? "at the start" : told.join(", ")
           throw new ScenarioAssertionError(
             [`storyline of ${read.descriptor.name.name}, beat ${index + 1} (${where})\n`, ...failures].join("\n"),
@@ -328,10 +341,10 @@ async function tell(
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 20))
       }
-      told.push(`shows`)
+      told.push("shows")
     }
   } finally {
-    await site.close()
+    await world.close()
   }
 }
 

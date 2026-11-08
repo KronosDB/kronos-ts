@@ -1,14 +1,25 @@
 import {
   commandHandler,
+  correlatingHandler,
   eventHandler,
   eventProcessor,
   queryHandler,
   state,
   withNamespace,
 } from "@kronos-ts/core"
-import type { EventStore } from "@kronos-ts/core"
+import type {
+  CommandBus,
+  CommandHandlerEntry,
+  EventHandlerEntry,
+  EventStore,
+  QueryBus,
+  QueryHandlerEntry,
+  ScheduleStoreCapability,
+  SnapshotCapableEventStore,
+  TokenStore,
+  UnitOfWork,
+} from "@kronos-ts/core"
 import { z } from "zod"
-import type { PartialProcessor, SiteResources, Subject } from "../site.js"
 
 // ---------------------------------------------------------------------------
 // A university, written the way a slice is written: descriptors, one state, the
@@ -191,58 +202,65 @@ const getCourseView = queryHandler(GetCourseView, async ({ payload: q }) => {
 // ── the composition root ───────────────────────────────────────────────────
 
 /**
- * The projection's own semantics, closed out; its RESOURCES left as parameters.
- *
- * The slice knows its durable name and that it wants global stream order. It
- * does not know which log it reads or where its cursor lives — those are
- * deployment facts, so they stay in the parameter list and the site calls this
- * full-handed. Three parameters, not four: no dead-letter queue, because a lane-
- * free projection has no honest place to park.
+ * The objects a composition root shares between its entries — what `main.ts`
+ * builds once and every entry carries. A test builds them too (wrapping in
+ * recorders what its fixture should observe) and calls the same function.
  */
-const projection: PartialProcessor = (eventStore, tokenStore, unitOfWork) =>
-  eventProcessor("courses", eventStore, tokenStore, unitOfWork)
+export type Shared = {
+  readonly eventStore: SnapshotCapableEventStore & ScheduleStoreCapability
+  readonly commandBus: CommandBus
+  readonly queryBus: QueryBus
+  readonly tokenStore: TokenStore
+  readonly unitOfWork: () => UnitOfWork
+}
+
+/** The three lists `kronos` takes. */
+export type Lists = {
+  readonly commandHandlers?: ReadonlyArray<CommandHandlerEntry<any, any, any>>
+  readonly queryHandlers?: ReadonlyArray<QueryHandlerEntry<any, any>>
+  readonly eventHandlers?: ReadonlyArray<EventHandlerEntry<any, any, any>>
+}
+
+const decide = [createCourse, subscribeStudent, closeCourse]
+const react = [closeWhenFull, armEnrolmentWindow, closeOnDeadline, onCreated, onSubscribed, onClosed]
+
+/** The house wiring: every handler correlated, every entry carrying its objects. */
+function sited(
+  { eventStore, commandBus, queryBus, tokenStore, unitOfWork }: Shared,
+  parts: { commands?: typeof decide; queries?: typeof getCourseView[]; events?: typeof react },
+): Lists {
+  // The projection's own semantics, closed out here: its durable name and global
+  // stream order. One processor for every event handler of the slice.
+  const processor = eventProcessor("courses", eventStore, tokenStore, unitOfWork)
+  return {
+    commandHandlers: (parts.commands ?? []).map(
+      (h) => ({ ...h, handler: correlatingHandler(h.handler), eventStore, commandBus, queryBus }) as never,
+    ),
+    queryHandlers: (parts.queries ?? []).map(
+      (h) => ({ ...h, handler: correlatingHandler(h.handler), eventStore, queryBus }) as never,
+    ),
+    eventHandlers: (parts.events ?? []).map(
+      (h) => ({ ...h, handler: correlatingHandler(h.handler), commandBus, queryBus, processor }) as never,
+    ),
+  }
+}
 
 /**
- * The whole university, as a function of the resources it runs on.
- *
- * `scenario(university)` and a production composition root call this the same
- * way — which is the point of taking the resources as parameters instead of
- * reaching for them.
+ * The whole university, as a function of the objects it runs on: what a
+ * production composition root and a test both hand to `kronos`.
  */
-export function university({ eventStore }: SiteResources): Subject {
-  return {
-    commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
-      ...h,
-      eventStore,
-    })),
-    queryHandlers: [getCourseView],
-    eventHandlers: [
-      closeWhenFull,
-      armEnrolmentWindow,
-      closeOnDeadline,
-      onCreated,
-      onSubscribed,
-      onClosed,
-    ].map((h) => ({ ...h, processor: projection })),
-  }
+export function university(shared: Shared): Lists {
+  return sited(shared, { commands: decide, queries: [getCourseView], events: react })
 }
 
 /** Decisions only — no automations, so `then` is exactly what the command decided. */
-export function decisions({ eventStore }: SiteResources): Subject {
-  return {
-    commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
-      ...h,
-      eventStore,
-    })),
-  }
+export function decisions(shared: Shared): Lists {
+  return sited(shared, { commands: decide })
 }
 
 /** Decisions plus the seat automation, with no scheduler and no read model. */
-export function withAutomation(resources: SiteResources): Subject {
-  return {
-    ...decisions(resources),
-    eventHandlers: [{ ...closeWhenFull, processor: projection }],
-  }
+export function withAutomation(shared: Shared): Lists {
+  return sited(shared, { commands: decide, events: [closeWhenFull] })
 }
 
 // ---------------------------------------------------------------------------
@@ -279,8 +297,8 @@ const armReminder = commandHandler(ArmReminder, async ({ payload: cmd }, ctx) =>
 })
 
 /** Reminders on their own — one command, one state, one schedule. */
-export function reminders({ eventStore }: SiteResources): Subject {
+export function reminders({ eventStore, commandBus, queryBus }: Shared): Lists {
   return {
-    commandHandlers: [{ ...armReminder, eventStore }],
+    commandHandlers: [{ ...armReminder, handler: correlatingHandler(armReminder.handler), eventStore, commandBus, queryBus } as never],
   }
 }

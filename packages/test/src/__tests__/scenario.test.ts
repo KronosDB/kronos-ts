@@ -1,20 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { beforeEach, describe, expect, it } from "bun:test"
 import {
+  correlation,
   eventHandler,
   eventProcessor,
   inMemoryEventStore,
   inMemorySnapshottingEventStore,
   inMemoryTokenStore,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  kronos,
   localCommandBus,
   localQueryBus,
   queryHandler,
-  type UnitOfWork,
   unitOfWork,
 } from "@kronos-ts/core"
 import { z } from "zod"
 import { ScenarioAssertionError } from "../diff.js"
-import { scenario, storyline } from "../scenario.js"
-import { advanceableClock, configure, FIXTURE_EPOCH } from "../site.js"
+import { advanceableClock, FIXTURE_EPOCH } from "../fixture.js"
+import { controllableSchedulingEventStore, recordingCommandBus, recordingEventStore } from "../recording.js"
+import { fixture } from "../scenario.js"
 import {
   any,
   cancelled,
@@ -42,9 +46,11 @@ import {
   decisions,
   EnrolmentClosing,
   GetCourseView,
+  type Lists,
   ReminderArmed,
   ReminderDue,
   reminders,
+  type Shared,
   StudentSubscribed,
   SubscribeStudent,
   university,
@@ -55,15 +61,26 @@ beforeEach(() => {
   clearViews()
 })
 
-afterEach(() => {
-  configure({})
-})
+/**
+ * A fresh app per scenario, built the way a process builds one — and the objects
+ * the fixture observes wrapped in recorders.
+ */
+function built(
+  lists: (shared: Shared) => Lists,
+  options: { clock?: () => number; within?: number; extras?: Record<string, unknown> } = {},
+) {
+  const clock = options.clock ?? advanceableClock()
+  const uow = () => unitOfWork(clock)
+  const eventStore = recordingEventStore(
+    controllableSchedulingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), clock),
+  )
+  const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(uow), correlation))
+  const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
+  const app = kronos(lists({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork: uow }))
+  return fixture({ app, eventStore, commandBus, queryBus, clock, within: options.within, ...options.extras })
+}
 
-const intro = (capacity: number) => ({
-  courseId: "cs-101",
-  name: "Intro",
-  capacity,
-})
+const intro = (capacity: number) => ({ courseId: "cs-101", name: "Intro", capacity })
 const seat = (studentId: string) => ({ courseId: "cs-101", studentId })
 
 // ===========================================================================
@@ -72,27 +89,27 @@ const seat = (studentId: string) => ({ courseId: "cs-101", studentId })
 
 describe("state change", () => {
   it("creates a course", async () => {
-    await scenario(decisions)
+    await built(decisions)
       .when(command(CreateCourse, intro(30)))
       .then(events(event(CourseCreated, intro(30))))
   })
 
   it("subscribes a student, and answers with the seats left", async () => {
-    await scenario(decisions)
+    await built(decisions)
       .given(event(CourseCreated, intro(30)))
       .when(command(SubscribeStudent, seat("stu-001")))
       .then(events(event(StudentSubscribed, seat("stu-001"))), result({ remainingSeats: 29 }))
   })
 
   it("refuses a duplicate course, and appends nothing", async () => {
-    await scenario(decisions)
+    await built(decisions)
       .given(event(CourseCreated, intro(30)))
       .when(command(CreateCourse, intro(30)))
       .then(error("Course already exists"), noEvents())
   })
 
   it("refuses a subscription to a full course", async () => {
-    await scenario(decisions)
+    await built(decisions)
       .given(event(CourseCreated, intro(1)), event(StudentSubscribed, seat("stu-001")))
       .when(command(SubscribeStudent, seat("stu-002")))
       .then(
@@ -102,17 +119,18 @@ describe("state change", () => {
   })
 
   it("matches an error by substring, by pattern, or by predicate", async () => {
-    const full = scenario(decisions)
-      .given(event(CourseCreated, intro(1)), event(StudentSubscribed, seat("stu-001")))
-      .when(command(SubscribeStudent, seat("stu-002")))
+    const full = () =>
+      built(decisions)
+        .given(event(CourseCreated, intro(1)), event(StudentSubscribed, seat("stu-001")))
+        .when(command(SubscribeStudent, seat("stu-002")))
 
-    await full.then(error("is full"))
-    await full.then(error(/^Course cs-101 is full$/))
-    await full.then(error(() => true))
+    await full().then(error("is full"))
+    await full().then(error(/^Course cs-101 is full$/))
+    await full().then(error(() => true))
   })
 
   it("accumulates repeated givens in order", async () => {
-    await scenario(decisions)
+    await built(decisions)
       .given(event(CourseCreated, intro(1)))
       .given(event(StudentSubscribed, seat("stu-001")))
       .when(command(SubscribeStudent, seat("stu-002")))
@@ -120,24 +138,16 @@ describe("state change", () => {
   })
 
   it("declines a field with `any()` and still pins the rest", async () => {
-    await scenario(decisions)
+    await built(decisions)
       .when(command(CreateCourse, intro(30)))
-      .then(
-        events(
-          event(CourseCreated, {
-            courseId: "cs-101",
-            name: any(z.string()),
-            capacity: 30,
-          }),
-        ),
-      )
-    await scenario(decisions)
+      .then(events(event(CourseCreated, { courseId: "cs-101", name: any(z.string()), capacity: 30 })))
+    await built(decisions)
       .when(command(CreateCourse, intro(30)))
       .then(events(event(CourseCreated, any())))
   })
 
   it("resolves with the outcome, for anything the claims did not say", async () => {
-    const outcome = await scenario(decisions)
+    const outcome = await built(decisions)
       .given(event(CourseCreated, intro(30)))
       .when(command(SubscribeStudent, seat("stu-001")))
       .then()
@@ -153,32 +163,28 @@ describe("state change", () => {
 
 describe("state view", () => {
   it("answers from the read model the given facts built", async () => {
-    await scenario(university)
+    await built(university)
       .given(event(CourseCreated, intro(5)), event(StudentSubscribed, seat("stu-001")))
       .when(query(GetCourseView, { courseId: "cs-101" }))
-      .then(
-        result({
-          courseId: "cs-101",
-          name: "Intro",
-          enrolled: 1,
-          closed: false,
-        }),
-        noEvents(),
-      )
+      .then(result({ courseId: "cs-101", name: "Intro", enrolled: 1, closed: false }), noEvents())
   })
 
   it("a read model that has not heard of the id says so", async () => {
-    await scenario(university)
+    await built(university)
       .when(query(GetCourseView, { courseId: "cs-999" }))
       .then(error('Course "cs-999" not found'))
   })
 
   it("folds the givens as a REPLAY — `ctx.isReplay()` is true for history, false for what arrives", async () => {
     const seen: Array<[string, boolean]> = []
-    const Watched = {
-      ...eventHandler(StudentSubscribed, ({ payload }, ctx) => void seen.push([payload.studentId, ctx.isReplay()])),
-    }
-    await scenario({ eventHandlers: [Watched] })
+    const watched = eventHandler(StudentSubscribed, ({ payload }, ctx) => {
+      seen.push([payload.studentId, ctx.isReplay()])
+    })
+    await built(({ eventStore, commandBus, queryBus, tokenStore, unitOfWork }) => ({
+      eventHandlers: [
+        { ...watched, commandBus, queryBus, processor: eventProcessor("watch", eventStore, tokenStore, unitOfWork) },
+      ],
+    }))
       .given(event(StudentSubscribed, seat("history")))
       .when(event(StudentSubscribed, seat("now")))
       .then()
@@ -195,7 +201,7 @@ describe("state view", () => {
 
 describe("automation", () => {
   it("the last seat closes the course — the event ARRIVES and the reactor reacts", async () => {
-    await scenario(withAutomation)
+    await built(withAutomation)
       .given(event(CourseCreated, intro(1)))
       .when(event(StudentSubscribed, seat("stu-001")))
       .then(
@@ -205,14 +211,14 @@ describe("automation", () => {
   })
 
   it("a seat that is not the last one dispatches nothing", async () => {
-    await scenario(withAutomation)
+    await built(withAutomation)
       .given(event(CourseCreated, intro(5)))
       .when(event(StudentSubscribed, seat("stu-001")))
       .then(events(event(StudentSubscribed, seat("stu-001"))), noCommands())
   })
 
   it("a command act shows the commands its automations dispatched, not itself", async () => {
-    const outcome = await scenario(withAutomation)
+    const outcome = await built(withAutomation)
       .given(event(CourseCreated, intro(1)))
       .when(command(SubscribeStudent, seat("stu-001")))
       .then(commands(command(CloseCourse, { courseId: "cs-101" })))
@@ -221,40 +227,22 @@ describe("automation", () => {
     expect(outcome.events.map((e) => e.name.name)).toEqual(["StudentSubscribed", "CourseClosed"])
   })
 
-  it("GIVEN events do not fire the automations — what they would dispatch is held back", async () => {
-    // The given subscription fills the course. The automation folds it like
-    // everyone else, but its CloseCourse is history that already happened (or
-    // did not): it is not dispatched, and nothing it would have appended is.
-    await scenario(withAutomation)
+  it("GIVEN events do not fire the automations — what they would dispatch is held", async () => {
+    await built(withAutomation)
       .given(event(CourseCreated, intro(1)), event(StudentSubscribed, seat("stu-001")))
-      .when(
-        command(CreateCourse, {
-          courseId: "cs-202",
-          name: "Other",
-          capacity: 5,
-        }),
-      )
-      .then(
-        events(
-          event(CourseCreated, {
-            courseId: "cs-202",
-            name: "Other",
-            capacity: 5,
-          }),
-        ),
-        noCommands(),
-      )
+      .when(command(CreateCourse, { courseId: "cs-202", name: "Other", capacity: 5 }))
+      .then(events(event(CourseCreated, { courseId: "cs-202", name: "Other", capacity: 5 })), noCommands())
   })
 
   it("and the state the givens describe is real, even though nothing fired", async () => {
-    await scenario(withAutomation)
+    await built(withAutomation)
       .given(event(CourseCreated, intro(1)), event(StudentSubscribed, seat("stu-001")))
       .when(command(SubscribeStudent, seat("stu-002")))
       .then(error((e) => e instanceof CourseFull))
   })
 
   it("GIVEN events arm no deadlines either", async () => {
-    await scenario(university)
+    await built(university)
       .given(event(CourseCreated, intro(5)))
       .when(command(SubscribeStudent, seat("stu-001")))
       .advance(60_000)
@@ -268,7 +256,8 @@ describe("automation", () => {
 
 describe("storyline", () => {
   it("judges each state once the events before it are handled", async () => {
-    await storyline(university, query(GetCourseView, { courseId: "cs-101" }))
+    await built(university)
+      .storyline(query(GetCourseView, { courseId: "cs-101" }))
       .after(event(CourseCreated, intro(2)))
       .shows({ courseId: "cs-101", name: "Intro", enrolled: 0, closed: false })
       .after(event(StudentSubscribed, seat("stu-001")))
@@ -278,7 +267,8 @@ describe("storyline", () => {
   })
 
   it("names the beat that failed, and what the story had got to", async () => {
-    const failure = (await storyline(university, query(GetCourseView, { courseId: "cs-101" }))
+    const failure = (await built(university)
+      .storyline(query(GetCourseView, { courseId: "cs-101" }))
       .after(event(CourseCreated, intro(2)))
       .shows({ courseId: "cs-101", name: "Intro", enrolled: 0, closed: false })
       .after(event(StudentSubscribed, seat("stu-001")))
@@ -296,7 +286,8 @@ describe("storyline", () => {
   })
 
   it("takes an assertion function for a state as well as a value", async () => {
-    await storyline(university, query(GetCourseView, { courseId: "cs-101" }))
+    await built(university)
+      .storyline(query(GetCourseView, { courseId: "cs-101" }))
       .after(event(CourseCreated, intro(2)))
       .shows(({ result }: Outcome) => expect((result as { enrolled: number }).enrolled).toBe(0))
   })
@@ -312,7 +303,7 @@ describe("your own assertions", () => {
       (n: number) =>
       ({ result }: Outcome) =>
         expect(result).toEqual({ remainingSeats: n })
-    await scenario(decisions)
+    await built(decisions)
       .given(event(CourseCreated, intro(3)))
       .when(command(SubscribeStudent, seat("stu-001")))
       .then(seatsLeft(2), events(event(StudentSubscribed, seat("stu-001"))))
@@ -322,7 +313,7 @@ describe("your own assertions", () => {
     const nothingLeft = function nothingLeft({ result }: Outcome) {
       expect(result).toEqual({ remainingSeats: 0 })
     }
-    const failure = (await scenario(decisions)
+    const failure = (await built(decisions)
       .given(event(CourseCreated, intro(3)))
       .when(command(SubscribeStudent, seat("stu-001")))
       .then(nothingLeft)
@@ -333,20 +324,19 @@ describe("your own assertions", () => {
     expect(failure.message).toContain("remainingSeats")
   })
 
-  it("reaches the running world through `app`", async () => {
-    await scenario(decisions)
+  it("reaches the running world — and anything that rode along — through `app`", async () => {
+    await built(decisions, { extras: { marker: "brought along" } })
       .when(command(CreateCourse, intro(5)))
       .then(async ({ app }) => {
-        const stored = await app.eventStore.source({
-          query: { types: [CourseCreated] },
-        })
+        const stored = await app.eventStore.source({ query: { types: [CourseCreated] } })
         expect(stored.events).toHaveLength(1)
+        expect(app.marker).toBe("brought along")
       })
   })
 
   it("can claim a throw by saying so", async () => {
     const refused = Object.assign(({ threw }: Outcome) => expect(threw).toBe(true), { claimsError: true })
-    await scenario(decisions)
+    await built(decisions)
       .given(event(CourseCreated, intro(30)))
       .when(command(CreateCourse, intro(30)))
       .then(refused)
@@ -359,7 +349,7 @@ describe("your own assertions", () => {
 
 describe("advance", () => {
   it("jumps the clock, fires what is due, and settles what that set off", async () => {
-    const outcome = await scenario(university)
+    const outcome = await built(university)
       .when(command(CreateCourse, intro(5)))
       .advance(30_000)
       .then(
@@ -379,7 +369,7 @@ describe("advance", () => {
   })
 
   it("an advance shorter than the deadline fires nothing", async () => {
-    await scenario(university)
+    await built(university)
       .when(command(CreateCourse, intro(5)))
       .advance(29_999)
       .then(
@@ -390,7 +380,7 @@ describe("advance", () => {
   })
 
   it("repeated advances accumulate to the same instant as one long one", async () => {
-    await scenario(university)
+    await built(university)
       .when(command(CreateCourse, intro(5)))
       .advance(20_000)
       .advance(10_000)
@@ -403,17 +393,15 @@ describe("advance", () => {
       )
   })
 
-  it("starts from the clock it was given", async () => {
-    const outcome = await scenario(decisions, {
-      clock: () => 1_700_000_000_000,
-    })
+  it("stamps from the clock the app was built with", async () => {
+    const outcome = await built(decisions, { clock: () => 1_700_000_000_000 })
       .when(command(CreateCourse, intro(5)))
       .then(events(event(CourseCreated, intro(5))))
     expect(outcome.events[0]!.timestamp).toBe(1_700_000_000_000)
   })
 
   it("reports a schedule as armed, then as cancelled when it is superseded", async () => {
-    await scenario(reminders)
+    await built(reminders)
       .when(command(ArmReminder, { orderId: "o-1", afterMs: 30_000 }))
       .then(
         events(event(ReminderArmed, { orderId: "o-1", token: any(z.string()) })),
@@ -436,21 +424,9 @@ describe("advance", () => {
       )
   })
 
-  it("a scenario on a plain clock cannot move it — and says so", async () => {
-    const failure = (await scenario(decisions, {
-      clock: () => 1_700_000_000_000,
-    })
-      .when(command(CreateCourse, intro(5)))
-      .advance(1_000)
-      .then(noEvents())
-      .catch((e: Error) => e)) as Error
-    expect(failure.message).toContain("cannot move time")
-    expect(failure.message).toContain("advanceableClock()")
-  })
-
-  it("a processor the scenario holds settles on its own — no waiting needed", async () => {
+  it("a processor the fixture holds settles on its own — no waiting needed", async () => {
     const clock = advanceableClock(1_700_000_000_000)
-    const outcome = await scenario(withAutomation, { clock })
+    const outcome = await built(withAutomation, { clock })
       .given(event(CourseCreated, intro(1)))
       .when(command(SubscribeStudent, seat("s-1")))
       .then(events(event(StudentSubscribed, seat("s-1")), event(CourseClosed, { courseId: "cs-101" })))
@@ -458,9 +434,9 @@ describe("advance", () => {
     expect(clock()).toBe(1_700_000_000_000)
   })
 
-  it("in memory, a claim that does not hold fails at once — there is nothing to wait for", async () => {
+  it("a claim that does not hold fails at once — there is nothing to wait for", async () => {
     const started = Date.now()
-    const failure = await scenario(decisions, { within: 5_000 })
+    const failure = await built(decisions)
       .when(command(CreateCourse, intro(5)))
       .then(events(event(CourseClosed, { courseId: "never-happens" })))
       .catch((e: Error) => e)
@@ -468,15 +444,9 @@ describe("advance", () => {
     expect(Date.now() - started).toBeLessThan(1_000)
   })
 
-  it("on foreign infrastructure, claims are re-judged until they hold or `within` passes", async () => {
+  it("with `within`, claims are re-judged until they hold or it passes", async () => {
     const started = Date.now()
-    const failure = await scenario(decisions, {
-      within: 120,
-      infrastructure: (uow) => ({
-        unitOfWork: uow,
-        eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()),
-      }),
-    })
+    const failure = await built(decisions, { within: 120 })
       .when(command(CreateCourse, intro(5)))
       .then(events(event(CourseClosed, { courseId: "never-happens" })))
       .catch((e: Error) => e)
@@ -491,7 +461,7 @@ describe("advance", () => {
 
 describe("and", () => {
   it("a prior act's events are the next act's history", async () => {
-    await scenario(decisions)
+    await built(decisions)
       .when(command(CreateCourse, intro(30)))
       .then(events(event(CourseCreated, intro(30))))
       .and.when(command(SubscribeStudent, seat("stu-001")))
@@ -499,7 +469,7 @@ describe("and", () => {
   })
 
   it("a saga plays out across steps of one world", async () => {
-    await scenario(withAutomation)
+    await built(withAutomation)
       .when(command(CreateCourse, intro(2)))
       .then(events(event(CourseCreated, intro(2))), noCommands())
       .and.when(command(SubscribeStudent, seat("stu-001")))
@@ -518,7 +488,7 @@ describe("and", () => {
     const marking = () => {
       ran = true
     }
-    const failure = await scenario(decisions)
+    const failure = await built(decisions)
       .when(command(CreateCourse, intro(30)))
       .then(noEvents())
       .and.when(command(SubscribeStudent, seat("stu-001")))
@@ -529,7 +499,7 @@ describe("and", () => {
   })
 
   it("the read model catches up before `then` resolves — no polling, no sleep", async () => {
-    await scenario(university)
+    await built(university)
       .when(command(CreateCourse, intro(5)))
       .then(events(event(CourseCreated, intro(5))))
       .and.when(command(SubscribeStudent, seat("stu-001")))
@@ -539,13 +509,13 @@ describe("and", () => {
 })
 
 // ===========================================================================
-// The builder is a value
+// The builder
 // ===========================================================================
 
 describe("the builder", () => {
-  it("one half-built scenario finishes several ways", async () => {
-    const lastSeat = (subject: typeof decisions) =>
-      scenario(subject)
+  it("is a value: the same steps against two apps", async () => {
+    const lastSeat = (lists: (shared: Shared) => Lists) =>
+      built(lists)
         .given(event(CourseCreated, intro(1)))
         .when(command(SubscribeStudent, seat("stu-001")))
 
@@ -558,14 +528,14 @@ describe("the builder", () => {
   })
 
   it("awaiting it without `then` runs it with no claims, and resolves with the outcome", async () => {
-    const outcome = (await scenario(decisions).when(command(CreateCourse, intro(5)))) as unknown as Outcome
+    const outcome = (await built(decisions).when(command(CreateCourse, intro(5)))) as unknown as Outcome
     expect(outcome.events.map((e) => e.name.name)).toEqual(["CourseCreated"])
   })
 
   it("and an unclaimed throw rejects that await instead of hanging it", async () => {
     const failure = await (async () => {
       try {
-        await scenario(decisions).when(command(SubscribeStudent, { courseId: "cs-404", studentId: "s" }))
+        await built(decisions).when(command(SubscribeStudent, { courseId: "cs-404", studentId: "s" }))
       } catch (e) {
         return e as Error
       }
@@ -587,17 +557,9 @@ describe("the diff", () => {
 
   it("names the event and the differing fields", async () => {
     const failure = await failing(
-      scenario(decisions)
+      built(decisions)
         .when(command(CreateCourse, intro(30)))
-        .then(
-          events(
-            event(CourseCreated, {
-              courseId: "cs-101",
-              name: "Introduction",
-              capacity: 40,
-            }),
-          ),
-        ),
+        .then(events(event(CourseCreated, { courseId: "cs-101", name: "Introduction", capacity: 40 }))),
     )
     expect(failure).toBeInstanceOf(ScenarioAssertionError)
     expect(failure.message).toContain("events did not match what the act appended.")
@@ -611,7 +573,7 @@ describe("the diff", () => {
 
   it("opens with the scenario's own sentence", async () => {
     const failure = await failing(
-      scenario(decisions)
+      built(decisions)
         .when(command(CreateCourse, intro(30)))
         .then(noEvents()),
     )
@@ -620,7 +582,7 @@ describe("the diff", () => {
 
   it("lists both sides in full so the shape of the mismatch is visible", async () => {
     const failure = await failing(
-      scenario(decisions)
+      built(decisions)
         .when(command(CreateCourse, intro(30)))
         .then(events(event(CourseClosed, { courseId: "cs-101" }))),
     )
@@ -632,7 +594,7 @@ describe("the diff", () => {
 
   it("reports an expected event that was never appended", async () => {
     const failure = await failing(
-      scenario(decisions)
+      built(decisions)
         .when(command(CreateCourse, intro(30)))
         .then(events(event(CourseCreated, intro(30)), event(CourseClosed, { courseId: "cs-101" }))),
     )
@@ -644,7 +606,7 @@ describe("the diff", () => {
 
   it("aligns by name, so one missing event does not shift every later pair", async () => {
     const failure = await failing(
-      scenario(withAutomation)
+      built(withAutomation)
         .given(event(CourseCreated, intro(1)))
         .when(command(SubscribeStudent, seat("stu-001")))
         .then(
@@ -662,7 +624,7 @@ describe("the diff", () => {
 
   it("`noEvents()` against something appended names what showed up", async () => {
     const failure = await failing(
-      scenario(decisions)
+      built(decisions)
         .when(command(CreateCourse, intro(30)))
         .then(noEvents()),
     )
@@ -672,7 +634,7 @@ describe("the diff", () => {
 
   it("renders a hole as `*` rather than as an object nobody wrote", async () => {
     const failure = await failing(
-      scenario(decisions)
+      built(decisions)
         .when(command(CreateCourse, intro(30)))
         .then(events(event(CourseClosed, any()))),
     )
@@ -681,7 +643,7 @@ describe("the diff", () => {
 
   it("reports the commands list the same exact way", async () => {
     const failure = await failing(
-      scenario(withAutomation)
+      built(withAutomation)
         .given(event(CourseCreated, intro(1)))
         .when(command(SubscribeStudent, seat("stu-001")))
         .then(noCommands()),
@@ -692,7 +654,7 @@ describe("the diff", () => {
 
   it("reports a wrong result field by field", async () => {
     const failure = await failing(
-      scenario(decisions)
+      built(decisions)
         .given(event(CourseCreated, intro(30)))
         .when(command(SubscribeStudent, seat("stu-001")))
         .then(result({ remainingSeats: 3 })),
@@ -703,7 +665,7 @@ describe("the diff", () => {
 
   it("reports every failing claim, not only the first", async () => {
     const failure = await failing(
-      scenario(decisions)
+      built(decisions)
         .given(event(CourseCreated, intro(30)))
         .when(command(SubscribeStudent, seat("stu-001")))
         .then(result({ remainingSeats: 3 }), noEvents()),
@@ -714,7 +676,7 @@ describe("the diff", () => {
 
   it("reports an expected throw that never came", async () => {
     const failure = await failing(
-      scenario(decisions)
+      built(decisions)
         .when(command(CreateCourse, intro(30)))
         .then(error("Course already exists")),
     )
@@ -726,21 +688,9 @@ describe("the diff", () => {
 
   it("an unclaimed throw surfaces as itself, not as an events diff", async () => {
     const failure = await failing(
-      scenario(decisions)
-        .when(
-          command(SubscribeStudent, {
-            courseId: "cs-404",
-            studentId: "stu-001",
-          }),
-        )
-        .then(
-          events(
-            event(StudentSubscribed, {
-              courseId: "cs-404",
-              studentId: "stu-001",
-            }),
-          ),
-        ),
+      built(decisions)
+        .when(command(SubscribeStudent, { courseId: "cs-404", studentId: "stu-001" }))
+        .then(events(event(StudentSubscribed, { courseId: "cs-404", studentId: "stu-001" }))),
     )
     expect(failure).not.toBeInstanceOf(ScenarioAssertionError)
     expect(failure.message).toBe("Course does not exist")
@@ -748,7 +698,7 @@ describe("the diff", () => {
 
   it("reports a schedule that was never armed the way it was claimed", async () => {
     const failure = await failing(
-      scenario(university)
+      built(university)
         .when(command(CreateCourse, intro(5)))
         .then(
           events(event(CourseCreated, intro(5))),
@@ -765,8 +715,16 @@ describe("the diff", () => {
 // ===========================================================================
 
 describe("misuse", () => {
+  const plain = () => {
+    const uow = () => unitOfWork()
+    const eventStore = inMemorySnapshottingEventStore(inMemoryEventStore())
+    const commandBus = localCommandBus(uow)
+    const queryBus = localQueryBus(uow)
+    return { uow, eventStore, commandBus, queryBus }
+  }
+
   it("refuses `result()` against an event arriving", async () => {
-    const failure = await scenario(withAutomation)
+    const failure = await built(withAutomation)
       .given(event(CourseCreated, intro(5)))
       .when(event(StudentSubscribed, seat("stu-001")))
       .then(result(undefined))
@@ -775,177 +733,119 @@ describe("misuse", () => {
   })
 
   it("refuses a hole in a fact", async () => {
-    const failure = await scenario(decisions)
+    const failure = await built(decisions)
       .given(event(CourseCreated, any()))
       .when(command(CloseCourse, { courseId: "cs-101" }))
       .then(noEvents())
       .catch((e: Error) => e)
     expect((failure as Error).message).toContain("this event is a FACT")
   })
-})
 
-// ===========================================================================
-// The subject: a slice's lists, or a composition root over the resources
-// ===========================================================================
+  it("names the recorder to wrap when the log is not recorded", async () => {
+    const { eventStore, commandBus } = plain()
+    const failure = await fixture({ app: kronos({}), eventStore, commandBus: recordingCommandBus(commandBus) })
+      .when(command(CloseCourse, { courseId: "cs-101" }))
+      .then()
+      .catch((e: Error) => e)
+    expect((failure as Error).message).toContain("recordingEventStore(")
+  })
 
-describe("the subject", () => {
-  it("takes a slice's lists as they are — no store, no bus, no wiring", async () => {
+  it("names the recorder to wrap when the command bus is not recorded", async () => {
+    const { eventStore, commandBus } = plain()
+    const failure = await fixture({ app: kronos({}), eventStore: recordingEventStore(eventStore), commandBus })
+      .when(command(CloseCourse, { courseId: "cs-101" }))
+      .then()
+      .catch((e: Error) => e)
+    expect((failure as Error).message).toContain("recordingCommandBus(")
+  })
+
+  it("says what `advance` needs: a clock it can move, and a scheduling tier it can fire", async () => {
+    const plainClock = await built(decisions, { clock: () => 1_700_000_000_000 })
+      .when(command(CreateCourse, intro(5)))
+      .advance(1_000)
+      .then()
+      .catch((e: Error) => e)
+    expect((plainClock as Error).message).toContain("advanceableClock()")
+
+    const { eventStore, commandBus } = plain()
+    const noTier = await fixture({
+      app: kronos({}),
+      eventStore: recordingEventStore(eventStore),
+      commandBus: recordingCommandBus(commandBus),
+      clock: advanceableClock(),
+    })
+      .when(command(CloseCourse, { courseId: "cs-101" }))
+      .advance(1_000)
+      .then()
+      .catch((e: Error) => e)
+    expect((noTier as Error).message).toContain("controllableSchedulingEventStore(")
+  })
+
+  it("refuses a second scenario on a world that is already used", async () => {
+    const world = built(decisions)
+    await world.when(command(CreateCourse, intro(5))).then()
+    const failure = await world
+      .when(command(CreateCourse, intro(5)))
+      .then()
+      .catch((e: Error) => e)
+    expect((failure as Error).message).toContain("A fixture is one world")
+  })
+
+  it("asks for the query bus when a query is the act", async () => {
+    const { eventStore, commandBus, queryBus } = plain()
     const getCourse = queryHandler(GetCourseView, async () => ({
       courseId: "x",
       name: "X",
       enrolled: 0,
       closed: false,
     }))
-    await scenario({ queryHandlers: [getCourse] })
-      .when(query(GetCourseView, { courseId: "x" }))
-      .then(result({ courseId: "x", name: "X", enrolled: 0, closed: false }))
-  })
-
-  it("calls a scope with the site's own log — ONE store, capabilities and all", async () => {
-    let seen: unknown
-    await scenario((resources) => {
-      seen = resources.eventStore
-      return decisions(resources)
+    const failure = await fixture({
+      app: kronos({ queryHandlers: [{ ...getCourse, eventStore, queryBus }] }),
+      eventStore: recordingEventStore(eventStore),
+      commandBus: recordingCommandBus(commandBus),
     })
-      .when(command(CreateCourse, intro(5)))
-      .then(events(event(CourseCreated, intro(5))))
-    expect(typeof (seen as { storeSnapshot?: unknown }).storeSnapshot).toBe("function")
-    expect(Array.isArray((seen as { appended?: unknown }).appended)).toBe(true)
-  })
-
-  it("completes a partial processor with the site's resources", async () => {
-    await scenario(university)
-      .when(command(CreateCourse, intro(5)))
-      .then(events(event(CourseCreated, intro(5))))
-    expect(courseViews().has("cs-101")).toBe(true)
-  })
-
-  it("takes an already-built processor, which then reads its own log", async () => {
-    const foreignStore = inMemoryEventStore()
-    const outcome = await scenario((resources) => ({
-      ...decisions(resources),
-      eventHandlers: [
-        {
-          ...withAutomation(resources).eventHandlers![0]!,
-          processor: eventProcessor("foreign", foreignStore, inMemoryTokenStore(), unitOfWork),
-        },
-      ],
-    }))
-      .given(event(CourseCreated, intro(1)))
-      .when(command(SubscribeStudent, seat("stu-001")))
-      .then(events(event(StudentSubscribed, seat("stu-001"))))
-    expect(outcome.events.map((e) => e.name.name)).toEqual(["StudentSubscribed"])
+      .when(query(GetCourseView, { courseId: "x" }))
+      .then()
+      .catch((e: Error) => e)
+    expect((failure as Error).message).toContain("`queryBus`")
   })
 })
 
 // ===========================================================================
-// Infrastructure: configured once, overridden per scenario
+// What the fixture is handed
 // ===========================================================================
 
-describe("infrastructure", () => {
-  it("runs against buses and a log the host supplied", async () => {
-    let builtWith: (() => unknown) | undefined
-    const log = inMemorySnapshottingEventStore(inMemoryEventStore())
-    await scenario(decisions, {
-      infrastructure: (unitOfWork) => {
-        builtWith = unitOfWork
-        return {
-          unitOfWork,
-          eventStore: log,
-          commandBus: localCommandBus(unitOfWork),
-          queryBus: localQueryBus(unitOfWork),
-        }
-      },
-    })
-      .when(command(CreateCourse, intro(5)))
-      .then(events(event(CourseCreated, intro(5))))
-
-    const stored = await log.source({ query: { types: [CourseCreated] } })
-    expect(stored.events.map((e) => e.name.name)).toEqual(["CourseCreated"])
-    expect(builtWith).toBeDefined()
-  })
-
-  it("hands over a task that is already on the scenario's clock, and still carries", async () => {
-    let minted: UnitOfWork | undefined
-    await scenario(decisions, {
-      clock: () => 1_700_000_000_000,
-      infrastructure: (unitOfWork) => {
-        const uow = () => {
-          minted = unitOfWork()
-          return minted
-        }
-        return {
-          unitOfWork: uow,
-          eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()),
-        }
-      },
-    })
-      .when(command(CreateCourse, { courseId: "cs-1", name: "N", capacity: 1 }))
-      .then(
-        events(
-          event(
-            CourseCreated,
-            { courseId: "cs-1", name: "N", capacity: 1 },
-            { correlationId: any(), causationId: any() },
-          ),
-        ),
+describe("the parts", () => {
+  it("takes a promise of the parts, for an app opened asynchronously", async () => {
+    const clock = advanceableClock()
+    const uow = () => unitOfWork(clock)
+    const parts = (async () => {
+      const eventStore = recordingEventStore(
+        controllableSchedulingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), clock),
       )
-    expect(minted!.now()).toBe(1_700_000_000_000)
-  })
-
-  it("is set once with `configure`, and a scenario's own options win", async () => {
-    let built = 0
-    configure({
-      infrastructure: (unitOfWork) => {
-        built++
-        return { unitOfWork }
-      },
-    })
-    await scenario(decisions)
+      const commandBus = recordingCommandBus(localCommandBus(uow))
+      const queryBus = localQueryBus(uow)
+      const app = kronos(
+        decisions({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork: uow }),
+      )
+      return { app, eventStore, commandBus, queryBus, clock }
+    })()
+    await fixture(parts)
       .when(command(CreateCourse, intro(5)))
       .then(events(event(CourseCreated, intro(5))))
-    await scenario(decisions)
-      .when(command(CreateCourse, intro(5)))
-      .then(events(event(CourseCreated, intro(5))))
-    expect(built).toBe(2)
-
-    await scenario(decisions, {
-      infrastructure: (unitOfWork) => ({ unitOfWork }),
-    })
-      .when(command(CreateCourse, intro(5)))
-      .then(events(event(CourseCreated, intro(5))))
-    expect(built).toBe(2)
   })
 
-  it("wraps every handler, closes what it opened, and rides along on `app`", async () => {
-    const kinds: string[] = []
-    let closed = false
-    await scenario(university, {
-      infrastructure: (unitOfWork) => ({
-        unitOfWork,
-        wrap: (handler, kind) => {
-          kinds.push(kind)
-          return handler
-        },
-        close: () => {
-          closed = true
-        },
-        marker: "brought along",
-      }),
-    })
+  it("stops the app and calls `close` once the scenario is judged", async () => {
+    let closed = 0
+    await built(university, { extras: { close: () => void closed++ } })
       .when(command(CreateCourse, intro(5)))
-      .then(({ app }) => expect(app.marker).toBe("brought along"))
-
-    expect(new Set(kinds)).toEqual(new Set(["command", "query", "event"]))
-    expect(closed).toBe(true)
+      .then()
+    expect(closed).toBe(1)
   })
 
-  it("keeps the log in memory unless it brings one — so it can still move time", async () => {
-    await scenario(university, {
-      infrastructure: (unitOfWork) => ({ unitOfWork }),
-    })
+  it("carries what the app's wiring carries: correlation is the app's own", async () => {
+    await built(decisions)
       .when(command(CreateCourse, intro(5)))
-      .advance(30_000)
-      .then(commands(command(CloseCourse, { courseId: "cs-101" })))
+      .then(events(event(CourseCreated, intro(5), { correlationId: any(), causationId: any() })))
   })
 })

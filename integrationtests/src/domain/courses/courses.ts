@@ -17,7 +17,7 @@ import type {
  */
 type EmittingContext = EventHandlerContext & SubscriptionCapability
 import { eventProcessor } from "@kronos-ts/core"
-import type { PartialProcessor, SiteResources, Subject } from "@kronos-ts/test"
+import type { CommandBus, CommandHandlerEntry, EventHandlerEntry, QueryBus, QueryHandlerEntry } from "@kronos-ts/core"
 import { z } from "zod"
 import { withNamespace, commandHandler, eventHandler, queryHandler } from "@kronos-ts/core"
 import { state } from "@kronos-ts/core"
@@ -237,27 +237,44 @@ export const COURSE_PROJECTION = "course-projection"
 
 
 /**
- * The course slice as a COMPOSITION ROOT: a function of the resources it runs on.
+ * The course slice as a COMPOSITION ROOT: a function of the objects it runs on,
+ * returning the three lists `kronos` takes.
  *
- * This is what a process deploys and what `scenario` runs — the same function,
- * called the same way. The projection is left PARTIAL: the slice closes out its
- * own semantics (its durable name, global stream order, no dead-letter queue for
- * a lane-free projection) and leaves its resources in the parameter list, so the
- * site calls it full-handed. Three parameters, not four, declines the queue by
- * assignability.
+ * This is what a process deploys and what a test builds its app from — the same
+ * function, called the same way. The projection's own semantics (its durable
+ * name, global stream order, no dead-letter queue for a lane-free projection)
+ * are closed out here; its resources come in as parameters.
  *
  * ONE STORE PARAMETER. There is no snapshot store beside the log any more —
  * a site that caches folds hands in a log that CAN, and the entries point at
  * the one object.
  */
-export function courses({ eventStore }: SiteResources): Subject {
-  const projection: PartialProcessor = (log, tokenStore, unitOfWork) =>
-    eventProcessor(COURSE_PROJECTION, log, tokenStore, unitOfWork)
-
+export function courses({
+  eventStore,
+  commandBus,
+  queryBus,
+  tokenStore,
+  unitOfWork,
+}: {
+  eventStore: EventStore
+  commandBus: CommandBus
+  queryBus: QueryBus
+  tokenStore: TokenStore
+  unitOfWork: () => UnitOfWork
+}): {
+  commandHandlers: CommandHandlerEntry[]
+  queryHandlers: QueryHandlerEntry[]
+  eventHandlers: EventHandlerEntry[]
+} {
+  const processor = eventProcessor(COURSE_PROJECTION, eventStore, tokenStore, unitOfWork)
   return {
-    commandHandlers: courseSlice.commandHandlers.map((h) => ({ ...h, eventStore })),
-    queryHandlers: courseSlice.queryHandlers.map((h) => ({ ...h, eventStore })),
-    eventHandlers: courseSlice.eventHandlers.map((h) => ({ ...h, processor: projection })),
+    commandHandlers: courseSlice.commandHandlers.map(
+      (h) => ({ ...h, eventStore, commandBus, queryBus }) as CommandHandlerEntry,
+    ),
+    queryHandlers: courseSlice.queryHandlers.map((h) => ({ ...h, eventStore, queryBus }) as QueryHandlerEntry),
+    eventHandlers: courseSlice.eventHandlers.map(
+      (h) => ({ ...h, commandBus, queryBus, processor }) as EventHandlerEntry,
+    ),
   }
 }
 

@@ -24,11 +24,12 @@ import {
   error,
   event,
   events,
+  fixture,
   noEvents,
   query as queryValue,
+  recordingCommandBus,
+  recordingEventStore,
   result,
-  scenario,
-  storyline,
 } from "@kronos-ts/test"
 import {
   courseSlice,
@@ -104,6 +105,18 @@ function sitedCourses(site: HandlerSite & {
 // Given-When-Then, in the shapes the model is written in
 // ============================================================================
 
+/**
+ * A fresh app per scenario, composed the way a process composes it — with the
+ * log and the command bus the fixture observes wrapped in recorders.
+ */
+function courseApp() {
+  const eventStore = recordingEventStore(inMemoryEventStore())
+  const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(unitOfWork), correlation))
+  const queryBus = interceptingQueryBus(localQueryBus(unitOfWork), correlation)
+  const app = kronos(courses({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork }))
+  return fixture({ app, eventStore, commandBus, queryBus })
+}
+
 describe("University — given, when, then", () => {
   // The slice's projection handlers run inside each scenario and write into the
   // module's view map, so each scenario starts from a clean read model.
@@ -116,13 +129,13 @@ describe("University — given, when, then", () => {
 
   describe("Course creation", () => {
     it("creates a course with valid data", async () => {
-      await scenario(courses)
+      await courseApp()
         .when(command(CreateCourse, course(30, "Intro to CS")))
         .then(events(event(CourseCreated, course(30, "Intro to CS"))))
     })
 
     it("rejects duplicate course creation", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(30)))
         .when(command(CreateCourse, course(30)))
         .then(error("Course already exists"), noEvents())
@@ -131,27 +144,27 @@ describe("University — given, when, then", () => {
 
   describe("Course capacity changes", () => {
     it("changes capacity on existing course", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(30)))
         .when(command(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 }))
         .then(events(event(CourseCapacityChanged, { courseId: "cs-101", capacity: 50 })))
     })
 
     it("rejects capacity change on nonexistent course", async () => {
-      await scenario(courses)
+      await courseApp()
         .when(command(ChangeCourseCapacity, { courseId: "cs-999", capacity: 50 }))
         .then(error("Course does not exist"), noEvents())
     })
 
     it("skips no-op capacity change", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(30)))
         .when(command(ChangeCourseCapacity, { courseId: "cs-101", capacity: 30 }))
         .then(noEvents())
     })
 
     it("rejects capacity below enrolled count", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(
           event(CourseCreated, course(5)),
           event(StudentSubscribed, seat("stu-001")),
@@ -165,27 +178,27 @@ describe("University — given, when, then", () => {
 
   describe("Student subscription", () => {
     it("subscribes a student to a course", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(30)))
         .when(command(SubscribeStudent, seat("stu-001")))
         .then(events(event(StudentSubscribed, seat("stu-001"))))
     })
 
     it("rejects subscription to nonexistent course", async () => {
-      await scenario(courses)
+      await courseApp()
         .when(command(SubscribeStudent, { courseId: "cs-999", studentId: "stu-001" }))
         .then(error("Course does not exist"))
     })
 
     it("rejects subscription when course is full", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(1)), event(StudentSubscribed, seat("stu-001")))
         .when(command(SubscribeStudent, seat("stu-002")))
         .then(error("Course is full"), noEvents())
     })
 
     it("rejects duplicate subscription", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(30)), event(StudentSubscribed, seat("stu-001")))
         .when(command(SubscribeStudent, seat("stu-001")))
         .then(error("Student already subscribed"), noEvents())
@@ -194,14 +207,14 @@ describe("University — given, when, then", () => {
 
   describe("Student unsubscription", () => {
     it("unsubscribes a student from a course", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(30)), event(StudentSubscribed, seat("stu-001")))
         .when(command(UnsubscribeStudent, seat("stu-001")))
         .then(events(event(StudentUnsubscribed, seat("stu-001"))))
     })
 
     it("rejects unsubscription of non-subscribed student", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(30)))
         .when(command(UnsubscribeStudent, seat("stu-999")))
         .then(error("Student not subscribed"), noEvents())
@@ -210,7 +223,7 @@ describe("University — given, when, then", () => {
 
   describe("The read model", () => {
     it("answers from what the given facts built", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(30)), event(StudentSubscribed, seat("stu-001")))
         .when(queryValue(GetCourseView, { courseId: "cs-101" }))
         .then(
@@ -227,7 +240,8 @@ describe("University — given, when, then", () => {
         enrolledCount,
         students,
       })
-      await storyline(courses, queryValue(GetCourseView, { courseId: "cs-101" }))
+      await courseApp()
+        .storyline(queryValue(GetCourseView, { courseId: "cs-101" }))
         .after(event(CourseCreated, course(2)))
         .shows(view(0, []))
         .after(event(StudentSubscribed, seat("stu-001")), event(StudentSubscribed, seat("stu-002")))
@@ -239,7 +253,7 @@ describe("University — given, when, then", () => {
 
   describe("One world, several acts", () => {
     it("creates a course then subscribes students until it is full", async () => {
-      await scenario(courses)
+      await courseApp()
         .when(command(CreateCourse, course(3)))
         .then(events(event(CourseCreated, course(3))))
         .and.when(command(SubscribeStudent, seat("stu-001")))
@@ -253,7 +267,7 @@ describe("University — given, when, then", () => {
     })
 
     it("subscribe then unsubscribe frees up a spot", async () => {
-      await scenario(courses)
+      await courseApp()
         .given(event(CourseCreated, course(1)), event(StudentSubscribed, seat("stu-001")))
         .when(command(UnsubscribeStudent, seat("stu-001")))
         .then(events(event(StudentUnsubscribed, seat("stu-001"))))
@@ -262,7 +276,7 @@ describe("University — given, when, then", () => {
     })
 
     it("the slice's projection runs inside the scenario, and answers a query act", async () => {
-      await scenario(courses)
+      await courseApp()
         .when(command(CreateCourse, course(30)))
         .then(events(event(CourseCreated, course(30))))
         .and.when(command(SubscribeStudent, seat("stu-001")))

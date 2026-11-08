@@ -372,7 +372,7 @@ billing/charge/
 
 `slice.ts` never imports a transport. It does not know whether it is reached over
 HTTP, a queue or a test fixture — which is exactly why the same composition-root
-function drops into `scenario(...)` unchanged. `controller.ts` is where the actor comes off the request
+function builds the app a test hands to `fixture(...)`, unchanged. `controller.ts` is where the actor comes off the request
 and becomes metadata. When the wire changes — oRPC today, a pubsub subscriber
 next year — one file changes.
 

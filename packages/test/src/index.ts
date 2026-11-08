@@ -17,8 +17,6 @@ export {
 // ── the claims: functions of what happened ─────────────────────────────────
 export {
   type Outcome,
-  type Resources,
-  type App,
   type Assertion,
   type ErrorMatcher,
   events,
@@ -31,40 +29,28 @@ export {
   cancelled,
 } from "./values.js"
 
-// ── the grammar: given → when → then, and storylines ───────────────────────
+// ── the grammar: given → when → then, and storylines, against a running app ─
 export {
+  type Fixture,
   type ScenarioStart,
   type ScenarioActed,
   type Judged,
   type Storyline,
-  scenario,
-  storyline,
+  fixture,
 } from "./scenario.js"
 
-// ── where it runs: set once, override per scenario ─────────────────────────
-export {
-  type Subject,
-  type Scope,
-  type SiteResources,
-  type SiteEventStore,
-  type PartialProcessor,
-  type Infrastructure,
-  type InfrastructureFactory,
-  type ScenarioOptions,
-  type AdvanceableClock,
-  advanceableClock,
-  configure,
-  FIXTURE_EPOCH,
-} from "./site.js"
+export { type FixtureParts, type AdvanceableClock, advanceableClock, FIXTURE_EPOCH } from "./fixture.js"
 
 // ── the failure, which is the product ──────────────────────────────────────
 export { ScenarioAssertionError } from "./diff.js"
 
-// ── recorders: thing-first decorators, usable on their own ─────────────────
+// ── recorders: what the fixture observes, applied by the test ──────────────
 export {
   type RecordingEventStore,
   type RecordingCommandBus,
   type RecordingQueryBus,
+  type EventRecording,
+  type CommandRecording,
   type ScheduleRecord,
   type ScheduleRecording,
   recordingEventStore,

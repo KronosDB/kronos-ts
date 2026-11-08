@@ -981,46 +981,66 @@ otlpHandler(handler, exporter, label?): handler        // parents (command/query
 Zero `@opentelemetry/*` dependencies. No SDK, no global tracer, no patching.
 otel-js interop = the consumer writes wrappers over the same public shapes.
 
-## @kronos-ts/test — scenarios in the shapes a model is written in
+## @kronos-ts/test — scenarios against the app you built
 ```ts
 // ── the vocabulary: one constructor per message kind, doubling as the expectation
 event(descriptor, payload, metadata?): EventValue        // a fact, an arrival, or an expectation
 command(descriptor, payload, metadata?): CommandValue    // the act, or an expected dispatch
 query(descriptor, payload, metadata?): QueryValue        // the act (a read is never a consequence)
-  // payloads are compile-checked against the descriptor; `any()` widens, never disables
 any(schema?: StandardSchemaV1): Any                      // the positional payload hole — renders as `*`
-type Duration = number                                   // ms, the unit a clock reads
 
-// ── the grammar
-scenario(subject, options?): ScenarioStart               // subject: a slice's three lists, or a Scope
+// ── the fixture: a running app and the recorders it was built with
+fixture(parts | Promise<parts>): Fixture                 // ONE world: its first scenario takes the app over
+type FixtureParts = {
+  app: App                                               // what `kronos(…)` returned
+  eventStore: EventStore & EventRecording                // recordingEventStore(…) — the log the app uses
+  commandBus: CommandBus & CommandRecording              // recordingCommandBus(…) — the bus commands go through
+  queryBus?: QueryBus                                    // for a query act
+  clock?: () => number                                   // an AdvanceableClock, for `advance`
+  within?: Duration                                      // re-judge claims until they hold
+  close?(): Promise<void> | void                         // released after the app stops
+  [extra]: unknown                                       // rides along to `outcome.app`
+}
   .given(...events)          → ScenarioStart             // history; repeatable, accumulates in order
   .advance(duration)         → same shape                // at any joint, repeatable
   .when(command | query | event) → ScenarioActed         // the act
   .then(...assertions)       → Judged                    // RUNS; resolves with the Outcome
+  .storyline(query(Q, p))    → .shows(expected | assertion) · .after(...events)   // a PromiseLike
 type Judged = Promise<Outcome> & { and: ScenarioStart }  // `and`: the same world, continued
-storyline(subject, query(Q, p), options?)                // one read model walked through its states
-  .shows(expected | assertion) · .after(...events)       // awaited as it is — a PromiseLike
-type Subject = { commandHandlers?, queryHandlers?, eventHandlers? }   // unwrapped, un-sited
-type Scope = (resources: SiteResources) => Subject       // a composition root over the resources
 
 // ── the claims: functions of what happened
 type Assertion = ((outcome: Outcome) => void | Promise<void>) & { label?: string; claimsError?: boolean }
-type Outcome = { act; result; threw; error; events; commands; schedules; app }
+type Outcome = { act; result; threw; error; events; commands; schedules; app }   // app = the parts
 events(...eventValues) · noEvents()      // the EXACT, ORDERED list the act appended
 commands(...commandValues) · noCommands()// the same over dispatches, the act's own command excluded
 result(value)                            // deep-strict, `any()` holes; refused for an event act
 error(matcher: string | RegExp | ((e: unknown) => boolean))   // claims the throw
 scheduled(event(...), after) · cancelled(event(...))
 
-// ── where it runs
-configure(options)                       // once per test run (a preload), replaces the defaults
-type ScenarioOptions = { infrastructure?: InfrastructureFactory; clock?: () => number; within?: Duration }
-type InfrastructureFactory = (unitOfWork, clock) => Infrastructure | Promise<Infrastructure>
-type Infrastructure = { unitOfWork?; eventStore?; commandBus?; queryBus?; tokenStore?; deadLetterQueue?;
-                        wrap?(handler, kind); close?(); [extra]: unknown }   // extras ride on `outcome.app`
-advanceableClock(from?) · FIXTURE_EPOCH · PartialProcessor
-ScenarioAssertionError                   // message IS the diff, under the scenario's own sentence
+advanceableClock(from?) · FIXTURE_EPOCH · ScenarioAssertionError
 ```
+
+The test composes its app EXACTLY as `main.ts` does — `kronos({ … })` over entries
+that carry their stores and buses, wrapped the way production wraps them — and
+wraps in a recorder what the fixture should observe:
+
+```ts
+const clock = advanceableClock()
+const uow = () => unitOfWork(clock)
+const eventStore = recordingEventStore(controllableSchedulingEventStore(inMemoryEventStore(), clock))
+const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(uow), correlation))
+const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
+const app = kronos(lists({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork: uow }))
+
+await fixture({ app, eventStore, commandBus, queryBus, clock })
+  .given(event(ItemAdded, a)).when(command(AddItem, b)).then(events(event(ItemAdded, b)))
+```
+
+The fixture BUILDS NOTHING. It takes the app's processors back from `kronos`
+(`app.processors`), folds history into them, performs the act, settles them,
+reads the recorders, and once the scenario is judged stops the app and calls
+`close`. A recorder it needs and was not handed is named in the error, with the
+line that applies it.
 
 An assertion is a plain function — the built-ins are nothing more — so a
 convention lives where it belongs, beside the code that has it:
@@ -1030,47 +1050,37 @@ const rejected = (code: string) => ({ result }: Outcome) =>
   expect(result).toMatchObject({ ok: false, rejection: code })
 ```
 
-Each scenario OPENS ITS OWN WORLD: the site creates the resources (or takes them
-from the infrastructure), wraps what it needs to judge a `then` around them, wires
-the subject against them kronos-style — `correlatingHandler` around every handler,
-inside it the infrastructure's `wrap` — and closes it once the scenario is judged.
-In memory that is `recordingEventStore(controllableSchedulingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), clock))`,
-`inMemoryTokenStore()`, `inMemoryDeadLetterQueue()` and the local buses, recorded.
-What the infrastructure brings replaces its part and nothing else; a Postgres read
-model typically brings the unit of work, the token store and `wrap`, and keeps the
-log in memory, so scenarios stay deterministic.
-
 Semantics, pinned:
 - `given` events are HISTORY. They are appended, then handed to every processor as
   a REPLAY (two token resets: to the head, then back to where the history began),
   so a projection folds them with `ctx.isReplay()` true — the same signal a
-  production replay gives. While they are folded nothing an event handler would set
-  in motion gets out: a command it dispatches is not dispatched (`send` resolves to
-  `undefined`), a deadline it arms is not armed. The automations that would have
-  fired already fired, long ago. None of it is in the outcome.
-- `when(command | query)` dispatches through the real bus. `when(event)` means the
+  production replay gives. While they are folded the recorders HOLD: a command an
+  event handler dispatches is not sent (`send` resolves to `undefined`), a deadline
+  it arms is not armed. The automations that would have fired already fired, long
+  ago. None of it is in the outcome.
+- `when(command | query)` dispatches through the app's bus. `when(event)` means the
   event ARRIVES: appended, and the processors DO react.
 - After the act and after each `advance`: QUIESCE — drive every processor to the head
-  of the log IT reads, settle, repeat until nothing moves. Deterministic; no sleeps.
-- `advance(d)` jumps the scenario's clock, fires the schedules now due, then
-  quiesces. A scenario on a plain clock, or on a log the infrastructure brought,
-  cannot move time and says so.
+  of the fixture's `eventStore`, settle, repeat until nothing moves. The app's
+  processors are expected to read that log.
+- `advance(d)` moves the clock, fires what is due through the controllable
+  scheduling tier, then quiesces. Without an advanceable clock, or without that
+  tier, it says which is missing.
 - `then` judges every claim and reports every failure. A throw no claim declares
-  (`error()`, or `claimsError: true`) surfaces as itself. In memory the claims are
-  judged once; on a FOREIGN site (a brought log, or a processor over a store of its
-  own) they are re-judged until `within` (default 5s).
+  (`error()`, or `claimsError: true`) surfaces as itself. Claims are judged once;
+  with `within` they are re-judged until they hold or it passes.
 - Awaiting a builder without `then` runs it with no claims — `then` makes the
   builder thenable, so this is defined rather than a hang.
 
 ```ts
-// recorders: thing-first decorators, same shape + a readable log + reset()
-recordingEventStore(store): EventStore & { appended; reset() }
-recordingCommandBus(bus):   CommandBus & { dispatched; reset() }
-recordingQueryBus(bus):     QueryBus   & { queried;    reset() }
+// recorders: thing-first decorators, same shape + a readable log, reset() and hold()
+recordingEventStore(store): E & { appended; reset(); hold(on) }      // hold: schedule/cancelSchedule inert
+recordingCommandBus(bus):   B & { dispatched; reset(); hold(on) }    // hold: dispatch neither sent nor recorded
+recordingQueryBus(bus):     B & { queried;    reset() }
 controllableSchedulingEventStore<E>(next: E, clock: () => number):
   E & ScheduleStoreCapability & { schedules; due(); resetSchedules() }   // no timer, no sink
 ```
-Unit level needs no scenario at all: folds are reduces over evolve tuples;
+Unit level needs no fixture at all: folds are reduces over evolve tuples;
 handlers are functions called with an inline ctx record.
 
 ## Deleted to reach this surface (from the current worktree)
