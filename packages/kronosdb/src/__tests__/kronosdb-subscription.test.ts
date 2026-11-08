@@ -3,7 +3,8 @@ import { jsonSerializer } from "@kronos-ts/core"
 import { connectToKronosDb, type KronosDbConnection } from "../connection.js"
 import { kronosDbEventStore } from "../kronosdb-event-store.js"
 import { kronosDbSubscription } from "../kronosdb-log-reads.js"
-import { ErrorCode, FLAG_END, type EventRecord, type Frame } from "../protocol/kronosdb-protocol.js"
+import { ErrorCode, FLAG_END, encodeFrame, writer, written, type EventRecord, type Frame } from "../protocol/kronosdb-protocol.js"
+import { until } from "./bus-test-kit.js"
 import { fakeNativeServer, type FakeConnection, type FakeNativeServer } from "./fake-native-server.js"
 
 const serializer = jsonSerializer()
@@ -19,15 +20,15 @@ afterEach(async () => {
   server = undefined
 })
 
-async function subscribed() {
+async function subscribed(window?: number) {
   server = await fakeNativeServer()
   const opened = server.nextConnection()
-  connection = connectToKronosDb({ host: "127.0.0.1", port: server.port, componentName: "sub-test" })
+  connection = connectToKronosDb({ host: "127.0.0.1", port: server.port, componentName: "sub-test", ...(window !== undefined ? { window } : {}) })
   const kdb = { connection, serializer }
   return { kdb, connection: () => opened }
 }
 
-const record = (position: bigint): { flags: number; event: EventRecord } => ({
+const record = (position: bigint, padding = 0): { flags: number; event: EventRecord } => ({
   flags: 0,
   event: {
     position,
@@ -37,14 +38,21 @@ const record = (position: bigint): { flags: number; event: EventRecord } => ({
     timestamp: 1,
     metadata: [],
     tags: [],
-    payload: enc.encode(JSON.stringify({ n: Number(position) })),
+    payload: enc.encode(JSON.stringify({ n: Number(position), pad: "x".repeat(padding) })),
   },
 })
 
-const events = (from: number, count: number): Frame => ({
+const events = (from: number, count: number, padding = 0): Frame => ({
   name: "Events",
-  body: { events: Array.from({ length: count }, (_, i) => record(BigInt(from + i))) },
+  body: { events: Array.from({ length: count }, (_, i) => record(BigInt(from + i), padding)) },
 })
+
+/** What a frame costs the stream's window: every byte of it, length prefix included. */
+const wireSize = (frame: Frame): number => {
+  const w = writer(1024)
+  encodeFrame(w, 1, 0, frame)
+  return written(w).length
+}
 
 /** The Subscribe the client sent, and its stream id. */
 async function subscribeFrame(fake: FakeConnection) {
@@ -56,19 +64,23 @@ async function subscribeFrame(fake: FakeConnection) {
   throw new Error("no Subscribe arrived")
 }
 
-const credits = (fake: FakeConnection) =>
-  fake.received.flatMap((r) => (r.frame.name === "Credit" ? [r.frame.body.credits] : []))
+const windows = (fake: FakeConnection) =>
+  fake.received.flatMap((r) => (r.frame.name === "Window" ? [{ stream: r.stream, flags: r.flags, bytes: r.frame.body.bytes }] : []))
+
+const HALF = 32 * 1024
 
 describe("subscription (native)", () => {
-  it("opens with Subscribe: where to start, what to match, how many credits, no END", async () => {
+  it("opens with Subscribe: where to start, what to match, END and no credits", async () => {
     const { kdb, connection: conn } = await subscribed()
     const stream = kronosDbEventStore(kdb).open({ position: 25n, query: { tags: { orderId: "o-1" }, types: ["shop.Ticked"] } })
     const fake = await conn()
     const sub = await subscribeFrame(fake)
 
-    expect(sub.flags & FLAG_END).toBe(0)
+    // The client sends nothing in a subscription; the window paces it, and Window and Cancel may still follow.
+    expect(sub.flags & FLAG_END).toBe(FLAG_END)
     // A query is a selective reader, so the server is asked to say how far it has looked.
-    expect(sub.body).toMatchObject({ context: 0, from: 25n, credits: 500, batchSize: 0, progressInterval: 1000, excludeNames: [] })
+    expect(sub.body).toMatchObject({ context: 0, from: 25n, batchSize: 0, progressInterval: 1000, excludeNames: [] })
+    expect(Object.keys(sub.body).sort()).toEqual(["batchSize", "context", "criteria", "excludeNames", "from", "progressInterval"])
     expect(sub.body.criteria).toEqual([
       { names: ["shop.Ticked"], tags: [{ key: enc.encode("orderId"), value: enc.encode("o-1") }] },
     ])
@@ -84,14 +96,15 @@ describe("subscription (native)", () => {
     stream.close()
   })
 
-  it("reads ahead as far as the reader asked, and never below the default", async () => {
+  it("leaves how far to read ahead to the window: readAhead changes nothing on the wire", async () => {
     const { kdb, connection: conn } = await subscribed()
     const big = kronosDbEventStore(kdb).open({ position: 0n, readAhead: 5000 })
     const small = kronosDbEventStore(kdb).open({ position: 0n, readAhead: 10 })
     const fake = await conn()
     for (let i = 0; i < 200 && fake.received.filter((r) => r.frame.name === "Subscribe").length < 2; i++) await Bun.sleep(5)
-    const grants = fake.received.flatMap((r) => (r.frame.name === "Subscribe" ? [r.frame.body.credits] : []))
-    expect(grants.sort((a, b) => a - b)).toEqual([500, 5000])
+    const bodies = fake.received.flatMap((r) => (r.frame.name === "Subscribe" ? [r.frame.body] : []))
+    expect(bodies).toHaveLength(2)
+    expect(bodies[0]).toEqual(bodies[1]!)
     big.close()
     small.close()
   })
@@ -144,26 +157,100 @@ describe("subscription (native)", () => {
     stream.close()
   })
 
-  it("grants credits back as events are TAKEN, topping up to the original grant", async () => {
-    const { kdb, connection: conn } = await subscribed()
+  it("holds back a slow consumer instead of failing it: nothing is granted until its events are taken", async () => {
+    const { kdb, connection: conn } = await subscribed(2 * HALF)
     const stream = kronosDbEventStore(kdb).open({ position: 0n })
     const fake = await conn()
     const { stream: id } = await subscribeFrame(fake)
 
-    fake.reply(id, 0, events(0, 500))
+    // Four frames of about 12 KiB: more than half of the 64 KiB window, none of it taken.
+    const frames = [0, 10, 20, 30].map((from) => events(from, 10, 1200))
+    for (const frame of frames) fake.reply(id, 0, frame)
     await Bun.sleep(30)
-    // Nothing taken yet: the server holds no new credit.
-    expect(credits(fake)).toEqual([])
+    expect(stream.error()).toBeUndefined()
+    expect(stream.isCompleted()).toBe(false)
+    expect(windows(fake)).toEqual([])
 
-    for (let i = 0; i < 375; i++) stream.next()
-    await Bun.sleep(30)
-    // 500 granted, 375 taken: 125 outstanding is the 25% threshold, so the grant is topped back up to 500.
-    expect(credits(fake)).toEqual([375])
-    // The credit rides the subscription's own stream.
-    expect(fake.received.find((r) => r.frame.name === "Credit")!.stream).toBe(id)
+    // Taking a frame's events gives its bytes back, once half the window has been taken.
+    const sizes = frames.map(wireSize)
+    expect(sizes[0]! + sizes[1]!).toBeLessThan(HALF)
+    expect(sizes[0]! + sizes[1]! + sizes[2]!).toBeGreaterThanOrEqual(HALF)
+    for (let i = 0; i < 20; i++) stream.next()
+    await Bun.sleep(20)
+    expect(windows(fake)).toEqual([])
+    for (let i = 0; i < 10; i++) stream.next()
+    await Bun.sleep(20)
+    // It goes on the subscription's own stream, after the client's END, as a frame about it.
+    expect(windows(fake)).toEqual([{ stream: id, flags: 0, bytes: sizes[0]! + sizes[1]! + sizes[2]! }])
 
-    for (let i = 0; i < 125; i++) stream.next()
-    expect(stream.next()).toBeUndefined()
+    // The last frame is still waiting; taking it does not reach half again.
+    for (let i = 0; i < 10; i++) expect(stream.next()).toBeDefined()
+    await Bun.sleep(20)
+    expect(windows(fake)).toHaveLength(1)
+    stream.close()
+  })
+
+  it("gives a frame back only when its LAST event is taken", async () => {
+    const { kdb, connection: conn } = await subscribed(2 * HALF)
+    const stream = kronosDbEventStore(kdb).open({ position: 0n })
+    const fake = await conn()
+    const { stream: id } = await subscribeFrame(fake)
+
+    // One frame of about 40 KiB: more than half the window by itself.
+    const big = events(0, 10, 4000)
+    fake.reply(id, 0, big)
+    await Bun.sleep(20)
+    expect(wireSize(big)).toBeGreaterThan(HALF)
+    for (let i = 0; i < 9; i++) stream.next()
+    await Bun.sleep(20)
+    expect(windows(fake)).toEqual([])
+    stream.next()
+    await Bun.sleep(20)
+    expect(windows(fake)).toEqual([{ stream: id, flags: 0, bytes: wireSize(big) }])
+    stream.close()
+  })
+
+  it("a peeked event counts as taken, and a spent frame is given back without another read", async () => {
+    const { kdb, connection: conn } = await subscribed(2 * HALF)
+    const stream = kronosDbEventStore(kdb).open({ position: 0n })
+    const fake = await conn()
+    const { stream: id } = await subscribeFrame(fake)
+    const big = events(0, 1, 40_000)
+    fake.reply(id, 0, big)
+    await Bun.sleep(20)
+    // One event, one frame: peek takes it from the queue, and nothing more has to be read for the bytes to go back.
+    stream.peek()
+    await Bun.sleep(20)
+    expect(windows(fake)).toEqual([{ stream: id, flags: 0, bytes: wireSize(big) }])
+    stream.close()
+  })
+
+  it("spends no window on the frame that ends the stream", async () => {
+    const { kdb, connection: conn } = await subscribed(2 * HALF)
+    const stream = kronosDbEventStore(kdb).open({ position: 0n })
+    const fake = await conn()
+    const { stream: id } = await subscribeFrame(fake)
+    fake.reply(id, FLAG_END, events(0, 10, 4000))
+    await Bun.sleep(20)
+    for (let i = 0; i < 10; i++) expect(stream.next()).toBeDefined()
+    await Bun.sleep(20)
+    expect(windows(fake)).toEqual([])
+    expect(stream.isCompleted()).toBe(true)
+    expect(stream.error()).toBeUndefined()
+  })
+
+  it("gives Progress frames back as they arrive: they hold no events for anyone to take", async () => {
+    const { kdb, connection: conn } = await subscribed(2 * HALF)
+    const stream = kronosDbSubscription(kdb, "default", { position: 0n }, { progressIntervalMs: 1 })
+    const fake = await conn()
+    const sub = await subscribeFrame(fake)
+    const progress = wireSize({ name: "Progress", body: { position: 1n } })
+    const needed = Math.ceil(HALF / progress)
+    for (let i = 0; i < needed; i++) fake.reply(sub.stream, 0, { name: "Progress", body: { position: BigInt(i) } })
+    await until(() => windows(fake).length > 0)
+    expect(windows(fake)).toEqual([{ stream: sub.stream, flags: 0, bytes: needed * progress }])
+    // The reader never took one, and the stream lives on.
+    expect(stream.error()).toBeUndefined()
     stream.close()
   })
 
@@ -244,11 +331,11 @@ describe("subscription (native)", () => {
     stream.close()
   })
 
-  it("passes the types to skip and the credits it was asked for", async () => {
+  it("passes the types to skip", async () => {
     const { kdb, connection: conn } = await subscribed()
-    const stream = kronosDbSubscription(kdb, "default", { position: 0n }, { credits: 40, excludeNames: ["shop.Noise"] })
+    const stream = kronosDbSubscription(kdb, "default", { position: 0n }, { excludeNames: ["shop.Noise"] })
     const sub = await subscribeFrame(await conn())
-    expect(sub.body).toMatchObject({ credits: 40, excludeNames: ["shop.Noise"] })
+    expect(sub.body).toMatchObject({ excludeNames: ["shop.Noise"] })
     stream.close()
   })
 
@@ -352,8 +439,23 @@ describe("subscription (native)", () => {
     expect(stream.error()).toBeInstanceOf(Error)
   })
 
-  it("rejects a credit count it cannot send", async () => {
-    const { kdb } = await subscribed()
-    expect(() => kronosDbSubscription(kdb, "default", { position: 0n }, { credits: 0 })).toThrow(RangeError)
+  it("rejects a window the server would refuse, where the connection is configured", () => {
+    for (const window of [0, 65535, 1.5, 2 ** 32]) {
+      expect(() => connectToKronosDb({ componentName: "x", window })).toThrow(RangeError)
+    }
+  })
+
+  it("grants an 8 MiB window in Hello unless the connection says otherwise", async () => {
+    const { kdb, connection: conn } = await subscribed()
+    const stream = kronosDbEventStore(kdb).open({ position: 0n })
+    expect((await conn()).hello.window).toBe(8 * 1024 * 1024)
+    stream.close()
+  })
+
+  it("grants the window the connection was configured with", async () => {
+    const { kdb, connection: conn } = await subscribed(1 << 20)
+    const stream = kronosDbEventStore(kdb).open({ position: 0n })
+    expect((await conn()).hello.window).toBe(1 << 20)
+    stream.close()
   })
 })

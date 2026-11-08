@@ -24,6 +24,17 @@
 //
 // A frame that straddles two chunks is assembled into a buffer allocated at its
 // final size, so a large read is copied once, not once per chunk.
+//
+// EVERY STREAM HAS A WINDOW. Hello says how many bytes the server may send on
+// a stream ahead of the client, and the client grants bytes back with Window as
+// its consumer takes the frames: the whole frame, length prefix included, except
+// the one that ends the stream. A slot adds up what its consumer has taken and
+// sends one Window once that reaches half the window, so the server keeps
+// sending while the grant travels. A stream whose sink does its work inside the
+// call (everything but a subscription) is consumed the moment the sink returns;
+// one that keeps frames for later says so with `manualWindow` and calls
+// `stream.consumed(bytes)` as it takes them. Either way a slow consumer holds
+// back its own stream and nothing else, and no stream is failed for it.
 // ---------------------------------------------------------------------------
 
 import { connect as netConnect, isIP } from "node:net"
@@ -44,13 +55,14 @@ import {
   encodeCancel,
   encodeClientPong,
   encodeHello,
+  encodeWindow,
   ensure,
   reader,
   writer,
   type Writer,
 } from "./protocol/kronosdb-protocol.js"
 
-/** The stored record layout this client decodes (protocol version 1). */
+/** The stored record layout this client decodes (protocol version 2). */
 const RECORD_FORMAT = 3
 
 /** What the server said in Welcome, in this package's units. */
@@ -77,6 +89,25 @@ export type NativeTransportOptions = {
   readonly token: string
   /** Connection plus handshake budget. Default: 10000. */
   readonly connectTimeoutMs?: number
+  /**
+   * Bytes the server may send on each stream ahead of this client, granted in
+   * Hello. At least {@link MIN_WINDOW}. Default: {@link DEFAULT_WINDOW}.
+   */
+  readonly window?: number
+}
+
+/** The smallest window the protocol allows a client to grant. */
+export const MIN_WINDOW = 64 * 1024
+/** Each stream's window when the caller does not choose one: 8 MiB, as the reference clients grant. */
+export const DEFAULT_WINDOW = 8 * 1024 * 1024
+
+/** The window to grant: the default for `undefined`, a RangeError for one the server would refuse. */
+export function validWindow(window: number | undefined): number {
+  if (window === undefined) return DEFAULT_WINDOW
+  if (!Number.isInteger(window) || window < MIN_WINDOW || window > 0xffffffff) {
+    throw new RangeError(`window must be a whole number of bytes between ${MIN_WINDOW} and ${0xffffffff}`)
+  }
+  return window
 }
 
 /**
@@ -91,13 +122,26 @@ export type ReplyParser<T> = (kind: number, buf: Uint8Array, start: number, end:
 
 /** The client's end of an open stream. */
 export type NativeStream = {
-  /** Send another frame on the stream (a subscription's Credit). */
+  /** Send another frame on the stream (a handler's answers, a subscription query's Permits). */
   send(kind: number, body: (w: Writer) => void): void
+  /**
+   * The consumer has taken `bytes` of what the server sent: the size of a frame
+   * (its length prefix included, so `FRAME_HEADER_LEN + end - start` of the
+   * body the sink saw) that did not end the stream. Only for a stream opened
+   * with `manualWindow`; the others are consumed as their sink returns. Never
+   * throws, and does nothing once the stream is over.
+   */
+  consumed(bytes: number): void
   /**
    * Give up on the stream: tell the server, and stop delivering. Nothing more
    * reaches the sink or `fail` after this returns. Safe to call twice.
    */
   cancel(): void
+}
+
+export type StreamOptions = {
+  /** The receiver keeps frames past the sink call and reports them with `NativeStream.consumed`. */
+  readonly manualWindow?: boolean
 }
 
 export type NativeTransport = {
@@ -108,10 +152,13 @@ export type NativeTransport = {
   /** Send a request answered by exactly one frame. */
   request<T>(kind: number, body: (w: Writer) => void, parse: ReplyParser<T>): Promise<T>
   /**
-   * Open a stream. With `end` the client sends nothing more (a Source); without
-   * it the client may keep sending (a Subscribe and its credits). Every frame
-   * the server sends on the stream reaches `sink`; a RequestFailed, or the
-   * connection closing, reaches `fail` instead and ends the stream.
+   * Open a stream. With `end` the client sends nothing more *in* it (a Source, a
+   * Subscribe); without it the client may keep sending (a handler's answers).
+   * Every frame the server sends on the stream reaches `sink`; a RequestFailed,
+   * or the connection closing, reaches `fail` instead and ends the stream.
+   *
+   * The stream's window is granted back as its frames are consumed: when `sink`
+   * returns, or, with `manualWindow`, when the receiver calls `consumed`.
    */
   open(
     kind: number,
@@ -119,6 +166,7 @@ export type NativeTransport = {
     end: boolean,
     sink: FrameSink,
     fail: (error: Error) => void,
+    options?: StreamOptions,
   ): NativeStream
   /** The wire id of a context on this connection, binding it on first use. */
   contextId(name: string): number | Promise<number>
@@ -137,6 +185,10 @@ type Slot = {
   readonly unary: boolean
   readonly sink: FrameSink
   readonly fail: (error: Error) => void
+  /** The consumer reports what it takes; otherwise a frame is consumed as the sink returns. */
+  readonly manual: boolean
+  /** Bytes consumed since the window was last granted back. */
+  consumed: number
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
@@ -163,6 +215,8 @@ export function openNativeTransport(options: NativeTransportOptions): Promise<Na
   return new Promise<NativeTransport>((resolve, reject) => {
     const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     const target = `${options.host}:${options.port}`
+    const window = validWindow(options.window)
+    const grantAt = Math.floor(window / 2)
 
     const socket = options.tls
       ? tlsConnect({ host: options.host, port: options.port, servername: isIP(options.host) === 0 ? options.host : undefined, ...options.tls })
@@ -233,6 +287,23 @@ export function openNativeTransport(options: NativeTransportOptions): Promise<Na
       }
     }
 
+    /**
+     * The consumer took `bytes` of a stream: add them up and, once they reach
+     * half the window, hand them back. Only buffers a frame, so it can neither
+     * block the socket reader nor throw into a consumer.
+     */
+    function grantBack(id: number, slot: Slot, bytes: number): void {
+      slot.consumed += bytes
+      if (slot.consumed < grantAt || closed || slots.get(id) !== slot) return
+      const granted = slot.consumed
+      slot.consumed = 0
+      try {
+        writeFrame(id, 0, FrameKind.Window, (out) => encodeWindow(out, { bytes: granted }))
+      } catch {
+        // The connection is going away; there is nothing left to grant.
+      }
+    }
+
     // ── closing ──────────────────────────────────────────────────────────
     function shutdown(error: Error | undefined, graceful: boolean): void {
       if (closed) return
@@ -289,6 +360,9 @@ export function openNativeTransport(options: NativeTransportOptions): Promise<Na
       if (slot.unary || (flags & FLAG_END) !== 0) slots.delete(stream)
       try {
         slot.sink(kind, flags, buf, start, end)
+        // The frame that ends a stream spends no window, so only a stream that
+        // goes on has anything to grant back.
+        if (!slot.manual) grantBack(stream, slot, total)
       } catch (error) {
         // A sink that throws is a bug in the receiver or a frame it cannot read;
         // that stream is over, the rest of the connection is not.
@@ -477,6 +551,8 @@ export function openNativeTransport(options: NativeTransportOptions): Promise<Na
             }
           },
           fail: rejectReply,
+          manual: false,
+          consumed: 0,
         })
         try {
           writeFrame(id, FLAG_END, kind, body)
@@ -493,9 +569,10 @@ export function openNativeTransport(options: NativeTransportOptions): Promise<Na
       end: boolean,
       sink: FrameSink,
       fail: (error: Error) => void,
+      streamOptions?: StreamOptions,
     ): NativeStream {
       const id = nextStream()
-      const slot: Slot = { unary: false, sink, fail }
+      const slot: Slot = { unary: false, sink, fail, manual: streamOptions?.manualWindow === true, consumed: 0 }
       slots.set(id, slot)
       try {
         writeFrame(id, end ? FLAG_END : 0, kind, body)
@@ -507,6 +584,9 @@ export function openNativeTransport(options: NativeTransportOptions): Promise<Na
         send(frameKind, frameBody) {
           if (slots.get(id) !== slot) return
           writeFrame(id, 0, frameKind, frameBody)
+        },
+        consumed(bytes) {
+          grantBack(id, slot, bytes)
         },
         cancel() {
           if (slots.get(id) !== slot) return
@@ -627,6 +707,7 @@ export function openNativeTransport(options: NativeTransportOptions): Promise<Na
           clientId: options.clientId,
           credentialKind: options.token === "" ? CredentialKind.none : CredentialKind.token,
           credential: options.token,
+          window,
         })
       } catch (error) {
         shutdown(new KronosDbError(`Cannot encode Hello: ${describe(error)}`, KronosDbErrorCode.OTHER, false), false)

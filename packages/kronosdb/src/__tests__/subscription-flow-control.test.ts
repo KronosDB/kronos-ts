@@ -1,9 +1,9 @@
 /**
- * CREDIT-BASED FLOW CONTROL ON A SUBSCRIPTION QUERY.
+ * PERMIT-BASED FLOW CONTROL ON A SUBSCRIPTION QUERY.
  *
  * OpenSubscriptionQuery grants a window of permits; the server sends at most
  * that many updates and then waits for the subscriber to top it back up with
- * Credit. A client that grants a window and never refills works until exactly
+ * Permits. A client that grants a window and never refills works until exactly
  * `window` updates have flowed and then stalls with no error anywhere — the
  * failure this pins.
  */
@@ -14,7 +14,7 @@ import { FLAG_END } from "../protocol/kronosdb-protocol.js"
 import { clientOf, until, type Client } from "./bus-test-kit.js"
 import { fakeNativeServer, type FakeConnection, type FakeNativeServer } from "./fake-native-server.js"
 
-type Opened = { connection: FakeConnection; stream: number; permits: bigint; subscriptionId: string; credits: number[]; cancelled: boolean }
+type Opened = { connection: FakeConnection; stream: number; permits: bigint; subscriptionId: string; grants: number[]; cancelled: boolean }
 
 describe("kronosDbQueryBus — subscription query flow control", () => {
   let server: FakeNativeServer
@@ -36,10 +36,10 @@ describe("kronosDbQueryBus — subscription query flow control", () => {
             stream,
             permits: frame.body.subscription.permits,
             subscriptionId: frame.body.subscription.subscriptionId,
-            credits: [],
+            grants: [],
             cancelled: false,
           })
-        } else if (frame.name === "Credit") opened.find((o) => o.stream === stream)?.credits.push(frame.body.credits)
+        } else if (frame.name === "Permits") opened.find((o) => o.stream === stream)?.grants.push(frame.body.count)
         else if (frame.name === "Cancel") {
           const o = opened.find((o) => o.stream === stream)
           if (o) o.cancelled = true
@@ -85,10 +85,10 @@ describe("kronosDbQueryBus — subscription query flow control", () => {
     expect(sent.permits).toBe(256n)
   })
 
-  it("never asks for more credit than the server will grant", async () => {
+  it("never asks for more permits than the server will grant", async () => {
     // The server clamps the initial grant to [1, 1024]. Asking for 5000 and
     // then pacing refills against a 5000-wide window would let 1250 updates
-    // pass before topping up — 226 of them beyond the credit the server
+    // pass before topping up — 226 of them beyond the permits the server
     // actually holds, and silently dropped. So the window we track is the one
     // the server gives.
     const { result, sent } = await setup(5000)
@@ -98,10 +98,10 @@ describe("kronosDbQueryBus — subscription query flow control", () => {
     // not the requested one.
     for (let i = 0; i < 255; i++) update(sent, i)
     await settle()
-    expect(sent.credits).toHaveLength(0)
+    expect(sent.grants).toHaveLength(0)
     update(sent, 255)
-    await until(() => sent.credits.length === 1, "the refill")
-    expect(sent.credits).toEqual([256])
+    await until(() => sent.grants.length === 1, "the refill")
+    expect(sent.grants).toEqual([256])
     result.close()
   })
 
@@ -113,15 +113,15 @@ describe("kronosDbQueryBus — subscription query flow control", () => {
     const { result, sent } = await setup(256) // quarter window = 64
 
     for (let i = 0; i < 64; i++) update(sent, i)
-    await until(() => sent.credits.length === 1, "the first refill")
-    expect(sent.credits).toEqual([64])
+    await until(() => sent.grants.length === 1, "the first refill")
+    expect(sent.grants).toEqual([64])
 
     for (let i = 0; i < 64; i++) update(sent, i)
-    await until(() => sent.credits.length === 2, "the second refill")
-    expect(sent.credits).toEqual([64, 64])
+    await until(() => sent.grants.length === 2, "the second refill")
+    expect(sent.grants).toEqual([64, 64])
 
     // What was granted back equals what was taken — the window never shrinks.
-    expect(sent.credits.reduce((sum, n) => sum + n, 0)).toBe(128)
+    expect(sent.grants.reduce((sum, n) => sum + n, 0)).toBe(128)
     result.close()
   })
 
@@ -129,28 +129,28 @@ describe("kronosDbQueryBus — subscription query flow control", () => {
     const { result, sent } = await setup(8)
     update(sent, 1)
     await settle()
-    expect(sent.credits).toHaveLength(0)
+    expect(sent.grants).toHaveLength(0)
     result.close()
   })
 
   it("sends every refill on the subscription's own stream", async () => {
     const { result, sent } = await setup(256)
     for (let i = 0; i < 64; i++) update(sent, i)
-    await until(() => sent.credits.length === 1, "the refill")
-    // The stream is the address: Credit carries no subscription id of its own.
+    await until(() => sent.grants.length === 1, "the refill")
+    // The stream is the address: Permits carries no subscription id of its own.
     expect(sent.subscriptionId).toBeTruthy()
     result.close()
   })
 
-  it("stops granting credit once the subscription is closed", async () => {
+  it("stops granting permits once the subscription is closed", async () => {
     const { result, sent } = await setup(4)
     result.close()
     await until(() => sent.cancelled, "the cancel")
-    const after = sent.credits.length
+    const after = sent.grants.length
     update(sent, 1)
     update(sent, 2)
     sent.connection.reply(sent.stream, FLAG_END, { name: "RequestFailed", body: { code: 10, message: "cancelled" } })
     await settle()
-    expect(sent.credits).toHaveLength(after)
+    expect(sent.grants).toHaveLength(after)
   })
 })

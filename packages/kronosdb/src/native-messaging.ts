@@ -399,10 +399,10 @@ export type FlowControlConfig = {
   refillThreshold?: number
 }
 
-/** The credit window a bus grants its server: how many, and when it tops up. */
-export function creditWindow(flowControl: FlowControlConfig | undefined): { permits: number; threshold: number } {
+/** The permits a bus grants its server: how many, and when it tops up. */
+export function permitWindow(flowControl: FlowControlConfig | undefined): { permits: number; threshold: number } {
   const permits = positiveInteger(flowControl?.permits ?? DEFAULT_PERMITS, "flowControl.permits")
-  if (permits > 0xffffffff) throw new RangeError("flowControl.permits exceeds what one Credit frame can grant")
+  if (permits > 0xffffffff) throw new RangeError("flowControl.permits exceeds what one Permits frame can grant")
   const threshold = flowControl?.refillThreshold ?? Math.floor(permits / 2)
   if (threshold < 0 || threshold >= permits) throw new RangeError("refillThreshold must be between zero and permits - 1")
   return { permits, threshold }

@@ -15,7 +15,7 @@ import type {
 import { compileQuery, FIRST_TOKEN, globalSequenceToken, markerAt, noMarker } from "@kronos-ts/core"
 import { ConcurrencyError } from "./errors.js"
 import type { KronosDbConnectionHandle } from "./kronosdb.js"
-import { DEFAULT_CREDITS, subscription, type SubscriptionOptions } from "./kronosdb-subscription.js"
+import { subscription, type SubscriptionOptions } from "./kronosdb-subscription.js"
 import {
   criteriaToWire,
   outbound,
@@ -94,10 +94,12 @@ const PROGRESS_INTERVAL_MS = 1000
  * an object you build. Two stores on different contexts share the ONE socket on
  * `kdb`; the context id each request carries is the entire difference.
  *
- * `streaming` overrides how `open()` subscribes. By default a stream reads ahead
- * as far as its reader asked (at least {@link DEFAULT_CREDITS} events), and one
- * with a query asks the server for a Progress frame every second while nothing
- * matches, which is how a processor of rare events moves its token.
+ * `streaming` overrides how `open()` subscribes. A stream reads ahead as far as
+ * the connection's `window` allows, in bytes, whatever its reader's
+ * `readAhead` (the window, not an event count, is what bounds what the server
+ * sends ahead of a slow reader). One with a query asks the server for a
+ * Progress frame every second while nothing matches, which is how a processor
+ * of rare events moves its token.
  *
  * A few things the wire gives that the framework's `EventStore` does not ask
  * for, kept out of this shape and available beside it: tags on read events (they
@@ -202,8 +204,6 @@ export function kronosDbEventStore(
 
     open(condition: StreamingCondition): MessageStream<SequencedEvent> {
       return subscription(link, serializer, context, condition, {
-        // A reader that takes events in big batches needs that many ready.
-        ...(condition.readAhead !== undefined ? { credits: Math.max(DEFAULT_CREDITS, Math.floor(condition.readAhead)) } : {}),
         // A query is a selective reader, and a selective reader needs to hear
         // how far the server has looked while nothing matches.
         ...(condition.query !== undefined ? { progressIntervalMs: PROGRESS_INTERVAL_MS } : {}),

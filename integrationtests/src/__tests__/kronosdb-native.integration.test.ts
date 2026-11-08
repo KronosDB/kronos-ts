@@ -225,11 +225,10 @@ describe("KronosDB event store — native protocol", () => {
       expect(positions[0]).toBeGreaterThanOrEqual(start)
     })
 
-    it("grants credits as the consumer takes events, so a long backlog flows through", async () => {
+    it("hands a long backlog through as the consumer takes it, window by window", async () => {
       const store = kronosDbEventStore(kdb, "default")
       const id = `flow-${run}`
       const start = await store.getHeadPosition()
-      // Several times the 500 initial credits.
       for (let batch = 0; batch < 4; batch++) {
         await store.append(Array.from({ length: 400 }, (_, i) => fact("Flow", { n: batch * 400 + i }, [["flow", id]])))
       }
@@ -241,6 +240,51 @@ describe("KronosDB event store — native protocol", () => {
       }, 20_000)
       stream.close()
       expect(seen).toEqual(Array.from({ length: 1600 }, (_, i) => i))
+    })
+
+    it("paces a consumer that falls behind: the server stops at the window, and nothing is failed", async () => {
+      // 64 KiB per stream, the smallest window there is: about sixteen of these events, though a frame in flight may overdraw it.
+      const small = await kronosDbConnection({
+        componentName: "native-it-window",
+        host: server.host,
+        port: server.port,
+        serializer: jsonSerializer(),
+        window: 64 * 1024,
+      })
+      try {
+        const store = kronosDbEventStore(small, "default")
+        const id = `window-${run}`
+        const start = await store.getHeadPosition()
+        const filler = "z".repeat(4_000)
+        const total = 1200
+        for (let batch = 0; batch < 4; batch++) {
+          await store.append(Array.from({ length: total / 4 }, (_, i) => fact("Wide", { n: batch * (total / 4) + i, filler }, [["window", id]])))
+        }
+
+        const stream = store.open({ position: start, query: { tags: { window: id } } })
+        // A reader that takes nothing for a while: what is ready is bounded by the window plus the one
+        // frame that may overdraw it (a frame carries up to a megabyte of events), not by the log.
+        await new Promise((r) => setTimeout(r, 500))
+        expect(stream.error()).toBeUndefined()
+        const seen: number[] = []
+        const take = () => {
+          for (let item = stream.next(); item !== undefined; item = stream.next()) seen.push((item.event.payload as { n: number }).n)
+        }
+        take()
+        expect(seen.length).toBeGreaterThan(0)
+        expect(seen.length).toBeLessThan(total / 2)
+
+        // Taking them is what gives the window back, so the rest follows, in order.
+        await waitFor(() => (take(), seen.length === total), 20_000)
+        stream.close()
+        expect(seen).toEqual(Array.from({ length: total }, (_, i) => i))
+
+        // A read through the same small window is consumed as it arrives, and completes.
+        const { events } = await store.source({ query: { tags: { window: id } } })
+        expect(events).toHaveLength(total)
+      } finally {
+        await small.close()
+      }
     })
 
     it("peek shows the next event without taking it", async () => {

@@ -16,7 +16,7 @@ import { frameBodyToJson, frameFromJson } from "./kronosdb-protocol-json.js"
  * point for a wire change: re-run `scripts/vendor-protocol.ts`, update this
  * line, and let the fixtures below prove the new codec.
  */
-const PINNED_SCHEMA_HASH = "a65e0eff"
+const PINNED_SCHEMA_HASH = "56aaeb68"
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fixtures = join(here, "fixtures")
@@ -47,7 +47,7 @@ describe("vendored protocol codec", () => {
   })
 
   it("speaks the protocol version this client implements", () => {
-    expect(P.PROTOCOL_VERSION).toBe(1)
+    expect(P.PROTOCOL_VERSION).toBe(2)
   })
 
   it("has the fixtures", () => {

@@ -2,8 +2,8 @@
 // enough routing for the buses' tests to cross the real wire.
 //
 // It does what the real server does where a bus can tell the difference —
-// handler streams that are subscribed to by name and granted credits (one pool
-// per stream, whatever the name), one command per credit, answers routed back to
+// handler streams that are subscribed to by name and granted permits (one pool
+// per stream, whatever the name), one command per permit, answers routed back to
 // the stream that dispatched, the handler of a lost stream failing its commands
 // with KRONOSDB-4006, a newer stream of the same client replacing an older one
 // — and nothing more. Every frame it receives stays in `connection.received`,
@@ -34,9 +34,9 @@ export type FakeHandlerStream = {
   /** Names subscribed. */
   readonly names: Map<string, { loadFactor: number }>
   /** Permits left on the stream, shared by every name. */
-  credit: number
-  /** Every Credit frame received, in order. */
-  readonly credits: number[]
+  permits: number
+  /** Every Permits frame received, in order. */
+  readonly grants: number[]
   ended: boolean
 }
 
@@ -129,17 +129,17 @@ export async function fakeBusServer(options: FakeBusOptions = {}): Promise<FakeB
     return handlerStreams.filter((h) => !h.ended && h.kind === kind && h.bus === bus && h.names.has(name))
   }
 
-  /** Queries and subscriptions waiting for a handler with credit; tried again whenever one gains any. */
+  /** Queries and subscriptions waiting for a handler with permits; tried again whenever one gains any. */
   const retries = new Set<() => void>()
 
   function route(): void {
     for (const retry of [...retries]) retry()
     for (const pending of [...waitingCommands]) {
-      const handler = handlersFor("command", pending.bus, pending.command.name).find((h) => h.credit > 0)
+      const handler = handlersFor("command", pending.bus, pending.command.name).find((h) => h.permits > 0)
       if (handler === undefined) continue
       waitingCommands.splice(waitingCommands.indexOf(pending), 1)
       clearTimeout(pending.holdTimer)
-      handler.credit--
+      handler.permits--
       pending.handler = handler
       handler.connection.reply(handler.stream, 0, { name: "HandleCommand", body: { command: pending.command } })
     }
@@ -224,8 +224,8 @@ export async function fakeBusServer(options: FakeBusOptions = {}): Promise<FakeB
             clientId: frame.body.clientId,
             componentName: frame.body.componentName,
             names: new Map(),
-            credit: 0,
-            credits: [],
+            permits: 0,
+            grants: [],
             ended: false,
           }
           for (const older of handlerStreams) {
@@ -275,7 +275,7 @@ export async function fakeBusServer(options: FakeBusOptions = {}): Promise<FakeB
           const attempt = (): void => {
             // The dispatcher may have given up while the query waited.
             if (routed || dispatchByStream.get(key(connection, stream))?.id !== query.messageId) return
-            const all = handlersFor("query", bus, query.name).filter((h) => h.credit > 0)
+            const all = handlersFor("query", bus, query.name).filter((h) => h.permits > 0)
             if (all.length === 0) {
               if (Date.now() < deadline) {
                 retries.add(attempt)
@@ -300,7 +300,7 @@ export async function fakeBusServer(options: FakeBusOptions = {}): Promise<FakeB
             }
             queries.set(query.messageId, pending)
             for (const handler of chosen) {
-              handler.credit--
+              handler.permits--
               handler.connection.reply(handler.stream, 0, pending.query)
             }
           }
@@ -317,7 +317,7 @@ export async function fakeBusServer(options: FakeBusOptions = {}): Promise<FakeB
           const attempt = (): void => {
             // Cancelled while it waited.
             if (routed || subscriptionByStream.get(key(connection, stream)) !== subscription.subscriptionId) return
-            const handler = handlersFor("query", bus, subscription.query.name).find((h) => h.credit > 0)
+            const handler = handlersFor("query", bus, subscription.query.name).find((h) => h.permits > 0)
             if (handler === undefined) {
               if (Date.now() < deadline) {
                 retries.add(attempt)
@@ -331,7 +331,7 @@ export async function fakeBusServer(options: FakeBusOptions = {}): Promise<FakeB
             }
             routed = true
             retries.delete(attempt)
-            handler.credit--
+            handler.permits--
             subscriptionsById.set(subscription.subscriptionId, { dispatcher: connection, stream, handler })
             handler.connection.reply(handler.stream, 0, { name: "HandleSubscriptionQuery", body: { subscription } })
           }
@@ -363,11 +363,11 @@ export async function fakeBusServer(options: FakeBusOptions = {}): Promise<FakeB
           ack(connection, stream, frame.body.instructionId)
           return
         }
-        case "Credit": {
+        case "Permits": {
           const handler = handlerByStream.get(key(connection, stream))
           if (handler !== undefined) {
-            handler.credits.push(frame.body.credits)
-            handler.credit += frame.body.credits
+            handler.grants.push(frame.body.count)
+            handler.permits += frame.body.count
             route()
             return
           }
@@ -376,7 +376,7 @@ export async function fakeBusServer(options: FakeBusOptions = {}): Promise<FakeB
           if (sub !== undefined && subscriptionId !== undefined) {
             sub.handler.connection.reply(sub.handler.stream, 0, {
               name: "SubscriptionQueryPermits",
-              body: { subscriptionId, permits: BigInt(frame.body.credits) },
+              body: { subscriptionId, permits: BigInt(frame.body.count) },
             })
           }
           return
