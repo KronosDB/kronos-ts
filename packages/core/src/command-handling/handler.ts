@@ -22,15 +22,34 @@ export type CommandHandler<
    * the entry — `{ ...h, handler: postgresHandler(h.handler, pg) }` — which is what lets
    * a slice write `ctx: CommandHandlerContext & PostgresCapability` and still compose into `kronos`.
    */
-  readonly handler: (
-    message: CommandMessage<InferOutput<P>>,
-    context: C,
-  ) => R extends StandardSchemaV1 ? Promise<InferOutput<R>> | InferOutput<R> : Promise<void> | void
+  readonly handler: (message: CommandMessage<InferOutput<P>>, context: C) => HandlerReturn<R>
   readonly appendCondition?: (
     message: CommandMessage<InferOutput<P>>,
     sourcedQuery: EventQuery,
   ) => EventQuery
 }
+
+/**
+ * What a handler returns: the result schema's output, or nothing when the
+ * descriptor declares no result. An array in the output may come back
+ * readonly, because {@link commandHandler} reads the returned literals in a
+ * const context (see there): `{ items: [id] }` is `readonly [string]`, and it is
+ * still a `string[]` at runtime.
+ */
+type HandlerReturn<R extends StandardSchemaV1 | undefined> = [R] extends [StandardSchemaV1]
+  ? Promise<Returned<InferOutput<NonNullable<R>>>> | Returned<InferOutput<NonNullable<R>>>
+  : Promise<void> | void
+
+/** An output as a handler may return it: the output itself, or it with its arrays readonly. */
+type Returned<T> = T | ReadonlyArrays<T>
+
+type ReadonlyArrays<T> = T extends readonly unknown[]
+  ? { readonly [K in keyof T]: ReadonlyArrays<T[K]> }
+  : T extends Date | ((...args: never[]) => unknown)
+    ? T
+    : T extends object
+      ? { [K in keyof T]: ReadonlyArrays<T[K]> }
+      : T
 
 /**
  * Defines a command handler.
@@ -63,15 +82,11 @@ export type CommandHandler<
  * })
  * ```
  *
- * A literal in the returned object widens (`{ ok: true }` is typed
- * `{ ok: boolean }`): TypeScript types the handler's return before it has
- * inferred the descriptor's result. When the result has literal members, say
- * the literal with `as const`, or annotate the handler's return with
- * `Promise<InferResult<typeof D.result>>`:
- * ```
- * commandHandler(AddItem, async ({ payload }, ctx) =>
- *   full ? ({ ok: false, rejection: "FULL" } as const) : ({ ok: true } as const))
- * ```
+ * The returned literals are read against the result: `{ ok: true }` is
+ * `{ ok: true }`, not `{ ok: boolean }`, with no `as const`. That is what `const R`
+ * is for — without it TypeScript types the return before it knows the result,
+ * and widens every literal in it. An array literal in the return comes back
+ * readonly for the same reason, which the handler's return type allows.
  *
  * With append condition override:
  * ```
@@ -81,44 +96,21 @@ export type CommandHandler<
  * })
  * ```
  */
-export function commandHandler<P extends StandardSchemaV1, C extends CommandHandlerContext = CommandHandlerContext>(
-  descriptor: CommandDescriptor<P, undefined>,
-  handler: (message: CommandMessage<InferOutput<P>>, context: C) => Promise<void> | void,
-): CommandHandler<P, undefined, C>
-
 export function commandHandler<
   P extends StandardSchemaV1,
-  R extends StandardSchemaV1,
+  const R extends StandardSchemaV1 | undefined = undefined,
   C extends CommandHandlerContext = CommandHandlerContext,
 >(
   descriptor: CommandDescriptor<P, R>,
-  handler: (message: CommandMessage<InferOutput<P>>, context: C) => Promise<InferOutput<R>> | InferOutput<R>,
-): CommandHandler<P, R, C>
-
-export function commandHandler<P extends StandardSchemaV1, C extends CommandHandlerContext = CommandHandlerContext>(
-  descriptor: CommandDescriptor<P, undefined>,
-  options: {
-    handler: (message: CommandMessage<InferOutput<P>>, context: C) => Promise<void> | void
-    appendCondition?: (
-      message: CommandMessage<InferOutput<P>>,
-      sourcedQuery: EventQuery,
-    ) => EventQuery
-  },
-): CommandHandler<P, undefined, C>
-
-export function commandHandler<
-  P extends StandardSchemaV1,
-  R extends StandardSchemaV1,
-  C extends CommandHandlerContext = CommandHandlerContext,
->(
-  descriptor: CommandDescriptor<P, R>,
-  options: {
-    handler: (message: CommandMessage<InferOutput<P>>, context: C) => Promise<InferOutput<R>> | InferOutput<R>
-    appendCondition?: (
-      message: CommandMessage<InferOutput<P>>,
-      sourcedQuery: EventQuery,
-    ) => EventQuery
-  },
+  handler:
+    | ((message: CommandMessage<InferOutput<P>>, context: C) => HandlerReturn<R>)
+    | {
+        handler: (message: CommandMessage<InferOutput<P>>, context: C) => HandlerReturn<R>
+        appendCondition?: (
+          message: CommandMessage<InferOutput<P>>,
+          sourcedQuery: EventQuery,
+        ) => EventQuery
+      },
 ): CommandHandler<P, R, C>
 
 export function commandHandler(
