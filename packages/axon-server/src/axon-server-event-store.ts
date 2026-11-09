@@ -25,6 +25,7 @@ import { globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/core"
 import { markerAt, noMarker } from "@kronos-ts/core"
 import type { AxonServerStoreSource } from "./connection.js"
 import { contextView } from "./context-view.js"
+import { AxonServerErrorCode, ConcurrencyError } from "./errors.js"
 import { boundedRead } from "./bounded-read.js"
 import type {
   Criterion,
@@ -175,6 +176,20 @@ function isStartPastHead(err: unknown): boolean {
   return code === 11 && details.includes("Start sequence cannot be larger than end sequence")
 }
 
+/**
+ * Axon Server's way of refusing an append whose condition was violated.
+ *
+ * The server (2025.2) answers it with gRPC status `CANCELLED`, which is 1, and
+ * the exception's class in the details; its error-code trailer is the generic
+ * `AXONIQ-0001`. A call cancelled for any other reason has different details,
+ * so it is not mistaken for a conflict.
+ */
+function isConditionRefused(err: unknown): boolean {
+  const code = (err as { code?: unknown }).code
+  const details = String((err as { details?: unknown }).details ?? "")
+  return code === 1 && details.includes("ConsistencyConditionException")
+}
+
 export function axonServerEventStore(conn: AxonServerStoreSource, context: string): EventStore {
   const { connection, serializer, metadata: createAxonMetadata } = contextView(conn, context)
   const { eventToProto, eventFromProto } = createEventConverters(serializer)
@@ -258,10 +273,19 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
           async function* requestStream() {
             yield request
           }
-          const response = await connection.eventStore.append(requestStream(), {
-            metadata: createAxonMetadata(),
-          })
-          responseMarker = response.consistencyMarker
+          try {
+            const response = await connection.eventStore.append(requestStream(), {
+              metadata: createAxonMetadata(),
+            })
+            responseMarker = response.consistencyMarker
+          } catch (err) {
+            if (!isConditionRefused(err)) throw err
+            throw new ConcurrencyError(
+              `consistency condition violated: ${String((err as { details?: unknown }).details)}`,
+              AxonServerErrorCode.CONCURRENCY_EXCEPTION,
+              { cause: err },
+            )
+          }
         },
         async afterCommit() {
           return markerAt(responseMarker ?? 0n)

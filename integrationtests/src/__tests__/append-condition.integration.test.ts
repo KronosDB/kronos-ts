@@ -18,9 +18,11 @@ import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 import { kronosDbConnection, kronosDbEventStore, type KronosDbConnection } from "@kronos-ts/kronosdb"
 import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 import { appendConditionScenarios } from "./append-condition-scenarios.js"
+import { eventStoreContract } from "./event-store-contract.js"
 
 describe("append condition — in-memory", () => {
   appendConditionScenarios({ eventStore: () => inMemoryEventStore(), exact: true })
+  eventStoreContract({ eventStore: () => inMemoryEventStore() })
 })
 
 describe("append condition — postgres", () => {
@@ -47,6 +49,7 @@ describe("append condition — postgres", () => {
   })
 
   describe("plain", () => {
+    eventStoreContract({ eventStore: () => postgresEventStore(pg) })
     appendConditionScenarios({
       eventStore: () => postgresEventStore(pg),
       unitOfWork: () => postgresUnitOfWork(unitOfWork, pg),
@@ -55,6 +58,7 @@ describe("append condition — postgres", () => {
   })
 
   describe("snapshotting", () => {
+    eventStoreContract({ eventStore: () => postgresSnapshottingEventStore(postgresEventStore(pg), pg, jsonSerializer()) })
     appendConditionScenarios({
       eventStore: () => postgresSnapshottingEventStore(postgresEventStore(pg), pg, jsonSerializer()),
       unitOfWork: () => postgresUnitOfWork(unitOfWork, pg),
@@ -86,4 +90,5 @@ describe("append condition — kronosdb", () => {
   })
 
   appendConditionScenarios({ eventStore: () => eventStore, exact: false })
+  eventStoreContract({ eventStore: () => eventStore })
 })

@@ -8,6 +8,7 @@ import { GenericContainer, Wait, type StartedTestContainer } from "testcontainer
 import { jsonSerializer, type EventStore } from "@kronos-ts/core"
 import { axonServerConnection, axonServerEventStore } from "@kronos-ts/axon-server"
 import { appendConditionScenarios } from "../__tests__/append-condition-scenarios.js"
+import { eventStoreContract } from "../__tests__/event-store-contract.js"
 
 async function initClusterWithDcb(host: string, httpPort: number): Promise<void> {
   await fetch(`http://${host}:${httpPort}/v2/cluster/init?dcb=true`, { method: "POST" })
@@ -54,4 +55,5 @@ describe("append condition — axon server", () => {
   })
 
   appendConditionScenarios({ eventStore: () => eventStore, exact: false })
+  eventStoreContract({ eventStore: () => eventStore })
 })

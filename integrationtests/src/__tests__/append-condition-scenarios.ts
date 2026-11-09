@@ -27,6 +27,7 @@ import {
   emptyMetadata,
   event,
   interceptingCommandBus,
+  isConflict,
   interceptingQueryBus,
   kronos,
   localCommandBus,
@@ -107,11 +108,6 @@ async function write<P extends z.ZodType>(
       tags: tagsOf(descriptor, payload, emptyMetadata()),
     },
   ])
-}
-
-function isConflict(err: unknown): boolean {
-  const text = `${(err as Error)?.name ?? ""} ${(err as Error)?.message ?? ""}`
-  return /append ?condition|conflict|consistency/i.test(text)
 }
 
 export function appendConditionScenarios(target: AppendConditionTarget): void {
