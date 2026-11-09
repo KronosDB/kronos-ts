@@ -63,6 +63,16 @@ export type CommandHandler<
  * })
  * ```
  *
+ * A literal in the returned object widens (`{ ok: true }` is typed
+ * `{ ok: boolean }`): TypeScript types the handler's return before it has
+ * inferred the descriptor's result. When the result has literal members, say
+ * the literal with `as const`, or annotate the handler's return with
+ * `Promise<InferResult<typeof D.result>>`:
+ * ```
+ * commandHandler(AddItem, async ({ payload }, ctx) =>
+ *   full ? ({ ok: false, rejection: "FULL" } as const) : ({ ok: true } as const))
+ * ```
+ *
  * With append condition override:
  * ```
  * commandHandler(CreateCourse, {
