@@ -11,10 +11,12 @@
  * widens to `{ ok: boolean }` and the call is refused. It caches that type, so
  * no overload order changes it, and `NoInfer` does not either.
  *
- * The one signature that keeps the literals, `const R`, makes every array
- * literal in a result a readonly tuple, which a `z.array` output refuses. So
- * the signature stays, and a handler says the literal in one of the two ways
- * below. The `@ts-expect-error` on the widened spelling goes red if a
+ * The one signature change that helps, `const R`, keeps the literals only in
+ * a handler that reads its message (`async ({ payload }) => …`); one that takes
+ * no arguments is still refused. It also turns an array literal built from
+ * values (`{ items: [payload.itemId] }`) into a readonly tuple, which a
+ * `z.array` output refuses. So the signature stays, and a handler says the
+ * literal in one of the two ways below. The `@ts-expect-error` on the widened spelling goes red if a
  * TypeScript release stops widening it; then the note on `commandHandler` and
  * this file can go.
  */
