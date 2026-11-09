@@ -343,9 +343,14 @@ export function withInstant<M extends Message>(message: M, instant: () => number
 /**
  * The result type a descriptor's `result` schema promises. `unknown` when the
  * descriptor declares none — the honest answer, not `void`.
+ *
+ * `result` is an optional field, so `typeof AddItem.result` is the schema OR
+ * `undefined`. The `undefined` is set aside rather than distributed over:
+ * `InferResult<typeof AddItem.result>` is the schema's output, not the
+ * `output | unknown` that collapses to `unknown`.
  */
 export type InferResult<R extends StandardSchemaV1 | undefined> =
-  R extends StandardSchemaV1 ? InferOutput<R> : unknown
+  [NonNullable<R>] extends [never] ? unknown : InferOutput<NonNullable<R>>
 
 /**
  * Describes a command message type — its name, payload schema,
