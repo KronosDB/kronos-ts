@@ -9,6 +9,11 @@
  */
 import { z } from "zod"
 import { command, qn, queryDescriptor, type InferResult } from "../messages.js"
+import type { CommandBus } from "../../command-handling/bus.js"
+import type { CommandHandlerContext } from "../../command-handling/context.js"
+import { send } from "../../command-handling/send.js"
+import type { QueryBus } from "../../query-handling/bus.js"
+import { query } from "../../query-handling/query.js"
 
 type Exactly<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 const exactly = <A, B>(proof: Exactly<A, B>): Exactly<A, B> => proof
@@ -38,3 +43,10 @@ export const undeclared = exactly<InferResult<undefined>, unknown>(true)
 
 // @ts-expect-error — the result is the schema's output, not `unknown`
 export const notUnknown = exactly<InferResult<typeof AddItem.result>, unknown>(true)
+
+// The bus verbs and the context verbs answer the same type, so a host can
+// implement `ctx.send` and `ctx.query` with `send` and `query` themselves.
+export const edgeOverBuses = (commandBus: CommandBus, queryBus: QueryBus): Pick<CommandHandlerContext, "send" | "query"> => ({
+  send: (descriptor, payload, metadata) => send(commandBus, descriptor, payload, metadata),
+  query: (descriptor, payload, metadata) => query(queryBus, descriptor, payload, metadata),
+})
