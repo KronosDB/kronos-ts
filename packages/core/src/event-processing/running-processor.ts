@@ -165,6 +165,12 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   const hashOf = (event: EventMessage) => (sequenceOf === undefined ? 0 : sequenceHash(sequenceOf(event)))
 
   let isRunning = false
+  // Which run this is: every start begins one and every stop ends it. A claim
+  // round belongs to the run that began it, and one that answers after its run
+  // ended hands its claims back instead of starting workers: claiming can cross
+  // a round trip, and a stop and a start can both happen meanwhile.
+  let run = 0
+  const current = (r: number) => isRunning && r === run
   let claimTimer: ReturnType<typeof setInterval> | null = null
   let claiming: Promise<void> | null = null
   let stopping: Promise<void> = Promise.resolve()
@@ -191,13 +197,13 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     return segmentsOf(ids)
   }
 
-  /** Renew what this node holds, and claim what is free. */
-  async function claimRound() {
+  /** Renew what this node holds, and claim what is free, for run `r`. */
+  async function claimRound(r: number) {
     for (const worker of [...workers.values()]) await worker.renew()
     const segments = await segmentsNow()
     const available = new Set(await tokenStore.fetchAvailableSegments(name))
     for (const segment of segments) {
-      if (!isRunning) return
+      if (!current(r)) return
       if (workers.has(segment.id) || !available.has(segment.id)) continue
       if ((releasedUntil.get(segment.id) ?? 0) > Date.now()) continue
       let stored: TrackingToken | undefined
@@ -207,7 +213,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
         if (error instanceof UnableToClaimTokenError) continue
         throw error
       }
-      if (!isRunning) {
+      if (!current(r)) {
         await tokenStore.releaseClaim(name, segment.id, owner)
         return
       }
@@ -217,11 +223,20 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
 
   function claimSoon() {
     if (claiming !== null || !isRunning) return
-    claiming = claimRound()
-      .catch((error) => console.error(`Event processor "${name}": claiming segments failed:`, error))
+    track(claimRound(run).catch((error) => console.error(`Event processor "${name}": claiming segments failed:`, error)))
+  }
+
+  /** Make `round` the claim round a stop waits for. */
+  function track(round: Promise<unknown>) {
+    const tracked: Promise<void> = round
+      .then(
+        () => undefined,
+        () => undefined,
+      )
       .finally(() => {
-        claiming = null
+        if (claiming === tracked) claiming = null
       })
+    claiming = tracked
   }
 
   /** Take a segment for an operation on it: from the worker handling it, or by claiming it. */
@@ -694,20 +709,29 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     async start() {
       if (isRunning) return
       await stopping
+      if (isRunning) return
       isRunning = true
+      const r = ++run
       backlogEnd = await eventStore.getHeadPosition().catch(() => undefined)
+      if (!current(r)) return
+      // Tracked like any other round, so a stop meanwhile waits for it.
+      const round = claimRound(r)
+      track(round)
       try {
-        await claimRound()
+        await round
       } catch (error) {
+        if (!current(r)) return
         isRunning = false
         throw error
       }
+      if (!current(r)) return
       claimTimer = setInterval(claimSoon, claimIntervalMs)
       claimTimer.unref?.()
     },
 
     stop() {
       isRunning = false
+      run++
       if (claimTimer !== null) {
         clearInterval(claimTimer)
         claimTimer = null

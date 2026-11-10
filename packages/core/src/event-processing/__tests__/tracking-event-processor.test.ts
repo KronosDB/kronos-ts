@@ -618,6 +618,65 @@ describe("event processor", () => {
       // then
       expect(delivered).toEqual([{ value: 1 }, { value: 2 }, { value: 3 }])
     })
+
+    it("a start that is stopped while it claims leaves no worker behind when started again", async () => {
+      // given: claiming crosses a round trip (a database token store), and the
+      // first claim is held up until the processor has been stopped and started
+      const delivered: unknown[] = []
+      const events = [makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n), makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n)]
+      const store = inMemoryTokenStore()
+      const claiming = Promise.withResolvers<void>()
+      const release = Promise.withResolvers<void>()
+      let held = false
+      const tokenStore: TokenStore = {
+        ...store,
+        async claimToken(processorName, segment, owner) {
+          if (!held) {
+            held = true
+            claiming.resolve()
+            await release.promise
+          }
+          return store.claimToken(processorName, segment, owner)
+        },
+      }
+      const handler: EventHandler<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: ({ payload }) => {
+          delivered.push(payload)
+        },
+      }
+      const processor = runOver({
+        eventSource: createInMemoryEventSource(events),
+        eventHandlers: [handler],
+        tokenStore,
+        pollingIntervalMs: 10,
+      })
+
+      // when
+      const first = processor.start()
+      await claiming.promise
+      const stopped = processor.stop()
+      const second = processor.start()
+      // The held-up claim answers last, after the second start has claimed.
+      await Promise.race([second, new Promise((r) => setTimeout(r, 200))])
+      release.resolve()
+      await Promise.all([first, stopped, second])
+      await waitForPosition(processor, 2n)
+      await new Promise((r) => setTimeout(r, 100))
+
+      // then: one worker, and every event handled once
+      expect(processor.running).toBe(true)
+      expect(processor.segments()).toHaveLength(1)
+      expect(delivered).toEqual([{ value: 1 }, { value: 2 }])
+
+      // and stopping stops everything: nothing runs on after it
+      await processor.stop()
+      const after = delivered.length
+      events.push(makeEvent(TEST_EVENT_NAME, { value: 3 }, 2n))
+      await new Promise((r) => setTimeout(r, 100))
+      expect(delivered).toHaveLength(after)
+    })
   })
 
   describe("reset and replay", () => {
