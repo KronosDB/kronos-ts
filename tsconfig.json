@@ -35,6 +35,7 @@
     "packages/core/src/command-handling/__tests__/handler-result-literals.types.ts",
     "packages/core/src/composition/__tests__/wrapper-order.types.ts",
     "packages/core/src/query-handling/__tests__/query-bus-factory.types.ts",
-    "integrationtests/src/__tests__/observability-order.types.ts"
+    "integrationtests/src/__tests__/observability-order.types.ts",
+    "packages/core/src/__tests__/app-infrastructure.types.ts"
   ]
 }

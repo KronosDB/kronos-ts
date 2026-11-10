@@ -195,7 +195,20 @@ function processorConflicts(a: EventProcessor<any>, b: EventProcessor<any>): str
   return conflicts
 }
 
-export type App = {
+/**
+ * What a running app is: its processors, the infrastructure its handlers were
+ * wired with, and the way to stop it.
+ *
+ * `S`, `C` and `Q` are the TYPES of what the entries carried — each store and
+ * bus with every capability it claims, read off the lists `kronos` was handed.
+ * A list that is absent contributes `never`, so an app of only query handlers
+ * reports no command bus at all rather than "some command bus".
+ */
+export type App<
+  S extends EventStore = EventStore,
+  C extends CommandBus<any> = CommandBus<any>,
+  Q extends QueryBus<any> = QueryBus<any>,
+> = {
   /**
    * The LIVE processors, keyed by name — the durable identity they were
    * grouped under. Distributed control planes (Axon Server, KronosDB) need
@@ -203,8 +216,53 @@ export type App = {
    * them to await a projection catching up.
    */
   readonly processors: ReadonlyMap<string, RunningProcessor>
+  /**
+   * Every distinct event store the app was wired with: each entry's
+   * `eventStore` and each processor's, by object identity, in the order they
+   * were first met. The object an entry carries is reported, so a wrapped store
+   * is the wrapper, and two wrappers over one log are two stores.
+   */
+  readonly eventStores: ReadonlySet<S>
+  /** Every distinct command bus an entry carried, by object identity, in the order first met. */
+  readonly commandBuses: ReadonlySet<C>
+  /** Every distinct query bus an entry carried, by object identity, in the order first met. */
+  readonly queryBuses: ReadonlySet<Q>
   stop(): Promise<void>
 }
+
+/**
+ * The SHAPE of the three lists, as far as `App` reads it. The entry types
+ * decide what may be wired; this is only where the reported types are read
+ * from, so it names nothing but the infrastructure fields.
+ */
+type Lists = {
+  readonly commandHandlers?: ReadonlyArray<{
+    readonly eventStore?: EventStore
+    readonly commandBus: CommandBus<any>
+    readonly queryBus: QueryBus<any>
+  }>
+  readonly queryHandlers?: ReadonlyArray<{ readonly eventStore?: EventStore; readonly queryBus: QueryBus<any> }>
+  readonly eventHandlers?: ReadonlyArray<{
+    readonly eventStore?: EventStore
+    readonly commandBus: CommandBus<any>
+    readonly queryBus: QueryBus<any>
+    readonly processor: { readonly eventStore: EventStore }
+  }>
+}
+
+type Item<T> = T extends ReadonlyArray<infer I> ? I : never
+type AnyEntryOf<L extends Lists> = Item<L["commandHandlers"]> | Item<L["queryHandlers"]> | Item<L["eventHandlers"]>
+/** What one entry carries under `key`, per entry; an entry without the field carries nothing. */
+type Carried<T, K extends string> = T extends unknown ? (K extends keyof T ? Exclude<T[K], undefined> : never) : never
+
+/** The stores an app of these lists reports: every entry's, and every processor's. */
+export type EventStoresOf<L extends Lists> =
+  | Carried<AnyEntryOf<L>, "eventStore">
+  | Carried<Carried<Item<L["eventHandlers"]>, "processor">, "eventStore">
+/** The command buses an app of these lists reports. */
+export type CommandBusesOf<L extends Lists> = Carried<Item<L["commandHandlers"]> | Item<L["eventHandlers"]>, "commandBus">
+/** The query buses an app of these lists reports. */
+export type QueryBusesOf<L extends Lists> = Carried<AnyEntryOf<L>, "queryBus">
 
 /**
  * Wire an app.
@@ -235,14 +293,20 @@ export function kronos<
   U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
   Q extends QueryBus<U> = QueryBus<U>,
->(opts: {
-  /** Handlers subscribed onto their own command bus. */
-  commandHandlers?: ReadonlyArray<CommandHandlerEntry<U, E, Q>>
-  /** Handlers subscribed onto their own query bus. */
-  queryHandlers?: ReadonlyArray<QueryHandlerEntry<U, E>>
-  /** Handlers delivered to by their own processor. */
-  eventHandlers?: ReadonlyArray<EventHandlerEntry<U, E, Q>>
-}): App {
+  // The lists exactly as handed over. `U`, `E` and `Q` are what the entries are
+  // CHECKED against (a common floor); `L` is only what the app REPORTS, so a
+  // store keeps every capability it claims even when another entry's does not.
+  L extends Lists = {},
+>(
+  opts: L & {
+    /** Handlers subscribed onto their own command bus. */
+    commandHandlers?: ReadonlyArray<CommandHandlerEntry<U, E, Q>>
+    /** Handlers subscribed onto their own query bus. */
+    queryHandlers?: ReadonlyArray<QueryHandlerEntry<U, E>>
+    /** Handlers delivered to by their own processor. */
+    eventHandlers?: ReadonlyArray<EventHandlerEntry<U, E, Q>>
+  },
+): App<EventStoresOf<L>, CommandBusesOf<L>, QueryBusesOf<L>> {
   // ---- Refuse a wrapper chain that cannot work ---------------------------
   // Before ANYTHING is subscribed or started. Wrappers that described
   // themselves (`describe`) are walked outermost-in; a wrapper using a
@@ -351,8 +415,36 @@ export function kronos<
     started.push(running)
   }
 
+  // ---- Report what the handlers were wired with -------------------------
+  // Collected by identity and nothing else: several of each is legal, and the
+  // object reported is the one the entry carried, outermost wrapper included,
+  // because that is the one a caller would send on or append through.
+  const eventStores = new Set<EventStore>()
+  const commandBuses = new Set<CommandBus<any>>()
+  const queryBuses = new Set<QueryBus<any>>()
+  for (const entry of opts.commandHandlers ?? []) {
+    if (entry.eventStore !== undefined) eventStores.add(entry.eventStore)
+    commandBuses.add(entry.commandBus)
+    queryBuses.add(entry.queryBus)
+  }
+  for (const entry of opts.queryHandlers ?? []) {
+    if (entry.eventStore !== undefined) eventStores.add(entry.eventStore)
+    queryBuses.add(entry.queryBus)
+  }
+  for (const entry of opts.eventHandlers ?? []) {
+    if (entry.eventStore !== undefined) eventStores.add(entry.eventStore)
+    eventStores.add(entry.processor.eventStore)
+    commandBuses.add(entry.commandBus)
+    queryBuses.add(entry.queryBus)
+  }
+
   return {
     processors,
+    // The sets hold exactly the objects `L` was read from; the checker cannot
+    // follow a loop over a generic, so the element types are asserted here.
+    eventStores: eventStores as ReadonlySet<any> as ReadonlySet<EventStoresOf<L>>,
+    commandBuses: commandBuses as ReadonlySet<any> as ReadonlySet<CommandBusesOf<L>>,
+    queryBuses: queryBuses as ReadonlySet<any> as ReadonlySet<QueryBusesOf<L>>,
     async stop() {
       await Promise.all(started.map((p) => p.stop()))
     },
