@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { AppendConditionError, isConflict, isUnavailable, UnavailableError } from "../failures.js"
+import { AppendConditionError, isConflict, isNoHandler, isUnavailable, NoHandlerError, UnavailableError } from "../failures.js"
 import { MessagingOverloadedError } from "../../messaging-reliability.js"
 
 describe("isConflict", () => {
@@ -54,5 +54,19 @@ describe("isUnavailable", () => {
     expect(isUnavailable(new AppendConditionError("lost the race"))).toBe(false)
     expect(isConflict(new UnavailableError("down"))).toBe(false)
     expect(isUnavailable(null)).toBe(false)
+  })
+})
+
+describe("isNoHandler", () => {
+  test("recognises core's NoHandlerError and anything carrying its kind", () => {
+    expect(isNoHandler(new NoHandlerError("nothing handles test.Thing"))).toBe(true)
+    expect(isNoHandler(Object.assign(new Error("from a transport"), { kind: "no-handler" }))).toBe(true)
+  })
+
+  test("refuses everything else, conflicts included", () => {
+    expect(isNoHandler(new Error('No handler registered for command "test.Thing"'))).toBe(false)
+    expect(isNoHandler(new AppendConditionError("lost the race"))).toBe(false)
+    expect(isConflict(new NoHandlerError("nothing"))).toBe(false)
+    expect(isNoHandler(undefined)).toBe(false)
   })
 })

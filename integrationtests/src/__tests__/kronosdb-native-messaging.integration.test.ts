@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url"
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import {
   generateIdentifier,
+  isNoHandler,
   jsonSerializer,
   localCommandBus,
   localQueryBus,
@@ -139,12 +140,13 @@ describe("KronosDB messaging — native protocol", () => {
     expect(failure.errorCode).toBe("KRONOS-4002")
   })
 
-  it("fails a command nobody handles, saying so, and as something safe to retry", async () => {
+  it("fails a command nobody handles with no-handler, saying so, and not as something to retry", async () => {
     const caller = await commands("lonely-caller")
     const failure = await caller.bus.dispatch(commandOf("Nobody", 1)).then(() => undefined, (e) => e)
     assert.ok(failure instanceof KronosDbRequestError)
-    expect(failure.status).toBe("unavailable")
-    expect(failure.transient).toBe(true)
+    expect(failure.status).toBe("no_handler")
+    expect(isNoHandler(failure)).toBe(true)
+    expect(failure.transient).toBe(false)
     expect(failure.message).toMatch(/no handler available/i)
   })
 
@@ -323,7 +325,8 @@ describe("KronosDB messaging — native protocol", () => {
     const caller = await queries("query-lonely")
     const failure = await caller.bus.query(queryOf("Nobody", 1)).then(() => undefined, (e) => e)
     assert.ok(failure instanceof KronosDbRequestError)
-    expect(failure.status).toBe("unavailable")
+    expect(failure.status).toBe("no_handler")
+    expect(isNoHandler(failure)).toBe(true)
   })
 
   it("gives up on a query at its deadline, and the handler keeps serving the next", async () => {

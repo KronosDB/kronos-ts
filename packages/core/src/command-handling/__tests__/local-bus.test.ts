@@ -5,6 +5,7 @@ import { localCommandBus } from "../local-bus.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
 import { interceptingCommandBus, type Intercept } from "../../interception/intercepting-bus.js"
 import { correlation } from "../../correlation/correlation.js"
+import { isNoHandler, NoHandlerError } from "../../messaging/failures.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -63,6 +64,12 @@ describe("LocalCommandBus", () => {
       expect(bus.dispatch(commandMsg("Unknown"))).rejects.toThrow(
         'No handler registered for command "test.Unknown"',
       )
+    })
+
+    it("says so with core's no-handler kind", async () => {
+      const failure = await localCommandBus(unitOfWork).dispatch(commandMsg("Unknown")).then(() => undefined, (e) => e)
+      expect(isNoHandler(failure)).toBe(true)
+      expect(failure).toBeInstanceOf(NoHandlerError)
     })
   })
 

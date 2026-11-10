@@ -13,6 +13,9 @@
  *   over capacity, or timed out. Retry later: an edge answers 503, a
  *   processor backs off. A request that was sent and never answered may have
  *   taken effect, so a resent command must recognise its own earlier attempt.
+ * - `no-handler`: nothing handles the message's name, here or on any
+ *   instance the bus reaches. A wiring or deployment problem: retrying does
+ *   not help until something subscribes.
  *
  * Any other failure carries no kind: it is a bug, a misconfiguration or
  * something for an operator, and retrying it does not help.
@@ -22,13 +25,18 @@
  * transport sends it in its own vocabulary (a protocol error code, or
  * `SerializedError.kind`) and rebuilds a contract error from it.
  *
+ * ONLY THE KINDS OF THE HANDLING CROSS. `no-handler` describes the bus, not
+ * the handling, so only the bus that dispatched a message reports it. A
+ * handler that fails because a command IT sent had no handler goes back as a
+ * failure without a kind: the caller's message did have a handler.
+ *
  * ASK WITH THE GUARD, NOT `instanceof`. Each store package pins the core it
  * was built against, so an app can hold two copies of core, and an error
  * built by one is not an `instanceof` the other's class. The guard reads the
  * `kind` field, which any copy, and an error rebuilt from a wire code, carries
  * the same way. The classes exist so that a store cannot forget the field.
  */
-export type FailureKind = "conflict" | "unavailable"
+export type FailureKind = "conflict" | "unavailable" | "no-handler"
 
 /**
  * The append condition was violated: nothing was written. Thrown by every
@@ -65,4 +73,19 @@ export class UnavailableError extends Error {
 /** Whether `error` says to retry later: the store or bus could not serve the request now. */
 export function isUnavailable(error: unknown): error is Error & { readonly kind: "unavailable" } {
   return typeof error === "object" && error !== null && (error as { kind?: unknown }).kind === "unavailable"
+}
+
+/** Nothing handles a message's name, on this instance or any the bus reaches. */
+export class NoHandlerError extends Error {
+  readonly kind: "no-handler" = "no-handler"
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "NoHandlerError"
+  }
+}
+
+/** Whether `error` says nothing handles the message that was sent or queried. */
+export function isNoHandler(error: unknown): error is Error & { readonly kind: "no-handler" } {
+  return typeof error === "object" && error !== null && (error as { kind?: unknown }).kind === "no-handler"
 }

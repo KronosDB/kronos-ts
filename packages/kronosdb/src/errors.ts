@@ -71,7 +71,8 @@ const UNAVAILABLE_CODES = new Set<string>([
 export class KronosDbError extends Error {
   readonly errorCode: string
   readonly transient: boolean
-  readonly kind?: "unavailable"
+  /** Core's contract kind: `unavailable` when the code says to retry later, `no-handler` when nothing handles the name. */
+  readonly kind?: "unavailable" | "no-handler"
 
   constructor(message: string, errorCode: string, transient: boolean, options?: ErrorOptions) {
     super(message, options)
@@ -83,6 +84,9 @@ export class KronosDbError extends Error {
 }
 
 export class NoHandlerForCommandError extends KronosDbError {
+  /** Core's `no-handler` kind, so `isNoHandler` recognises it. */
+  readonly kind: "no-handler" = "no-handler"
+
   constructor(message: string) {
     super(message, KronosDbErrorCode.NO_HANDLER_FOR_COMMAND, false)
     this.name = "NoHandlerForCommandError"
@@ -90,6 +94,9 @@ export class NoHandlerForCommandError extends KronosDbError {
 }
 
 export class NoHandlerForQueryError extends KronosDbError {
+  /** Core's `no-handler` kind, so `isNoHandler` recognises it. */
+  readonly kind: "no-handler" = "no-handler"
+
   constructor(message: string) {
     super(message, KronosDbErrorCode.NO_HANDLER_FOR_QUERY, false)
     this.name = "NoHandlerForQueryError"
@@ -171,6 +178,8 @@ export class KronosDbRequestError extends KronosDbError {
     super(message, errorCode, transient)
     this.name = "KronosDbRequestError"
     this.status = status
+    // `no_handler` is core's no-handler kind; `unavailable` already has its kind from the code.
+    if (status === "no_handler") (this as { kind?: string }).kind = "no-handler"
   }
 }
 
@@ -184,6 +193,9 @@ export function requestError(code: number, message: string): KronosDbError {
     case NativeErrorCode.unavailable:
       // Not ready, failing over, unreachable: the one status that is safe to retry as-is.
       return new KronosDbRequestError(status, message, KronosDbErrorCode.CONNECTION_FAILED, true)
+    case NativeErrorCode.no_handler:
+      // Nothing handles the dispatched name. Not a retry until something subscribes.
+      return new KronosDbRequestError(status, message, KronosDbErrorCode.OTHER, false)
     case NativeErrorCode.unauthenticated:
       return new AuthenticationError(message, KronosDbErrorCode.AUTHENTICATION_INVALID_TOKEN)
     case NativeErrorCode.corrupted:

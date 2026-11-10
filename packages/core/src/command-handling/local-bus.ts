@@ -5,6 +5,7 @@ import {
   qualifiedNameToString,
 } from "../messaging/messages.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
+import { NoHandlerError } from "../messaging/failures.js"
 /**
  * Simple in-process command bus.
  *
@@ -39,7 +40,7 @@ export function localCommandBus<U extends UnitOfWork = UnitOfWork>(
       const key = qualifiedNameToString(message.name)
       const handler = handlers.get(key)
       if (!handler) {
-        throw new Error(`No handler registered for command "${key}"`)
+        throw new NoHandlerError(`No handler registered for command "${key}"`)
       }
 
       // AF5 parity: every command gets its own fresh UnitOfWork, even when

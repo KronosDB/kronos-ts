@@ -2,9 +2,10 @@
  * THE ERROR CONTRACT OF A REMOTE BUS, against any transport.
  *
  * Two instances share one transport: handlers run on one, and the other sends
- * and queries. A handler that fails with a contract kind fails the caller with
- * the same kind; any other failure reaches the caller without one, with its
- * message. Commands and queries alike.
+ * and queries. A handler that fails with a contract kind of the handling fails
+ * the caller with the same kind; any other failure, a handler's own nested
+ * no-handler included, reaches the caller without one, with its message. A name
+ * nothing subscribed to fails with no-handler. Commands and queries alike.
  */
 import assert from "node:assert/strict"
 import { beforeAll, it } from "bun:test"
@@ -14,6 +15,8 @@ import {
   isConflict,
   isUnavailable,
   UnavailableError,
+  isNoHandler,
+  NoHandlerError,
   qn,
   type CommandBus,
   type CommandMessage,
@@ -31,11 +34,12 @@ export type BusContractTarget = {
   readonly instances: () => Promise<{ readonly handling: BusInstance; readonly calling: BusInstance }>
 }
 
-type Outcome = "conflict" | "unavailable" | "plain"
+type Outcome = "conflict" | "unavailable" | "nested-no-handler" | "plain"
 
 function failWith(outcome: Outcome): never {
   if (outcome === "conflict") throw new AppendConditionError("lost the race")
   if (outcome === "unavailable") throw new UnavailableError("the store is down")
+  if (outcome === "nested-no-handler") throw new NoHandlerError('No handler registered for command "bus-contract.Nested"')
   throw new RangeError("out of stock")
 }
 
@@ -74,7 +78,7 @@ export function busContract(target: BusContractTarget): void {
     const ready = `bus-contract.ready-${run}`
     commandBus.subscribe(ready, async () => "ready")
     queryBus.subscribe(`bus-contract.ready-query-${run}`, async () => "ready")
-    for (const outcome of ["conflict", "unavailable", "plain"] as const) {
+    for (const outcome of ["conflict", "unavailable", "nested-no-handler", "plain"] as const) {
       commandBus.subscribe(`bus-contract.${outcome}-${run}`, async () => failWith(outcome))
       queryBus.subscribe(`bus-contract.${outcome}-query-${run}`, async () => failWith(outcome))
     }
@@ -130,5 +134,27 @@ export function busContract(target: BusContractTarget): void {
   it("does not call a handler's plain failure unavailable", async () => {
     assert.ok(!isUnavailable(await failureOf(calling.commandBus.dispatch(command("plain")))))
     assert.ok(!isUnavailable(await failureOf(calling.queryBus.query(query("plain-query")))))
+  })
+
+  it("fails a command nothing subscribed to with no-handler", async () => {
+    const failure = await failureOf(calling.commandBus.dispatch(command("nobody")))
+    assert.ok(isNoHandler(failure), `expected no-handler, got ${String(failure)}`)
+  })
+
+  it("fails a query nothing subscribed to with no-handler", async () => {
+    const failure = await failureOf(calling.queryBus.query(query("nobody-query")))
+    assert.ok(isNoHandler(failure), `expected no-handler, got ${String(failure)}`)
+  })
+
+  it("fails a command without a kind when its handler's own nested command had no handler", async () => {
+    const failure = await failureOf(calling.commandBus.dispatch(command("nested-no-handler")))
+    assert.ok(!isNoHandler(failure), `expected no kind, got ${String(failure)}`)
+    assert.match((failure as Error).message, /bus-contract\.Nested/)
+  })
+
+  it("fails a query without a kind when its handler's own nested command had no handler", async () => {
+    const failure = await failureOf(calling.queryBus.query(query("nested-no-handler-query")))
+    assert.ok(!isNoHandler(failure), `expected no kind, got ${String(failure)}`)
+    assert.match((failure as Error).message, /bus-contract\.Nested/)
   })
 }

@@ -14,6 +14,7 @@ import {
 import { type SubscriptionFilter, applySubscriptionFilter } from "./subscription-filter.js"
 import { UnavailableError } from "../messaging/failures.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
+import { NoHandlerError } from "../messaging/failures.js"
 import { isTransactional, type RefusingTransactional } from "../unit-of-work/transactional.js"
 /**
  * Simple in-process query bus with subscription query support.
@@ -53,7 +54,7 @@ export function localQueryBus<F extends () => UnitOfWork = () => UnitOfWork>(
       const key = qualifiedNameToString(message.name)
       const handler = handlers.get(key)
       if (!handler) {
-        throw new Error(`No handler registered for query "${key}"`)
+        throw new NoHandlerError(`No handler registered for query "${key}"`)
       }
 
       // Mirrors local-command-bus.dispatch: every query mints its own unit of
