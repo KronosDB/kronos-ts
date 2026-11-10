@@ -111,7 +111,7 @@ export type ContextQueryFunction = <P extends StandardSchemaV1, R extends Standa
   descriptor: QueryDescriptor<P, R>,
   payload: InferOutput<P>,
   metadata?: Metadata,
-) => Promise<R extends StandardSchemaV1 ? InferOutput<R> : unknown>
+) => Promise<InferResult<R>>
 
 // THE SCHEDULING VERBS ARE NOT DECLARED HERE. They used to be — three context
 // capability types beside these, duplicating the three in
