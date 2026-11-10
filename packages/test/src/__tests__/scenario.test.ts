@@ -16,8 +16,8 @@ import {
 } from "@kronos-ts/core"
 import { z } from "zod"
 import { ScenarioAssertionError } from "../diff.js"
-import { advanceableClock, FIXTURE_EPOCH } from "../fixture.js"
-import { controllableSchedulingEventStore, recordingCommandBus, recordingEventStore } from "../recording.js"
+import { type AdvanceableClock, advanceableClock, FIXTURE_EPOCH } from "../clock.js"
+import { recordingCommandBus, recordingEventStore } from "../recording.js"
 import { fixture } from "../scenario.js"
 import {
   any,
@@ -62,22 +62,24 @@ beforeEach(() => {
 })
 
 /**
- * A fresh app per scenario, built the way a process builds one — and the objects
- * the fixture observes wrapped in recorders.
+ * A fresh app per scenario, built the way a process builds one, with the
+ * infrastructure wrapped once at the top: the log and the command bus recorded,
+ * and the log holding its deadlines against the clock the app's tasks read.
  */
-function built(
-  lists: (shared: Shared) => Lists,
-  options: { clock?: () => number; within?: number; extras?: Record<string, unknown> } = {},
-) {
+/** A composition root: a function of the shared objects, keeping their types. */
+type Root = <S extends Shared>(shared: S) => Lists<S>
+
+function app(lists: Root, options: { clock?: AdvanceableClock } = {}) {
   const clock = options.clock ?? advanceableClock()
   const uow = () => unitOfWork(clock)
-  const eventStore = recordingEventStore(
-    controllableSchedulingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), clock),
-  )
+  const eventStore = recordingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), { clock })
   const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(uow), correlation))
   const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
-  const app = kronos(lists({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork: uow }))
-  return fixture({ app, eventStore, commandBus, queryBus, clock, within: options.within, ...options.extras })
+  return kronos(lists({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork: uow }))
+}
+
+function built(lists: Root, options: { clock?: AdvanceableClock } = {}) {
+  return fixture(app(lists, options))
 }
 
 const intro = (capacity: number) => ({ courseId: "cs-101", name: "Intro", capacity })
@@ -180,7 +182,7 @@ describe("state view", () => {
     const watched = eventHandler(StudentSubscribed, ({ payload }, ctx) => {
       seen.push([payload.studentId, ctx.isReplay()])
     })
-    await built(({ eventStore, commandBus, queryBus, tokenStore, unitOfWork }) => ({
+    await built(<S extends Shared>({ eventStore, commandBus, queryBus, tokenStore, unitOfWork }: S): Lists<S> => ({
       eventHandlers: [
         { ...watched, commandBus, queryBus, processor: eventProcessor("watch", eventStore, tokenStore, unitOfWork) },
       ],
@@ -324,13 +326,13 @@ describe("your own assertions", () => {
     expect(failure.message).toContain("remainingSeats")
   })
 
-  it("reaches the running world — and anything that rode along — through `app`", async () => {
-    await built(decisions, { extras: { marker: "brought along" } })
+  it("reaches the running app through `app`", async () => {
+    await built(decisions)
       .when(command(CreateCourse, intro(5)))
       .then(async ({ app }) => {
-        const stored = await app.eventStore.source({ query: { types: [CourseCreated] } })
+        const [log] = app.eventStores
+        const stored = await log!.source({ query: { types: [CourseCreated] } })
         expect(stored.events).toHaveLength(1)
-        expect(app.marker).toBe("brought along")
       })
   })
 
@@ -394,7 +396,7 @@ describe("advance", () => {
   })
 
   it("stamps from the clock the app was built with", async () => {
-    const outcome = await built(decisions, { clock: () => 1_700_000_000_000 })
+    const outcome = await built(decisions, { clock: advanceableClock(1_700_000_000_000) })
       .when(command(CreateCourse, intro(5)))
       .then(events(event(CourseCreated, intro(5))))
     expect(outcome.events[0]!.timestamp).toBe(1_700_000_000_000)
@@ -444,15 +446,6 @@ describe("advance", () => {
     expect(Date.now() - started).toBeLessThan(1_000)
   })
 
-  it("with `within`, claims are re-judged until they hold or it passes", async () => {
-    const started = Date.now()
-    const failure = await built(decisions, { within: 120 })
-      .when(command(CreateCourse, intro(5)))
-      .then(events(event(CourseClosed, { courseId: "never-happens" })))
-      .catch((e: Error) => e)
-    expect(failure).toBeInstanceOf(ScenarioAssertionError)
-    expect(Date.now() - started).toBeGreaterThanOrEqual(100)
-  })
 })
 
 // ===========================================================================
@@ -514,7 +507,7 @@ describe("and", () => {
 
 describe("the builder", () => {
   it("is a value: the same steps against two apps", async () => {
-    const lastSeat = (lists: (shared: Shared) => Lists) =>
+    const lastSeat = (lists: Root) =>
       built(lists)
         .given(event(CourseCreated, intro(1)))
         .when(command(SubscribeStudent, seat("stu-001")))
@@ -741,9 +734,12 @@ describe("misuse", () => {
     expect((failure as Error).message).toContain("this event is a FACT")
   })
 
+  // The type refuses these apps; the runtime says the same, for JavaScript and casts.
+
   it("names the recorder to wrap when the log is not recorded", async () => {
-    const { eventStore, commandBus } = plain()
-    const failure = await fixture({ app: kronos({}), eventStore, commandBus: recordingCommandBus(commandBus) })
+    const { eventStore, commandBus, queryBus } = plain()
+    const unrecorded = kronos(decisions({ eventStore, commandBus: recordingCommandBus(commandBus), queryBus } as never))
+    const failure = await fixture(unrecorded as never)
       .when(command(CloseCourse, { courseId: "cs-101" }))
       .then()
       .catch((e: Error) => e)
@@ -751,34 +747,53 @@ describe("misuse", () => {
   })
 
   it("names the recorder to wrap when the command bus is not recorded", async () => {
-    const { eventStore, commandBus } = plain()
-    const failure = await fixture({ app: kronos({}), eventStore: recordingEventStore(eventStore), commandBus })
+    const { eventStore, commandBus, queryBus } = plain()
+    const unrecorded = kronos(decisions({ eventStore: recordingEventStore(eventStore), commandBus, queryBus } as never))
+    const failure = await fixture(unrecorded as never)
       .when(command(CloseCourse, { courseId: "cs-101" }))
       .then()
       .catch((e: Error) => e)
     expect((failure as Error).message).toContain("recordingCommandBus(")
   })
 
-  it("says what `advance` needs: a clock it can move, and a scheduling tier it can fire", async () => {
-    const plainClock = await built(decisions, { clock: () => 1_700_000_000_000 })
-      .when(command(CreateCourse, intro(5)))
-      .advance(1_000)
-      .then()
-      .catch((e: Error) => e)
-    expect((plainClock as Error).message).toContain("advanceableClock()")
-
-    const { eventStore, commandBus } = plain()
-    const noTier = await fixture({
-      app: kronos({}),
-      eventStore: recordingEventStore(eventStore),
-      commandBus: recordingCommandBus(commandBus),
-      clock: advanceableClock(),
-    })
+  it("says what `advance` needs: a log given a clock", async () => {
+    const { eventStore, commandBus, queryBus } = plain()
+    const unclocked = kronos(
+      decisions({ eventStore: recordingEventStore(eventStore), commandBus: recordingCommandBus(commandBus), queryBus } as never),
+    )
+    const failure = await (fixture(unclocked as never) as unknown as ReturnType<typeof built>)
       .when(command(CloseCourse, { courseId: "cs-101" }))
       .advance(1_000)
       .then()
       .catch((e: Error) => e)
-    expect((noTier as Error).message).toContain("controllableSchedulingEventStore(")
+    expect((failure as Error).message).toContain("recordingEventStore(store, { clock })")
+  })
+
+  it("refuses an app with more than one event store: a fixture drives one module", async () => {
+    const { eventStore, commandBus, queryBus } = plain()
+    const recorded = { commandBus: recordingCommandBus(commandBus), queryBus }
+    const first = decisions({ ...recorded, eventStore: recordingEventStore(eventStore) } as never)
+    const second = reminders({ ...recorded, eventStore: recordingEventStore(inMemoryEventStore()) } as never)
+    const twoLogs = kronos({ commandHandlers: [...first.commandHandlers!, ...second.commandHandlers!] } as never)
+    const failure = await fixture(twoLogs as never)
+      .when(command(CloseCourse, { courseId: "cs-101" }))
+      .then()
+      .catch((e: Error) => e)
+    expect((failure as Error).message).toContain("this app has 2 event stores")
+    expect((failure as Error).message).toContain("configuration of the module under test")
+  })
+
+  it("refuses an app with more than one command bus, wrappers over one bus included", async () => {
+    const { eventStore, commandBus, queryBus } = plain()
+    const log = recordingEventStore(eventStore)
+    const first = decisions({ eventStore: log, commandBus: recordingCommandBus(commandBus), queryBus } as never)
+    const second = reminders({ eventStore: log, commandBus: recordingCommandBus(commandBus), queryBus } as never)
+    const twoBuses = kronos({ commandHandlers: [...first.commandHandlers!, ...second.commandHandlers!] } as never)
+    const failure = await fixture(twoBuses as never)
+      .when(command(CloseCourse, { courseId: "cs-101" }))
+      .then()
+      .catch((e: Error) => e)
+    expect((failure as Error).message).toContain("this app has 2 command buses")
   })
 
   it("refuses a second scenario on a world that is already used", async () => {
@@ -791,23 +806,12 @@ describe("misuse", () => {
     expect((failure as Error).message).toContain("A fixture is one world")
   })
 
-  it("asks for the query bus when a query is the act", async () => {
-    const { eventStore, commandBus, queryBus } = plain()
-    const getCourse = queryHandler(GetCourseView, async () => ({
-      courseId: "x",
-      name: "X",
-      enrolled: 0,
-      closed: false,
-    }))
-    const failure = await fixture({
-      app: kronos({ queryHandlers: [{ ...getCourse, eventStore, queryBus }] }),
-      eventStore: recordingEventStore(eventStore),
-      commandBus: recordingCommandBus(commandBus),
-    })
+  it("says so when a query is the act and the app has no query bus", async () => {
+    const failure = await fixture(kronos({}))
       .when(query(GetCourseView, { courseId: "x" }))
       .then()
       .catch((e: Error) => e)
-    expect((failure as Error).message).toContain("`queryBus`")
+    expect((failure as Error).message).toContain("a query act needs a query bus")
   })
 })
 
@@ -815,37 +819,40 @@ describe("misuse", () => {
 // What the fixture is handed
 // ===========================================================================
 
-describe("the parts", () => {
-  it("takes a promise of the parts, for an app opened asynchronously", async () => {
-    const clock = advanceableClock()
-    const uow = () => unitOfWork(clock)
-    const parts = (async () => {
-      const eventStore = recordingEventStore(
-        controllableSchedulingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), clock),
-      )
-      const commandBus = recordingCommandBus(localCommandBus(uow))
-      const queryBus = localQueryBus(uow)
-      const app = kronos(
-        decisions({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork: uow }),
-      )
-      return { app, eventStore, commandBus, queryBus, clock }
-    })()
-    await fixture(parts)
+describe("the app", () => {
+  it("may be a promise, for an app opened asynchronously", async () => {
+    const opened = (async () => app(decisions))()
+    await fixture(opened)
       .when(command(CreateCourse, intro(5)))
       .then(events(event(CourseCreated, intro(5))))
   })
 
-  it("stops the app and calls `close` once the scenario is judged", async () => {
-    let closed = 0
-    await built(university, { extras: { close: () => void closed++ } })
+  it("is stopped once the scenario is judged — and a test app releases what it holds in its own `stop`", async () => {
+    let released = 0
+    const running = app(university)
+    const holding = {
+      ...running,
+      async stop() {
+        await running.stop()
+        released++
+      },
+    }
+    await fixture(holding)
       .when(command(CreateCourse, intro(5)))
       .then()
-    expect(closed).toBe(1)
+    expect(released).toBe(1)
   })
 
   it("carries what the app's wiring carries: correlation is the app's own", async () => {
     await built(decisions)
       .when(command(CreateCourse, intro(5)))
       .then(events(event(CourseCreated, intro(5), { correlationId: any(), causationId: any() })))
+  })
+
+  it("does not need the query bus recorded", async () => {
+    await built(university)
+      .given(event(CourseCreated, intro(5)))
+      .when(query(GetCourseView, { courseId: "cs-101" }))
+      .then(result({ courseId: "cs-101", name: "Intro", enrolled: 0, closed: false }))
   })
 })

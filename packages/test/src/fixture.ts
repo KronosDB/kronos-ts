@@ -1,6 +1,6 @@
 import { emptyMetadata, generateIdentifier, qualifiedNameToString, tagsOf } from "@kronos-ts/core"
 import type {
-  App as KronosApp,
+  App,
   CommandBus,
   CommandMessage,
   EventMessage,
@@ -9,81 +9,24 @@ import type {
   QueryMessage,
   RunningProcessor,
 } from "@kronos-ts/core"
+import type { Duration } from "./clock.js"
 import type { CommandRecording, EventRecording, ScheduleRecord, ScheduleRecording } from "./recording.js"
-import { type Action, type Duration, type EventValue, isAny } from "./values.js"
+import { type Action, type EventValue, isAny } from "./values.js"
 
 // ---------------------------------------------------------------------------
-// The fixture: a running app, and the recorders it was built with.
+// The fixture: a running app, read through what it reports.
 //
 // A test composes its app the way `main.ts` does — `kronos({ … })` over entries
-// that carry their stores and buses — and wraps in a recorder what the fixture
-// should observe. The fixture builds nothing. It drives what it is handed: it
-// takes the app's processors back from `kronos`, folds history into them,
-// performs the act, settles them, and reads the recorders.
+// that carry their stores and buses — with the infrastructure wrapped once at
+// the top: the log in `recordingEventStore`, the command bus in
+// `recordingCommandBus`. The fixture is handed the app and nothing else. It
+// finds the log and the buses on `app.eventStores`, `app.commandBuses` and
+// `app.queryBuses`, takes the app's processors back from `kronos`, folds history
+// into them, performs the act, settles them, and reads the recorders.
 // ---------------------------------------------------------------------------
 
-/**
- * The instant an {@link advanceableClock} starts at when nobody says otherwise.
- *
- * A FIXED instant rather than the wall clock, because a timestamp a test can
- * predict is worth more than one that is technically current: an assertion can
- * name `FIXTURE_EPOCH + 30_000` and mean it.
- */
-export const FIXTURE_EPOCH = Date.UTC(2024, 0, 1)
-
-/** A CLOCK YOU CAN MOVE — a clock, plus the one verb that moves it. */
-export type AdvanceableClock = (() => number) & {
-  /** Move time forward. What was due before is due now. */
-  advance(duration: Duration): void
-}
-
-/**
- * A clock that starts at `from` and moves only when you say so. Build the app's
- * tasks on it — `() => unitOfWork(clock)` — and hand it to the fixture, which
- * moves it on `advance`.
- *
- * It is a CLOSURE over its own offset: everything that captured the arrow sees
- * a move, and whatever captured a NUMBER is frozen where it was built.
- */
-export function advanceableClock(from: number = FIXTURE_EPOCH): AdvanceableClock {
-  let offset = 0
-  const read = () => from + offset
-  return Object.assign(read, {
-    advance(duration: Duration): void {
-      offset += duration
-    },
-  })
-}
-
-/**
- * WHAT A FIXTURE IS HANDED: the running app and the objects it was built with.
- *
- * - `app` — what `kronos(…)` returned. Its processors are the ones the fixture
- *   drives.
- * - `eventStore` — the log the app's entries and processors use, wrapped in
- *   `recordingEventStore`. For `advance` and the `scheduled`/`cancelled` claims,
- *   its scheduling tier is `controllableSchedulingEventStore(…, clock)`.
- * - `commandBus` — the bus the command handlers subscribed to, wrapped in
- *   `recordingCommandBus`.
- * - `queryBus` — the bus the query handlers subscribed to. Needed for a query act.
- * - `clock` — the {@link AdvanceableClock} the app's tasks read. Needed for `advance`.
- * - `within` — when given, claims that do not hold are re-judged until they do
- *   or this many ms pass: for an app whose effects land where the fixture
- *   cannot watch them settle. Absent, a claim is judged once.
- * - `close` — released once the scenario is judged, after the app stops.
- *
- * Anything else rides along to `outcome.app` — a pool, a database client.
- */
-export type FixtureParts = {
-  readonly app: KronosApp
-  readonly eventStore: EventStore & Partial<EventRecording>
-  readonly commandBus: CommandBus<any> & Partial<CommandRecording>
-  readonly queryBus?: QueryBus<any>
-  readonly clock?: () => number
-  readonly within?: Duration
-  readonly close?: () => Promise<void> | void
-  readonly [extra: string]: unknown
-}
+/** An app whose log and command bus are recorded: what `fixture` accepts. */
+export type RecordedApp = App<EventStore & EventRecording, CommandBus<any> & CommandRecording, QueryBus<any>>
 
 /** What an act did, before it is judged. */
 export type Acted = {
@@ -95,7 +38,7 @@ export type Acted = {
 
 /** The running world a scenario drives. Internal. */
 export type World = {
-  readonly parts: FixtureParts
+  readonly app: App
   /** Facts that already happened: the processors fold them, nothing they set in motion gets out. */
   history(events: ReadonlyArray<EventValue<any>>): Promise<void>
   advance(duration: Duration): Promise<void>
@@ -105,7 +48,7 @@ export type World = {
   observe(actIdentifier: string | undefined): {
     events: ReadonlyArray<EventMessage>
     commands: ReadonlyArray<CommandMessage>
-    schedules: ReadonlyArray<ScheduleRecord>
+    schedules: ReadonlyArray<ScheduleRecord> | undefined
   }
   quiesce(): Promise<void>
   close(): Promise<void>
@@ -113,28 +56,43 @@ export type World = {
 
 const SETTLE_WITHIN = 5000
 
-/** Take the app over: check what it was handed, park its processors. */
-export async function openWorld(parts: FixtureParts): Promise<World> {
-  const eventStore = parts.eventStore as EventStore & EventRecording & Partial<ScheduleRecording>
-  const commandBus = parts.commandBus as CommandBus<any> & CommandRecording
-  if (typeof parts.app?.processors?.values !== "function") {
-    throw usage("`app` is not what `kronos(…)` returned. Pass the running app: `fixture({ app: kronos({ … }), … })`.")
+/** Take the app over: find its log and buses, check they are recorded, park its processors. */
+export async function openWorld(app: App): Promise<World> {
+  if (typeof app?.processors?.values !== "function" || typeof app?.eventStores?.values !== "function") {
+    throw usage("`fixture(app)` takes what `kronos(…)` returned: `fixture(kronos({ … }))`.")
   }
-  if (typeof (eventStore as Partial<EventRecording>).reset !== "function" || !("appended" in eventStore)) {
+  const eventStore = only(app.eventStores, "event store", "event stores") as
+    | (EventStore & EventRecording & Partial<ScheduleRecording>)
+    | undefined
+  const commandBus = only(app.commandBuses, "command bus", "command buses") as
+    | (CommandBus<any> & CommandRecording)
+    | undefined
+  const queryBus = only(app.queryBuses, "query bus", "query buses")
+
+  if (eventStore !== undefined && (typeof eventStore.reset !== "function" || !("appended" in eventStore))) {
     throw usage(
-      "the `eventStore` is not recorded. Wrap the log the app's entries and processors use: " +
+      "the app's event store is not recorded. Wrap the log once, where the app's infrastructure is built: " +
         "`const eventStore = recordingEventStore(inMemoryEventStore())`, and build the app with that object.",
     )
   }
-  if (typeof (commandBus as Partial<CommandRecording>).hold !== "function") {
+  if (commandBus !== undefined && typeof commandBus.hold !== "function") {
     throw usage(
-      "the `commandBus` is not recorded. Wrap the bus the command handlers subscribe to: " +
+      "the app's command bus is not recorded. Wrap the bus once, where the app's infrastructure is built: " +
         "`const commandBus = recordingCommandBus(localCommandBus(uow))`, and build the app with that object.",
     )
   }
 
-  const processors: ReadonlyArray<RunningProcessor> = [...parts.app.processors.values()]
-  const clock = parts.clock ?? Date.now
+  const processors: ReadonlyArray<RunningProcessor> = [...app.processors.values()]
+  // History and arrivals are stamped from the clock the log's deadlines wait
+  // for, which is the one the app's tasks are built on; without one, from now.
+  const clock = eventStore?.clock ?? Date.now
+
+  function log(): EventStore & EventRecording & Partial<ScheduleRecording> {
+    if (eventStore === undefined) {
+      throw usage("this app has no event store, so there is no log to put history in or an event into.")
+    }
+    return eventStore
+  }
 
   // `kronos` starts every processor. The fixture drives them by hand, so the
   // first thing it does is take them back.
@@ -153,18 +111,18 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
 
   let priorSchedules = new Map<string, string>()
   function markSchedules(): void {
-    priorSchedules = new Map((eventStore.schedules ?? []).map((s) => [s.token.id, s.status]))
+    priorSchedules = new Map((eventStore?.schedules ?? []).map((s) => [s.token.id, s.status]))
   }
 
   function window(): void {
-    eventStore.reset()
-    commandBus.reset()
+    eventStore?.reset()
+    commandBus?.reset()
     markSchedules()
   }
 
   function hold(on: boolean): void {
-    commandBus.hold(on)
-    eventStore.hold?.(on)
+    commandBus?.hold(on)
+    eventStore?.hold(on)
   }
 
   function toEventMessage(value: EventValue<any>): EventMessage {
@@ -190,15 +148,15 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
 
   /**
    * Drive every processor to the head of the log, let what it dispatched settle,
-   * and repeat until nothing moves. The app's processors are expected to read
-   * the `eventStore` the fixture was handed.
+   * and repeat until nothing moves. With one store reported, it is the log every
+   * processor reads.
    */
   async function quiesce(): Promise<void> {
     if (processors.length === 0) return
     const deadline = Date.now() + SETTLE_WITHIN
     let previous = ""
     for (;;) {
-      const head = await eventStore.getHeadPosition()
+      const head = await log().getHeadPosition()
       const settled = processors.every((p) => {
         const status = p.status()
         return status.caughtUp && status.position >= head
@@ -213,8 +171,7 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
         throw usage(
           `the app's event handlers did not go quiet within ${SETTLE_WITHIN}ms. ${behind}. An event handler ` +
             "that dispatches a command whose events re-trigger it never settles, one that keeps failing holds " +
-            "its processor where it is, and a processor reading another log than the fixture's `eventStore` " +
-            "is never seen to catch up.",
+            "its processor where it is.",
         )
       }
       await settle()
@@ -224,7 +181,7 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
   let closed = false
 
   return {
-    parts,
+    app,
 
     /**
      * HISTORY: append the facts, then hand them to every processor as a REPLAY —
@@ -237,6 +194,7 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
      */
     async history(events) {
       if (events.length === 0) return
+      const eventStore = log()
       await parkAll()
       const before = await eventStore.getHeadPosition()
       await eventStore.append(events.map(toEventMessage))
@@ -256,22 +214,15 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
     },
 
     async advance(duration) {
-      const movable = parts.clock as AdvanceableClock | undefined
-      if (typeof movable?.advance !== "function") {
+      const eventStore = log()
+      if (typeof eventStore.advance !== "function") {
         throw usage(
-          "`advance` needs a clock it can move. Build the app's tasks on `advanceableClock()` — " +
-            "`const clock = advanceableClock(); const uow = () => unitOfWork(clock)` — and pass `clock` to the fixture.",
+          "`advance` needs a log that holds its deadlines against a clock it can move. Give the recorder one: " +
+            "`const clock = advanceableClock(); const eventStore = recordingEventStore(store, { clock })`, " +
+            "and build the app's tasks on the same clock: `() => unitOfWork(clock)`.",
         )
       }
-      if (typeof eventStore.due !== "function") {
-        throw usage(
-          "`advance` needs a scheduling tier it can fire. Put `controllableSchedulingEventStore(…, clock)` " +
-            "under the recorder: `recordingEventStore(controllableSchedulingEventStore(inMemoryEventStore(), clock))`.",
-        )
-      }
-      movable.advance(duration)
-      const due = eventStore.due()
-      if (due.length > 0) await eventStore.append(due)
+      await eventStore.advance(duration)
       await quiesce()
     },
 
@@ -294,11 +245,10 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
             metadata: action.metadata ?? emptyMetadata(),
           }
           actIdentifier = message.identifier
+          if (commandBus === undefined) throw usage("a command act needs a command bus, and this app has none.")
           result = await commandBus.dispatch(message)
         } else if (action.kind === "query") {
-          if (parts.queryBus === undefined) {
-            throw usage("a query act needs the `queryBus` the query handlers subscribed to. Pass it to the fixture.")
-          }
+          if (queryBus === undefined) throw usage("a query act needs a query bus, and this app has none.")
           const message: QueryMessage = {
             kind: "query",
             identifier: generateIdentifier(),
@@ -307,10 +257,10 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
             metadata: action.metadata ?? emptyMetadata(),
           }
           actIdentifier = message.identifier
-          result = await parts.queryBus.query(message)
+          result = await queryBus.query(message)
         } else {
           // An event ARRIVES: appended, and the automations DO react.
-          await eventStore.append([toEventMessage(action)])
+          await log().append([toEventMessage(action)])
         }
       } catch (error) {
         if (error instanceof Error && error.message.startsWith("@kronos-ts/test:")) throw error
@@ -325,9 +275,9 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
 
     observe(actIdentifier) {
       return {
-        events: [...eventStore.appended],
-        commands: commandBus.dispatched.filter((m) => m.identifier !== actIdentifier),
-        schedules: (eventStore.schedules ?? []).filter((s) => priorSchedules.get(s.token.id) !== s.status),
+        events: [...(eventStore?.appended ?? [])],
+        commands: (commandBus?.dispatched ?? []).filter((m) => m.identifier !== actIdentifier),
+        schedules: eventStore?.schedules?.filter((s) => priorSchedules.get(s.token.id) !== s.status),
       }
     },
 
@@ -336,13 +286,23 @@ export async function openWorld(parts: FixtureParts): Promise<World> {
     async close() {
       if (closed) return
       closed = true
-      try {
-        await parts.app.stop()
-      } finally {
-        await parts.close?.()
-      }
+      await app.stop()
     },
   }
+}
+
+/**
+ * The one object of a kind the app reports, or none. More than one is refused:
+ * a fixture drives one module, so it is built from that module's configuration.
+ */
+function only<T>(reported: ReadonlySet<T>, one: string, many: string): T | undefined {
+  if (reported.size > 1) {
+    throw usage(
+      `this app has ${reported.size} ${many}, and a fixture drives one. Build the app you hand it from the ` +
+        `configuration of the module under test, so it has one event store, one command bus and one query bus.`,
+    )
+  }
+  return reported.values().next().value
 }
 
 function usage(text: string): Error {

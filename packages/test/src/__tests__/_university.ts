@@ -11,6 +11,7 @@ import type {
   CommandBus,
   CommandHandlerEntry,
   EventHandlerEntry,
+  EventProcessor,
   EventStore,
   QueryBus,
   QueryHandlerEntry,
@@ -214,21 +215,32 @@ export type Shared = {
   readonly unitOfWork: () => UnitOfWork
 }
 
-/** The three lists `kronos` takes. */
-export type Lists = {
-  readonly commandHandlers?: ReadonlyArray<CommandHandlerEntry<any, any, any>>
-  readonly queryHandlers?: ReadonlyArray<QueryHandlerEntry<any, any>>
-  readonly eventHandlers?: ReadonlyArray<EventHandlerEntry<any, any, any>>
+/**
+ * The three lists `kronos` takes, each entry carrying the shared objects with
+ * THEIR OWN types — so the app reports a recorded log as a recorded log.
+ */
+export type Lists<S extends Shared = Shared> = {
+  readonly commandHandlers?: ReadonlyArray<
+    Omit<CommandHandlerEntry<any, any, any>, "eventStore" | "commandBus" | "queryBus"> &
+      Pick<S, "eventStore" | "commandBus" | "queryBus">
+  >
+  readonly queryHandlers?: ReadonlyArray<
+    Omit<QueryHandlerEntry<any, any>, "eventStore" | "queryBus"> & Pick<S, "eventStore" | "queryBus">
+  >
+  readonly eventHandlers?: ReadonlyArray<
+    Omit<EventHandlerEntry<any, any, any>, "commandBus" | "queryBus" | "processor"> &
+      Pick<S, "commandBus" | "queryBus"> & { readonly processor: EventProcessor<any, S["eventStore"]> }
+  >
 }
 
 const decide = [createCourse, subscribeStudent, closeCourse]
 const react = [closeWhenFull, armEnrolmentWindow, closeOnDeadline, onCreated, onSubscribed, onClosed]
 
 /** The house wiring: every handler correlated, every entry carrying its objects. */
-function sited(
-  { eventStore, commandBus, queryBus, tokenStore, unitOfWork }: Shared,
+function sited<S extends Shared>(
+  { eventStore, commandBus, queryBus, tokenStore, unitOfWork }: S,
   parts: { commands?: typeof decide; queries?: typeof getCourseView[]; events?: typeof react },
-): Lists {
+): Lists<S> {
   // The projection's own semantics, closed out here: its durable name and global
   // stream order. One processor for every event handler of the slice.
   const processor = eventProcessor("courses", eventStore, tokenStore, unitOfWork)
@@ -249,17 +261,17 @@ function sited(
  * The whole university, as a function of the objects it runs on: what a
  * production composition root and a test both hand to `kronos`.
  */
-export function university(shared: Shared): Lists {
+export function university<S extends Shared>(shared: S): Lists<S> {
   return sited(shared, { commands: decide, queries: [getCourseView], events: react })
 }
 
 /** Decisions only — no automations, so `then` is exactly what the command decided. */
-export function decisions(shared: Shared): Lists {
+export function decisions<S extends Shared>(shared: S): Lists<S> {
   return sited(shared, { commands: decide })
 }
 
 /** Decisions plus the seat automation, with no scheduler and no read model. */
-export function withAutomation(shared: Shared): Lists {
+export function withAutomation<S extends Shared>(shared: S): Lists<S> {
   return sited(shared, { commands: decide, events: [closeWhenFull] })
 }
 
@@ -297,7 +309,7 @@ const armReminder = commandHandler(ArmReminder, async ({ payload: cmd }, ctx) =>
 })
 
 /** Reminders on their own — one command, one state, one schedule. */
-export function reminders({ eventStore, commandBus, queryBus }: Shared): Lists {
+export function reminders<S extends Shared>({ eventStore, commandBus, queryBus }: S): Lists<S> {
   return {
     commandHandlers: [{ ...armReminder, handler: correlatingHandler(armReminder.handler), eventStore, commandBus, queryBus } as never],
   }

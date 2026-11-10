@@ -248,34 +248,48 @@ export const COURSE_PROJECTION = "course-projection"
  * ONE STORE PARAMETER. There is no snapshot store beside the log any more —
  * a site that caches folds hands in a log that CAN, and the entries point at
  * the one object.
+ *
+ * GENERIC OVER WHAT IT IS HANDED, so the entries carry the objects with their
+ * own types and the app reports them that way: a test that hands in a recorded
+ * log gets an app whose log is recorded, which is what `fixture(app)` asks for.
  */
-export function courses({
+export function courses<S extends CourseResources>({
   eventStore,
   commandBus,
   queryBus,
   tokenStore,
   unitOfWork,
-}: {
-  eventStore: EventStore
-  commandBus: CommandBus
-  queryBus: QueryBus
-  tokenStore: TokenStore
-  unitOfWork: () => UnitOfWork
-}): {
-  commandHandlers: CommandHandlerEntry[]
-  queryHandlers: QueryHandlerEntry[]
-  eventHandlers: EventHandlerEntry[]
+}: S): {
+  commandHandlers: Array<CommandHandlerEntry & Pick<S, "eventStore" | "commandBus" | "queryBus">>
+  queryHandlers: Array<QueryHandlerEntry & Pick<S, "eventStore" | "queryBus">>
+  eventHandlers: Array<
+    EventHandlerEntry &
+      Pick<S, "eventStore" | "commandBus" | "queryBus"> & { processor: EventProcessor<UnitOfWork, S["eventStore"]> }
+  >
 } {
   const processor = eventProcessor(COURSE_PROJECTION, eventStore, tokenStore, unitOfWork)
   return {
     commandHandlers: courseSlice.commandHandlers.map(
-      (h) => ({ ...h, eventStore, commandBus, queryBus }) as CommandHandlerEntry,
+      (h) => ({ ...h, eventStore, commandBus, queryBus }) as CommandHandlerEntry & Pick<S, "eventStore" | "commandBus" | "queryBus">,
     ),
-    queryHandlers: courseSlice.queryHandlers.map((h) => ({ ...h, eventStore, queryBus }) as QueryHandlerEntry),
+    queryHandlers: courseSlice.queryHandlers.map(
+      (h) => ({ ...h, eventStore, queryBus }) as QueryHandlerEntry & Pick<S, "eventStore" | "queryBus">,
+    ),
     eventHandlers: courseSlice.eventHandlers.map(
-      (h) => ({ ...h, commandBus, queryBus, processor }) as EventHandlerEntry,
+      (h) =>
+        ({ ...h, eventStore, commandBus, queryBus, processor }) as EventHandlerEntry &
+          Pick<S, "eventStore" | "commandBus" | "queryBus"> & { processor: EventProcessor<UnitOfWork, S["eventStore"]> },
     ),
   }
+}
+
+/** What the course slice runs on. */
+export type CourseResources = {
+  readonly eventStore: EventStore
+  readonly commandBus: CommandBus
+  readonly queryBus: QueryBus
+  readonly tokenStore: TokenStore
+  readonly unitOfWork: () => UnitOfWork
 }
 
 // ---------------------------------------------------------------------------

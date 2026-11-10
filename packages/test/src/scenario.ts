@@ -1,13 +1,16 @@
+import type { App } from "@kronos-ts/core"
+import type { Duration } from "./clock.js"
 import { ScenarioAssertionError } from "./diff.js"
-import { type FixtureParts, openWorld, type World } from "./fixture.js"
+import { openWorld, type RecordedApp, type World } from "./fixture.js"
+import type { ScheduleRecording } from "./recording.js"
 import {
   type Action,
   type Assertion,
-  type Duration,
   type EventValue,
   type Outcome,
   type QueryValue,
   result as resultOf,
+  type TimedOutcome,
 } from "./values.js"
 
 // ---------------------------------------------------------------------------
@@ -28,20 +31,35 @@ type Step =
   | { readonly kind: "advance"; readonly duration: Duration }
   | { readonly kind: "when"; readonly action: Action }
 
+/** True when the outcome is timed: the app's log holds its deadlines against a clock. */
+type Timed<O extends Outcome> = [O] extends [TimedOutcome] ? true : false
+
 /** Before the act: history, time passing, then the act. */
-export type ScenarioStart = {
+export type ScenarioStart<O extends Outcome = Outcome> = Timed<O> extends true
+  ? BeforeAct<O> & {
+      /** Move the clock forward — deadlines armed before it fire here. Repeatable. */
+      advance(duration: Duration): ScenarioStart<O>
+    }
+  : BeforeAct<O>
+
+/** What every scenario can do before its act, timed or not. */
+export type BeforeAct<O extends Outcome = Outcome> = {
   /** Facts that already happened. Repeatable; the facts accumulate in order. */
-  given(...events: EventValue<any>[]): ScenarioStart
-  /** Move the clock forward — deadlines armed before it fire here. Repeatable. */
-  advance(duration: Duration): ScenarioStart
+  given(...events: EventValue<any>[]): ScenarioStart<O>
   /** The act: a command, a query, or an event arriving. */
-  when(action: Action): ScenarioActed
+  when(action: Action): ScenarioActed<O>
 }
 
 /** After the act: time may pass, then `then` runs the scenario and judges it. */
-export type ScenarioActed = {
-  /** Move the clock after the act — deadlines fire here. Repeatable. */
-  advance(duration: Duration): ScenarioActed
+export type ScenarioActed<O extends Outcome = Outcome> = Timed<O> extends true
+  ? AfterAct<O> & {
+      /** Move the clock after the act — deadlines fire here. Repeatable. */
+      advance(duration: Duration): ScenarioActed<O>
+    }
+  : AfterAct<O>
+
+/** What every scenario can do after its act, timed or not. */
+export type AfterAct<O extends Outcome = Outcome> = {
   /**
    * Run the scenario and judge these claims — each a function of the
    * {@link Outcome}. Resolves with the outcome; rejects with the failure.
@@ -51,7 +69,7 @@ export type ScenarioActed = {
    * hang: the scenario runs, an unclaimed throw rejects, and the await
    * resolves with the outcome.
    */
-  then(...assertions: Assertion[]): Judged
+  then(...assertions: Assertion<O>[]): Judged<O>
 }
 
 /**
@@ -60,14 +78,14 @@ export type ScenarioActed = {
  * what the previous ones left behind:
  *
  * ```ts
- * await fixture(parts)
+ * await fixture(app)
  *   .when(command(SubscribeStudent, first)).then(events(event(StudentSubscribed, first)))
  *   .and.when(command(SubscribeStudent, second)).then(error("full"))
  * ```
  */
-export type Judged = Promise<Outcome> & {
+export type Judged<O extends Outcome = Outcome> = Promise<O> & {
   /** Continue in the world this scenario left behind. */
-  readonly and: ScenarioStart
+  readonly and: ScenarioStart<O>
 }
 
 /**
@@ -78,52 +96,74 @@ export type Judged = Promise<Outcome> & {
  * `shows` takes the expected answer (deep-strict, `any()` holes) or any
  * {@link Assertion}, judged with the query as the act.
  */
-export type Storyline = PromiseLike<void> & {
-  shows(expected: unknown): Storyline
-  after(...events: EventValue<any>[]): Storyline
+export type Storyline<O extends Outcome = Outcome> = PromiseLike<void> & {
+  shows(expected: unknown): Storyline<O>
+  after(...events: EventValue<any>[]): Storyline<O>
 }
 
 /** A fixture: the scenario start, plus storylines. */
-export type Fixture = ScenarioStart & {
+export type Fixture<O extends Outcome = Outcome> = ScenarioStart<O> & {
   /** A storyline of the read model this query asks for. */
-  storyline(read: QueryValue<any, any>): Storyline
+  storyline(read: QueryValue<any, any>): Storyline<O>
 }
 
+/** The store an app reports, as a type. */
+type StoreOf<A> = A extends App<infer S, any, any> ? S : never
+
 /**
- * Scenarios against a running app — built the way `main.ts` builds it, with the
- * objects the fixture should observe wrapped in recorders:
+ * The outcome a fixture of this app judges: timed when its log holds deadlines
+ * against a clock. An app with no log at all is not timed.
+ */
+export type OutcomeOf<A> = [StoreOf<A>] extends [never]
+  ? Outcome
+  : [StoreOf<A>] extends [ScheduleRecording]
+    ? TimedOutcome
+    : Outcome
+
+/**
+ * Scenarios against a running app, built the way `main.ts` builds it with the
+ * infrastructure wrapped once at the top — the log and the command bus in
+ * recorders, and the log given the clock the app's tasks read:
  *
  * ```ts
  * const clock = advanceableClock()
  * const uow = () => unitOfWork(clock)
- * const eventStore = recordingEventStore(controllableSchedulingEventStore(inMemoryEventStore(), clock))
+ * const eventStore = recordingEventStore(inMemoryEventStore(), { clock })
  * const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(uow), correlation))
  * const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
  * const app = kronos({ commandHandlers: […], queryHandlers: […], eventHandlers: […] })
  *
- * await fixture({ app, eventStore, commandBus, queryBus, clock })
+ * await fixture(app)
  *   .given(event(ItemAdded, a))
  *   .when(command(AddItem, b))
  *   .then(events(event(ItemAdded, b)))
  * ```
  *
+ * The fixture reads the log and the buses off the app (`app.eventStores`,
+ * `app.commandBuses`, `app.queryBuses`). Its TYPE refuses an app whose log or
+ * command bus is not recorded, and offers `advance` — and takes `scheduled` and
+ * `cancelled` — only when the log was given a clock. An app with more than one
+ * store or bus of a kind is refused when the scenario runs: build the fixture's
+ * app from the configuration of the module under test.
+ *
  * A fixture is ONE WORLD: its first scenario takes the app over, `.and`
- * continues it, and once that is judged the app is stopped and `close` called.
- * Build a fresh app and fixture per scenario. The parts may be handed as a
- * promise, for an app whose resources are opened asynchronously.
+ * continues it, and once that is judged the app is stopped — so a test app that
+ * holds more (a database to drop) releases it in its own `stop`. Build a fresh
+ * app and fixture per scenario. The app may be handed as a promise, for one
+ * whose resources are opened asynchronously.
  */
-export function fixture(parts: FixtureParts | Promise<FixtureParts>): Fixture {
-  const home: Home = { parts, claimed: false }
+export function fixture<A extends RecordedApp>(app: A | Promise<A>): Fixture<OutcomeOf<A>> {
+  const home: Home = { app, claimed: false }
   const lineage: Lineage = { home, prior: undefined }
   return {
     ...start(lineage, []),
-    storyline: (read) => beats(home, read, []),
-  }
+    storyline: (read: QueryValue<any, any>) => beats(home, read, []),
+  } as unknown as Fixture<OutcomeOf<A>>
 }
 
 /** The world a fixture stands for, claimed by its first run. */
 type Home = {
-  readonly parts: FixtureParts | Promise<FixtureParts>
+  readonly app: App | Promise<App>
   claimed: boolean
 }
 
@@ -147,10 +187,15 @@ async function claim(home: Home): Promise<World> {
     )
   }
   home.claimed = true
-  return openWorld(await home.parts)
+  return openWorld(await home.app)
 }
 
-function start(lineage: Lineage, steps: ReadonlyArray<Step>): ScenarioStart {
+// The builders below are written once, for every outcome: the TYPES above decide
+// which of their steps a fixture offers.
+type AnyStart = ScenarioStart<TimedOutcome>
+type AnyActed = ScenarioActed<TimedOutcome>
+
+function start(lineage: Lineage, steps: ReadonlyArray<Step>): AnyStart {
   return {
     given: (...events) => start(lineage, [...steps, { kind: "given", events }]),
     advance: (duration) => start(lineage, [...steps, { kind: "advance", duration }]),
@@ -158,10 +203,10 @@ function start(lineage: Lineage, steps: ReadonlyArray<Step>): ScenarioStart {
   }
 }
 
-function acted(lineage: Lineage, steps: ReadonlyArray<Step>): ScenarioActed {
+function acted(lineage: Lineage, steps: ReadonlyArray<Step>): AnyActed {
   return {
     advance: (duration) => acted(lineage, [...steps, { kind: "advance", duration }]),
-    then(...assertions: Assertion[]): Judged {
+    then(...assertions: Assertion<TimedOutcome>[]): Judged<TimedOutcome> {
       // The promise machinery calls `then(resolve, reject)` when a builder is
       // awaited without its claims. Those are engine callbacks, not claims:
       // run with none and settle through them.
@@ -176,7 +221,11 @@ function acted(lineage: Lineage, steps: ReadonlyArray<Step>): ScenarioActed {
   }
 }
 
-function runJudged(lineage: Lineage, steps: ReadonlyArray<Step>, assertions: ReadonlyArray<Assertion>): Judged {
+function runJudged(
+  lineage: Lineage,
+  steps: ReadonlyArray<Step>,
+  assertions: ReadonlyArray<Assertion<TimedOutcome>>,
+): Judged<TimedOutcome> {
   let resolveWorld!: (world: World) => void
   let rejectWorld!: (error: unknown) => void
   const run: Run = {
@@ -189,7 +238,7 @@ function runJudged(lineage: Lineage, steps: ReadonlyArray<Step>, assertions: Rea
   // A step after a failed one never runs; nobody has to handle this rejection.
   run.done.catch(() => {})
 
-  const outcome = (async (): Promise<Outcome> => {
+  const outcome = (async (): Promise<TimedOutcome> => {
     let world: World | undefined
     try {
       world = lineage.prior ? await lineage.prior.done : await claim(lineage.home)
@@ -206,9 +255,9 @@ function runJudged(lineage: Lineage, steps: ReadonlyArray<Step>, assertions: Rea
     }
   })()
 
-  let continuation: ScenarioStart | undefined
+  let continuation: AnyStart | undefined
   return Object.defineProperty(outcome, "and", {
-    get(): ScenarioStart {
+    get(): AnyStart {
       run.continued = true
       // The chain is awaited at its END: a failure here reaches the caller as
       // the last step's rejection, so this step's own promise is not left
@@ -217,15 +266,15 @@ function runJudged(lineage: Lineage, steps: ReadonlyArray<Step>, assertions: Rea
       continuation ??= start({ ...lineage, prior: run }, [])
       return continuation
     },
-  }) as Judged
+  }) as Judged<TimedOutcome>
 }
 
 /** Drive the world through the steps, then judge the claims. */
 async function perform(
   world: World,
   steps: ReadonlyArray<Step>,
-  assertions: ReadonlyArray<Assertion>,
-): Promise<Outcome> {
+  assertions: ReadonlyArray<Assertion<TimedOutcome>>,
+): Promise<TimedOutcome> {
   world.window()
   let acted: Awaited<ReturnType<World["act"]>> | undefined
   let act: Action | undefined
@@ -249,30 +298,31 @@ async function perform(
   const claimsError = assertions.some((a) => a.claimsError === true)
   if (acted.threw && !claimsError) throw acted.thrown
 
-  const description = describe(steps, assertions)
-  const within = world.parts.within
-  const deadline = Date.now() + (within ?? 0)
-  for (;;) {
-    const outcome: Outcome = {
-      act: act.kind,
-      result: acted.result,
-      threw: acted.threw,
-      error: acted.thrown,
-      ...world.observe(acted.actIdentifier),
-      app: world.parts,
-    }
-    const failures = await judge(assertions, outcome)
-    if (failures.length === 0) return outcome
-    if (within === undefined || Date.now() > deadline) {
-      throw new ScenarioAssertionError([`${description}\n`, ...failures].join("\n"))
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 20))
-    await world.quiesce()
-  }
+  const outcome = outcomeOf(world, act.kind, acted)
+  const failures = await judge(assertions, outcome)
+  if (failures.length === 0) return outcome
+  throw new ScenarioAssertionError([`${describe(steps, assertions)}\n`, ...failures].join("\n"))
+}
+
+/**
+ * The outcome as the world recorded it. `schedules` is present only when the
+ * log holds deadlines; the type a fixture hands its claims says the same.
+ */
+function outcomeOf(world: World, act: Action["kind"], acted: Awaited<ReturnType<World["act"]>>): TimedOutcome {
+  const { schedules, ...observed } = world.observe(acted.actIdentifier)
+  return {
+    act,
+    result: acted.result,
+    threw: acted.threw,
+    error: acted.thrown,
+    ...observed,
+    ...(schedules !== undefined ? { schedules } : {}),
+    app: world.app,
+  } as TimedOutcome
 }
 
 /** Every claim, judged; the failures as text. A usage error is thrown, not reported. */
-async function judge(assertions: ReadonlyArray<Assertion>, outcome: Outcome): Promise<string[]> {
+async function judge(assertions: ReadonlyArray<Assertion<TimedOutcome>>, outcome: TimedOutcome): Promise<string[]> {
   const failures: string[] = []
   for (const assertion of assertions) {
     try {
@@ -315,31 +365,17 @@ async function tell(home: Home, read: QueryValue<any, any>, story: ReadonlyArray
         told.push(`after ${beat.events.map((e) => e.descriptor.name.name).join(", ")}`)
         continue
       }
-      const check: Assertion =
-        typeof beat.expected === "function" ? (beat.expected as Assertion) : resultOf(beat.expected)
-      const within = world.parts.within
-      const deadline = Date.now() + (within ?? 0)
-      for (;;) {
-        world.window()
-        const asked = await world.act(read)
-        if (asked.threw) throw asked.thrown
-        const outcome: Outcome = {
-          act: "query",
-          result: asked.result,
-          threw: false,
-          error: undefined,
-          ...world.observe(asked.actIdentifier),
-          app: world.parts,
-        }
-        const failures = await judge([check], outcome)
-        if (failures.length === 0) break
-        if (within === undefined || Date.now() > deadline) {
-          const where = told.length === 0 ? "at the start" : told.join(", ")
-          throw new ScenarioAssertionError(
-            [`storyline of ${read.descriptor.name.name}, beat ${index + 1} (${where})\n`, ...failures].join("\n"),
-          )
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 20))
+      const check: Assertion<TimedOutcome> =
+        typeof beat.expected === "function" ? (beat.expected as Assertion<TimedOutcome>) : resultOf(beat.expected)
+      world.window()
+      const asked = await world.act(read)
+      if (asked.threw) throw asked.thrown
+      const failures = await judge([check], outcomeOf(world, "query", asked))
+      if (failures.length > 0) {
+        const where = told.length === 0 ? "at the start" : told.join(", ")
+        throw new ScenarioAssertionError(
+          [`storyline of ${read.descriptor.name.name}, beat ${index + 1} (${where})\n`, ...failures].join("\n"),
+        )
       }
       told.push("shows")
     }
@@ -351,7 +387,7 @@ async function tell(home: Home, read: QueryValue<any, any>, story: ReadonlyArray
 // ── the sentence ───────────────────────────────────────────────────────────
 
 /** The scenario as a sentence, at the top of every failure. Derived, so it cannot drift. */
-function describe(steps: ReadonlyArray<Step>, assertions: ReadonlyArray<Assertion>): string {
+function describe(steps: ReadonlyArray<Step>, assertions: ReadonlyArray<Assertion<any>>): string {
   const clauses: string[] = []
   for (const step of steps) {
     if (step.kind === "given") clauses.push(`given ${step.events.map((e) => e.descriptor.name.name).join(", ")}`)

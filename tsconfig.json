@@ -18,6 +18,7 @@
   // Without it a `@ts-expect-error` claim would be decoration: nothing compiles
   // the tests.
   "files": [
+    "packages/test/src/__tests__/fixture-demand.types.ts",
     "packages/core/src/correlation/__tests__/correlation-demand.types.ts",
     "packages/core/src/event-sourcing/__tests__/snapshot-demand.types.ts",
     "packages/core/src/event-scheduling/__tests__/schedule-demand.types.ts",

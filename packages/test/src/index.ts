@@ -17,6 +17,7 @@ export {
 // ── the claims: functions of what happened ─────────────────────────────────
 export {
   type Outcome,
+  type TimedOutcome,
   type Assertion,
   type ErrorMatcher,
   events,
@@ -34,12 +35,18 @@ export {
   type Fixture,
   type ScenarioStart,
   type ScenarioActed,
+  type BeforeAct,
+  type AfterAct,
   type Judged,
   type Storyline,
+  type OutcomeOf,
   fixture,
 } from "./scenario.js"
 
-export { type FixtureParts, type AdvanceableClock, advanceableClock, FIXTURE_EPOCH } from "./fixture.js"
+export type { RecordedApp } from "./fixture.js"
+
+// ── time a test can move ───────────────────────────────────────────────────
+export { type AdvanceableClock, advanceableClock, FIXTURE_EPOCH } from "./clock.js"
 
 // ── the failure, which is the product ──────────────────────────────────────
 export { ScenarioAssertionError } from "./diff.js"
@@ -56,5 +63,4 @@ export {
   recordingEventStore,
   recordingCommandBus,
   recordingQueryBus,
-  controllableSchedulingEventStore,
 } from "./recording.js"

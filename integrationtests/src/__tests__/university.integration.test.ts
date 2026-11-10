@@ -107,14 +107,13 @@ function sitedCourses(site: HandlerSite & {
 
 /**
  * A fresh app per scenario, composed the way a process composes it — with the
- * log and the command bus the fixture observes wrapped in recorders.
+ * log and the command bus wrapped once, in recorders, where they are built.
  */
 function courseApp() {
   const eventStore = recordingEventStore(inMemoryEventStore())
   const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(unitOfWork), correlation))
   const queryBus = interceptingQueryBus(localQueryBus(unitOfWork), correlation)
-  const app = kronos(courses({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork }))
-  return fixture({ app, eventStore, commandBus, queryBus })
+  return fixture(kronos(courses({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork })))
 }
 
 describe("University — given, when, then", () => {

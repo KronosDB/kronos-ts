@@ -3,6 +3,7 @@ import {
   emptyMetadata,
   generateIdentifier,
   inMemoryEventStore,
+  inMemorySchedulingEventStore,
   qn,
   send,
   localCommandBus,
@@ -11,12 +12,8 @@ import {
   tagsOf,
 } from "@kronos-ts/core"
 import type { EventDescriptor, EventMessage } from "@kronos-ts/core"
-import {
-  controllableSchedulingEventStore,
-  recordingCommandBus,
-  recordingEventStore,
-  recordingQueryBus,
-} from "../recording.js"
+import { advanceableClock } from "../clock.js"
+import { recordingCommandBus, recordingEventStore, recordingQueryBus } from "../recording.js"
 import { CloseCourse, CourseClosed, GetCourseView } from "./_university.js"
 
 // ---------------------------------------------------------------------------
@@ -140,103 +137,119 @@ describe("recordingQueryBus", () => {
   })
 })
 
-describe("controllableSchedulingEventStore", () => {
-  it("fires nothing until the clock is moved and `due` is asked", async () => {
-    let now = FROZEN
-    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => now)
+describe("recordingEventStore with a clock", () => {
+  const clocked = () => {
+    const clock = advanceableClock(FROZEN)
+    return { clock, store: recordingEventStore(inMemoryEventStore(), { clock }) }
+  }
+  const courses = (events: ReadonlyArray<EventMessage>) => events.map((e) => (e.payload as { courseId: string }).courseId)
 
-    const token = await unitOfWork(() => now).execute((uow) =>
-      scheduler.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(now + 1_000), uow),
+  it("holds a deadline until `advance` reaches it, then appends it through the store, recorded", async () => {
+    const { clock, store } = clocked()
+
+    const token = await unitOfWork(clock).execute((uow) =>
+      store.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN + 1_000), uow),
     )
+    expect(store.schedules).toHaveLength(1)
 
-    expect(scheduler.schedules).toHaveLength(1)
-    expect(scheduler.due()).toHaveLength(0)
+    await store.advance(999)
+    expect(store.appended).toHaveLength(0)
 
-    now = FROZEN + 999
-    expect(scheduler.due()).toHaveLength(0)
-
-    now = FROZEN + 1_000
-    const fired = scheduler.due()
-    expect(fired).toHaveLength(1)
+    await store.advance(1)
+    expect(courses(store.appended)).toEqual(["cs-101"])
     // Born when it fires, not when it was arranged.
-    expect(fired[0]!.timestamp).toBe(FROZEN + 1_000)
+    expect(store.appended[0]!.timestamp).toBe(FROZEN + 1_000)
+    // In the real log, too.
+    expect(await store.getHeadPosition()).toBe(1n)
     // And never twice.
-    expect(scheduler.due()).toHaveLength(0)
-    expect(scheduler.schedules[0]!.status).toBe("fired")
+    await store.advance(10_000)
+    expect(store.appended).toHaveLength(1)
+    expect(store.schedules[0]!.status).toBe("fired")
     expect(token.id).toBeDefined()
+    expect(store.clock).toBe(clock)
   })
 
   it("fires in fire-time order, not in the order they were arranged", async () => {
-    let now = FROZEN
-    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => now)
+    const { clock, store } = clocked()
 
-    await unitOfWork(() => now).execute(async (uow) => {
-      await scheduler.schedule(
-        message(CourseClosed, { courseId: "late" }),
-        new Date(now + 900),
-        uow,
-      )
-      await scheduler.schedule(
-        message(CourseClosed, { courseId: "early" }),
-        new Date(now + 100),
-        uow,
-      )
+    await unitOfWork(clock).execute(async (uow) => {
+      await store.schedule(message(CourseClosed, { courseId: "late" }), new Date(FROZEN + 900), uow)
+      await store.schedule(message(CourseClosed, { courseId: "early" }), new Date(FROZEN + 100), uow)
     })
 
-    now = FROZEN + 1_000
-    expect(scheduler.due().map((e) => (e.payload as { courseId: string }).courseId)).toEqual([
-      "early",
-      "late",
-    ])
+    await store.advance(1_000)
+    expect(courses(store.appended)).toEqual(["early", "late"])
   })
 
   it("a cancelled schedule never fires, and says it was cancelled", async () => {
-    let now = FROZEN
-    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => now)
+    const { clock, store } = clocked()
 
-    await unitOfWork(() => now).execute(async (uow) => {
-      const token = await scheduler.schedule(
-        message(CourseClosed, { courseId: "cs-101" }),
-        new Date(now + 1_000),
-        uow,
-      )
-      expect(await scheduler.cancelSchedule(token, uow)).toEqual({ kind: "cancelled" })
+    await unitOfWork(clock).execute(async (uow) => {
+      const token = await store.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN + 1_000), uow)
+      expect(await store.cancelSchedule(token, uow)).toEqual({ kind: "cancelled" })
     })
 
-    now = FROZEN + 5_000
-    expect(scheduler.due()).toHaveLength(0)
-    expect(scheduler.schedules[0]!.status).toBe("cancelled")
+    await store.advance(5_000)
+    expect(store.appended).toHaveLength(0)
+    expect(store.schedules[0]!.status).toBe("cancelled")
   })
 
   it("a schedule a rolled-back handler asked for was never asked for", async () => {
-    let now = FROZEN
-    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => now)
+    const { clock, store } = clocked()
 
-    await unitOfWork(() => now)
+    await unitOfWork(clock)
       .execute(async (uow) => {
-        await scheduler.schedule(
-          message(CourseClosed, { courseId: "cs-101" }),
-          new Date(now + 1_000),
-          uow,
-        )
+        await store.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN + 1_000), uow)
         throw new Error("the handler blew up")
       })
       .catch(() => undefined)
 
-    now = FROZEN + 5_000
-    expect(scheduler.schedules).toHaveLength(0)
-    expect(scheduler.due()).toHaveLength(0)
+    await store.advance(5_000)
+    expect(store.schedules).toHaveLength(0)
+    expect(store.appended).toHaveLength(0)
+  })
+
+  it("holds the deadlines in place of the store's own scheduling tier", async () => {
+    const clock = advanceableClock(FROZEN)
+    const store = recordingEventStore(inMemorySchedulingEventStore(inMemoryEventStore(), { clock }), { clock })
+
+    await unitOfWork(clock).execute((uow) =>
+      store.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN), uow),
+    )
+    // A timer-driven tier would have appended by now; the held book waits for `advance`.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(store.appended).toHaveLength(0)
+    await store.advance(0)
+    expect(courses(store.appended)).toEqual(["cs-101"])
+  })
+
+  it("while held, arms nothing and cancels nothing", async () => {
+    const { clock, store } = clocked()
+
+    store.hold(true)
+    await unitOfWork(clock).execute((uow) =>
+      store.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN + 1_000), uow),
+    )
+    store.hold(false)
+
+    expect(store.schedules).toHaveLength(0)
   })
 
   it("refuses to be called outside a handler", async () => {
-    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => FROZEN)
-    await expect(
-      scheduler.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN)),
-    ).rejects.toThrow("requires a UnitOfWork")
+    const { store } = clocked()
+    await expect(store.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN))).rejects.toThrow(
+      "requires a UnitOfWork",
+    )
   })
 
   it("reports a token it has never seen as not-found", async () => {
-    const scheduler = controllableSchedulingEventStore(inMemoryEventStore(), () => FROZEN)
-    expect(await scheduler.cancelSchedule({ id: "nope" })).toEqual({ kind: "not-found" })
+    const { store } = clocked()
+    expect(await store.cancelSchedule({ id: "nope" })).toEqual({ kind: "not-found" })
+  })
+
+  it("without a clock, has no deadline book of its own", () => {
+    const store = recordingEventStore(inMemoryEventStore())
+    expect("advance" in store).toBe(false)
+    expect("schedules" in store).toBe(false)
   })
 })

@@ -989,58 +989,65 @@ command(descriptor, payload, metadata?): CommandValue    // the act, or an expec
 query(descriptor, payload, metadata?): QueryValue        // the act (a read is never a consequence)
 any(schema?: StandardSchemaV1): Any                      // the positional payload hole — renders as `*`
 
-// ── the fixture: a running app and the recorders it was built with
-fixture(parts | Promise<parts>): Fixture                 // ONE world: its first scenario takes the app over
-type FixtureParts = {
-  app: App                                               // what `kronos(…)` returned
-  eventStore: EventStore & EventRecording                // recordingEventStore(…) — the log the app uses
-  commandBus: CommandBus & CommandRecording              // recordingCommandBus(…) — the bus commands go through
-  queryBus?: QueryBus                                    // for a query act
-  clock?: () => number                                   // an AdvanceableClock, for `advance`
-  within?: Duration                                      // re-judge claims until they hold
-  close?(): Promise<void> | void                         // released after the app stops
-  [extra]: unknown                                       // rides along to `outcome.app`
-}
+// ── the fixture: the running app, and nothing else
+fixture<A extends RecordedApp>(app: A | Promise<A>): Fixture<OutcomeOf<A>>   // ONE world
+type RecordedApp = App<EventStore & EventRecording, CommandBus & CommandRecording, QueryBus>
   .given(...events)          → ScenarioStart             // history; repeatable, accumulates in order
-  .advance(duration)         → same shape                // at any joint, repeatable
+  .advance(duration)         → same shape                // at any joint, repeatable — ONLY when the log has a clock
   .when(command | query | event) → ScenarioActed         // the act
   .then(...assertions)       → Judged                    // RUNS; resolves with the Outcome
   .storyline(query(Q, p))    → .shows(expected | assertion) · .after(...events)   // a PromiseLike
-type Judged = Promise<Outcome> & { and: ScenarioStart }  // `and`: the same world, continued
+type Judged<O> = Promise<O> & { and: ScenarioStart<O> }  // `and`: the same world, continued
 
 // ── the claims: functions of what happened
-type Assertion = ((outcome: Outcome) => void | Promise<void>) & { label?: string; claimsError?: boolean }
-type Outcome = { act; result; threw; error; events; commands; schedules; app }   // app = the parts
+type Assertion<O = Outcome> = ((outcome: O) => void | Promise<void>) & { label?: string; claimsError?: boolean }
+type Outcome = { act; result; threw; error; events; commands; app }   // app = the App
+type TimedOutcome = Outcome & { schedules }                           // a log with a clock
 events(...eventValues) · noEvents()      // the EXACT, ORDERED list the act appended
 commands(...commandValues) · noCommands()// the same over dispatches, the act's own command excluded
 result(value)                            // deep-strict, `any()` holes; refused for an event act
 error(matcher: string | RegExp | ((e: unknown) => boolean))   // claims the throw
-scheduled(event(...), after) · cancelled(event(...))
+scheduled(event(...), after) · cancelled(event(...))          // Assertion<TimedOutcome>
 
 advanceableClock(from?) · FIXTURE_EPOCH · ScenarioAssertionError
 ```
 
 The test composes its app EXACTLY as `main.ts` does — `kronos({ … })` over entries
-that carry their stores and buses, wrapped the way production wraps them — and
-wraps in a recorder what the fixture should observe:
+that carry their stores and buses, wrapped the way production wraps them — with
+the infrastructure wrapped ONCE, at the top, where it is built, and hands the
+fixture the app:
 
 ```ts
 const clock = advanceableClock()
 const uow = () => unitOfWork(clock)
-const eventStore = recordingEventStore(controllableSchedulingEventStore(inMemoryEventStore(), clock))
+const eventStore = recordingEventStore(inMemoryEventStore(), { clock })
 const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(uow), correlation))
 const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
 const app = kronos(lists({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork: uow }))
 
-await fixture({ app, eventStore, commandBus, queryBus, clock })
-  .given(event(ItemAdded, a)).when(command(AddItem, b)).then(events(event(ItemAdded, b)))
+await fixture(app).given(event(ItemAdded, a)).when(command(AddItem, b)).then(events(event(ItemAdded, b)))
 ```
 
-The fixture BUILDS NOTHING. It takes the app's processors back from `kronos`
+The fixture BUILDS NOTHING and is handed NOTHING but the app. It finds the log
+and the buses on what the app reports (`app.eventStores`, `app.commandBuses`,
+`app.queryBuses`), takes the app's processors back from `kronos`
 (`app.processors`), folds history into them, performs the act, settles them,
-reads the recorders, and once the scenario is judged stops the app and calls
-`close`. A recorder it needs and was not handed is named in the error, with the
-line that applies it.
+reads the recorders, and once the scenario is judged stops the app — so a test
+app that holds more (a database to drop) releases it in its own `stop`.
+
+ITS TYPE IS THE CHECK. A fixture covers the whole app, so an app whose log or
+command bus is not recorded does not compile — a processor reading an unrecorded
+log included — and the refusal names the property the recorder adds. `advance`
+exists, and `scheduled`/`cancelled` are accepted, only on a fixture whose log was
+given a clock. The query bus need not be recorded: the fixture asks through it
+and claims nothing about what was asked. The same checks run when the scenario
+does, with the line that fixes each, for JavaScript and casts.
+
+ONE OF EACH. A fixture drives one module: an app reporting more than one event
+store, command bus or query bus is refused when the scenario runs, naming the
+count — build the fixture's app from the configuration of the module under test.
+(A composition-root function that should keep its objects' types — so the app
+reports a recorded log as recorded — is generic over what it is handed.)
 
 An assertion is a plain function — the built-ins are nothing more — so a
 convention lives where it belongs, beside the code that has it:
@@ -1057,29 +1064,35 @@ Semantics, pinned:
   production replay gives. While they are folded the recorders HOLD: a command an
   event handler dispatches is not sent (`send` resolves to `undefined`), a deadline
   it arms is not armed. The automations that would have fired already fired, long
-  ago. None of it is in the outcome.
+  ago. None of it is in the outcome. A fact is stamped from the log's clock when
+  it has one, and from now when it does not.
 - `when(command | query)` dispatches through the app's bus. `when(event)` means the
   event ARRIVES: appended, and the processors DO react.
 - After the act and after each `advance`: QUIESCE — drive every processor to the head
-  of the fixture's `eventStore`, settle, repeat until nothing moves. The app's
-  processors are expected to read that log.
-- `advance(d)` moves the clock, fires what is due through the controllable
-  scheduling tier, then quiesces. Without an advanceable clock, or without that
-  tier, it says which is missing.
-- `then` judges every claim and reports every failure. A throw no claim declares
-  (`error()`, or `claimsError: true`) surfaces as itself. Claims are judged once;
-  with `within` they are re-judged until they hold or it passes.
+  of the app's log, settle, repeat until nothing moves.
+- `advance(d)` moves the log's clock, appends through the log every deadline it
+  reached, then quiesces.
+- `then` judges every claim, once, and reports every failure. A throw no claim
+  declares (`error()`, or `claimsError: true`) surfaces as itself.
 - Awaiting a builder without `then` runs it with no claims — `then` makes the
   builder thenable, so this is defined rather than a hang.
 
 ```ts
 // recorders: thing-first decorators, same shape + a readable log, reset() and hold()
 recordingEventStore(store): E & { appended; reset(); hold(on) }      // hold: schedule/cancelSchedule inert
+recordingEventStore(store, { clock }):
+  E & { appended; reset(); hold(on) } & ScheduleStoreCapability & { clock; schedules; advance(d) }
+  // WITH A CLOCK it also holds the deadlines in memory — no timer — and `advance`
+  // fires them through the real store. The LOG stays real (in memory, Postgres,
+  // KronosDB); only the deadline book is held, in place of the store's own tier.
 recordingCommandBus(bus):   B & { dispatched; reset(); hold(on) }    // hold: dispatch neither sent nor recorded
 recordingQueryBus(bus):     B & { queried;    reset() }
-controllableSchedulingEventStore<E>(next: E, clock: () => number):
-  E & ScheduleStoreCapability & { schedules; due(); resetSchedules() }   // no timer, no sink
 ```
+ONE WRAPPER FOR TIME, not a scheduling tier of its own: there is no controllable
+`inMemorySchedulingEventStore` and no separate controllable store, because either
+would be a second way to say "the test owns the clock". Testing a real store's own
+scheduler belongs to the shared scheduling suite, not here.
+
 Unit level needs no fixture at all: folds are reduces over evolve tuples;
 handlers are functions called with an inline ctx record.
 

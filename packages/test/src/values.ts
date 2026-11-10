@@ -1,5 +1,6 @@
 import { qualifiedNameToString } from "@kronos-ts/core"
 import type {
+  App,
   CommandDescriptor,
   CommandMessage,
   EventDescriptor,
@@ -19,7 +20,7 @@ import {
   preview,
   ScenarioAssertionError,
 } from "./diff.js"
-import type { FixtureParts } from "./fixture.js"
+import type { Duration } from "./clock.js"
 import type { ScheduleRecord } from "./recording.js"
 
 // ---------------------------------------------------------------------------
@@ -37,8 +38,7 @@ import type { ScheduleRecord } from "./recording.js"
 // looking at.
 // ---------------------------------------------------------------------------
 
-/** Milliseconds. The unit a clock reads and `timestamp` carries. */
-export type Duration = number
+export type { Duration } from "./clock.js"
 
 // ── the payload hole ───────────────────────────────────────────────────────
 
@@ -180,11 +180,11 @@ export type Action = CommandValue<any, any> | QueryValue<any, any> | EventValue<
 // ── the outcome ────────────────────────────────────────────────────────────
 
 /**
- * What a scenario's act did, and the world it did it in — the one argument every
+ * What a scenario's act did, and the app it did it in — the one argument every
  * assertion takes.
  *
- * `events`, `commands` and `schedules` cover THE ACT ONLY: `given` is history and
- * is never in them, and the act's own command is not among `commands`.
+ * `events` and `commands` cover THE ACT ONLY: `given` is history and is never in
+ * them, and the act's own command is not among `commands`.
  */
 export type Outcome = {
   /** What the act was. */
@@ -199,14 +199,17 @@ export type Outcome = {
   readonly events: ReadonlyArray<EventMessage>
   /** Commands dispatched during the act, the act's own command excluded. */
   readonly commands: ReadonlyArray<CommandMessage>
-  /** Schedules armed, fired or cancelled during the act. */
+  /** The running app the fixture was handed. What a check reaches for when the built-ins are not enough. */
+  readonly app: App
+}
+
+/**
+ * The outcome in an app whose log holds its deadlines against a clock
+ * (`recordingEventStore(store, { clock })`): what the act did to them as well.
+ */
+export type TimedOutcome = Outcome & {
+  /** Deadlines armed, fired or cancelled during the act. */
   readonly schedules: ReadonlyArray<ScheduleRecord>
-  /**
-   * The running world: what the fixture was handed — the app, its log and buses,
-   * and anything else that rode along (a pool, a database client). What a check
-   * reaches for when the built-ins are not enough.
-   */
-  readonly app: FixtureParts
 }
 
 // ── assertions ─────────────────────────────────────────────────────────────
@@ -231,12 +234,16 @@ export type Outcome = {
  * throw — without one, a throw nobody claimed surfaces as itself, because the
  * real error is what the reader needs.
  */
-export type Assertion = ((outcome: Outcome) => void | Promise<void>) & {
+export type Assertion<O extends Outcome = Outcome> = ((outcome: O) => void | Promise<void>) & {
   readonly label?: string
   readonly claimsError?: boolean
 }
 
-function assertion(label: string, check: (outcome: Outcome) => void, claimsError = false): Assertion {
+function assertion<O extends Outcome = Outcome>(
+  label: string,
+  check: (outcome: O) => void,
+  claimsError = false,
+): Assertion<O> {
   return Object.assign(check, claimsError ? { label, claimsError } : { label })
 }
 
@@ -339,14 +346,28 @@ export function error(matcher: ErrorMatcher): Assertion {
  * The delay is relative on purpose: a test knows it asked for "thirty seconds
  * from now", and it does not know — and should not have to compute — which
  * absolute millisecond the handler ran at.
+ *
+ * A claim about deadlines, so only a fixture over a clocked log takes it: its
+ * outcome is a {@link TimedOutcome}.
  */
-export function scheduled(event: EventValue<any>, after: Duration): Assertion {
-  return assertion(`${localName(event.descriptor)} scheduled after ${after}ms`, ({ schedules }) =>
-    fail(judgeScheduled(event, after, schedules)),
+export function scheduled(event: EventValue<any>, after: Duration): Assertion<TimedOutcome> {
+  return assertion<TimedOutcome>(`${localName(event.descriptor)} scheduled after ${after}ms`, ({ schedules }) =>
+    fail(judgeScheduled(event, after, heldDeadlines(schedules, "scheduled"))),
   )
 }
 
-/** A schedule for this event was cancelled before it fired. */
-export function cancelled(event: EventValue<any>): Assertion {
-  return assertion(`${localName(event.descriptor)} cancelled`, ({ schedules }) => fail(judgeCancelled(event, schedules)))
+/** A schedule for this event was cancelled before it fired. Like {@link scheduled}, for a clocked log only. */
+export function cancelled(event: EventValue<any>): Assertion<TimedOutcome> {
+  return assertion<TimedOutcome>(`${localName(event.descriptor)} cancelled`, ({ schedules }) =>
+    fail(judgeCancelled(event, heldDeadlines(schedules, "cancelled"))),
+  )
+}
+
+/** The deadlines the outcome carries — refused, for JavaScript and casts, when the log holds none. */
+function heldDeadlines(schedules: ReadonlyArray<ScheduleRecord> | undefined, claim: string): ReadonlyArray<ScheduleRecord> {
+  if (schedules !== undefined) return schedules
+  throw new Error(
+    `@kronos-ts/test: \`${claim}(…)\` claims a deadline, but the app's log holds none it can see. ` +
+      "Give the recorder a clock: `recordingEventStore(store, { clock })`.",
+  )
 }
