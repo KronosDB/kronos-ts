@@ -56,7 +56,7 @@ import { metadataToProto, metadataFromProto } from "./metadata-conversion.js"
 import { outboundStream, type OutboundStream } from "./outbound-stream.js"
 import type { Command } from "./generated/command.js"
 import type { ShutdownLatch } from "./shutdown-latch.js"
-import { mapErrorCode, AxonServerErrorCode } from "./errors.js"
+import { mapErrorCode, AxonServerErrorCode, commandFailureCode, queryFailureCode } from "./errors.js"
 
 /** Default flow control settings — aligned with Java's 5000 permits. */
 const DEFAULT_PERMITS = 5000n
@@ -384,7 +384,7 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
       } catch (err) {
         // Decode, handler, and result-encoding failures belong to this request;
         // none should terminate the receive loop or reconnect the stream.
-        errorCode = AxonServerErrorCode.COMMAND_EXECUTION_ERROR
+        errorCode = commandFailureCode(err)
         errorMsg = err instanceof Error ? err.message : String(err)
       }
 
@@ -696,7 +696,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
           errorMsg = `No next handler for query "${proto.query}"`
         }
       } catch (err) {
-        errorCode = AxonServerErrorCode.QUERY_EXECUTION_ERROR
+        errorCode = queryFailureCode(err)
         errorMsg = err instanceof Error ? err.message : String(err)
       }
       // An unsubscribe or completion can overtake a slow initial handler.
@@ -778,7 +778,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
                 subscriptionQueryResponse: {
                   messageIdentifier: generateIdentifier(), subscriptionIdentifier: sub.subscriptionIdentifier,
                   completeExceptionally: {
-                    errorCode: AxonServerErrorCode.QUERY_EXECUTION_ERROR,
+                    errorCode: queryFailureCode(err),
                     errorMessage: { message: err instanceof Error ? err.message : String(err) },
                   },
                 },
@@ -1005,7 +1005,9 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
               explicitlyCompleted = true
               break
             } else if (response.completeExceptionally) {
-              throw new Error(response.completeExceptionally.errorMessage?.message ?? "Subscription query failed")
+              const { errorCode, errorMessage } = response.completeExceptionally
+              const message = errorMessage?.message ?? "Subscription query failed"
+              throw errorCode ? mapErrorCode(errorCode, message) : new Error(message)
             }
           }
         } catch (err) {
@@ -1137,12 +1139,12 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
               completeExceptionally: {
                 clientId: connection.config.clientId,
                 componentName: connection.config.componentName,
-                errorCode: AxonServerErrorCode.QUERY_EXECUTION_ERROR,
+                errorCode: queryFailureCode(error),
                 errorMessage: {
                   message: error.message,
                   location: connection.config.componentName,
                   details: [],
-                  errorCode: AxonServerErrorCode.QUERY_EXECUTION_ERROR,
+                  errorCode: queryFailureCode(error),
                 },
               },
             },

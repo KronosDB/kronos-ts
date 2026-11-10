@@ -17,7 +17,7 @@ import {
   type SerializedObject,
   type UnitOfWork,
 } from "@kronos-ts/core"
-import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
+import { KronosDbErrorCode, handlingFailureCode, mapErrorCode } from "./errors.js"
 import type { BusHost } from "./kronosdb.js"
 import { handlerClientId, handlerStream, type HandlerSession } from "./native-handlers.js"
 import {
@@ -246,7 +246,7 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
       } catch (err) {
         // Decode, handler, and result-encoding failures belong to this request;
         // none should terminate the receive loop or reconnect the stream.
-        errorCode = KronosDbErrorCode.COMMAND_EXECUTION_ERROR
+        errorCode = handlingFailureCode(err, KronosDbErrorCode.COMMAND_EXECUTION_ERROR)
         errorMessage = err instanceof Error ? err.message : String(err)
         result = undefined
       }

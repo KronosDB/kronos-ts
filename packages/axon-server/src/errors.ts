@@ -1,4 +1,4 @@
-import { AppendConditionError } from "@kronos-ts/core"
+import { AppendConditionError, isConflict } from "@kronos-ts/core"
 
 /**
  * Axon Server error codes — mapped from the Java framework's ErrorCode enum.
@@ -233,4 +233,21 @@ export function mapErrorCode(errorCode: string, message: string): AxonServerErro
 export function isTransientError(error: unknown): boolean {
   if (error instanceof AxonServerError || error instanceof ConcurrencyError) return error.transient
   return false
+}
+
+/**
+ * The code a command handler's failure goes back to its caller with: its
+ * contract kind's code when it has one, so the caller's `mapErrorCode`
+ * rebuilds the same kind, and the execution error otherwise.
+ */
+export function commandFailureCode(error: unknown): string {
+  return isConflict(error) ? AxonServerErrorCode.COMMAND_CONCURRENCY_ERROR : AxonServerErrorCode.COMMAND_EXECUTION_ERROR
+}
+
+/**
+ * The code a query handler's failure goes back with, as {@link commandFailureCode}.
+ * Axon Server has no query concurrency code, so a conflict is the event store's.
+ */
+export function queryFailureCode(error: unknown): string {
+  return isConflict(error) ? AxonServerErrorCode.CONCURRENCY_EXCEPTION : AxonServerErrorCode.QUERY_EXECUTION_ERROR
 }

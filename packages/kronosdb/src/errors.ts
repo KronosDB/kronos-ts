@@ -1,4 +1,4 @@
-import { AppendConditionError } from "@kronos-ts/core"
+import { AppendConditionError, isConflict } from "@kronos-ts/core"
 import { ErrorCode as NativeErrorCode, ErrorCodeNames as NativeErrorCodeNames } from "./protocol/kronosdb-protocol.js"
 
 /**
@@ -223,4 +223,13 @@ export function mapErrorCode(errorCode: string, message: string): KronosDbError 
 export function isTransientError(error: unknown): boolean {
   if (error instanceof KronosDbError || error instanceof ConcurrencyError) return error.transient
   return false
+}
+
+/**
+ * The code a handling failure goes back to its caller with: its contract
+ * kind's code when it has one, so the caller's `mapErrorCode` rebuilds the
+ * same kind, and `fallback` otherwise.
+ */
+export function handlingFailureCode(error: unknown, fallback: string): string {
+  return isConflict(error) ? KronosDbErrorCode.CONSISTENCY_CONDITION_VIOLATED : fallback
 }

@@ -150,7 +150,9 @@ AppendConditionError · isConflict(error) · type FailureKind   // THE ERROR CON
   // bus carries back, for a caller that handles it differently. A conflict: the append's condition was violated,
   // nothing was written, load again and decide again. Stores throw the class (or a subclass with their own detail);
   // callers ask with the guard, which reads a `kind` field, because a second installed copy of core builds a class
-  // the first's `instanceof` does not know.
+  // the first's `instanceof` does not know. A remote bus keeps the kind: a handler's conflict on another instance
+  // fails the caller's send or query as a conflict, carried as the protocol's own code (KronosDB KRONOS-2000, Axon
+  // Server AXONIQ-4004 for commands and AXONIQ-2000 for queries) or as `SerializedError.kind` (RabbitMQ).
 type StandardSchemaV1 · type InferOutput<S>    // the VENDORED schema contract, types only
 
 // SCHEMAS ARE STANDARD SCHEMA. Every payload/result/id constraint is

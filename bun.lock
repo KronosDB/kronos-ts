@@ -21,6 +21,7 @@
         "@kronos-ts/kronosdb": "workspace:*",
         "@kronos-ts/otlp": "workspace:*",
         "@kronos-ts/postgres": "workspace:*",
+        "@kronos-ts/rabbitmq": "workspace:*",
         "@kronos-ts/test": "workspace:*",
         "zod": "^4.3.6",
       },

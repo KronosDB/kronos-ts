@@ -28,7 +28,7 @@ import {
   type UnitOfWork,
   type UpdateHandler,
 } from "@kronos-ts/core"
-import { KronosDbErrorCode, mapErrorCode } from "./errors.js"
+import { KronosDbErrorCode, handlingFailureCode, mapErrorCode } from "./errors.js"
 import type { BusHost } from "./kronosdb.js"
 import { handlerClientId, handlerStream, type HandlerSession } from "./native-handlers.js"
 import {
@@ -300,7 +300,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
           errorMessage = `No next handler for query "${incoming.name}"`
         }
       } catch (err) {
-        errorCode = KronosDbErrorCode.QUERY_EXECUTION_ERROR
+        errorCode = handlingFailureCode(err, KronosDbErrorCode.QUERY_EXECUTION_ERROR)
         errorMessage = err instanceof Error ? err.message : String(err)
         result = undefined
       }
@@ -342,15 +342,13 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
     },
   })
 
-  const failureEvent = (message: string): SubscriptionEvent => ({
-    kind: "completeExceptionally",
-    value: {
-      clientId,
-      componentName,
-      errorCode: KronosDbErrorCode.QUERY_EXECUTION_ERROR,
-      error: { message, location: componentName, details: [], errorCode: KronosDbErrorCode.QUERY_EXECUTION_ERROR },
-    },
-  })
+  const failureEvent = (message: string, cause?: unknown): SubscriptionEvent => {
+    const errorCode = handlingFailureCode(cause, KronosDbErrorCode.QUERY_EXECUTION_ERROR)
+    return {
+      kind: "completeExceptionally",
+      value: { clientId, componentName, errorCode, error: { message, location: componentName, details: [], errorCode } },
+    }
+  }
 
   /** Send what permits allow of the held updates, then the terminal event if it was waiting behind them. */
   function drain(subscriptionId: string, sub: ProvidedSubscription): void {
@@ -412,7 +410,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
           errorMessage = `No next handler for query "${incoming.name}"`
         }
       } catch (err) {
-        errorCode = KronosDbErrorCode.QUERY_EXECUTION_ERROR
+        errorCode = handlingFailureCode(err, KronosDbErrorCode.QUERY_EXECUTION_ERROR)
         errorMessage = err instanceof Error ? err.message : String(err)
         result = undefined
       }
@@ -675,8 +673,10 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
               explicitlyCompleted = true
               terminal = true
               break
-            case "completeExceptionally":
-              throw new Error(event.value.error?.message ?? "Subscription query failed")
+            case "completeExceptionally": {
+              const message = event.value.error?.message ?? "Subscription query failed"
+              throw event.value.errorCode ? mapErrorCode(event.value.errorCode, message) : new Error(message)
+            }
           }
         } catch (error) {
           closeSubscription(error instanceof Error ? error : new Error(String(error)))
@@ -785,7 +785,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
         for (const [subscriptionId, sub] of provided) {
           if (sub.queryName !== queryName) continue
           if (filter && !applySubscriptionFilter(filter, sub.payload)) continue
-          finish(subscriptionId, sub, failureEvent(error.message))
+          finish(subscriptionId, sub, failureEvent(error.message, error))
         }
       }, uow)
     },
