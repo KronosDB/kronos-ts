@@ -1,4 +1,4 @@
-import type { MessagingLimits } from "@kronos-ts/core"
+import { UnavailableError, type MessagingLimits } from "@kronos-ts/core"
 import type { Channel, ChannelModel } from "amqplib"
 import {
   resolveRabbitMqConfig,
@@ -53,7 +53,7 @@ export function amqpChannelSource(
 
   return {
     async channel() {
-      if (closed) throw new Error("RabbitMQ connection is closed")
+      if (closed) throw new UnavailableError("RabbitMQ connection is closed")
       connection ??= connect(url).then((socket) => {
         socket.on?.("error", () => { /* Transports observe channel closure and reject their work. */ })
         return socket

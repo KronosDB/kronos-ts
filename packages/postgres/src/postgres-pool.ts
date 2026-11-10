@@ -30,6 +30,7 @@
  * store, which is why they are configured once here instead of six times.
  */
 
+import { markUnavailable } from "./errors.js"
 import { withRetry, type ResilienceConfig } from "./resilience.js"
 import type {
   ListenSubscription,
@@ -143,7 +144,7 @@ export function postgresPool(
     start(): Promise<void> {
       // Cached rather than flag-guarded: two concurrent start() calls must
       // await ONE connect, not race two pools into existence.
-      started ??= open()
+      started ??= open().catch(rethrowMarked)
       return started
     },
 
@@ -155,29 +156,31 @@ export function postgresPool(
 
     // `async` throughout so a use-before-start surfaces as a rejection, never
     // as a synchronous throw out of a call the caller is awaiting.
+    // Every statement goes through here, so this is where a lost connection,
+    // on any driver, gets core's `unavailable` kind (see `markUnavailable`).
     async query<R extends QueryRow = QueryRow>(sql: string, params?: unknown[]): Promise<R[]> {
-      return handle().query<R>(sql, params)
+      return handle().query<R>(sql, params).catch(rethrowMarked)
     },
 
     async queryOne<R extends QueryRow = QueryRow>(
       sql: string,
       params?: unknown[],
     ): Promise<R | null> {
-      return handle().queryOne<R>(sql, params)
+      return handle().queryOne<R>(sql, params).catch(rethrowMarked)
     },
 
     async transaction<T>(
       isolationLevel: IsolationLevel,
       fn: (tx: PostgresAdapterTransaction) => Promise<T>,
     ): Promise<T> {
-      return handle().transaction(isolationLevel, fn)
+      return handle().transaction(isolationLevel, fn).catch(rethrowMarked)
     },
 
     async listen(
       channel: string,
       onNotification: (payload: string | undefined) => void,
     ): Promise<ListenSubscription> {
-      return handle().listen(channel, onNotification)
+      return handle().listen(channel, onNotification).catch(rethrowMarked)
     },
 
     unwrap<T = unknown>(): T {
@@ -195,4 +198,8 @@ export function postgresPool(
       return this.close()
     },
   }
+}
+
+function rethrowMarked(error: unknown): never {
+  throw markUnavailable(error)
 }

@@ -12,6 +12,8 @@ import {
   AppendConditionError,
   generateIdentifier,
   isConflict,
+  isUnavailable,
+  UnavailableError,
   qn,
   type CommandBus,
   type CommandMessage,
@@ -29,10 +31,11 @@ export type BusContractTarget = {
   readonly instances: () => Promise<{ readonly handling: BusInstance; readonly calling: BusInstance }>
 }
 
-type Outcome = "conflict" | "plain"
+type Outcome = "conflict" | "unavailable" | "plain"
 
 function failWith(outcome: Outcome): never {
   if (outcome === "conflict") throw new AppendConditionError("lost the race")
+  if (outcome === "unavailable") throw new UnavailableError("the store is down")
   throw new RangeError("out of stock")
 }
 
@@ -71,7 +74,7 @@ export function busContract(target: BusContractTarget): void {
     const ready = `bus-contract.ready-${run}`
     commandBus.subscribe(ready, async () => "ready")
     queryBus.subscribe(`bus-contract.ready-query-${run}`, async () => "ready")
-    for (const outcome of ["conflict", "plain"] as const) {
+    for (const outcome of ["conflict", "unavailable", "plain"] as const) {
       commandBus.subscribe(`bus-contract.${outcome}-${run}`, async () => failWith(outcome))
       queryBus.subscribe(`bus-contract.${outcome}-query-${run}`, async () => failWith(outcome))
     }
@@ -111,5 +114,21 @@ export function busContract(target: BusContractTarget): void {
     const failure = await failureOf(calling.queryBus.query(query("plain-query")))
     assert.ok(!isConflict(failure), `expected no kind, got ${String(failure)}`)
     assert.match((failure as Error).message, /out of stock/)
+  })
+
+  it("fails a command as unavailable when its handler could not reach its store on the other instance", async () => {
+    const failure = await failureOf(calling.commandBus.dispatch(command("unavailable")))
+    assert.ok(isUnavailable(failure), `expected unavailable, got ${String(failure)}`)
+    assert.ok(!isConflict(failure))
+  })
+
+  it("fails a query as unavailable when its handler could not reach its store on the other instance", async () => {
+    const failure = await failureOf(calling.queryBus.query(query("unavailable-query")))
+    assert.ok(isUnavailable(failure), `expected unavailable, got ${String(failure)}`)
+  })
+
+  it("does not call a handler's plain failure unavailable", async () => {
+    assert.ok(!isUnavailable(await failureOf(calling.commandBus.dispatch(command("plain")))))
+    assert.ok(!isUnavailable(await failureOf(calling.queryBus.query(query("plain-query")))))
   })
 }

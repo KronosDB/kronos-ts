@@ -2,6 +2,8 @@
  * A shutdown latch that tracks in-flight operations and enables
  * graceful shutdown by draining pending work.
  */
+
+import { UnavailableError } from "@kronos-ts/core"
 export type ShutdownLatch = {
   onShutdown(callback: () => void): () => void
   registerActivity(): ActivityHandle
@@ -14,7 +16,8 @@ export type ActivityHandle = {
   end(): void
 }
 
-export class ShutdownInProgressError extends Error {
+/** Work refused because the connection is shutting down: core's unavailable, so a caller retries elsewhere or later. */
+export class ShutdownInProgressError extends UnavailableError {
   constructor(message: string = "Shutdown in progress") {
     super(message)
     this.name = "ShutdownInProgressError"

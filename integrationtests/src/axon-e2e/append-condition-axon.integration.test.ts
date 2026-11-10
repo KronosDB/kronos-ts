@@ -26,34 +26,69 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
   throw new Error("Timed out waiting for default context")
 }
 
+async function startAxonServer(): Promise<StartedTestContainer> {
+  const container = await new GenericContainer("axoniq/axonserver:2025.2.5")
+    .withExposedPorts(8024, 8124)
+    .withEnvironment({ AXONIQ_AXONSERVER_DEVMODE_ENABLED: "true" })
+    .withWaitStrategy(Wait.forHttp("/actuator/health", 8024).forStatusCode(200))
+    .start()
+  await initClusterWithDcb(container.getHost(), container.getMappedPort(8024))
+  return container
+}
+
 describe("append condition — axon server", () => {
   let container: StartedTestContainer
   let axon: Awaited<ReturnType<typeof axonServerConnection>>
   let eventStore: EventStore
+  const connections: Array<{ close(): Promise<void> }> = []
+  const containers: StartedTestContainer[] = []
 
-  beforeAll(async () => {
-    container = await new GenericContainer("axoniq/axonserver:2025.2.5")
-      .withExposedPorts(8024, 8124)
-      .withEnvironment({ AXONIQ_AXONSERVER_DEVMODE_ENABLED: "true" })
-      .withWaitStrategy(Wait.forHttp("/actuator/health", 8024).forStatusCode(200))
-      .start()
-    await initClusterWithDcb(container.getHost(), container.getMappedPort(8024))
-    axon = await axonServerConnection({
+  const connect = async (host: string, port: number) => {
+    const opened = await axonServerConnection({
       componentName: "append-condition-test",
-      host: container.getHost(),
-      port: container.getMappedPort(8124),
+      host,
+      port,
       context: "default",
       serializer: jsonSerializer(),
+      readTimeoutMs: 5_000,
     })
+    connections.push(opened)
+    return opened
+  }
+
+  beforeAll(async () => {
+    container = await startAxonServer()
+    axon = await connect(container.getHost(), container.getMappedPort(8124))
     await axon.start()
     eventStore = axonServerEventStore(axon, "default")
   }, 180_000)
 
   afterAll(async () => {
-    await axon?.close()
+    for (const opened of connections) await opened.close().catch(() => {})
+    for (const started of containers) await started.stop().catch(() => {})
     await container?.stop()
   })
 
   appendConditionScenarios({ eventStore: () => eventStore, exact: false })
-  eventStoreContract({ eventStore: () => eventStore })
+  eventStoreContract({
+    eventStore: () => eventStore,
+    unreachable: async (port) => axonServerEventStore(await connect("127.0.0.1", port), "default"),
+    stopped: async () => {
+      const own = await startAxonServer()
+      containers.push(own)
+      const store = axonServerEventStore(await connect(own.getHost(), own.getMappedPort(8124)), "default")
+      // A freshly initialised context takes a moment to serve reads.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await store.source({ query: { tags: { subject: "warm-up" } } })
+          break
+        } catch (error) {
+          if (attempt >= 60) throw error
+          await new Promise((r) => setTimeout(r, 500))
+        }
+      }
+      await own.stop()
+      return store
+    },
+  })
 })

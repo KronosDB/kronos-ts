@@ -11,6 +11,7 @@ import {
   positiveInteger,
   qualifiedNameFromString,
   qualifiedNameToString,
+  UnavailableError,
   type CommandBus,
   type CommandMessage,
   type QualifiedName,
@@ -282,7 +283,7 @@ export function kronosDbCommandBus<U extends UnitOfWork = UnitOfWork>(
         if (done) return
         done = true
         native?.cancel()
-        reject(new Error(`Messaging deadline exceeded after ${requestTimeoutMs}ms`))
+        reject(new UnavailableError(`Messaging deadline exceeded after ${requestTimeoutMs}ms`))
       }, requestTimeoutMs)
 
       const sink: FrameSink = (kind, _flags, buf, start, end) => {

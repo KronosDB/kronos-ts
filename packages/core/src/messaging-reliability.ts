@@ -1,3 +1,5 @@
+import { UnavailableError } from "./messaging/failures.js"
+
 /** Limits reject excess work immediately: queued children must never wait for parents' slots. */
 export type MessagingLimits = {
   /** Per bus/transport. Default: 128. Includes handlers still running after caller timeout. */
@@ -18,7 +20,10 @@ export type MessagingActivity = {
   limit: number
 }
 
+/** A bus or transport at capacity: unavailable, so a caller retries later. */
 export class MessagingOverloadedError extends Error {
+  readonly kind: "unavailable" = "unavailable"
+
   constructor(name: string, limit: number) {
     super(`${name} overloaded: capacity ${limit} exhausted`)
     this.name = "MessagingOverloadedError"
@@ -104,7 +109,7 @@ export async function withMessagingTimeout<T>(
       work,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`${description} timed out after ${timeoutMs}ms`)),
+          () => reject(new UnavailableError(`${description} timed out after ${timeoutMs}ms`)),
           timeoutMs,
         )
       }),
@@ -124,7 +129,7 @@ export function messagingDeadline(timeoutMs: number): {
   if (timeoutMs > 2_147_483_647) throw new RangeError("timeoutMs exceeds the timer range")
   const controller = new AbortController()
   const timer = setTimeout(
-    () => controller.abort(new Error(`Messaging deadline exceeded after ${timeoutMs}ms`)),
+    () => controller.abort(new UnavailableError(`Messaging deadline exceeded after ${timeoutMs}ms`)),
     timeoutMs,
   )
   return {

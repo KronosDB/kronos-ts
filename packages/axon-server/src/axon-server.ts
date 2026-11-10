@@ -1,5 +1,5 @@
 import { streamRecovery } from "./stream-recovery.js"
-import { messagingAdmission, messagingDeadline, positiveInteger, type MessagingLimits } from "@kronos-ts/core"
+import { messagingAdmission, messagingDeadline, positiveInteger, UnavailableError, type MessagingLimits } from "@kronos-ts/core"
 /**
  * The Axon Server command and query buses.
  *
@@ -56,7 +56,7 @@ import { metadataToProto, metadataFromProto } from "./metadata-conversion.js"
 import { outboundStream, type OutboundStream } from "./outbound-stream.js"
 import type { Command } from "./generated/command.js"
 import type { ShutdownLatch } from "./shutdown-latch.js"
-import { mapErrorCode, AxonServerErrorCode, commandFailureCode, queryFailureCode } from "./errors.js"
+import { mapErrorCode, AxonServerErrorCode, commandFailureCode, fromGrpc, queryFailureCode } from "./errors.js"
 
 /** Default flow control settings — aligned with Java's 5000 permits. */
 const DEFAULT_PERMITS = 5000n
@@ -476,6 +476,10 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
         }
 
         return deserializePayload(response.payload?.data, response.payload?.type, response.payload?.revision)
+      } catch (err) {
+        // The deadline's own reason, not the client's AbortError, says why the call ended.
+        if (deadline?.signal.aborted && deadline.signal.reason instanceof Error) throw deadline.signal.reason
+        throw fromGrpc(err)
       } finally {
         deadline?.close()
         admission?.end()
@@ -766,8 +770,8 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
           const sub = request.subscribe
           if (sub?.subscriptionIdentifier && sub.queryRequest) {
             try {
-              if (shutdownLatch.shuttingDown) throw new Error("Shutdown in progress")
-              if (handlerSubscriptions.size >= 1024 && !handlerSubscriptions.has(sub.subscriptionIdentifier)) throw new Error("Provider subscription capacity exhausted")
+              if (shutdownLatch.shuttingDown) throw new UnavailableError("Shutdown in progress")
+              if (handlerSubscriptions.size >= 1024 && !handlerSubscriptions.has(sub.subscriptionIdentifier)) throw new UnavailableError("Provider subscription capacity exhausted")
               const proto = sub.queryRequest
               handlerSubscriptions.set(sub.subscriptionIdentifier, {
                 queryName: proto.query,
@@ -859,6 +863,10 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
         if (received) return result
 
         throw new Error(`No response for query "${queryName}"`)
+      } catch (err) {
+        // The deadline's own reason, not the client's AbortError, says why the call ended.
+        if (deadline?.signal.aborted && deadline.signal.reason instanceof Error) throw deadline.signal.reason
+        throw fromGrpc(err)
       } finally {
         deadline?.close()
         admission?.end()
@@ -883,8 +891,8 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
       unstamped: QueryMessage,
       bufferSize?: number,
     ): SubscriptionQueryResult {
-      if (shutdownLatch.shuttingDown) throw new Error("Messaging shutdown in progress")
-      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
+      if (shutdownLatch.shuttingDown) throw new UnavailableError("Messaging shutdown in progress")
+      if (subscriptions.size >= 1024) throw new UnavailableError("Subscription capacity 1024 exhausted")
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
@@ -954,8 +962,8 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
       })
       let initialSettled = false
       let explicitlyCompleted = false
-      const initialTimer = setTimeout(() => closeSubscription(new Error("Subscription initial result timed out")), requestTimeoutMs)
-      const removeShutdown = shutdownLatch.onShutdown(() => closeSubscription(new Error("Messaging shutdown in progress")))
+      const initialTimer = setTimeout(() => closeSubscription(new UnavailableError("Subscription initial result timed out")), requestTimeoutMs)
+      const removeShutdown = shutdownLatch.onShutdown(() => closeSubscription(new UnavailableError("Messaging shutdown in progress")))
       // Callers may consume updates without awaiting the initial result. Keep
       // the original promise rejectable without an unhandled rejection on close.
       void initialResult.catch(() => {})
@@ -1045,8 +1053,8 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
       unstamped: QueryMessage,
       bufferSize?: number,
     ): AsyncIterable<unknown> & { close(): void } {
-      if (shutdownLatch.shuttingDown) throw new Error("Messaging shutdown in progress")
-      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
+      if (shutdownLatch.shuttingDown) throw new UnavailableError("Messaging shutdown in progress")
+      if (subscriptions.size >= 1024) throw new UnavailableError("Subscription capacity 1024 exhausted")
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       const queryId = message.identifier
       if (subscriptions.has(queryId)) {
@@ -1055,7 +1063,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
 
       let removeShutdown: (() => void) | undefined
       const handler = updateHandler(message, bufferSize, () => { subscriptions.delete(queryId); removeShutdown?.() })
-      removeShutdown = shutdownLatch.onShutdown(() => handler.completeExceptionally(new Error("Messaging shutdown in progress")))
+      removeShutdown = shutdownLatch.onShutdown(() => handler.completeExceptionally(new UnavailableError("Messaging shutdown in progress")))
       subscriptions.set(queryId, handler)
 
       return {

@@ -82,7 +82,7 @@ export { type Tag, tag, tagsFromRecord } from "./messaging/tag.js"
 export { generateIdentifier } from "./messaging/identifier.js"
 
 export { type SerializedError } from "./messaging/serialized-error.js"
-export { type FailureKind, AppendConditionError, isConflict } from "./messaging/failures.js"
+export { type FailureKind, AppendConditionError, isConflict, UnavailableError, isUnavailable } from "./messaging/failures.js"
 
 // SCHEMAS ARE STANDARD SCHEMA, not any one library's type. Descriptor payload,
 // result and id constraints are `StandardSchemaV1`, so zod, valibot, arktype

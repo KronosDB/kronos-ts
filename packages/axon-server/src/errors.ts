@@ -1,4 +1,4 @@
-import { AppendConditionError, isConflict } from "@kronos-ts/core"
+import { AppendConditionError, isConflict, isUnavailable } from "@kronos-ts/core"
 
 /**
  * Axon Server error codes — mapped from the Java framework's ErrorCode enum.
@@ -62,18 +62,32 @@ export type AxonServerErrorCodeValue = typeof AxonServerErrorCode[keyof typeof A
 // ---------------------------------------------------------------------------
 
 /**
+ * The codes that mean the server or a handler could not serve the request
+ * now, and the same request later may succeed: core's `unavailable` kind.
+ */
+const UNAVAILABLE_CODES = new Set<string>([
+  AxonServerErrorCode.CONNECTION_FAILED,
+  AxonServerErrorCode.NO_EVENT_STORE_MASTER_AVAILABLE,
+  AxonServerErrorCode.COMMAND_DISPATCH_ERROR,
+  AxonServerErrorCode.QUERY_DISPATCH_ERROR,
+])
+
+/**
  * Base error for all Axon Server errors. Carries the error code
  * and whether the error is transient (retryable).
  */
 export class AxonServerError extends Error {
   readonly errorCode: string
   readonly transient: boolean
+  /** Core's `unavailable` kind, when the code says to retry later, so `isUnavailable` recognises it. */
+  readonly kind?: "unavailable"
 
-  constructor(message: string, errorCode: string, transient: boolean) {
-    super(message)
+  constructor(message: string, errorCode: string, transient: boolean, options?: ErrorOptions) {
+    super(message, options)
     this.name = "AxonServerError"
     this.errorCode = errorCode
     this.transient = transient
+    if (UNAVAILABLE_CODES.has(errorCode)) this.kind = "unavailable"
   }
 }
 
@@ -142,7 +156,7 @@ export class QueryDispatchError extends AxonServerError {
  * {@link AppendConditionError}, so `isConflict` recognises it, with Axon
  * Server's code. Ask with `isConflict` from `@kronos-ts/core` rather than this class.
  *
- * It is not a `AxonServerError`: it carries the same `errorCode` and
+ * It is not an `AxonServerError`: it carries the same `errorCode` and
  * `transient` fields, and `isTransientError` answers for it.
  */
 export class ConcurrencyError extends AppendConditionError {
@@ -158,8 +172,8 @@ export class ConcurrencyError extends AppendConditionError {
 
 /** Connection to Axon Server failed. */
 export class ConnectionFailedError extends AxonServerError {
-  constructor(message: string) {
-    super(message, AxonServerErrorCode.CONNECTION_FAILED, true)
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, AxonServerErrorCode.CONNECTION_FAILED, true, options)
     this.name = "ConnectionFailedError"
   }
 }
@@ -182,7 +196,6 @@ const TRANSIENT_CODES = new Set<string>([
   AxonServerErrorCode.COMMAND_DISPATCH_ERROR,
   AxonServerErrorCode.QUERY_DISPATCH_ERROR,
   AxonServerErrorCode.CONNECTION_FAILED,
-  AxonServerErrorCode.GRPC_MESSAGE_TOO_LARGE,
   AxonServerErrorCode.CONCURRENCY_EXCEPTION,
   AxonServerErrorCode.COMMAND_CONCURRENCY_ERROR,
   AxonServerErrorCode.NO_EVENT_STORE_MASTER_AVAILABLE,
@@ -213,8 +226,10 @@ export function mapErrorCode(errorCode: string, message: string): AxonServerErro
     case AxonServerErrorCode.COMMAND_CONCURRENCY_ERROR:
       return new ConcurrencyError(message, errorCode)
     case AxonServerErrorCode.CONNECTION_FAILED:
-    case AxonServerErrorCode.GRPC_MESSAGE_TOO_LARGE:
       return new ConnectionFailedError(message)
+    case AxonServerErrorCode.GRPC_MESSAGE_TOO_LARGE:
+      // Too large is too large on every retry: not a connection failure.
+      return new AxonServerError(message, errorCode, false)
     case AxonServerErrorCode.AUTHENTICATION_TOKEN_MISSING:
     case AxonServerErrorCode.AUTHENTICATION_INVALID_TOKEN:
       return new AuthenticationError(message, errorCode)
@@ -228,7 +243,12 @@ export function mapErrorCode(errorCode: string, message: string): AxonServerErro
 }
 
 /**
- * Check if an error is transient (retryable).
+ * Whether the error's own `transient` flag is set. That flag is the protocol's
+ * word and does not mean "retry later": a handler's business failure is
+ * transient too.
+ *
+ * @deprecated Use `isUnavailable` (retry later) and `isConflict` (load again)
+ * from `@kronos-ts/core`.
  */
 export function isTransientError(error: unknown): boolean {
   if (error instanceof AxonServerError || error instanceof ConcurrencyError) return error.transient
@@ -241,7 +261,9 @@ export function isTransientError(error: unknown): boolean {
  * rebuilds the same kind, and the execution error otherwise.
  */
 export function commandFailureCode(error: unknown): string {
-  return isConflict(error) ? AxonServerErrorCode.COMMAND_CONCURRENCY_ERROR : AxonServerErrorCode.COMMAND_EXECUTION_ERROR
+  if (isConflict(error)) return AxonServerErrorCode.COMMAND_CONCURRENCY_ERROR
+  if (isUnavailable(error)) return AxonServerErrorCode.CONNECTION_FAILED
+  return AxonServerErrorCode.COMMAND_EXECUTION_ERROR
 }
 
 /**
@@ -249,5 +271,23 @@ export function commandFailureCode(error: unknown): string {
  * Axon Server has no query concurrency code, so a conflict is the event store's.
  */
 export function queryFailureCode(error: unknown): string {
-  return isConflict(error) ? AxonServerErrorCode.CONCURRENCY_EXCEPTION : AxonServerErrorCode.QUERY_EXECUTION_ERROR
+  if (isConflict(error)) return AxonServerErrorCode.CONCURRENCY_EXCEPTION
+  if (isUnavailable(error)) return AxonServerErrorCode.CONNECTION_FAILED
+  return AxonServerErrorCode.QUERY_EXECUTION_ERROR
+}
+
+/** gRPC statuses that mean the server could not answer now: UNAVAILABLE and DEADLINE_EXCEEDED. */
+const UNAVAILABLE_GRPC_STATUSES = new Set([14, 4])
+
+/**
+ * The error a failed gRPC call is reported as: a `ConnectionFailedError`, with
+ * the client's error as its cause, when the server could not answer now, and
+ * the error itself otherwise.
+ */
+export function fromGrpc(error: unknown): unknown {
+  const code = (error as { code?: unknown } | null)?.code
+  if (error instanceof Error && error.name === "ClientError" && typeof code === "number" && UNAVAILABLE_GRPC_STATUSES.has(code)) {
+    return new ConnectionFailedError(error.message, { cause: error })
+  }
+  return error
 }
