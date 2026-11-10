@@ -1,5 +1,24 @@
 # @kronos-ts/core
 
+## 0.9.0
+
+### Minor Changes
+
+- c89309c: The app returned by `kronos()` reports what its handlers were wired with: `app.eventStores`, `app.commandBuses` and `app.queryBuses` are the distinct stores and buses its entries and processors carry, by object identity, in the order first met. Each keeps its type, including every capability its wrappers added; a list that is absent contributes none. `App` takes these as type parameters (`App<S, C, Q>`), defaulting to the plain store and buses.
+
+  `EventProcessor` keeps the type of the log it reads (`EventProcessor<U, S>`, `S` defaulting to `EventStore`), and `concurrent`, `deadLettering` and `segmented` return the processor value they were given with its type unchanged, as `batched` and `polling` already did.
+
+- 884cc2b: `AppendConditionError` carries `kind: "conflict"`, and the new `isConflict(error)` recognises a conflict by that field, including one thrown by another installed copy of core. `AppendConditionError` and the `FailureKind` type are exported from the package root.
+- ad65e6e: A command handler returns its result as plain literals: `return { ok: false, rejection: "FULL" }` is accepted for a result declaring those literals, with no `as const` and no annotated return type. Before, every literal in the return widened (`{ ok: boolean; rejection: string }`) and the call was refused.
+
+  `commandHandler` has one signature where it had four overloads: `<P, const R = undefined, C>(descriptor, handler | { handler, appendCondition })`. An array literal in the return may come back readonly (`{ items: [id] }` is `readonly [string]`), and the handler's return type accepts that. **Breaking** only for a call that passes type arguments to a command without a result: the context type is now the third type argument, not the second (`commandHandler<P, undefined, MyContext>(…)`).
+
+### Patch Changes
+
+- e9bb537: `InferResult<typeof D.result>` is the result schema's output. `result` is optional on a descriptor, so `typeof D.result` includes `undefined`, and `InferResult` used to turn that into `unknown`. It now sets the `undefined` aside. A descriptor without a result still gives `unknown`. `ctx.query` answers `InferResult` too, as `query()` does, so a host can implement `ctx.send` and `ctx.query` with `send` and `query`.
+- ee507a7: A processor stopped while `start()` was still claiming its segments, then started again, could run two workers on one segment and handle every event twice. It happened when claiming crosses a round trip, as with the Postgres token store. A claim round now belongs to the start that began it: one that answers after a stop gives its claims back, and `stop()` (so also the next `start()`) waits for it.
+- cb5af13: An event appended while a processor was finishing a batch could wait until the next event arrived before being handled. It happened when the processor had already looked for more events and was still writing its position, as with the Postgres token store after a stretch of events it does not handle. A wake-up during a batch now makes the processor look again once the batch is done.
+
 ## 0.8.0
 
 ### Minor Changes

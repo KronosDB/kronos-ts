@@ -1,5 +1,21 @@
 # @kronos-ts/kronosdb
 
+## 0.12.0
+
+### Minor Changes
+
+- 884cc2b: `ConcurrencyError` extends core's `AppendConditionError`, so `isConflict` recognises a KronosDB conflict. It is no longer an `instanceof KronosDbError`; it keeps its `errorCode` and `transient` fields, and `isTransientError` still returns true for it.
+
+### Patch Changes
+
+- Updated dependencies [c89309c]
+- Updated dependencies [884cc2b]
+- Updated dependencies [ad65e6e]
+- Updated dependencies [e9bb537]
+- Updated dependencies [ee507a7]
+- Updated dependencies [cb5af13]
+  - @kronos-ts/core@0.9.0
+
 ## 0.11.0
 
 ### Minor Changes

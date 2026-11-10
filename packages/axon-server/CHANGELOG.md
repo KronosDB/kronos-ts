@@ -1,5 +1,21 @@
 # @kronos-ts/axon-server
 
+## 0.9.0
+
+### Minor Changes
+
+- 884cc2b: The event store throws `ConcurrencyError` when Axon Server refuses an append whose condition was violated, instead of the gRPC client's error. `ConcurrencyError` extends core's `AppendConditionError`, so `isConflict` recognises it, and is no longer an `instanceof AxonServerError`; it keeps its `errorCode` and `transient` fields, and `isTransientError` still returns true for it.
+
+### Patch Changes
+
+- Updated dependencies [c89309c]
+- Updated dependencies [884cc2b]
+- Updated dependencies [ad65e6e]
+- Updated dependencies [e9bb537]
+- Updated dependencies [ee507a7]
+- Updated dependencies [cb5af13]
+  - @kronos-ts/core@0.9.0
+
 ## 0.8.0
 
 ### Minor Changes

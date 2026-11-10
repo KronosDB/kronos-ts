@@ -1,5 +1,21 @@
 # @kronos-ts/postgres
 
+## 0.20.0
+
+### Minor Changes
+
+- 884cc2b: A violated append condition throws a subclass of core's `AppendConditionError`, so `isConflict` and `instanceof` core's class recognise it. The package's own `AppendConditionError` export is deprecated.
+
+### Patch Changes
+
+- Updated dependencies [c89309c]
+- Updated dependencies [884cc2b]
+- Updated dependencies [ad65e6e]
+- Updated dependencies [e9bb537]
+- Updated dependencies [ee507a7]
+- Updated dependencies [cb5af13]
+  - @kronos-ts/core@0.9.0
+
 ## 0.19.0
 
 ### Minor Changes
