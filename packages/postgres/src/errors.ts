@@ -1,3 +1,5 @@
+import { AppendConditionError as CoreAppendConditionError } from "@kronos-ts/core"
+
 /**
  * SQLSTATE-style code tagged onto the error when a DCB append condition is
  * violated. The conflict check in `checkAndInsert` detects the violation and
@@ -12,22 +14,18 @@
 export const KRONOS_DCB_VIOLATION_SQLSTATE = "KR001"
 
 /**
- * Thrown when an append condition is violated — optimistic concurrency
- * failure. Structurally mirrors `@kronos-ts/core`'s
- * AppendConditionError so callers that catch either get equivalent
- * behaviour, but we ship our own class so that the SQLSTATE-catch
- * boundary lives inside this package's import graph.
+ * Core's {@link CoreAppendConditionError}, with the conflict count in its
+ * message. Throw and catch core's class, and ask with core's `isConflict`:
+ * this subclass stays for one release and then goes.
+ *
+ * @deprecated Use `AppendConditionError` and `isConflict` from `@kronos-ts/core`.
  */
-export class AppendConditionError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "AppendConditionError"
-  }
-
-  static fromConflictCount(count: number, afterPosition: bigint): AppendConditionError {
+export class AppendConditionError extends CoreAppendConditionError {
+  static fromConflictCount(count: number, afterPosition: bigint, options?: ErrorOptions): AppendConditionError {
     return new AppendConditionError(
       `Append condition violated: ${count} conflicting event(s) ` +
         `found after position ${afterPosition}`,
+      options,
     )
   }
 }

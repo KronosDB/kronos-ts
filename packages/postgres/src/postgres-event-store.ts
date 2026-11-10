@@ -273,7 +273,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
               throw err
             }
             if ((err as { code?: string }).code === "23505") {
-              throw AppendConditionError.fromConflictCount(0, condition?.marker.position ?? -1n)
+              throw AppendConditionError.fromConflictCount(0, condition?.marker.position ?? -1n, { cause: err })
             }
             throw err
           }
@@ -366,7 +366,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       const translateError = (err: unknown): never => {
         if (isDcbViolation(err)) throw err
         if ((err as { code?: string }).code === "23505") {
-          throw AppendConditionError.fromConflictCount(0, condition?.marker.position ?? -1n)
+          throw AppendConditionError.fromConflictCount(0, condition?.marker.position ?? -1n, { cause: err })
         }
         throw err
       }

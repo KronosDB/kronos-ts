@@ -337,15 +337,15 @@ postgresPool(connectionString, {
 
 ## SQLSTATE
 
-DCB violations raise SQLSTATE `KR001`. The adapter catches this and throws `AppendConditionError`. To detect violations from your own code:
+DCB violations raise SQLSTATE `KR001`. The adapter catches this and throws core's `AppendConditionError`, the conflict every store throws. To detect violations from your own code, ask with core's guard:
 
 ```typescript
-import { AppendConditionError } from "@kronos-ts/postgres"
+import { isConflict } from "@kronos-ts/core"
 
 try {
   await eventStore.append(events, condition)
 } catch (e) {
-  if (e instanceof AppendConditionError) {
+  if (isConflict(e)) {
     // Re-source the state to get a fresh marker, then retry.
   }
 }

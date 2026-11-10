@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { jsonSerializer, markerAt, noMarker, qn, type EventMessage } from "@kronos-ts/core"
+import { AppendConditionError, isConflict, jsonSerializer, markerAt, noMarker, qn, type EventMessage } from "@kronos-ts/core"
 import { connectToKronosDb, type KronosDbConnection } from "../connection.js"
 import { ConcurrencyError, KronosDbRequestError } from "../errors.js"
 import { kronosDbEventStore } from "../kronosdb-event-store.js"
@@ -98,12 +98,14 @@ describe("kronosDbEventStore (native)", () => {
       expect(frame.body.condition?.marker).toBe(0n)
     })
 
-    it("turns AppendConflict into a ConcurrencyError that names the position", async () => {
+    it("turns AppendConflict into a conflict that names the position", async () => {
       const { kdb } = await against((conn, r) => conn.reply(r.stream, FLAG_END, { name: "AppendConflict", body: { conflictingPosition: 12n } }))
       const refusal = await kronosDbEventStore(kdb)
         .append([sample("a")], { query: { tags: { orderId: "a" } }, marker: markerAt(3n) })
         .then(() => undefined, (e) => e)
       expect(refusal).toBeInstanceOf(ConcurrencyError)
+      expect(refusal).toBeInstanceOf(AppendConditionError)
+      expect(isConflict(refusal)).toBe(true)
       expect(refusal.message).toBe("consistency condition violated: conflicting event at position 12")
     })
 
@@ -145,6 +147,7 @@ describe("kronosDbEventStore (native)", () => {
       expect(refusal).toBeInstanceOf(KronosDbRequestError)
       expect(refusal.status).toBe("unavailable")
       expect(refusal.transient).toBe(true)
+      expect(isConflict(refusal)).toBe(false)
     })
   })
 

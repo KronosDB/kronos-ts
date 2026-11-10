@@ -1,3 +1,5 @@
+import { AppendConditionError } from "@kronos-ts/core"
+
 /**
  * Axon Server error codes — mapped from the Java framework's ErrorCode enum.
  *
@@ -135,11 +137,22 @@ export class QueryDispatchError extends AxonServerError {
   }
 }
 
-/** Optimistic concurrency violation (transient — retry with fresh state). */
-export class ConcurrencyError extends AxonServerError {
-  constructor(message: string) {
-    super(message, AxonServerErrorCode.CONCURRENCY_EXCEPTION, true)
+/**
+ * Axon Server refused an append whose condition was violated: core's
+ * {@link AppendConditionError}, so `isConflict` recognises it, with Axon
+ * Server's code. Ask with `isConflict` from `@kronos-ts/core` rather than this class.
+ *
+ * It is not a `AxonServerError`: it carries the same `errorCode` and
+ * `transient` fields, and `isTransientError` answers for it.
+ */
+export class ConcurrencyError extends AppendConditionError {
+  readonly errorCode: string
+  readonly transient: boolean = true
+
+  constructor(message: string, errorCode: string = AxonServerErrorCode.CONCURRENCY_EXCEPTION, options?: ErrorOptions) {
+    super(message, options)
     this.name = "ConcurrencyError"
+    this.errorCode = errorCode
   }
 }
 
@@ -178,7 +191,7 @@ const TRANSIENT_CODES = new Set<string>([
 /**
  * Convert an Axon Server error code + message into a typed exception.
  */
-export function mapErrorCode(errorCode: string, message: string): AxonServerError {
+export function mapErrorCode(errorCode: string, message: string): AxonServerError | ConcurrencyError {
   switch (errorCode) {
     case AxonServerErrorCode.NO_HANDLER_FOR_COMMAND:
       return new NoHandlerForCommandError(message)
@@ -198,7 +211,7 @@ export function mapErrorCode(errorCode: string, message: string): AxonServerErro
       return new QueryDispatchError(message)
     case AxonServerErrorCode.CONCURRENCY_EXCEPTION:
     case AxonServerErrorCode.COMMAND_CONCURRENCY_ERROR:
-      return new ConcurrencyError(message)
+      return new ConcurrencyError(message, errorCode)
     case AxonServerErrorCode.CONNECTION_FAILED:
     case AxonServerErrorCode.GRPC_MESSAGE_TOO_LARGE:
       return new ConnectionFailedError(message)
@@ -218,6 +231,6 @@ export function mapErrorCode(errorCode: string, message: string): AxonServerErro
  * Check if an error is transient (retryable).
  */
 export function isTransientError(error: unknown): boolean {
-  if (error instanceof AxonServerError) return error.transient
+  if (error instanceof AxonServerError || error instanceof ConcurrencyError) return error.transient
   return false
 }

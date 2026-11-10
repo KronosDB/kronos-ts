@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { AppendConditionError, isConflict } from "@kronos-ts/core"
 import {
   shutdownLatch,
   ShutdownInProgressError,
@@ -246,13 +247,21 @@ describe("Error mapping", () => {
   })
 
   describe("error hierarchy", () => {
-    it("all typed errors extend AxonServerError", () => {
+    it("all typed errors but the conflict extend AxonServerError", () => {
       expect(new NoHandlerForCommandError("msg")).toBeInstanceOf(AxonServerError)
       expect(new CommandExecutionError("msg")).toBeInstanceOf(AxonServerError)
       expect(new QueryExecutionError("msg")).toBeInstanceOf(AxonServerError)
-      expect(new ConcurrencyError("msg")).toBeInstanceOf(AxonServerError)
       expect(new ConnectionFailedError("msg")).toBeInstanceOf(AxonServerError)
       expect(new AuthenticationError("msg", "AXONIQ-1000")).toBeInstanceOf(AxonServerError)
+    })
+
+    it("the conflict is core's, with Axon Server's code", () => {
+      const conflict = mapErrorCode(AxonServerErrorCode.COMMAND_CONCURRENCY_ERROR, "msg")
+      expect(conflict).toBeInstanceOf(AppendConditionError)
+      expect(isConflict(conflict)).toBe(true)
+      expect(conflict.errorCode).toBe(AxonServerErrorCode.COMMAND_CONCURRENCY_ERROR)
+      expect(isTransientError(conflict)).toBe(true)
+      expect(isConflict(new ConnectionFailedError("msg"))).toBe(false)
     })
 
     it("all typed errors extend Error", () => {

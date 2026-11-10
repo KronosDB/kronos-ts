@@ -1,3 +1,4 @@
+import { AppendConditionError } from "@kronos-ts/core"
 import { ErrorCode as NativeErrorCode, ErrorCodeNames as NativeErrorCodeNames } from "./protocol/kronosdb-protocol.js"
 
 /**
@@ -107,9 +108,20 @@ export class QueryDispatchError extends KronosDbError {
   }
 }
 
-export class ConcurrencyError extends KronosDbError {
+/**
+ * KronosDB refused an append whose condition was violated: core's
+ * {@link AppendConditionError}, so `isConflict` recognises it, with KronosDB's
+ * code. Ask with `isConflict` from `@kronos-ts/core` rather than this class.
+ *
+ * It is not a `KronosDbError`: it carries the same `errorCode` and
+ * `transient` fields, and `isTransientError` answers for it.
+ */
+export class ConcurrencyError extends AppendConditionError {
+  readonly errorCode: string = KronosDbErrorCode.CONSISTENCY_CONDITION_VIOLATED
+  readonly transient: boolean = true
+
   constructor(message: string) {
-    super(message, KronosDbErrorCode.CONSISTENCY_CONDITION_VIOLATED, true)
+    super(message)
     this.name = "ConcurrencyError"
   }
 }
@@ -178,7 +190,7 @@ const TRANSIENT_CODES = new Set<string>([
 /**
  * Convert a KronosDB error code + message into a typed exception.
  */
-export function mapErrorCode(errorCode: string, message: string): KronosDbError {
+export function mapErrorCode(errorCode: string, message: string): KronosDbError | ConcurrencyError {
   switch (errorCode) {
     case KronosDbErrorCode.NO_HANDLER_FOR_COMMAND:
       return new NoHandlerForCommandError(message)
@@ -209,6 +221,6 @@ export function mapErrorCode(errorCode: string, message: string): KronosDbError 
 }
 
 export function isTransientError(error: unknown): boolean {
-  if (error instanceof KronosDbError) return error.transient
+  if (error instanceof KronosDbError || error instanceof ConcurrencyError) return error.transient
   return false
 }

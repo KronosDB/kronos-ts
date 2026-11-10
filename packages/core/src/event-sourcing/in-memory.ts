@@ -21,6 +21,7 @@ import type { AppendTransaction } from "./event-store.js"
 import type { AppendCondition } from "./append-condition.js"
 import type { SourcingCondition } from "./sourcing-condition.js"
 import { markerAt, type ConsistencyMarker } from "./consistency-marker.js"
+import { AppendConditionError } from "../messaging/failures.js"
 /**
  * In-memory event store for testing and standalone usage.
  * Events are stored in an ordered array with a global sequence position.
@@ -246,15 +247,5 @@ export function inMemoryEventStore(): EventStore {
       return globalSequenceToken(nextPosition)
     },
 
-  }
-}
-
-/**
- * Thrown when an append condition is violated — optimistic concurrency failure.
- */
-export class AppendConditionError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "AppendConditionError"
   }
 }

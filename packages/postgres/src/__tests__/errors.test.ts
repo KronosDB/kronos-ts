@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test"
+import { AppendConditionError as CoreAppendConditionError, isConflict } from "@kronos-ts/core"
 import {
   AppendConditionError,
   KRONOS_DCB_VIOLATION_SQLSTATE,
@@ -39,5 +40,13 @@ describe("isDcbViolation", () => {
     expect(isDcbViolation({})).toBe(false)
     expect(isDcbViolation(null)).toBe(false)
     expect(isDcbViolation(new Error("plain"))).toBe(false)
+  })
+})
+
+describe("the conflict contract", () => {
+  it("is core's conflict, by class and by guard", () => {
+    const e = AppendConditionError.fromConflictCount(1, 7n)
+    expect(e).toBeInstanceOf(CoreAppendConditionError)
+    expect(isConflict(e)).toBe(true)
   })
 })

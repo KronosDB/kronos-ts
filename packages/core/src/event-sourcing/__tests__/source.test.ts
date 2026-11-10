@@ -33,7 +33,8 @@ import {
   localQueryBus,
   upcastingEventStore,
 } from "../../index.js"
-import { inMemoryEventStore, AppendConditionError } from "../in-memory.js"
+import { inMemoryEventStore } from "../in-memory.js"
+import { AppendConditionError } from "../../messaging/failures.js"
 import type { EventStore } from "../event-store.js"
 
 // ─── Domain ─────────────────────────────────────────────────────────────────

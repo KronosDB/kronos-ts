@@ -146,6 +146,11 @@ down to it.
 // primitives
 qn(ns, name): QualifiedName · type Metadata · emptyMetadata() · type Tag · tag(k, v)
 generateIdentifier(): string · type SerializedError
+AppendConditionError · isConflict(error) · type FailureKind   // THE ERROR CONTRACT: what every store throws, and every
+  // bus carries back, for a caller that handles it differently. A conflict: the append's condition was violated,
+  // nothing was written, load again and decide again. Stores throw the class (or a subclass with their own detail);
+  // callers ask with the guard, which reads a `kind` field, because a second installed copy of core builds a class
+  // the first's `instanceof` does not know.
 type StandardSchemaV1 · type InferOutput<S>    // the VENDORED schema contract, types only
 
 // SCHEMAS ARE STANDARD SCHEMA. Every payload/result/id constraint is
