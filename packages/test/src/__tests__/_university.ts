@@ -1,14 +1,26 @@
 import {
   commandHandler,
+  correlatingHandler,
   eventHandler,
   eventProcessor,
   queryHandler,
   state,
   withNamespace,
 } from "@kronos-ts/core"
-import type { EventStore } from "@kronos-ts/core"
+import type {
+  CommandBus,
+  CommandHandlerEntry,
+  EventHandlerEntry,
+  EventProcessor,
+  EventStore,
+  QueryBus,
+  QueryHandlerEntry,
+  ScheduleStoreCapability,
+  SnapshotCapableEventStore,
+  TokenStore,
+  UnitOfWork,
+} from "@kronos-ts/core"
 import { z } from "zod"
-import type { FixtureLists, FixtureResources, PartialProcessor } from "../fixture.js"
 
 // ---------------------------------------------------------------------------
 // A university, written the way a slice is written: descriptors, one state, the
@@ -191,58 +203,76 @@ const getCourseView = queryHandler(GetCourseView, async ({ payload: q }) => {
 // ── the composition root ───────────────────────────────────────────────────
 
 /**
- * The projection's own semantics, closed out; its RESOURCES left as parameters.
- *
- * The slice knows its durable name and that it wants global stream order. It
- * does not know which log it reads or where its cursor lives — those are
- * deployment facts, so they stay in the parameter list and the site calls this
- * full-handed. Three parameters, not four: no dead-letter queue, because a lane-
- * free projection has no honest place to park.
+ * The objects a composition root shares between its entries — what `main.ts`
+ * builds once and every entry carries. A test builds them too (wrapping in
+ * recorders what its fixture should observe) and calls the same function.
  */
-const projection: PartialProcessor = (eventStore, tokenStore, unitOfWork) =>
-  eventProcessor("courses", eventStore, tokenStore, unitOfWork)
+export type Shared = {
+  readonly eventStore: SnapshotCapableEventStore & ScheduleStoreCapability
+  readonly commandBus: CommandBus
+  readonly queryBus: QueryBus
+  readonly tokenStore: TokenStore
+  readonly unitOfWork: () => UnitOfWork
+}
 
 /**
- * The whole university, as a function of the resources it runs on.
- *
- * `testFixture(university)` and a production composition root call this the same
- * way — which is the point of taking the resources as parameters instead of
- * reaching for them.
+ * The three lists `kronos` takes, each entry carrying the shared objects with
+ * THEIR OWN types — so the app reports a recorded log as a recorded log.
  */
-export function university({ eventStore }: FixtureResources): FixtureLists {
+export type Lists<S extends Shared = Shared> = {
+  readonly commandHandlers?: ReadonlyArray<
+    Omit<CommandHandlerEntry<any, any, any>, "eventStore" | "commandBus" | "queryBus"> &
+      Pick<S, "eventStore" | "commandBus" | "queryBus">
+  >
+  readonly queryHandlers?: ReadonlyArray<
+    Omit<QueryHandlerEntry<any, any>, "eventStore" | "queryBus"> & Pick<S, "eventStore" | "queryBus">
+  >
+  readonly eventHandlers?: ReadonlyArray<
+    Omit<EventHandlerEntry<any, any, any>, "commandBus" | "queryBus" | "processor"> &
+      Pick<S, "commandBus" | "queryBus"> & { readonly processor: EventProcessor<any, S["eventStore"]> }
+  >
+}
+
+const decide = [createCourse, subscribeStudent, closeCourse]
+const react = [closeWhenFull, armEnrolmentWindow, closeOnDeadline, onCreated, onSubscribed, onClosed]
+
+/** The house wiring: every handler correlated, every entry carrying its objects. */
+function sited<S extends Shared>(
+  { eventStore, commandBus, queryBus, tokenStore, unitOfWork }: S,
+  parts: { commands?: typeof decide; queries?: typeof getCourseView[]; events?: typeof react },
+): Lists<S> {
+  // The projection's own semantics, closed out here: its durable name and global
+  // stream order. One processor for every event handler of the slice.
+  const processor = eventProcessor("courses", eventStore, tokenStore, unitOfWork)
   return {
-    commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
-      ...h,
-      eventStore,
-    })),
-    queryHandlers: [getCourseView],
-    eventHandlers: [
-      closeWhenFull,
-      armEnrolmentWindow,
-      closeOnDeadline,
-      onCreated,
-      onSubscribed,
-      onClosed,
-    ].map((h) => ({ ...h, processor: projection })),
+    commandHandlers: (parts.commands ?? []).map(
+      (h) => ({ ...h, handler: correlatingHandler(h.handler), eventStore, commandBus, queryBus }) as never,
+    ),
+    queryHandlers: (parts.queries ?? []).map(
+      (h) => ({ ...h, handler: correlatingHandler(h.handler), eventStore, queryBus }) as never,
+    ),
+    eventHandlers: (parts.events ?? []).map(
+      (h) => ({ ...h, handler: correlatingHandler(h.handler), commandBus, queryBus, processor }) as never,
+    ),
   }
+}
+
+/**
+ * The whole university, as a function of the objects it runs on: what a
+ * production composition root and a test both hand to `kronos`.
+ */
+export function university<S extends Shared>(shared: S): Lists<S> {
+  return sited(shared, { commands: decide, queries: [getCourseView], events: react })
 }
 
 /** Decisions only — no automations, so `then` is exactly what the command decided. */
-export function decisions({ eventStore }: FixtureResources): FixtureLists {
-  return {
-    commandHandlers: [createCourse, subscribeStudent, closeCourse].map((h) => ({
-      ...h,
-      eventStore,
-    })),
-  }
+export function decisions<S extends Shared>(shared: S): Lists<S> {
+  return sited(shared, { commands: decide })
 }
 
 /** Decisions plus the seat automation, with no scheduler and no read model. */
-export function withAutomation(resources: FixtureResources): FixtureLists {
-  return {
-    ...decisions(resources),
-    eventHandlers: [{ ...closeWhenFull, processor: projection }],
-  }
+export function withAutomation<S extends Shared>(shared: S): Lists<S> {
+  return sited(shared, { commands: decide, events: [closeWhenFull] })
 }
 
 // ---------------------------------------------------------------------------
@@ -279,8 +309,8 @@ const armReminder = commandHandler(ArmReminder, async ({ payload: cmd }, ctx) =>
 })
 
 /** Reminders on their own — one command, one state, one schedule. */
-export function reminders({ eventStore }: FixtureResources): FixtureLists {
+export function reminders<S extends Shared>({ eventStore, commandBus, queryBus }: S): Lists<S> {
   return {
-    commandHandlers: [{ ...armReminder, eventStore }],
+    commandHandlers: [{ ...armReminder, handler: correlatingHandler(armReminder.handler), eventStore, commandBus, queryBus } as never],
   }
 }

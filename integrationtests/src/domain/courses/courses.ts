@@ -17,7 +17,7 @@ import type {
  */
 type EmittingContext = EventHandlerContext & SubscriptionCapability
 import { eventProcessor } from "@kronos-ts/core"
-import type { FixtureLists, FixtureResources, PartialProcessor } from "@kronos-ts/test"
+import type { CommandBus, CommandHandlerEntry, EventHandlerEntry, QueryBus, QueryHandlerEntry } from "@kronos-ts/core"
 import { z } from "zod"
 import { withNamespace, commandHandler, eventHandler, queryHandler } from "@kronos-ts/core"
 import { state } from "@kronos-ts/core"
@@ -237,28 +237,59 @@ export const COURSE_PROJECTION = "course-projection"
 
 
 /**
- * The course slice as a COMPOSITION ROOT: a function of the resources it runs on.
+ * The course slice as a COMPOSITION ROOT: a function of the objects it runs on,
+ * returning the three lists `kronos` takes.
  *
- * This is what a process deploys and what `testFixture` runs — the same function,
- * called the same way. The projection is left PARTIAL: the slice closes out its
- * own semantics (its durable name, global stream order, no dead-letter queue for
- * a lane-free projection) and leaves its resources in the parameter list, so the
- * site calls it full-handed. Three parameters, not four, declines the queue by
- * assignability.
+ * This is what a process deploys and what a test builds its app from — the same
+ * function, called the same way. The projection's own semantics (its durable
+ * name, global stream order, no dead-letter queue for a lane-free projection)
+ * are closed out here; its resources come in as parameters.
  *
  * ONE STORE PARAMETER. There is no snapshot store beside the log any more —
  * a site that caches folds hands in a log that CAN, and the entries point at
  * the one object.
+ *
+ * GENERIC OVER WHAT IT IS HANDED, so the entries carry the objects with their
+ * own types and the app reports them that way: a test that hands in a recorded
+ * log gets an app whose log is recorded, which is what `fixture(app)` asks for.
  */
-export function courses({ eventStore }: FixtureResources): FixtureLists {
-  const projection: PartialProcessor = (log, tokenStore, unitOfWork) =>
-    eventProcessor(COURSE_PROJECTION, log, tokenStore, unitOfWork)
-
+export function courses<S extends CourseResources>({
+  eventStore,
+  commandBus,
+  queryBus,
+  tokenStore,
+  unitOfWork,
+}: S): {
+  commandHandlers: Array<CommandHandlerEntry & Pick<S, "eventStore" | "commandBus" | "queryBus">>
+  queryHandlers: Array<QueryHandlerEntry & Pick<S, "eventStore" | "queryBus">>
+  eventHandlers: Array<
+    EventHandlerEntry &
+      Pick<S, "eventStore" | "commandBus" | "queryBus"> & { processor: EventProcessor<UnitOfWork, S["eventStore"]> }
+  >
+} {
+  const processor = eventProcessor(COURSE_PROJECTION, eventStore, tokenStore, unitOfWork)
   return {
-    commandHandlers: courseSlice.commandHandlers.map((h) => ({ ...h, eventStore })),
-    queryHandlers: courseSlice.queryHandlers.map((h) => ({ ...h, eventStore })),
-    eventHandlers: courseSlice.eventHandlers.map((h) => ({ ...h, processor: projection })),
+    commandHandlers: courseSlice.commandHandlers.map(
+      (h) => ({ ...h, eventStore, commandBus, queryBus }) as CommandHandlerEntry & Pick<S, "eventStore" | "commandBus" | "queryBus">,
+    ),
+    queryHandlers: courseSlice.queryHandlers.map(
+      (h) => ({ ...h, eventStore, queryBus }) as QueryHandlerEntry & Pick<S, "eventStore" | "queryBus">,
+    ),
+    eventHandlers: courseSlice.eventHandlers.map(
+      (h) =>
+        ({ ...h, eventStore, commandBus, queryBus, processor }) as EventHandlerEntry &
+          Pick<S, "eventStore" | "commandBus" | "queryBus"> & { processor: EventProcessor<UnitOfWork, S["eventStore"]> },
+    ),
   }
+}
+
+/** What the course slice runs on. */
+export type CourseResources = {
+  readonly eventStore: EventStore
+  readonly commandBus: CommandBus
+  readonly queryBus: QueryBus
+  readonly tokenStore: TokenStore
+  readonly unitOfWork: () => UnitOfWork
 }
 
 // ---------------------------------------------------------------------------

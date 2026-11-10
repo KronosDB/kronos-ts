@@ -7,72 +7,60 @@ export {
   type CommandValue,
   type QueryValue,
   type Action,
-  type ErrorMatcher,
-  type ResultAssertion,
-  type ErrorAssertion,
-  type NoEventsAssertion,
-  type NoCommandsAssertion,
-  type ScheduledAssertion,
-  type CancelledAssertion,
-  type Assertion,
   any,
   isAny,
   event,
   command,
   query,
+} from "./values.js"
+
+// ── the claims: functions of what happened ─────────────────────────────────
+export {
+  type Outcome,
+  type TimedOutcome,
+  type Assertion,
+  type ErrorMatcher,
+  events,
+  noEvents,
+  commands,
+  noCommands,
   result,
   error,
-  noEvents,
-  noCommands,
   scheduled,
   cancelled,
 } from "./values.js"
 
-// ── the grammar: given → when → then, with waits at the joints ─────────────
+// ── the grammar: given → when → then, and storylines, against a running app ─
 export {
-  type Step,
-  type Scenario,
+  type Fixture,
   type ScenarioStart,
   type ScenarioActed,
-  type Judgement,
-  type Advances,
-  scenario,
-  given,
+  type BeforeAct,
+  type AfterAct,
+  type Judged,
+  type Storyline,
+  type OutcomeOf,
+  fixture,
 } from "./scenario.js"
 
-// ── the site ───────────────────────────────────────────────────────────────
-export {
-  type PartialProcessor,
-  type FixtureUnitOfWork,
-  type FixtureEventHandler,
-  type FixtureLists,
-  advanceableClock,
-  type AdvanceableClock,
-  type IfAdvanceable,
-  type FixtureResources,
-  type FixtureScope,
-  type FixtureInfrastructure,
-  type InfrastructureFactory,
-  type EventRecording,
-  type FixtureOptions,
-  type RunOutcome,
-  type TestFixture,
-  FIXTURE_EPOCH,
-  testFixture,
-} from "./fixture.js"
+export type { RecordedApp } from "./fixture.js"
+
+// ── time a test can move ───────────────────────────────────────────────────
+export { type AdvanceableClock, advanceableClock, FIXTURE_EPOCH } from "./clock.js"
 
 // ── the failure, which is the product ──────────────────────────────────────
 export { ScenarioAssertionError } from "./diff.js"
 
-// ── recorders: thing-first decorators, usable outside a fixture ────────────
+// ── recorders: what the fixture observes, applied by the test ──────────────
 export {
   type RecordingEventStore,
   type RecordingCommandBus,
   type RecordingQueryBus,
+  type EventRecording,
+  type CommandRecording,
   type ScheduleRecord,
   type ScheduleRecording,
   recordingEventStore,
   recordingCommandBus,
   recordingQueryBus,
-  controllableSchedulingEventStore,
 } from "./recording.js"

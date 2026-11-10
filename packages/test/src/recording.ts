@@ -1,4 +1,5 @@
 import { generateIdentifier, requireInvocation, NoActiveUnitOfWork } from "@kronos-ts/core"
+import type { AdvanceableClock, Duration } from "./clock.js"
 import type {
   SubscriptionBusCapability,
   AppendCondition,
@@ -50,33 +51,86 @@ export type EventRecording = {
   readonly appended: ReadonlyArray<EventMessage>
   /** Forget the log. The STORE keeps its events; only the recording is cleared. */
   reset(): void
+  /**
+   * HOLD what is set in motion through this store: while held, `schedule` arms
+   * nothing (it answers a token that matches no schedule) and `cancelSchedule`
+   * cancels nothing. A fixture holds while it folds history — the deadlines the
+   * past armed are already in the book, or already fired.
+   */
+  hold(held: boolean): void
+}
+
+/** One armed, fired or cancelled deadline, as a reader sees it. */
+export type ScheduleRecord = {
+  readonly token: ScheduleToken
+  /** The event this schedule will append when it fires. */
+  readonly event: EventMessage
+  /** The clock instant the handler armed it at. */
+  readonly armedAt: number
+  /** The clock instant it fires at. `fireAt - armedAt` is the delay asked for. */
+  readonly fireAt: number
+  readonly status: "pending" | "fired" | "cancelled"
+}
+
+/**
+ * WHAT A CLOCK ADDS to the recorder: the deadlines it holds, and the verb that
+ * moves time over them. Named on its own so the wrapper can be ADDITIVE, and so
+ * a fixture can tell from the TYPE whether the app's log can be advanced.
+ */
+export type ScheduleRecording = {
+  /** The clock the deadlines are held against — the one given to the recorder. */
+  readonly clock: AdvanceableClock
+  /** Every deadline armed through this store, oldest first, with what became of it. */
+  readonly schedules: ReadonlyArray<ScheduleRecord>
+  /**
+   * Move the clock forward, then append through this store every held deadline
+   * the clock has reached — in FIRE-TIME order, each stamped with the instant it
+   * fired — so the recording sees them exactly as it sees a handler's append.
+   */
+  advance(duration: Duration): Promise<void>
+  /** Forget every held deadline, pending or not. The LOG keeps its events; only the book is cleared. */
+  resetSchedules(): void
 }
 
 /**
  * Record what is committed through `store`.
  *
  * ADDITIVE: `E & EventRecording`, never a collapse to `RecordingEventStore`.
- * The fixture composes `recordingEventStore(inMemorySnapshottingEventStore(log))`
- * — recorder OUTERMOST, so `appended` is what left the fixture — and a
- * signature that returned the bare intersection would have thrown the
- * snapshotting capability away one layer above the store that has it. Every
- * scope loading a snapshotting state would then fail to compile against a
- * fixture that serves it perfectly well.
+ * `recordingEventStore(inMemorySnapshottingEventStore(log))` still serves a
+ * cached state, and a signature that returned the bare intersection would have
+ * thrown that capability away one layer above the store that has it.
+ *
+ * WITH A CLOCK it also holds the deadlines: `schedule` and `cancelSchedule` keep
+ * them in memory, nothing fires on a timer, and {@link ScheduleRecording.advance}
+ * moves the clock and appends what is due through `store`. The LOG stays the
+ * real one — in memory, Postgres or KronosDB — and only the deadline book is
+ * held here, in place of any scheduling tier `store` has of its own:
+ *
+ * ```ts
+ * const clock = advanceableClock()
+ * const eventStore = recordingEventStore(postgresEventStore(pg), { clock })
+ * ```
+ *
+ * A deadline is staged while its handling runs (so a `cancelSchedule` in the
+ * same task finds it), becomes due-able when the task commits, and is dropped
+ * if the task fails. A fired event is stamped with the instant it FIRES, not
+ * the instant it was arranged: the arrangement is not the event, and
+ * everything the fired event causes is stamped from the fire instant anyway.
  */
-export function recordingEventStore<E extends EventStore>(store: E): E & EventRecording {
+export function recordingEventStore<E extends EventStore>(store: E): E & EventRecording
+export function recordingEventStore<E extends EventStore>(
+  store: E,
+  options: { readonly clock: AdvanceableClock },
+): E & EventRecording & ScheduleStoreCapability & ScheduleRecording
+export function recordingEventStore<E extends EventStore>(
+  store: E,
+  options?: { readonly clock: AdvanceableClock },
+): E & EventRecording & Partial<ScheduleStoreCapability & ScheduleRecording> {
   const log: EventMessage[] = []
+  const scheduling = store as E & Partial<ScheduleStoreCapability>
+  let held = false
 
-  return {
-    ...store,
-
-    get appended(): ReadonlyArray<EventMessage> {
-      return log
-    },
-
-    reset(): void {
-      log.length = 0
-    },
-
+  const recorded = {
     async append(
       events: ReadonlyArray<EventMessage>,
       condition?: AppendCondition,
@@ -101,7 +155,142 @@ export function recordingEventStore<E extends EventStore>(store: E): E & EventRe
         },
       }
     },
-  } as E & EventRecording
+  }
+
+  // The scheduling tier: held in memory against the clock when there is one,
+  // passed through to `store` when it has a tier of its own, absent otherwise.
+  const tier: Partial<ScheduleStoreCapability & ScheduleRecording> = options
+    ? heldDeadlines(options.clock, (events) => recorded.append(events).then(() => undefined))
+    : typeof scheduling.schedule === "function"
+      ? { schedule: scheduling.schedule, cancelSchedule: scheduling.cancelSchedule! }
+      : {}
+
+  // DESCRIPTORS, not a spread: a spread reads every getter once and freezes the
+  // value, and a tier under this one may expose a live view that has to stay one.
+  const own = {
+    get appended(): ReadonlyArray<EventMessage> {
+      return log
+    },
+
+    reset(): void {
+      log.length = 0
+    },
+
+    hold(on: boolean): void {
+      held = on
+    },
+
+    ...recorded,
+
+    ...(tier.schedule !== undefined
+      ? {
+          schedule: (event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> =>
+            held ? Promise.resolve({ id: `held-${generateIdentifier()}` }) : tier.schedule!(event, at, uow),
+          cancelSchedule: (token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult> =>
+            held ? Promise.resolve({ kind: "not-found" }) : tier.cancelSchedule!(token, uow),
+        }
+      : {}),
+  }
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(store),
+      ...Object.getOwnPropertyDescriptors(own),
+      ...(tier.advance !== undefined ? Object.getOwnPropertyDescriptors(pick(tier, ["clock", "schedules", "advance", "resetSchedules"])) : {}),
+    },
+  ) as E & EventRecording & Partial<ScheduleStoreCapability & ScheduleRecording>
+}
+
+/** Copy the named properties as DESCRIPTORS, so a getter stays a getter. */
+function pick<T extends object>(source: T, keys: ReadonlyArray<keyof T>): Partial<T> {
+  const target = {}
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key)
+    if (descriptor) Object.defineProperty(target, key, descriptor)
+  }
+  return target as Partial<T>
+}
+
+/**
+ * The deadline book a clocked recorder holds: no timer, nothing fires until the
+ * clock is moved through {@link ScheduleRecording.advance}, and what fires goes
+ * to `fire` — the recorder's own append, so it is recorded like any other.
+ */
+function heldDeadlines(
+  clock: AdvanceableClock,
+  fire: (events: ReadonlyArray<EventMessage>) => Promise<void>,
+): ScheduleStoreCapability & ScheduleRecording {
+  type Entry = { record: ScheduleRecord; armed: boolean }
+  const entries: Entry[] = []
+
+  return {
+    clock,
+
+    get schedules(): ReadonlyArray<ScheduleRecord> {
+      return entries.map((e) => e.record)
+    },
+
+    resetSchedules(): void {
+      entries.length = 0
+    },
+
+    async advance(duration: Duration): Promise<void> {
+      clock.advance(duration)
+      const now = clock()
+      // Fire-time order, not arming order: two deadlines arranged in one order
+      // and due in another happen in the order they are DUE, which is the only
+      // order a reader can predict from the scenario.
+      const ready = entries
+        .filter((e) => e.armed && e.record.status === "pending" && e.record.fireAt <= now)
+        .sort((a, b) => a.record.fireAt - b.record.fireAt)
+      if (ready.length === 0) return
+      for (const entry of ready) entry.record = { ...entry.record, status: "fired" }
+      await fire(ready.map((e) => ({ ...e.record.event, timestamp: now })))
+    },
+
+    async schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
+      if (uow === undefined) {
+        throw new NoActiveUnitOfWork(
+          "recordingEventStore.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",
+        )
+      }
+      requireInvocation(uow)
+
+      const token: ScheduleToken = { id: generateIdentifier() }
+      const entry: Entry = {
+        armed: false,
+        record: { token, event, armedAt: clock(), fireAt: at.getTime(), status: "pending" },
+      }
+      entries.push(entry)
+
+      // Arm at AFTER_COMMIT and drop on failure — a schedule a rolled-back
+      // handler asked for was never asked for.
+      uow.onAfterCommit(() => {
+        entry.armed = true
+      })
+      uow.onError(() => {
+        const index = entries.indexOf(entry)
+        if (index >= 0 && entry.record.status === "pending") entries.splice(index, 1)
+      })
+
+      return token
+    },
+
+    async cancelSchedule(token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult> {
+      const entry = entries.find((e) => e.record.token.id === token.id)
+      if (!entry) return { kind: "not-found" }
+      if (entry.record.status === "fired") return { kind: "already-appended" }
+      if (entry.record.status === "cancelled") return { kind: "not-found" }
+
+      entry.record = { ...entry.record, status: "cancelled" }
+      if (uow !== undefined && !uow.closed) {
+        uow.onError(() => {
+          if (entry.record.status === "cancelled") entry.record = { ...entry.record, status: "pending" }
+        })
+      }
+      return { kind: "cancelled" }
+    },
+  }
 }
 
 /**
@@ -123,6 +312,12 @@ export type RecordingCommandBus<U extends UnitOfWork = UnitOfWork> = CommandBus<
 export type CommandRecording = {
   readonly dispatched: ReadonlyArray<CommandMessage>
   reset(): void
+  /**
+   * HOLD what is dispatched: while held, `dispatch` neither records nor sends,
+   * and resolves to `undefined`. A fixture holds while it folds history, so an
+   * automation that reacts to the past sets nothing in motion.
+   */
+  hold(held: boolean): void
 }
 
 /**
@@ -134,6 +329,7 @@ export function recordingCommandBus<B extends CommandBus<any>>(
   bus: B,
 ): B & CommandRecording {
   const log: Array<CommandMessage> = []
+  let held = false
 
   return {
     ...bus,
@@ -146,7 +342,12 @@ export function recordingCommandBus<B extends CommandBus<any>>(
       log.length = 0
     },
 
+    hold(on: boolean): void {
+      held = on
+    },
+
     async dispatch(message: CommandMessage): Promise<unknown> {
+      if (held) return undefined
       log.push(message)
       return bus.dispatch(message)
     },
@@ -218,162 +419,4 @@ export function recordingQueryBus<B extends QueryBus<any>>(
 
 
   } as B & QueryRecording
-}
-
-// ── the controllable SCHEDULING TIER ───────────────────────────────────────
-
-/** One armed, fired or cancelled schedule, as a reader sees it. */
-export type ScheduleRecord = {
-  readonly token: ScheduleToken
-  /** The event this schedule will append when it fires. */
-  readonly event: EventMessage
-  /** The clock instant the handler armed it at. */
-  readonly armedAt: number
-  /** The clock instant it fires at. `fireAt - armedAt` is the delay asked for. */
-  readonly fireAt: number
-  readonly status: "pending" | "fired" | "cancelled"
-}
-
-/**
- * WHAT THE CONTROLLABLE TIER ADDS BEYOND THE CAPABILITY, named on its own so
- * the wrapper can be ADDITIVE.
- *
- * `resetSchedules` rather than `reset`, because this tier composes UNDER
- * `recordingEventStore` and that one already owns a `reset`. Two different
- * resets under one name on one object was a collision waiting to be found by
- * somebody debugging at midnight; the recorder's `reset` clears the event log
- * and this clears the schedule book, and now you can say which you meant.
- */
-export type ScheduleRecording = {
-  /** Every schedule this store has seen since the last reset, oldest first. */
-  readonly schedules: ReadonlyArray<ScheduleRecord>
-  /**
-   * The events whose fire-time has arrived at the clock's current instant, in
-   * FIRE-TIME order, marked fired. Calling it twice does not fire anything twice.
-   */
-  due(): ReadonlyArray<EventMessage>
-  /** Forget every schedule. The LOG keeps its events; only the book is cleared. */
-  resetSchedules(): void
-}
-
-/**
- * A scheduling capability tier with NO TIMER: nothing fires until somebody
- * moves the clock and asks what is due.
- *
- * That is the whole difference from `inMemorySchedulingEventStore`, and it is
- * the difference between a deadline test that takes thirty seconds and one that
- * takes a millisecond. It does not append the fired events either: {@link
- * ScheduleRecording.due} HANDS THEM BACK, and whoever drives the clock decides
- * where they go — in a fixture, in through the OUTERMOST store, so the recorder
- * above this one sees them exactly as it sees a handler's append.
- *
- * ADDITIVE: `E & ScheduleStoreCapability & ScheduleRecording`, never a collapse. The
- * fixture composes it over the snapshotting tier and under the recorder, and a
- * signature that returned a bare intersection would throw one of the other two
- * capabilities away on the way through.
- *
- * Unit-of-work semantics match the in-memory tier: a schedule is staged during
- * INVOCATION so a `cancelSchedule` in the same task can see it, becomes
- * DUE-able only at AFTER_COMMIT, and is dropped if the task fails.
- *
- * One thing it does NOT copy: a fired event is stamped with the instant it
- * FIRES, not the instant somebody arranged it. The arrangement is not the event —
- * a reader who jumped the clock thirty seconds and got back an event claiming to
- * have happened thirty seconds ago would be reading a lie, and everything the
- * fired event then causes is stamped from the fire instant anyway.
- */
-export function controllableSchedulingEventStore<E extends EventStore>(
-  next: E,
-  clock: () => number,
-): E & ScheduleStoreCapability & ScheduleRecording {
-  type Entry = {
-    record: ScheduleRecord
-    armed: boolean
-  }
-  const entries: Entry[] = []
-
-  function find(id: string): Entry | undefined {
-    return entries.find((e) => e.record.token.id === id)
-  }
-
-  return {
-    ...next,
-
-    get schedules(): ReadonlyArray<ScheduleRecord> {
-      return entries.map((e) => e.record)
-    },
-
-    resetSchedules(): void {
-      entries.length = 0
-    },
-
-    due(): ReadonlyArray<EventMessage> {
-      const now = clock()
-      // Fire-time order, not arming order: two deadlines arranged in one order
-      // and due in another happen in the order they are DUE, which is the only
-      // order a reader can predict from the scenario.
-      const ready = entries
-        .filter((e) => e.armed && e.record.status === "pending" && e.record.fireAt <= now)
-        .sort((a, b) => a.record.fireAt - b.record.fireAt)
-      const fired: EventMessage[] = []
-      for (const entry of ready) {
-        entry.record = { ...entry.record, status: "fired" }
-        fired.push({ ...entry.record.event, timestamp: now })
-      }
-      return fired
-    },
-
-    async schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
-      if (uow === undefined) {
-        throw new NoActiveUnitOfWork(
-          "controllableSchedulingEventStore.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",
-        )
-      }
-      requireInvocation(uow)
-
-      const token: ScheduleToken = { id: generateIdentifier() }
-      const entry: Entry = {
-        armed: false,
-        record: {
-          token,
-          event,
-          armedAt: clock(),
-          fireAt: at.getTime(),
-          status: "pending",
-        },
-      }
-      entries.push(entry)
-
-      // Arm at AFTER_COMMIT and drop on failure — a schedule a rolled-back
-      // handler asked for was never asked for.
-      uow.onAfterCommit(() => {
-        entry.armed = true
-      })
-      uow.onError(() => {
-        const index = entries.indexOf(entry)
-        if (index >= 0 && entry.record.status === "pending") entries.splice(index, 1)
-      })
-
-      return token
-    },
-
-    async cancelSchedule(token: ScheduleToken, uow?: UnitOfWork): Promise<CancelResult> {
-      const entry = find(token.id)
-      if (!entry) return { kind: "not-found" }
-      if (entry.record.status === "fired") return { kind: "already-appended" }
-      if (entry.record.status === "cancelled") return { kind: "not-found" }
-
-      entry.record = { ...entry.record, status: "cancelled" }
-      if (uow !== undefined && !uow.closed) {
-        uow.onError(() => {
-          if (entry.record.status === "cancelled") {
-            entry.record = { ...entry.record, status: "pending" }
-          }
-        })
-      }
-      return { kind: "cancelled" }
-    },
-    // The spread of a generic is opaque to the checker, so the shape it
-    // produces is asserted rather than inferred; the probe keeps it honest.
-  } as E & ScheduleStoreCapability & ScheduleRecording
 }

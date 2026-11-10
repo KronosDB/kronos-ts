@@ -92,7 +92,7 @@ changes.
 | Package | What it is |
 | --- | --- |
 | `@kronos-ts/core` | The shapes and the primitive: messages, descriptors, buses, stores, state folds, the unit of work, the event processor, and `kronos`. In-memory implementations of every store seam. |
-| `@kronos-ts/test` | `given(...).when(...).then(...)` — a test as a value, run at a fixture. |
+| `@kronos-ts/test` | `fixture(app).given(...).when(...).then(...)` and storylines — scenarios against the app you built, in the shapes an event model is written in. |
 | `@kronos-ts/rabbitmq` | Command and query transport over AMQP. A dumb pipe: routing happens client-side. |
 | `@kronos-ts/kronosdb` | Event store plus its snapshotting and scheduling tiers, command/query transport and control plane over KronosDB. Server-side routing. |
 | `@kronos-ts/axon-server` | Event store plus its snapshotting tier, command/query transport and control plane over Axon Server. |

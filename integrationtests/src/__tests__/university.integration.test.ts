@@ -23,13 +23,13 @@ import {
   command,
   error,
   event,
-  given,
+  events,
+  fixture,
   noEvents,
   query as queryValue,
+  recordingCommandBus,
+  recordingEventStore,
   result,
-  scenario,
-  testFixture,
-  type TestFixture,
 } from "@kronos-ts/test"
 import {
   courseSlice,
@@ -102,220 +102,198 @@ function sitedCourses(site: HandlerSite & {
 }
 
 // ============================================================================
-// Given-When-Then — a test is a VALUE
+// Given-When-Then, in the shapes the model is written in
 // ============================================================================
 
-describe("University — the given/when/then triple", () => {
-  let fixture: TestFixture
+/**
+ * A fresh app per test, composed the way a process composes it — with the log
+ * and the command bus wrapped once, in recorders, where they are built. These
+ * scenarios share fixed ids and a module-level read model, so each gets its own
+ * app; the fixture never stops one, so the test does.
+ */
+const courseApps: App[] = []
+afterEach(async () => {
+  await Promise.all(courseApps.splice(0).map((app) => app.stop()))
+})
 
-  // The slice's projection handlers run inside the fixture and write into the
+function courseApp() {
+  const eventStore = recordingEventStore(inMemoryEventStore())
+  const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(unitOfWork), correlation))
+  const queryBus = interceptingQueryBus(localQueryBus(unitOfWork), correlation)
+  const app = kronos(courses({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork }))
+  courseApps.push(app)
+  return fixture(app)
+}
+
+describe("University — given, when, then", () => {
+  // The slice's projection handlers run inside each scenario and write into the
   // module's view map, so each scenario starts from a clean read model.
   beforeEach(() => {
     clearCourseViews()
-    fixture = testFixture(courses)
   })
+
+  const course = (capacity: number, name = "Intro") => ({ courseId: "cs-101", name, capacity })
+  const seat = (studentId: string) => ({ courseId: "cs-101", studentId })
 
   describe("Course creation", () => {
     it("creates a course with valid data", async () => {
-      await fixture.run(
-        scenario()
-          .when(command(CreateCourse, { courseId: "cs-101", name: "Intro to CS", capacity: 30 }))
-          .then(event(CourseCreated, { courseId: "cs-101", name: "Intro to CS", capacity: 30 })),
-      )
+      await courseApp()
+        .when(command(CreateCourse, course(30, "Intro to CS")))
+        .then(events(event(CourseCreated, course(30, "Intro to CS"))))
     })
 
     it("rejects duplicate course creation", async () => {
-      await fixture.run(
-        given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }))
-          .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 }))
-          .then(error("Course already exists"), noEvents()),
-      )
+      await courseApp()
+        .given(event(CourseCreated, course(30)))
+        .when(command(CreateCourse, course(30)))
+        .then(error("Course already exists"), noEvents())
     })
   })
 
   describe("Course capacity changes", () => {
     it("changes capacity on existing course", async () => {
-      await fixture.run(
-        given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }))
-          .when(command(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 }))
-          .then(event(CourseCapacityChanged, { courseId: "cs-101", capacity: 50 })),
-      )
+      await courseApp()
+        .given(event(CourseCreated, course(30)))
+        .when(command(ChangeCourseCapacity, { courseId: "cs-101", capacity: 50 }))
+        .then(events(event(CourseCapacityChanged, { courseId: "cs-101", capacity: 50 })))
     })
 
     it("rejects capacity change on nonexistent course", async () => {
-      await fixture.run(
-        scenario()
-          .when(command(ChangeCourseCapacity, { courseId: "cs-999", capacity: 50 }))
-          .then(error("Course does not exist"), noEvents()),
-      )
+      await courseApp()
+        .when(command(ChangeCourseCapacity, { courseId: "cs-999", capacity: 50 }))
+        .then(error("Course does not exist"), noEvents())
     })
 
     it("skips no-op capacity change", async () => {
-      await fixture.run(
-        given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }))
-          .when(command(ChangeCourseCapacity, { courseId: "cs-101", capacity: 30 }))
-          .then(noEvents()),
-      )
+      await courseApp()
+        .given(event(CourseCreated, course(30)))
+        .when(command(ChangeCourseCapacity, { courseId: "cs-101", capacity: 30 }))
+        .then(noEvents())
     })
 
     it("rejects capacity below enrolled count", async () => {
-      await fixture.run(
-        given(
-          event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 5 }),
-          event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" }),
-          event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-002" }),
-          event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-003" }),
+      await courseApp()
+        .given(
+          event(CourseCreated, course(5)),
+          event(StudentSubscribed, seat("stu-001")),
+          event(StudentSubscribed, seat("stu-002")),
+          event(StudentSubscribed, seat("stu-003")),
         )
-          .when(command(ChangeCourseCapacity, { courseId: "cs-101", capacity: 2 }))
-          .then(error("Cannot reduce capacity below enrolled count"), noEvents()),
-      )
+        .when(command(ChangeCourseCapacity, { courseId: "cs-101", capacity: 2 }))
+        .then(error("Cannot reduce capacity below enrolled count"), noEvents())
     })
   })
 
   describe("Student subscription", () => {
     it("subscribes a student to a course", async () => {
-      await fixture.run(
-        given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }))
-          .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" }))
-          .then(event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" })),
-      )
+      await courseApp()
+        .given(event(CourseCreated, course(30)))
+        .when(command(SubscribeStudent, seat("stu-001")))
+        .then(events(event(StudentSubscribed, seat("stu-001"))))
     })
 
     it("rejects subscription to nonexistent course", async () => {
-      await fixture.run(
-        scenario()
-          .when(command(SubscribeStudent, { courseId: "cs-999", studentId: "stu-001" }))
-          .then(error("Course does not exist")),
-      )
+      await courseApp()
+        .when(command(SubscribeStudent, { courseId: "cs-999", studentId: "stu-001" }))
+        .then(error("Course does not exist"))
     })
 
     it("rejects subscription when course is full", async () => {
-      await fixture.run(
-        given(
-          event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }),
-          event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" }),
-        )
-          .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-002" }))
-          .then(error("Course is full"), noEvents()),
-      )
+      await courseApp()
+        .given(event(CourseCreated, course(1)), event(StudentSubscribed, seat("stu-001")))
+        .when(command(SubscribeStudent, seat("stu-002")))
+        .then(error("Course is full"), noEvents())
     })
 
     it("rejects duplicate subscription", async () => {
-      await fixture.run(
-        given(
-          event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }),
-          event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" }),
-        )
-          .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" }))
-          .then(error("Student already subscribed"), noEvents()),
-      )
+      await courseApp()
+        .given(event(CourseCreated, course(30)), event(StudentSubscribed, seat("stu-001")))
+        .when(command(SubscribeStudent, seat("stu-001")))
+        .then(error("Student already subscribed"), noEvents())
     })
   })
 
   describe("Student unsubscription", () => {
     it("unsubscribes a student from a course", async () => {
-      await fixture.run(
-        given(
-          event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }),
-          event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" }),
-        )
-          .when(command(UnsubscribeStudent, { courseId: "cs-101", studentId: "stu-001" }))
-          .then(event(StudentUnsubscribed, { courseId: "cs-101", studentId: "stu-001" })),
-      )
+      await courseApp()
+        .given(event(CourseCreated, course(30)), event(StudentSubscribed, seat("stu-001")))
+        .when(command(UnsubscribeStudent, seat("stu-001")))
+        .then(events(event(StudentUnsubscribed, seat("stu-001"))))
     })
 
     it("rejects unsubscription of non-subscribed student", async () => {
-      await fixture.run(
-        given(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 }))
-          .when(command(UnsubscribeStudent, { courseId: "cs-101", studentId: "stu-999" }))
-          .then(error("Student not subscribed"), noEvents()),
-      )
+      await courseApp()
+        .given(event(CourseCreated, course(30)))
+        .when(command(UnsubscribeStudent, seat("stu-999")))
+        .then(error("Student not subscribed"), noEvents())
     })
   })
 
-  describe("One timeline, several acts", () => {
-    it("creates a course then subscribes multiple students", async () => {
-      await fixture.run(
-        scenario()
-          .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 3 }))
-          .then(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 3 })),
-      )
-      for (const studentId of ["stu-001", "stu-002", "stu-003"]) {
-        await fixture.run(
-          scenario()
-            .when(command(SubscribeStudent, { courseId: "cs-101", studentId }))
-            .then(event(StudentSubscribed, { courseId: "cs-101", studentId })),
+  describe("The read model", () => {
+    it("answers from what the given facts built", async () => {
+      await courseApp()
+        .given(event(CourseCreated, course(30)), event(StudentSubscribed, seat("stu-001")))
+        .when(queryValue(GetCourseView, { courseId: "cs-101" }))
+        .then(
+          result({ courseId: "cs-101", name: "Intro", capacity: 30, enrolledCount: 1, students: ["stu-001"] }),
+          noEvents(),
         )
-      }
+    })
 
-      // Course should now be full
-      await fixture.run(
-        scenario()
-          .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-004" }))
-          .then(error("Course is full")),
-      )
+    it("walks through its states as a storyline", async () => {
+      const view = (enrolledCount: number, students: string[]) => ({
+        courseId: "cs-101",
+        name: "Intro",
+        capacity: 2,
+        enrolledCount,
+        students,
+      })
+      await courseApp()
+        .storyline(queryValue(GetCourseView, { courseId: "cs-101" }))
+        .after(event(CourseCreated, course(2)))
+        .shows(view(0, []))
+        .after(event(StudentSubscribed, seat("stu-001")), event(StudentSubscribed, seat("stu-002")))
+        .shows(view(2, ["stu-001", "stu-002"]))
+        .after(event(StudentUnsubscribed, seat("stu-001")))
+        .shows(view(1, ["stu-002"]))
+    })
+  })
+
+  describe("One world, several acts", () => {
+    it("creates a course then subscribes students until it is full", async () => {
+      await courseApp()
+        .when(command(CreateCourse, course(3)))
+        .then(events(event(CourseCreated, course(3))))
+        .and.when(command(SubscribeStudent, seat("stu-001")))
+        .then(events(event(StudentSubscribed, seat("stu-001"))))
+        .and.when(command(SubscribeStudent, seat("stu-002")))
+        .then(events(event(StudentSubscribed, seat("stu-002"))))
+        .and.when(command(SubscribeStudent, seat("stu-003")))
+        .then(events(event(StudentSubscribed, seat("stu-003"))))
+        .and.when(command(SubscribeStudent, seat("stu-004")))
+        .then(error("Course is full"))
     })
 
     it("subscribe then unsubscribe frees up a spot", async () => {
-      await fixture.run(
-        given(
-          event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 1 }),
-          event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" }),
+      await courseApp()
+        .given(event(CourseCreated, course(1)), event(StudentSubscribed, seat("stu-001")))
+        .when(command(UnsubscribeStudent, seat("stu-001")))
+        .then(events(event(StudentUnsubscribed, seat("stu-001"))))
+        .and.when(command(SubscribeStudent, seat("stu-002")))
+        .then(events(event(StudentSubscribed, seat("stu-002"))))
+    })
+
+    it("the slice's projection runs inside the scenario, and answers a query act", async () => {
+      await courseApp()
+        .when(command(CreateCourse, course(30)))
+        .then(events(event(CourseCreated, course(30))))
+        .and.when(command(SubscribeStudent, seat("stu-001")))
+        .then(events(event(StudentSubscribed, seat("stu-001"))))
+        .and.when(queryValue(GetCourseView, { courseId: "cs-101" }))
+        .then(
+          result({ courseId: "cs-101", name: "Intro", capacity: 30, enrolledCount: 1, students: ["stu-001"] }),
+          noEvents(),
         )
-          .when(command(UnsubscribeStudent, { courseId: "cs-101", studentId: "stu-001" }))
-          .then(event(StudentUnsubscribed, { courseId: "cs-101", studentId: "stu-001" })),
-      )
-
-      // Spot is now free
-      await fixture.run(
-        scenario()
-          .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-002" }))
-          .then(event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-002" })),
-      )
-    })
-
-    it("a prior act's command flows through the full bus and becomes history", async () => {
-      await fixture.run(
-        scenario()
-          .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 }))
-          .then(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 })),
-      )
-      await fixture.run(
-        scenario()
-          .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" }))
-          .then(event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" })),
-      )
-    })
-
-    it("the slice's projection runs inside the fixture, and answers a query act", async () => {
-      await fixture.run(
-        scenario()
-          .when(command(CreateCourse, { courseId: "cs-101", name: "Intro", capacity: 30 }))
-          .then(event(CourseCreated, { courseId: "cs-101", name: "Intro", capacity: 30 })),
-      )
-      await fixture.run(
-        scenario()
-          .when(command(SubscribeStudent, { courseId: "cs-101", studentId: "stu-001" }))
-          .then(event(StudentSubscribed, { courseId: "cs-101", studentId: "stu-001" })),
-      )
-
-      // `run` does not return until the processors are quiet, so the read model
-      // is already caught up — no polling, no sleep. Asked through the read side,
-      // which is what a state-view slice is FOR.
-      await fixture.run(
-        scenario()
-          .when(queryValue(GetCourseView, { courseId: "cs-101" }))
-          .then(
-            result({
-              courseId: "cs-101",
-              name: "Intro",
-              capacity: 30,
-              enrolledCount: 1,
-              students: ["stu-001"],
-            }),
-            noEvents(),
-          ),
-      )
       expect(getCourseViews().get("cs-101")?.enrolledCount).toBe(1)
     })
   })
