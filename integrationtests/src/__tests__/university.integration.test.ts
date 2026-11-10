@@ -106,14 +106,23 @@ function sitedCourses(site: HandlerSite & {
 // ============================================================================
 
 /**
- * A fresh app per scenario, composed the way a process composes it — with the
- * log and the command bus wrapped once, in recorders, where they are built.
+ * A fresh app per test, composed the way a process composes it — with the log
+ * and the command bus wrapped once, in recorders, where they are built. These
+ * scenarios share fixed ids and a module-level read model, so each gets its own
+ * app; the fixture never stops one, so the test does.
  */
+const courseApps: App[] = []
+afterEach(async () => {
+  await Promise.all(courseApps.splice(0).map((app) => app.stop()))
+})
+
 function courseApp() {
   const eventStore = recordingEventStore(inMemoryEventStore())
   const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(unitOfWork), correlation))
   const queryBus = interceptingQueryBus(localQueryBus(unitOfWork), correlation)
-  return fixture(kronos(courses({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork })))
+  const app = kronos(courses({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork }))
+  courseApps.push(app)
+  return fixture(app)
 }
 
 describe("University — given, when, then", () => {

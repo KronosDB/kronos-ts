@@ -43,6 +43,8 @@ export type World = {
   history(events: ReadonlyArray<EventValue<any>>): Promise<void>
   advance(duration: Duration): Promise<void>
   act(action: Action): Promise<Acted>
+  /** A new scenario: an empty deadline book, and a fresh observation window. */
+  begin(): void
   /** Start a new observation window: what is recorded from here on is the next act's. */
   window(): void
   observe(actIdentifier: string | undefined): {
@@ -51,7 +53,6 @@ export type World = {
     schedules: ReadonlyArray<ScheduleRecord> | undefined
   }
   quiesce(): Promise<void>
-  close(): Promise<void>
 }
 
 const SETTLE_WITHIN = 5000
@@ -178,8 +179,6 @@ export async function openWorld(app: App): Promise<World> {
     }
   }
 
-  let closed = false
-
   return {
     app,
 
@@ -271,6 +270,11 @@ export async function openWorld(app: App): Promise<World> {
       return { result, threw, thrown, actIdentifier }
     },
 
+    begin() {
+      eventStore?.resetSchedules?.()
+      window()
+    },
+
     window,
 
     observe(actIdentifier) {
@@ -282,12 +286,6 @@ export async function openWorld(app: App): Promise<World> {
     },
 
     quiesce,
-
-    async close() {
-      if (closed) return
-      closed = true
-      await app.stop()
-    },
   }
 }
 

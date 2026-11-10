@@ -146,14 +146,23 @@ export type OutcomeOf<A> = [StoreOf<A>] extends [never]
  * store or bus of a kind is refused when the scenario runs: build the fixture's
  * app from the configuration of the module under test.
  *
- * A fixture is ONE WORLD: its first scenario takes the app over, `.and`
- * continues it, and once that is judged the app is stopped — so a test app that
- * holds more (a database to drop) releases it in its own `stop`. Build a fresh
- * app and fixture per scenario. The app may be handed as a promise, for one
- * whose resources are opened asynchronously.
+ * ONE FIXTURE, MANY SCENARIOS. Build the app once — per spec file or suite, of
+ * the whole app or of one slice — call `fixture(app)` once, and start every
+ * scenario from it. The first takes the app over; each after it runs in what
+ * the ones before it left, one at a time:
+ * - each scenario sees only what ITS act did (its own observation window);
+ * - nothing is reset: the log, the processors' positions and the read models
+ *   carry on, so scenarios stay apart by minting their own ids;
+ * - the clock is the test's own and carries on too;
+ * - each scenario starts with an empty deadline book — a deadline lives through
+ *   its scenario and that scenario's `.and` steps, never into the next one.
+ *
+ * The fixture never stops the app: the test does, with whatever else it opened
+ * (a database to drop), in its runner's hooks. The app may be handed as a
+ * promise, for one whose resources are opened asynchronously.
  */
 export function fixture<A extends RecordedApp>(app: A | Promise<A>): Fixture<OutcomeOf<A>> {
-  const home: Home = { app, claimed: false }
+  const home: Home = { app, world: undefined, turn: Promise.resolve() }
   const lineage: Lineage = { home, prior: undefined }
   return {
     ...start(lineage, []),
@@ -161,33 +170,58 @@ export function fixture<A extends RecordedApp>(app: A | Promise<A>): Fixture<Out
   } as unknown as Fixture<OutcomeOf<A>>
 }
 
-/** The world a fixture stands for, claimed by its first run. */
+/** The world a fixture stands for, opened by its first scenario and shared by all of them. */
 type Home = {
   readonly app: App | Promise<App>
-  claimed: boolean
+  world: Promise<World> | undefined
+  /** Settles when the scenario that holds the world lets go of it. */
+  turn: Promise<void>
 }
 
-/** Where a builder's run happens: its fixture's world, or the one a previous step left behind. */
+/** Where a builder's run happens: a new scenario on its fixture, or the step before it. */
 type Lineage = {
   readonly home: Home
   readonly prior: Run | undefined
 }
 
-/** A step that has run (or is running), with the world it ran in. */
+/** A world held by one scenario, and how that scenario lets go of it. */
+type Session = {
+  readonly world: World
+  /** Hand the world to the next scenario. Absent once let go. */
+  release: (() => void) | undefined
+}
+
+/** A step that has run (or is running), with the session it ran in. */
 type Run = {
-  readonly done: Promise<World>
+  readonly done: Promise<Session>
   continued: boolean
 }
 
-async function claim(home: Home): Promise<World> {
-  if (home.claimed) {
-    throw new Error(
-      "@kronos-ts/test: this fixture's world was already used by another scenario. A fixture is one world — " +
-        "build a fresh app and fixture per scenario, or continue the same world with `.and`.",
-    )
+/**
+ * Wait for the scenarios before this one to finish, then take the world — opened
+ * on first use. Scenarios on one fixture run one at a time even when the runner
+ * starts them together, because they share the recorders their windows read.
+ */
+async function take(home: Home): Promise<Session> {
+  const previous = home.turn
+  let release!: () => void
+  home.turn = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await previous
+  try {
+    home.world ??= Promise.resolve(home.app).then(openWorld)
+    return { world: await home.world, release }
+  } catch (error) {
+    release()
+    throw error
   }
-  home.claimed = true
-  return openWorld(await home.app)
+}
+
+/** Let go of the world, if this session still holds it. */
+function letGo(session: Session): void {
+  session.release?.()
+  session.release = undefined
 }
 
 // The builders below are written once, for every outcome: the TYPES above decide
@@ -226,12 +260,12 @@ function runJudged(
   steps: ReadonlyArray<Step>,
   assertions: ReadonlyArray<Assertion<TimedOutcome>>,
 ): Judged<TimedOutcome> {
-  let resolveWorld!: (world: World) => void
-  let rejectWorld!: (error: unknown) => void
+  let resolveSession!: (session: Session) => void
+  let rejectSession!: (error: unknown) => void
   const run: Run = {
-    done: new Promise<World>((resolve, reject) => {
-      resolveWorld = resolve
-      rejectWorld = reject
+    done: new Promise<Session>((resolve, reject) => {
+      resolveSession = resolve
+      rejectSession = reject
     }),
     continued: false,
   }
@@ -239,18 +273,19 @@ function runJudged(
   run.done.catch(() => {})
 
   const outcome = (async (): Promise<TimedOutcome> => {
-    let world: World | undefined
+    let session: Session | undefined
     try {
-      world = lineage.prior ? await lineage.prior.done : await claim(lineage.home)
-      const judged = await perform(world, steps, assertions)
-      // Hand the world on if a step was chained onto this one, close it if not.
-      // The chain is built synchronously, so by now `continued` is settled.
-      if (run.continued) resolveWorld(world)
-      else await world.close()
+      session = await sessionFor(lineage)
+      const judged = await perform(session.world, steps, assertions)
+      // Hand the world on to a step chained onto this one, or let the next
+      // scenario have it. The chain is built synchronously, so by now
+      // `continued` is settled; a step chained later takes its turn again.
+      if (!run.continued) letGo(session)
+      resolveSession(session)
       return judged
     } catch (error) {
-      rejectWorld(error)
-      if (world !== undefined) await world.close().catch(() => {})
+      if (session !== undefined) letGo(session)
+      rejectSession(error)
       throw error
     }
   })()
@@ -267,6 +302,23 @@ function runJudged(
       return continuation
     },
   }) as Judged<TimedOutcome>
+}
+
+/**
+ * The session a step runs in: a new scenario takes its turn and starts with an
+ * empty deadline book; a chained step continues the one before it — taking a
+ * turn of its own when that one already let go.
+ */
+async function sessionFor(lineage: Lineage): Promise<Session> {
+  if (lineage.prior === undefined) {
+    const session = await take(lineage.home)
+    session.world.begin()
+    return session
+  }
+  const prior = await lineage.prior.done
+  if (prior.release !== undefined) return prior
+  const again = await take(lineage.home)
+  return again
 }
 
 /** Drive the world through the steps, then judge the claims. */
@@ -352,7 +404,9 @@ function beats(home: Home, read: QueryValue<any, any>, so_far: ReadonlyArray<Bea
 }
 
 async function tell(home: Home, read: QueryValue<any, any>, story: ReadonlyArray<Beat>): Promise<void> {
-  const world = await claim(home)
+  const session = await take(home)
+  const { world } = session
+  world.begin()
   try {
     const told: string[] = []
     for (const [index, beat] of story.entries()) {
@@ -380,7 +434,7 @@ async function tell(home: Home, read: QueryValue<any, any>, story: ReadonlyArray
       told.push("shows")
     }
   } finally {
-    await world.close()
+    letGo(session)
   }
 }
 

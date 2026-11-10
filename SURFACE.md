@@ -990,12 +990,12 @@ query(descriptor, payload, metadata?): QueryValue        // the act (a read is n
 any(schema?: StandardSchemaV1): Any                      // the positional payload hole — renders as `*`
 
 // ── the fixture: the running app, and nothing else
-fixture<A extends RecordedApp>(app: A | Promise<A>): Fixture<OutcomeOf<A>>   // ONE world
+fixture<A extends RecordedApp>(app: A | Promise<A>): Fixture<OutcomeOf<A>>   // the app, and nothing else; many scenarios
 type RecordedApp = App<EventStore & EventRecording, CommandBus & CommandRecording, QueryBus>
   .given(...events)          → ScenarioStart             // history; repeatable, accumulates in order
   .advance(duration)         → same shape                // at any joint, repeatable — ONLY when the log has a clock
   .when(command | query | event) → ScenarioActed         // the act
-  .then(...assertions)       → Judged                    // RUNS; resolves with the Outcome
+  .then(...assertions)       → Judged                    // RUNS (after the fixture's earlier scenarios); resolves with the Outcome
   .storyline(query(Q, p))    → .shows(expected | assertion) · .after(...events)   // a PromiseLike
 type Judged<O> = Promise<O> & { and: ScenarioStart<O> }  // `and`: the same world, continued
 
@@ -1028,12 +1028,28 @@ const app = kronos(lists({ eventStore, commandBus, queryBus, tokenStore: inMemor
 await fixture(app).given(event(ItemAdded, a)).when(command(AddItem, b)).then(events(event(ItemAdded, b)))
 ```
 
-The fixture BUILDS NOTHING and is handed NOTHING but the app. It finds the log
-and the buses on what the app reports (`app.eventStores`, `app.commandBuses`,
-`app.queryBuses`), takes the app's processors back from `kronos`
-(`app.processors`), folds history into them, performs the act, settles them,
-reads the recorders, and once the scenario is judged stops the app — so a test
-app that holds more (a database to drop) releases it in its own `stop`.
+The fixture BUILDS NOTHING and is handed NOTHING but the app — no options. It
+finds the log and the buses on what the app reports (`app.eventStores`,
+`app.commandBuses`, `app.queryBuses`), takes the app's processors back from
+`kronos` (`app.processors`), folds history into them, performs the act, settles
+them and reads the recorders. It NEVER STOPS THE APP: the test does, with
+whatever else it opened (a database to drop), in its runner's hooks.
+
+ONE FIXTURE, MANY SCENARIOS. Build the app once per spec file or suite — the
+WHOLE app, where a scenario also sees what other slices set off, or ONE slice,
+tested on its own — call `fixture(app)` once, and start every scenario from it:
+- each scenario has its OWN OBSERVATION WINDOW: `events`, `commands` and
+  `schedules` are what its act did, nothing earlier;
+- NOTHING IS RESET. The log may be real and the read models are the app's, so
+  the fixture could not wipe them consistently; the log, the processors'
+  positions and the read models carry on, and scenarios stay apart by MINTING
+  THEIR OWN IDS. (A list read model shows other scenarios' rows too.)
+- the clock is the TEST'S OWN and carries on from one scenario to the next;
+- each scenario starts with an EMPTY DEADLINE BOOK: a deadline lives through
+  its scenario and that scenario's `.and` steps, never into the next one (only
+  the clocked recorder's in-memory book is cleared, never the log);
+- scenarios on one fixture run ONE AT A TIME, even when the runner starts them
+  together, because their windows read the same recorders.
 
 ITS TYPE IS THE CHECK. A fixture covers the whole app, so an app whose log or
 command bus is not recorded does not compile — a processor reading an unrecorded

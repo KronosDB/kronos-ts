@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   correlation,
   eventHandler,
@@ -69,13 +69,21 @@ beforeEach(() => {
 /** A composition root: a function of the shared objects, keeping their types. */
 type Root = <S extends Shared>(shared: S) => Lists<S>
 
+/** Every app a test built: the fixture never stops one, so the test does. */
+const running: Array<{ stop(): Promise<void> }> = []
+afterEach(async () => {
+  await Promise.all(running.splice(0).map((a) => a.stop()))
+})
+
 function app(lists: Root, options: { clock?: AdvanceableClock } = {}) {
   const clock = options.clock ?? advanceableClock()
   const uow = () => unitOfWork(clock)
   const eventStore = recordingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), { clock })
   const commandBus = recordingCommandBus(interceptingCommandBus(localCommandBus(uow), correlation))
   const queryBus = interceptingQueryBus(localQueryBus(uow), correlation)
-  return kronos(lists({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork: uow }))
+  const built = kronos(lists({ eventStore, commandBus, queryBus, tokenStore: inMemoryTokenStore(), unitOfWork: uow }))
+  running.push(built)
+  return built
 }
 
 function built(lists: Root, options: { clock?: AdvanceableClock } = {}) {
@@ -796,15 +804,6 @@ describe("misuse", () => {
     expect((failure as Error).message).toContain("this app has 2 command buses")
   })
 
-  it("refuses a second scenario on a world that is already used", async () => {
-    const world = built(decisions)
-    await world.when(command(CreateCourse, intro(5))).then()
-    const failure = await world
-      .when(command(CreateCourse, intro(5)))
-      .then()
-      .catch((e: Error) => e)
-    expect((failure as Error).message).toContain("A fixture is one world")
-  })
 
   it("says so when a query is the act and the app has no query bus", async () => {
     const failure = await fixture(kronos({}))
@@ -827,20 +826,20 @@ describe("the app", () => {
       .then(events(event(CourseCreated, intro(5))))
   })
 
-  it("is stopped once the scenario is judged — and a test app releases what it holds in its own `stop`", async () => {
-    let released = 0
-    const running = app(university)
-    const holding = {
-      ...running,
+  it("is never stopped by the fixture — the test stops it", async () => {
+    let stopped = 0
+    const built = app(university)
+    const watched = {
+      ...built,
       async stop() {
-        await running.stop()
-        released++
+        stopped++
+        await built.stop()
       },
     }
-    await fixture(holding)
-      .when(command(CreateCourse, intro(5)))
-      .then()
-    expect(released).toBe(1)
+    const f = fixture(watched)
+    await f.when(command(CreateCourse, intro(5))).then()
+    await f.when(command(SubscribeStudent, seat("stu-001"))).then()
+    expect(stopped).toBe(0)
   })
 
   it("carries what the app's wiring carries: correlation is the app's own", async () => {
@@ -854,5 +853,87 @@ describe("the app", () => {
       .given(event(CourseCreated, intro(5)))
       .when(query(GetCourseView, { courseId: "cs-101" }))
       .then(result({ courseId: "cs-101", name: "Intro", enrolled: 0, closed: false }))
+  })
+})
+
+// ===========================================================================
+// One fixture, many scenarios
+// ===========================================================================
+
+describe("one fixture, many scenarios", () => {
+  const course = (id: string, capacity = 5) => ({ courseId: id, name: "Intro", capacity })
+  const seatIn = (courseId: string, studentId: string) => ({ courseId, studentId })
+
+  it("runs scenario after scenario on one app, each seeing only what its own act did", async () => {
+    const f = built(decisions)
+    await f.when(command(CreateCourse, course("c-1"))).then(events(event(CourseCreated, course("c-1"))))
+    await f.when(command(CreateCourse, course("c-2"))).then(events(event(CourseCreated, course("c-2"))))
+    await f
+      .given(event(CourseCreated, course("c-3", 1)))
+      .when(command(SubscribeStudent, seatIn("c-3", "s-1")))
+      .then(events(event(StudentSubscribed, seatIn("c-3", "s-1"))), result({ remainingSeats: 0 }))
+  })
+
+  it("resets nothing: scenarios stay apart by their own ids, and share what they share", async () => {
+    const f = built(decisions)
+    await f.when(command(CreateCourse, course("shared"))).then()
+    // The log carries on, so a later scenario about the same id meets it.
+    await f.when(command(CreateCourse, course("shared"))).then(error("Course already exists"), noEvents())
+  })
+
+  it("over the whole app, a scenario sees what other slices set off; over one slice, it does not", async () => {
+    const whole = built(withAutomation)
+    await whole
+      .given(event(CourseCreated, course("w-1", 1)))
+      .when(command(SubscribeStudent, seatIn("w-1", "s-1")))
+      .then(commands(command(CloseCourse, { courseId: "w-1" })))
+    const slice = built(decisions)
+    await slice
+      .given(event(CourseCreated, course("d-1", 1)))
+      .when(command(SubscribeStudent, seatIn("d-1", "s-1")))
+      .then(noCommands())
+  })
+
+  it("runs scenarios one at a time, even when they are started together", async () => {
+    const f = built(decisions)
+    await Promise.all(
+      ["p-1", "p-2", "p-3", "p-4"].map((id) =>
+        f.when(command(CreateCourse, course(id))).then(events(event(CourseCreated, course(id)))),
+      ),
+    )
+  })
+
+  it("keeps a deadline through its scenario's `.and` steps, and never into the next scenario", async () => {
+    const f = built(reminders)
+    await f
+      .when(command(ArmReminder, { orderId: "r-1", afterMs: 30_000 }))
+      .then(scheduled(event(ReminderDue, { orderId: "r-1" }), 30_000))
+      .and.when(command(ArmReminder, { orderId: "r-2", afterMs: 60_000 }))
+      .advance(30_000)
+      .then(events(event(ReminderArmed, { orderId: "r-2", token: any(z.string()) }), event(ReminderDue, { orderId: "r-1" })))
+    // r-2's deadline was armed in the scenario above and never fired there: it does not fire here.
+    await f
+      .when(command(ArmReminder, { orderId: "r-3", afterMs: 1_000 }))
+      .advance(60_000)
+      .then(events(event(ReminderArmed, { orderId: "r-3", token: any(z.string()) }), event(ReminderDue, { orderId: "r-3" })))
+  })
+
+  it("lets the test's clock carry on from one scenario to the next", async () => {
+    const clock = advanceableClock()
+    const f = built(reminders, { clock })
+    await f.when(command(ArmReminder, { orderId: "t-1", afterMs: 1_000 })).advance(10_000).then()
+    const outcome = await f.when(command(ArmReminder, { orderId: "t-2", afterMs: 1_000 })).then()
+    expect(outcome.events[0]!.timestamp).toBe(FIXTURE_EPOCH + 10_000)
+    expect(clock()).toBe(FIXTURE_EPOCH + 10_000)
+  })
+
+  it("runs storylines on the same fixture as scenarios", async () => {
+    const f = built(university)
+    await f.when(command(CreateCourse, course("v-1", 2))).then()
+    await f
+      .storyline(query(GetCourseView, { courseId: "v-1" }))
+      .shows({ courseId: "v-1", name: "Intro", enrolled: 0, closed: false })
+      .after(event(StudentSubscribed, seatIn("v-1", "s-1")))
+      .shows({ courseId: "v-1", name: "Intro", enrolled: 1, closed: false })
   })
 })

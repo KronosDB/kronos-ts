@@ -88,6 +88,8 @@ export type ScheduleRecording = {
    * fired — so the recording sees them exactly as it sees a handler's append.
    */
   advance(duration: Duration): Promise<void>
+  /** Forget every held deadline, pending or not. The LOG keeps its events; only the book is cleared. */
+  resetSchedules(): void
 }
 
 /**
@@ -194,7 +196,7 @@ export function recordingEventStore<E extends EventStore>(
     {
       ...Object.getOwnPropertyDescriptors(store),
       ...Object.getOwnPropertyDescriptors(own),
-      ...(tier.advance !== undefined ? Object.getOwnPropertyDescriptors(pick(tier, ["clock", "schedules", "advance"])) : {}),
+      ...(tier.advance !== undefined ? Object.getOwnPropertyDescriptors(pick(tier, ["clock", "schedules", "advance", "resetSchedules"])) : {}),
     },
   ) as E & EventRecording & Partial<ScheduleStoreCapability & ScheduleRecording>
 }
@@ -226,6 +228,10 @@ function heldDeadlines(
 
     get schedules(): ReadonlyArray<ScheduleRecord> {
       return entries.map((e) => e.record)
+    },
+
+    resetSchedules(): void {
+      entries.length = 0
     },
 
     async advance(duration: Duration): Promise<void> {
