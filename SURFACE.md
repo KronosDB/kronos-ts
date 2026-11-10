@@ -595,9 +595,10 @@ ctx.source(query: EventQuery): Promise<ReadonlyArray<EventMessage>>
 // ── event delivery: tracked only; the processor is a value ────────────────
 type Sequence = (event: EventMessage) => string    // TOTAL — (e) => e.identifier = own sequence = no constraint
 //   by tag, written out: (e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier
-eventProcessor<U extends UnitOfWork = UnitOfWork>(
-  name: string, eventStore: EventStore, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive, positional
-): EventProcessor<U>          // `U` is read off the factory and threads to the event handler's ctx.unitOfWork
+eventProcessor<U extends UnitOfWork = UnitOfWork, S extends EventStore = EventStore>(
+  name: string, eventStore: S, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive, positional
+): EventProcessor<U, S>       // `U` is read off the factory and threads to the event handler's ctx.unitOfWork;
+                              // `S` is the log's own type, kept so the app reports it whole (`App.eventStores`)
 // WHAT A PROCESSOR ASKS OF ITS LOG. It opens its stream with the union of its
 // handlers' event types as the query, and a store that can filter (KronosDB on the
 // server, Postgres in its WHERE clause) sends nothing else. The query is a
@@ -624,16 +625,17 @@ eventProcessor<U extends UnitOfWork = UnitOfWork>(
 //      here: a token store or DLQ handed a task carrying no transaction of its
 //      own throws, naming the factory to build `unitOfWork` with. See the
 //      persistence section for why that beats the brand it replaced.
-type EventProcessor<U> · RunningProcessor · EventProcessorStatus · SegmentStatus
+type EventProcessor<U, S> · RunningProcessor · EventProcessorStatus · SegmentStatus
 // WHAT A PROCESSOR DOES WITH ITS BATCH, said as functions over the value. Each
 // returns a new value; the host composes them with whatever `pipe` it uses.
 batched(p, size: number): EventProcessor<U>                     // up to `size` READY events a batch, head and behind alike
 polling(p, ms: number): EventProcessor<U>                       // look again every `ms` when idle (default 500); base of the retry delay
 //   `batched` and `polling` take anything with the field they set, so they tune a
 //   store's polling worker the same way: polling(batched(postgresSchedulingEventStore(…), 200), 250)
-concurrent(p, sequenceOf: Sequence): EventProcessor<U>         // the batch's sequences side by side; one sequence in log order
-deadLettering(p, queue: SequencedDeadLetterQueue<U>, sequenceOf: Sequence): EventProcessor<U>   // park per sequence
-segmented(p, count: number, sequenceOf: Sequence): EventProcessor<U>   // start as `count` segments (a power of two)
+concurrent(p: P, sequenceOf: Sequence): P                       // the batch's sequences side by side; one sequence in log order
+deadLettering(p: P, queue: SequencedDeadLetterQueue<U>, sequenceOf: Sequence): P   // park per sequence
+segmented(p: P, count: number, sequenceOf: Sequence): P         // start as `count` segments (a power of two)
+//   all five are generic identity over the processor value (`P extends EventProcessor`), so its log's type survives them
 //   pipe(eventProcessor(name, eventStore, tokenStore, unitOfWork), (p) => batched(p, 1000), (p) => concurrent(p, byAccount))
 // A SEQUENCE IS ORDERED, SEQUENCES ARE NOT. Without `concurrent` the processor
 // hands over one event at a time in log order, whatever the sequences say. With it,
@@ -664,7 +666,7 @@ kronos<U extends UnitOfWork = UnitOfWork>({
   commandHandlers?: ReadonlyArray<CommandHandlerEntry<U>>,   // handler ctx, commandBus, queryBus all keyed on U
   queryHandlers?:   ReadonlyArray<QueryHandlerEntry<U>>,
   eventHandlers?:   ReadonlyArray<EventHandlerEntry<U>>,     // …and the processor too
-}): App
+}): App<S, C, Q>                // S, C, Q read off what the entries (and their processors) carry
 // THREE, because `kronos` registers BEHAVIOUR and a state is DATA. There is no
 // `states` list, no `StateEntry` and no `StateOptions`: `ctx.load(Course, id)`
 // names the state at the call site and takes the log off the entry's site, and
@@ -679,7 +681,22 @@ kronos<U extends UnitOfWork = UnitOfWork>({
 // one: scheduling is a tier on the entry's `eventStore`, so which log an
 // automation arms a deadline in is the same deployment fact as which log it
 // reads, said once. A site that can schedule is a site whose log was wrapped.
-type App = { processors: ReadonlyMap<string, RunningProcessor>; stop(): Promise<void> }
+type App<S extends EventStore, C extends CommandBus, Q extends QueryBus> = {
+  processors: ReadonlyMap<string, RunningProcessor>
+  eventStores: ReadonlySet<S>      // every entry's `eventStore` and every processor's, by identity
+  commandBuses: ReadonlySet<C>     // every entry's `commandBus`, by identity
+  queryBuses: ReadonlySet<Q>       // every entry's `queryBus`, by identity
+  stop(): Promise<void>
+}
+// WHAT THE HANDLERS WERE WIRED WITH, for code that is handed only the app (a test
+// fixture, an edge that would rather take one object). Collected by OBJECT
+// IDENTITY, first met first; the object reported is the one the entry carried,
+// outermost wrapper included, because that is the one you would send on. Two
+// modules wrapping one bus differently report two buses. Several of each is legal
+// and no boot error: a module may share some infrastructure and keep some private.
+// The TYPES are kept: each member is the store or bus with every capability its
+// wrapper claimed (a union when entries carry different ones), and an absent list
+// contributes `never`. Grabbing a bus where you built it stays the normal way.
 // grouping: processors by NAME (the durable identity — tokens persist by name
 // across restarts). Same name + equal config ⇒ one delivery; same name +
 // conflicting config ⇒ boot error. Stores are not grouped at all any more —

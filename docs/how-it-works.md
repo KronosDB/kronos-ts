@@ -1309,11 +1309,22 @@ an automation replaying from a cold store can never dispatch to a command whose
 handler is not yet subscribed.
 
 ```ts
-type App = {
+type App<S extends EventStore, C extends CommandBus, Q extends QueryBus> = {
   readonly processors: ReadonlyMap<string, RunningProcessor>
+  readonly eventStores: ReadonlySet<S>
+  readonly commandBuses: ReadonlySet<C>
+  readonly queryBuses: ReadonlySet<Q>
   stop(): Promise<void>
 }
 ```
+
+The app also reports what its handlers were wired with: every distinct event
+store (each entry's and each processor's), command bus and query bus, by object
+identity, in the order first met. The object reported is the one the entry
+carried, so a wrapped bus is reported as its outermost wrapper. Several of each
+is legal. The types are kept, so `app.eventStores` holds the stores with every
+capability their wrappers added; that is what lets code that is handed only the
+app (a test fixture, say) demand a store that records.
 
 `app.processors` is keyed by that same durable name. A `RunningProcessor` carries
 `running` / `position` / `replaying`, `status()`, `start()` / `stop()`,

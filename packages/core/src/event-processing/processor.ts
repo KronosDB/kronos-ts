@@ -39,12 +39,16 @@ export type EventProcessorStatus = {
  * It defaults to the bare {@link UnitOfWork} and is threaded through to the
  * event handler's `ctx.unitOfWork`, so a handler that demands a composed
  * capability does not typecheck against a processor built without one.
+ *
+ * `S` is the log's own type, kept rather than collapsed to {@link EventStore}, so
+ * the app that runs this processor can report the store with everything it
+ * claims (`App.eventStores`).
  */
-export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
+export type EventProcessor<U extends UnitOfWork = UnitOfWork, S extends EventStore = EventStore> = {
   /** Durable identity — the key this processor's token is stored under. */
   readonly name: string
   /** The log this processor reads. Also names the state manager `ctx.load` uses. */
-  readonly eventStore: EventStore
+  readonly eventStore: S
   /**
    * Where the position is kept. Never defaulted — see {@link eventProcessor}.
    *
@@ -115,12 +119,12 @@ export type EventProcessor<U extends UnitOfWork = UnitOfWork> = {
  * What the processor does with its batch is said by wrapping the value:
  * {@link batched}, {@link concurrent}, {@link deadLettering}, {@link segmented}.
  */
-export function eventProcessor<U extends UnitOfWork = UnitOfWork>(
+export function eventProcessor<U extends UnitOfWork = UnitOfWork, S extends EventStore = EventStore>(
   name: string,
-  eventStore: EventStore,
+  eventStore: S,
   tokenStore: TokenStore<NoInfer<U>>,
   unitOfWork: () => U,
-): EventProcessor<U> {
+): EventProcessor<U, S> {
   return { name, eventStore, tokenStore, unitOfWork }
 }
 
@@ -187,7 +191,7 @@ function nameOf(worker: object): string {
  * events go wherever the function sends them: `e.identifier` gives each a
  * sequence of its own, a constant puts them all in one.
  */
-export function concurrent<U extends UnitOfWork>(processor: EventProcessor<U>, sequenceOf: Sequence): EventProcessor<U> {
+export function concurrent<P extends EventProcessor<any, any>>(processor: P, sequenceOf: Sequence): P {
   sameSequence(processor, sequenceOf, "concurrent")
   return { ...processor, concurrent: sequenceOf }
 }
@@ -200,11 +204,11 @@ export function concurrent<U extends UnitOfWork>(processor: EventProcessor<U>, s
  * With {@link concurrent} the two must sequence events THE SAME WAY: a sequence
  * that runs side by side with another cannot be parked behind it.
  */
-export function deadLettering<U extends UnitOfWork>(
-  processor: EventProcessor<U>,
-  queue: SequencedDeadLetterQueue<U>,
+export function deadLettering<P extends EventProcessor<any, any>>(
+  processor: P,
+  queue: SequencedDeadLetterQueue<TaskOf<P>>,
   sequenceOf: Sequence,
-): EventProcessor<U> {
+): P {
   sameSequence(processor, sequenceOf, "deadLettering")
   return { ...processor, deadLetterQueue: queue, sequence: sequenceOf }
 }
@@ -225,17 +229,20 @@ export function deadLettering<U extends UnitOfWork>(
  * With {@link concurrent} and {@link deadLettering} all three must be given the
  * same function.
  */
-export function segmented<U extends UnitOfWork>(
-  processor: EventProcessor<U>,
+export function segmented<P extends EventProcessor<any, any>>(
+  processor: P,
   count: number,
   sequenceOf: Sequence,
-): EventProcessor<U> {
+): P {
   if (!Number.isInteger(count) || count < 1 || count > 2 ** 16 || (count & (count - 1)) !== 0) {
     throw new Error(`segmented("${processor.name}"): the number of segments is a power of two, from 1 to 65536 — got ${count}`)
   }
   sameSequence(processor, sequenceOf, "segmented")
   return { ...processor, segments: { count, sequenceOf } }
 }
+
+/** The unit of work a processor's batches commit in, read off its factory. */
+type TaskOf<P extends EventProcessor<any, any>> = ReturnType<P["unitOfWork"]>
 
 function sameSequence(processor: EventProcessor<any>, sequenceOf: Sequence, wrapper: string) {
   const existing = [processor.concurrent, processor.sequence, processor.segments?.sequenceOf]
