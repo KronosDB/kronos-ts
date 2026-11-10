@@ -130,12 +130,13 @@ function run(config: {
   tokens?: TokenStore
   batch?: number
   withQueue?: boolean
+  pollingMs?: number
 }) {
   let processor: EventProcessor = eventProcessor("p", config.log, config.tokens ?? inMemoryTokenStore(), unitOfWork)
   if (config.batch !== undefined) processor = batched(processor, config.batch)
   if (config.withQueue) processor = deadLettering(processor, inMemoryDeadLetterQueue(), (e) => e.tags.find((t) => t.key === "order")?.value ?? qualifiedNameToString(e.name))
   return runEventProcessor({
-    processor: polling(processor, 5),
+    processor: polling(processor, config.pollingMs ?? 5),
     handlers: config.handlers.map((definition) => ({ definition })),
   })
 }
@@ -584,5 +585,44 @@ describe("resetting a processor", () => {
     expect(processor.replaying).toBe(false)
     expect(processor.position).toBe(1n)
     expect((await tokens.get("p", 0))!.kind).toBe("global-sequence")
+  })
+})
+
+describe("an event that arrives while the processor writes how far it looked", () => {
+  it("is handled, not left until the next event wakes the processor", async () => {
+    // The write of a quiet stretch's position is held open, so the event lands
+    // while the batch before it is still being finished.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let writing!: () => void
+    const startedWriting = new Promise<void>((resolve) => {
+      writing = resolve
+    })
+    const inner = inMemoryTokenStore()
+    const tokens = Object.assign(Object.create(inner) as TokenStore, {
+      store: async (...args: Parameters<TokenStore["store"]>) => {
+        // A quiet stretch's position is written outside any unit of work.
+        if (args[3] === undefined) {
+          writing()
+          await held
+        }
+        return inner.store(...args)
+      },
+    }) as TokenStore
+
+    const seen: bigint[] = []
+    const log = fakeLog([event(Ordered, 0n), event(Noise, 1n)], { reportsProgress: true })
+    // A long polling interval, so nothing but the stream's wake-up can find the event.
+    const processor = run({ log, handlers: [handlerFor(Ordered, seen)], tokens, pollingMs: 60_000 })
+    await processor.start()
+    await startedWriting
+    log.push(event(Ordered, 2n))
+    release()
+    await until(() => seen.length === 2, "the event that arrived during the write", 1000)
+    processor.stop()
+
+    expect(seen).toEqual([0n, 2n])
   })
 })

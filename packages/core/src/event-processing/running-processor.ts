@@ -275,6 +275,9 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     // unref'd either — see `scheduleImmediate`.
     let pollImmediate: ReturnType<typeof setImmediate> | null = null
     let processing = false
+    // The stream called while a poll was running. That poll may already have
+    // looked for more and found none, so it polls once more when it is done.
+    let woken = false
     let inFlight: Promise<void> = Promise.resolve()
     let renewing: Promise<void> = Promise.resolve()
     let caughtUp = false
@@ -317,7 +320,9 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     function openStream() {
       stream = log.open({ position: token.position(), token }, accepts)
       stream.setCallback(() => {
-        if (active && !processing) scheduleImmediate()
+        if (!active) return
+        if (processing) woken = true
+        else scheduleImmediate()
       })
     }
 
@@ -341,8 +346,13 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     function poll() {
       if (!active || processing) return
       processing = true
+      woken = false
       inFlight = pollOnce().finally(() => {
         processing = false
+        if (woken && active) {
+          woken = false
+          scheduleImmediate()
+        }
       })
     }
 
@@ -429,6 +439,9 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
         // Mirrors Axon's close-and-reopen-from-token recovery.
         stream?.close()
         stream = null
+        // The retry re-reads from the token, so a wake-up meanwhile adds
+        // nothing, and must not cut the backoff short.
+        woken = false
         if (retryInMs !== undefined) {
           retryDelayMs = Math.min(retryDelayMs * 2, Math.max(MAX_RETRY_DELAY_MS, firstRetryDelayMs))
           schedule(retryInMs)
