@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { AppendConditionError, emptyMetadata, isConflict, qn, qualifiedNameToString } from "@kronos-ts/core"
+import { AppendConditionError, emptyMetadata, isConflict, isNoHandler, NoHandlerError, qn, qualifiedNameToString } from "@kronos-ts/core"
 import { command, unitOfWork } from "@kronos-ts/core"
 import {
   correlation,
@@ -279,6 +279,15 @@ describe("RabbitMQ command bus failures", () => {
     expect(isConflict(failure)).toBe(true)
     expect(failure.name).toBe("AppendConditionError")
     expect(failure.message).toBe("lost the race")
+  })
+
+  it("does not pass on a handler's own nested no-handler as no-handler", async () => {
+    const send = twoInstances(async () => {
+      throw new NoHandlerError('No handler registered for command "test.Nested"')
+    })
+    const failure = await send("1").then(() => undefined, (e) => e)
+    expect(isNoHandler(failure)).toBe(false)
+    expect(failure.message).toContain("test.Nested")
   })
 
   it("fails the caller with a plain error, keeping its name, when the handler failed otherwise", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { AppendConditionError, isConflict, isUnavailable, UnavailableError } from "@kronos-ts/core"
+import { AppendConditionError, isConflict, isNoHandler, isUnavailable, NoHandlerError, UnavailableError } from "@kronos-ts/core"
 import {
   shutdownLatch,
   ShutdownInProgressError,
@@ -117,6 +117,7 @@ describe("Error mapping", () => {
       expect(err).toBeInstanceOf(NoHandlerForCommandError)
       expect(err.errorCode).toBe(AxonServerErrorCode.NO_HANDLER_FOR_COMMAND)
       expect(err.transient).toBe(false)
+      expect(isNoHandler(err)).toBe(true)
     })
 
     it("maps NO_HANDLER_FOR_QUERY to NoHandlerForQueryError", () => {
@@ -124,6 +125,14 @@ describe("Error mapping", () => {
 
       expect(err).toBeInstanceOf(NoHandlerForQueryError)
       expect(err.transient).toBe(false)
+      expect(isNoHandler(err)).toBe(true)
+    })
+
+    it("answers a handler's conflict with its code, and anything else, a nested no-handler too, as an execution error", () => {
+      expect(commandFailureCode(new AppendConditionError("lost"))).toBe(AxonServerErrorCode.COMMAND_CONCURRENCY_ERROR)
+      expect(queryFailureCode(new AppendConditionError("lost"))).toBe(AxonServerErrorCode.CONCURRENCY_EXCEPTION)
+      expect(commandFailureCode(new NoHandlerError("nested"))).toBe(AxonServerErrorCode.COMMAND_EXECUTION_ERROR)
+      expect(queryFailureCode(new NoHandlerForQueryError("nested"))).toBe(AxonServerErrorCode.QUERY_EXECUTION_ERROR)
     })
 
     it("maps COMMAND_EXECUTION_ERROR to transient CommandExecutionError", () => {

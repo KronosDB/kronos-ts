@@ -146,7 +146,7 @@ down to it.
 // primitives
 qn(ns, name): QualifiedName · type Metadata · emptyMetadata() · type Tag · tag(k, v)
 generateIdentifier(): string · type SerializedError
-AppendConditionError · isConflict(error) · UnavailableError · isUnavailable(error) · type FailureKind
+AppendConditionError · isConflict(error) · UnavailableError · isUnavailable(error) · NoHandlerError · isNoHandler(error) · type FailureKind
   // THE ERROR CONTRACT: what every store throws, and every
   // bus carries back, for a caller that handles it differently. A conflict: the append's condition was violated,
   // nothing was written, load again and decide again. Stores throw the class (or a subclass with their own detail);
@@ -157,6 +157,8 @@ AppendConditionError · isConflict(error) · UnavailableError · isUnavailable(e
   // Unavailable: the store or bus could not serve the request now; retry later. An answer that never came may still
   // have landed. Transports with their own error classes give those the kind; KronosDB and Axon Server carry it as
   // their CONNECTION_FAILED code.
+  // No handler: nothing handles the name, on this instance or any the bus reaches. Only the bus that dispatched a
+  // message reports it; a handler's own nested no-handler reaches its caller without a kind.
 type StandardSchemaV1 · type InferOutput<S>    // the VENDORED schema contract, types only
 
 // SCHEMAS ARE STANDARD SCHEMA. Every payload/result/id constraint is

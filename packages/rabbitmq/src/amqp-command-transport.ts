@@ -1,4 +1,4 @@
-import { messagingAdmission, positiveInteger, UnavailableError, withMessagingTimeout } from "@kronos-ts/core"
+import { messagingAdmission, NoHandlerError, positiveInteger, UnavailableError, withMessagingTimeout } from "@kronos-ts/core"
 import type { Channel, ConsumeMessage } from "amqplib"
 import type {
   RabbitMqCommandEnvelope,
@@ -204,7 +204,7 @@ export function amqpRabbitMqCommandTransport(
       if (!request) return
       pending.delete(requestId)
       clearTimeout(request.timer)
-      request.reject(new Error("No RabbitMQ queue is bound for this request"))
+      request.reject(new NoHandlerError("No RabbitMQ queue is bound for this request"))
     })
     await channel.prefetch(maxHandlers + 1, true)
 

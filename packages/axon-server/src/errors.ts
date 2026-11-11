@@ -79,8 +79,8 @@ const UNAVAILABLE_CODES = new Set<string>([
 export class AxonServerError extends Error {
   readonly errorCode: string
   readonly transient: boolean
-  /** Core's `unavailable` kind, when the code says to retry later, so `isUnavailable` recognises it. */
-  readonly kind?: "unavailable"
+  /** Core's contract kind: `unavailable` when the code says to retry later, `no-handler` on the no-handler errors. */
+  readonly kind?: "unavailable" | "no-handler"
 
   constructor(message: string, errorCode: string, transient: boolean, options?: ErrorOptions) {
     super(message, options)
@@ -93,6 +93,9 @@ export class AxonServerError extends Error {
 
 /** No handler registered for the dispatched command. */
 export class NoHandlerForCommandError extends AxonServerError {
+  /** Core's `no-handler` kind, so `isNoHandler` recognises it. */
+  readonly kind: "no-handler" = "no-handler"
+
   constructor(message: string) {
     super(message, AxonServerErrorCode.NO_HANDLER_FOR_COMMAND, false)
     this.name = "NoHandlerForCommandError"
@@ -101,6 +104,9 @@ export class NoHandlerForCommandError extends AxonServerError {
 
 /** No handler registered for the dispatched query. */
 export class NoHandlerForQueryError extends AxonServerError {
+  /** Core's `no-handler` kind, so `isNoHandler` recognises it. */
+  readonly kind: "no-handler" = "no-handler"
+
   constructor(message: string) {
     super(message, AxonServerErrorCode.NO_HANDLER_FOR_QUERY, false)
     this.name = "NoHandlerForQueryError"
