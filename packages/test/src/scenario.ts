@@ -21,9 +21,11 @@ import {
 //   automation: given(events) → when(event)   → then(commands)
 //   storyline:  a read model, shown → after(events) → shown → …
 //
-// `given` is history: projections fold it, automations do not act on it. The
-// builders are VALUES — every step returns a new one — and `then` is where one
-// runs, in the world its fixture was handed.
+// `given` is what the act starts from: its events are appended and the app
+// handles them like any others, before the act. `when` opens the observation
+// window, so the outcome is the act's alone. The builders are VALUES — every
+// step returns a new one — and `then` is where one runs, in the world its
+// fixture was handed.
 // ---------------------------------------------------------------------------
 
 type Step =
@@ -44,7 +46,10 @@ export type ScenarioStart<O extends Outcome = Outcome> = Timed<O> extends true
 
 /** What every scenario can do before its act, timed or not. */
 export type BeforeAct<O extends Outcome = Outcome> = {
-  /** Facts that already happened. Repeatable; the facts accumulate in order. */
+  /**
+   * Facts the act starts from, appended and handled by the running app before
+   * it — automations included. Repeatable; the facts accumulate in order.
+   */
   given(...events: EventValue<any>[]): ScenarioStart<O>
   /** The act: a command, a query, or an event arriving. */
   when(action: Action): ScenarioActed<O>
@@ -327,7 +332,6 @@ async function perform(
   steps: ReadonlyArray<Step>,
   assertions: ReadonlyArray<Assertion<TimedOutcome>>,
 ): Promise<TimedOutcome> {
-  world.window()
   let acted: Awaited<ReturnType<World["act"]>> | undefined
   let act: Action | undefined
   for (const step of steps) {
@@ -412,7 +416,6 @@ async function tell(home: Home, read: QueryValue<any, any>, story: ReadonlyArray
     for (const [index, beat] of story.entries()) {
       if (beat.kind === "after") {
         for (const e of beat.events) {
-          world.window()
           const arrived = await world.act(e)
           if (arrived.threw) throw arrived.thrown
         }
@@ -421,7 +424,6 @@ async function tell(home: Home, read: QueryValue<any, any>, story: ReadonlyArray
       }
       const check: Assertion<TimedOutcome> =
         typeof beat.expected === "function" ? (beat.expected as Assertion<TimedOutcome>) : resultOf(beat.expected)
-      world.window()
       const asked = await world.act(read)
       if (asked.threw) throw asked.thrown
       const failures = await judge([check], outcomeOf(world, "query", asked))

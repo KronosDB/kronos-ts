@@ -21,8 +21,12 @@ import { type Action, type EventValue, isAny } from "./values.js"
 // the top: the log in `recordingEventStore`, the command bus in
 // `recordingCommandBus`. The fixture is handed the app and nothing else. It
 // finds the log and the buses on `app.eventStores`, `app.commandBuses` and
-// `app.queryBuses`, takes the app's processors back from `kronos`, folds history
-// into them, performs the act, settles them, and reads the recorders.
+// `app.queryBuses`, appends history, performs the act, settles the app's
+// processors after each, and reads the recorders.
+//
+// The processors are the app's own and keep running, as `kronos` started them.
+// The fixture never stops, resets or replays them: a `given` event reaches them
+// the way any appended event does, and what they do with it happens.
 // ---------------------------------------------------------------------------
 
 /** An app whose log and command bus are recorded: what `fixture` accepts. */
@@ -39,14 +43,13 @@ export type Acted = {
 /** The running world a scenario drives. Internal. */
 export type World = {
   readonly app: App
-  /** Facts that already happened: the processors fold them, nothing they set in motion gets out. */
+  /** Facts the act starts from: appended, and settled like any other event. */
   history(events: ReadonlyArray<EventValue<any>>): Promise<void>
   advance(duration: Duration): Promise<void>
+  /** A fresh observation window, the act, and the settle after it. */
   act(action: Action): Promise<Acted>
   /** A new scenario: an empty deadline book, and a fresh observation window. */
   begin(): void
-  /** Start a new observation window: what is recorded from here on is the next act's. */
-  window(): void
   observe(actIdentifier: string | undefined): {
     events: ReadonlyArray<EventMessage>
     commands: ReadonlyArray<CommandMessage>
@@ -57,7 +60,7 @@ export type World = {
 
 const SETTLE_WITHIN = 5000
 
-/** Take the app over: find its log and buses, check they are recorded, park its processors. */
+/** Open the app: find its log and buses, check they are recorded, settle its processors. */
 export async function openWorld(app: App): Promise<World> {
   if (typeof app?.processors?.values !== "function" || typeof app?.eventStores?.values !== "function") {
     throw usage("`fixture(app)` takes what `kronos(…)` returned: `fixture(kronos({ … }))`.")
@@ -76,7 +79,7 @@ export async function openWorld(app: App): Promise<World> {
         "`const eventStore = recordingEventStore(inMemoryEventStore())`, and build the app with that object.",
     )
   }
-  if (commandBus !== undefined && typeof commandBus.hold !== "function") {
+  if (commandBus !== undefined && (typeof commandBus.reset !== "function" || !("dispatched" in commandBus))) {
     throw usage(
       "the app's command bus is not recorded. Wrap the bus once, where the app's infrastructure is built: " +
         "`const commandBus = recordingCommandBus(localCommandBus(uow))`, and build the app with that object.",
@@ -95,21 +98,6 @@ export async function openWorld(app: App): Promise<World> {
     return eventStore
   }
 
-  // `kronos` starts every processor. The fixture drives them by hand, so the
-  // first thing it does is take them back.
-  await settle()
-  for (const processor of processors) processor.stop()
-
-  async function parkAll(): Promise<void> {
-    for (const processor of processors) processor.stop()
-    await settle()
-    for (const processor of processors) processor.stop()
-  }
-
-  async function resumeAll(): Promise<void> {
-    for (const processor of processors) await processor.start()
-  }
-
   let priorSchedules = new Map<string, string>()
   function markSchedules(): void {
     priorSchedules = new Map((eventStore?.schedules ?? []).map((s) => [s.token.id, s.status]))
@@ -119,11 +107,6 @@ export async function openWorld(app: App): Promise<World> {
     eventStore?.reset()
     commandBus?.reset()
     markSchedules()
-  }
-
-  function hold(on: boolean): void {
-    commandBus?.hold(on)
-    eventStore?.hold(on)
   }
 
   function toEventMessage(value: EventValue<any>): EventMessage {
@@ -167,49 +150,41 @@ export async function openWorld(app: App): Promise<World> {
       previous = current
       if (Date.now() > deadline) {
         const behind = processors
-          .map((p) => `"${p.name}" at ${p.status().position} of ${head}${p.status().caughtUp ? "" : " (busy)"}`)
+          .map((p) => {
+            const status = p.status()
+            const state = !status.running ? " (stopped)" : status.caughtUp ? "" : " (busy)"
+            return `"${p.name}" at ${status.position} of ${head}${state}`
+          })
           .join(", ")
         throw usage(
           `the app's event handlers did not go quiet within ${SETTLE_WITHIN}ms. ${behind}. An event handler ` +
             "that dispatches a command whose events re-trigger it never settles, one that keeps failing holds " +
-            "its processor where it is.",
+            "its processor where it is, and a stopped processor never moves: hand the fixture the app `kronos` " +
+            "started, before it is stopped.",
         )
       }
       await settle()
     }
   }
 
+  // Whatever the log already holds is handled before the first scenario
+  // opens its window, so none of it lands in that scenario's outcome.
+  await quiesce()
+
   return {
     app,
 
     /**
-     * HISTORY: append the facts, then hand them to every processor as a REPLAY —
-     * first a reset to the head, so each processor has "got to" the end of the
-     * history, then back to where it began, which core turns into a replay up to
-     * that head. The processors fold the facts with `ctx.isReplay()` true, the
-     * signal a production replay gives, while the recorders HOLD whatever an
-     * event handler would set in motion: a command it dispatches is not sent, a
-     * deadline it arms is not armed.
+     * HISTORY: append the facts through the recorded log and settle, exactly as
+     * an event appended in production is handled. The processors handle them
+     * live (`ctx.isReplay()` is false), and what an event handler sets in
+     * motion happens: a command it dispatches is sent, a deadline it arms is
+     * armed. None of it is in the outcome, because the act opens its own window.
      */
     async history(events) {
       if (events.length === 0) return
-      const eventStore = log()
-      await parkAll()
-      const before = await eventStore.getHeadPosition()
-      await eventStore.append(events.map(toEventMessage))
-      const head = await eventStore.getHeadPosition()
-      for (const processor of processors) {
-        await processor.resetTokens(head)
-        await processor.resetTokens(before)
-      }
-      hold(true)
-      try {
-        await resumeAll()
-        await quiesce()
-      } finally {
-        hold(false)
-      }
-      window()
+      await log().append(events.map(toEventMessage))
+      await quiesce()
     },
 
     async advance(duration) {
@@ -226,7 +201,8 @@ export async function openWorld(app: App): Promise<World> {
     },
 
     async act(action) {
-      await resumeAll()
+      // What happened before the act is not the act's: the window opens here.
+      window()
       let result: unknown
       let thrown: unknown
       let threw = false
@@ -274,8 +250,6 @@ export async function openWorld(app: App): Promise<World> {
       eventStore?.resetSchedules?.()
       window()
     },
-
-    window,
 
     observe(actIdentifier) {
       return {
