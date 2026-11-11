@@ -24,7 +24,7 @@ import {
   mergedToken,
   reachedBy,
 } from "./tracking-token.js"
-import { UnableToClaimTokenError } from "./token-store.js"
+import { isUnableToClaimToken } from "./token-store.js"
 import { type Segment, inSegment, mergeableSegmentId, segmentsOf, sequenceHash, splitSegment } from "./segment.js"
 import { sharedStream } from "./shared-stream.js"
 import { generateIdentifier } from "../messaging/identifier.js"
@@ -210,7 +210,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       try {
         stored = await tokenStore.claimToken(name, segment.id, owner)
       } catch (error) {
-        if (error instanceof UnableToClaimTokenError) continue
+        if (isUnableToClaimToken(error)) continue
         throw error
       }
       if (!current(r)) {
@@ -416,7 +416,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
           if (active) schedule(pollingIntervalMs)
         }
       } catch (err) {
-        if (err instanceof UnableToClaimTokenError) {
+        if (isUnableToClaimToken(err)) {
           lose()
           return
         }
@@ -545,7 +545,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
             unwritten = false
           })
           .catch((error) => {
-            if (error instanceof UnableToClaimTokenError) lose()
+            if (isUnableToClaimToken(error)) lose()
             else throw error
           })
         renewing = attempt.catch(() => {})
@@ -562,7 +562,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
           if (unwritten) await write(token)
           if (release) await tokenStore.releaseClaim(name, segment.id, owner)
         } catch (error) {
-          if (!(error instanceof UnableToClaimTokenError)) throw error
+          if (!isUnableToClaimToken(error)) throw error
         }
       },
     }
@@ -776,7 +776,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
           try {
             await tokenStore.claimToken(name, id, owner)
           } catch (error) {
-            if (!(error instanceof UnableToClaimTokenError)) throw error
+            if (!isUnableToClaimToken(error)) throw error
             throw new Error(
               `Processor "${name}" cannot be reset: segment ${id} is held by another node. ` +
                 `Stop the processor on every node first.`,

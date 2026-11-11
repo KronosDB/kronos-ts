@@ -457,6 +457,7 @@ export {
 export {
   type TokenStore,
   UnableToClaimTokenError,
+  isUnableToClaimToken,
   inMemoryTokenStore,
 } from "./event-processing/token-store.js"
 

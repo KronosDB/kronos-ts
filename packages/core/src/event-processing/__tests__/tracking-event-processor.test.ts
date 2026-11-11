@@ -679,6 +679,52 @@ describe("event processor", () => {
     })
   })
 
+  describe("claims refused by another copy of core", () => {
+    it("skips a segment another node holds, by the guard, when the store's core is a different copy", async () => {
+      // given: a token store built against another installed copy of core,
+      // whose claim error is not an instanceof this core's class
+      class UnableToClaimTokenError extends Error {
+        readonly claimRefused = true
+      }
+      const delivered: unknown[] = []
+      const store = inMemoryTokenStore(200)
+      let refusals = 0
+      const tokenStore: TokenStore = {
+        ...store,
+        async claimToken(processorName, segment, owner) {
+          if (refusals < 2) {
+            refusals++
+            throw new UnableToClaimTokenError(`segment ${segment} is held by another node`)
+          }
+          return store.claimToken(processorName, segment, owner)
+        },
+      }
+      const handler: EventHandler<any> = {
+        kind: "event-handler",
+        descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+        handler: ({ payload }) => {
+          delivered.push(payload)
+        },
+      }
+      const processor = runOver({
+        eventSource: createInMemoryEventSource([makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n)]),
+        eventHandlers: [handler],
+        tokenStore,
+        pollingIntervalMs: 10,
+      })
+
+      // when: the claim is refused, then free again
+      await processor.start()
+      await waitForPosition(processor, 1n)
+
+      // then: the refusals were skipped rather than failing the processor
+      expect(refusals).toBe(2)
+      expect(processor.running).toBe(true)
+      expect(delivered).toEqual([{ value: 1 }])
+      await processor.stop()
+    })
+  })
+
   describe("reset and replay", () => {
     it("reset stores a ReplayToken and rewinds the position", async () => {
       // given
