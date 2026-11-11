@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { emptyMetadata, qn } from "@kronos-ts/core"
+import { AppendConditionError, emptyMetadata, isConflict, qn } from "@kronos-ts/core"
 import { query, payloadEquals, unitOfWork } from "@kronos-ts/core"
 import {
   correlation,
@@ -172,6 +172,43 @@ describe("RabbitMQ query bus", () => {
         timestamp: Date.now(),
       }),
     ).rejects.toThrow("no such thing")
+  })
+
+  it("rebuilds a remote failure's kind", async () => {
+    const transport: RabbitMqQueryTransport = {
+      async dispatch(envelope) {
+        return {
+          requestId: envelope.requestId,
+          ok: false,
+          error: { name: "ConcurrencyError", message: "lost the race", kind: "conflict" },
+        }
+      },
+      subscribe() {},
+    }
+    const bus = busOver({ transport, options: {} })
+
+    const failure = await bus
+      .query({ identifier: "qry-1", name: GetThing.name, payload: { id: "1" }, metadata: emptyMetadata(), timestamp: Date.now() })
+      .then(() => undefined, (e) => e)
+    expect(isConflict(failure)).toBe(true)
+    expect(failure.name).toBe("ConcurrencyError")
+  })
+
+  it("sends a handler's conflict with its kind", async () => {
+    const { transport, subscriptions } = recordingTransport()
+    const bus = busOver({ transport, options: {} })
+    bus.subscribe("test.GetThing", async () => {
+      throw new AppendConditionError("lost the race")
+    })
+
+    const reply = await subscriptions.get("test.GetThing")!({
+      kind: "query",
+      requestId: "qry-1",
+      message: { identifier: "qry-1", name: GetThing.name, payload: { id: "1" }, metadata: emptyMetadata(), timestamp: Date.now() },
+      timeoutMs: 1000,
+    })
+    expect(reply.ok).toBe(false)
+    expect(reply.error.kind).toBe("conflict")
   })
 
   it("handles an inbound query in its own UnitOfWork", async () => {

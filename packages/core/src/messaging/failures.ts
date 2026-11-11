@@ -12,6 +12,11 @@
  * Any other failure carries no kind: it is a bug, a misconfiguration or
  * something for an operator, and retrying it does not help.
  *
+ * ACROSS A BUS THE KIND IS KEPT. A handler that fails with a kind on another
+ * instance fails the caller's `send` or `query` with the same kind: each
+ * transport sends it in its own vocabulary (a protocol error code, or
+ * `SerializedError.kind`) and rebuilds a contract error from it.
+ *
  * ASK WITH THE GUARD, NOT `instanceof`. Each store package pins the core it
  * was built against, so an app can hold two copies of core, and an error
  * built by one is not an `instanceof` the other's class. The guard reads the

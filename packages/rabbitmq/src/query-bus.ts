@@ -11,8 +11,10 @@ import {
   type SubscriptionQueryResult,
   type UnitOfWork,
   type UpdateHandler,
+  type SerializedError,
 } from "@kronos-ts/core"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
+import { deserializeError, serializeError } from "./remote-error.js"
 import type {
   DistributedSubscriberRegistry,
   SubscriptionDelivery,
@@ -30,11 +32,7 @@ export type RabbitMqQueryReplyEnvelope = {
   readonly requestId: string
   readonly ok: boolean
   readonly result?: unknown
-  readonly error?: {
-    readonly name?: string
-    readonly message: string
-    readonly stack?: string
-  }
+  readonly error?: SerializedError
 }
 
 export type RabbitMqQueryTransport = {
@@ -121,10 +119,9 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
       handler.complete()
       unregisterSubscription(handler.query)
     } else if (delivery.kind === "completeExceptionally") {
-      const error = Object.assign(new Error(delivery.error.message), {
-        name: delivery.error.name ?? "RemoteSubscriptionError",
-      })
-      handler.completeExceptionally(error)
+      handler.completeExceptionally(
+        deserializeError(delivery.error, { name: "RemoteSubscriptionError", message: "Remote subscription failed" }),
+      )
       unregisterSubscription(handler.query)
     }
   }
@@ -185,7 +182,7 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
         message,
         timeoutMs,
       })
-      if (!reply.ok) throw deserializeRemoteError(reply.error)
+      if (!reply.ok) throw deserializeError(reply.error, { name: "RemoteQueryHandlingError", message: "Remote query handling failed" })
       return reply.result
     },
 
@@ -303,7 +300,7 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
     ): Promise<void> {
       runAfterCommitOrImmediately(() => {
         if (registry) {
-          const serialized = { name: error.name, message: error.message, stack: error.stack }
+          const serialized = serializeError(error)
           for (const record of registry.records()) {
             if (record.queryName !== queryName) continue
             if (filter && !applySubscriptionFilter(filter, record.payload)) continue
@@ -330,18 +327,4 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
   }
 
   return bus
-}
-
-function serializeError(error: unknown): RabbitMqQueryReplyEnvelope["error"] {
-  if (error instanceof Error) {
-    return { name: error.name, message: error.message, stack: error.stack }
-  }
-  return { message: String(error) }
-}
-
-function deserializeRemoteError(error: RabbitMqQueryReplyEnvelope["error"]): Error {
-  const result = new Error(error?.message ?? "Remote query handling failed")
-  result.name = error?.name ?? "RemoteQueryHandlingError"
-  if (error?.stack) result.stack = error.stack
-  return result
 }

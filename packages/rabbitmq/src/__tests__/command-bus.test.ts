@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { emptyMetadata, qn } from "@kronos-ts/core"
+import { AppendConditionError, emptyMetadata, isConflict, qn, qualifiedNameToString } from "@kronos-ts/core"
 import { command, unitOfWork } from "@kronos-ts/core"
 import {
   correlation,
@@ -248,5 +248,46 @@ describe("RabbitMQ command bus", () => {
         timestamp: Date.now(),
       }),
     ).rejects.toThrow("far side failed")
+  })
+})
+
+describe("RabbitMQ command bus failures", () => {
+  /** One instance's bus handling, another's dispatching, with the reply through JSON as on the wire. */
+  function twoInstances(handler: () => Promise<unknown>) {
+    const subscriptions = new Map<string, (envelope: RabbitMqCommandEnvelope) => Promise<any>>()
+    const transport: RabbitMqCommandTransport = {
+      async dispatch(envelope) {
+        const reply = await subscriptions.get(qualifiedNameToString(envelope.message.name))!(envelope)
+        return JSON.parse(JSON.stringify(reply))
+      },
+      subscribe(name, h) {
+        subscriptions.set(name, h)
+      },
+    }
+    const handling = rabbitMqCommandBus(localCommandBus(unitOfWork), { config: rabbitConfig({ url: "amqp://test" }), commandTransport: transport })
+    handling.subscribe("test.DoThing", handler)
+    const caller = rabbitMqCommandBus(localCommandBus(unitOfWork), { config: rabbitConfig({ url: "amqp://test" }), commandTransport: transport })
+    return (id: string) =>
+      caller.dispatch({ identifier: id, name: DoThing.name, payload: { id }, metadata: emptyMetadata(), timestamp: Date.now() })
+  }
+
+  it("fails the caller with a conflict when the handler lost a race on another instance", async () => {
+    const send = twoInstances(async () => {
+      throw new AppendConditionError("lost the race")
+    })
+    const failure = await send("1").then(() => undefined, (e) => e)
+    expect(isConflict(failure)).toBe(true)
+    expect(failure.name).toBe("AppendConditionError")
+    expect(failure.message).toBe("lost the race")
+  })
+
+  it("fails the caller with a plain error, keeping its name, when the handler failed otherwise", async () => {
+    const send = twoInstances(async () => {
+      throw new RangeError("out of stock")
+    })
+    const failure = await send("1").then(() => undefined, (e) => e)
+    expect(isConflict(failure)).toBe(false)
+    expect(failure.name).toBe("RangeError")
+    expect(failure.message).toBe("out of stock")
   })
 })

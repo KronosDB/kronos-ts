@@ -6,6 +6,7 @@ import type {
   RabbitMqQueryTransport,
 } from "./query-bus.js"
 import type { AmqpChannelSource } from "./connection.js"
+import { serializeError } from "./remote-error.js"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
 
 type PendingRequest = {
@@ -338,11 +339,4 @@ export function amqpRabbitMqQueryTransport(
       }
     },
   }
-}
-
-function serializeError(error: unknown): RabbitMqQueryReplyEnvelope["error"] {
-  if (error instanceof Error) {
-    return { name: error.name, message: error.message, stack: error.stack }
-  }
-  return { message: String(error) }
 }

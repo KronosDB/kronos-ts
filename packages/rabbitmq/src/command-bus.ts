@@ -2,9 +2,11 @@ import {
   qualifiedNameToString,
   type CommandBus,
   type CommandMessage,
+  type SerializedError,
   type UnitOfWork,
 } from "@kronos-ts/core"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
+import { deserializeError, serializeError } from "./remote-error.js"
 
 export type RabbitMqCommandEnvelope = {
   readonly kind: "command"
@@ -18,11 +20,7 @@ export type RabbitMqCommandReplyEnvelope = {
   readonly requestId: string
   readonly ok: boolean
   readonly result?: unknown
-  readonly error?: {
-    readonly name?: string
-    readonly message: string
-    readonly stack?: string
-  }
+  readonly error?: SerializedError
 }
 
 export type RabbitMqCommandTransport = {
@@ -119,7 +117,7 @@ export function rabbitMqCommandBus<U extends UnitOfWork = UnitOfWork>(
         expectsReply: true,
         timeoutMs,
       })
-      if (!reply.ok) throw deserializeRemoteError(reply.error)
+      if (!reply.ok) throw deserializeError(reply.error, { name: "RemoteCommandHandlingError", message: "Remote command handling failed" })
       return reply.result
     },
 
@@ -140,18 +138,4 @@ export function rabbitMqCommandBus<U extends UnitOfWork = UnitOfWork>(
       })
     },
   }
-}
-
-function serializeError(error: unknown): RabbitMqCommandReplyEnvelope["error"] {
-  if (error instanceof Error) {
-    return { name: error.name, message: error.message, stack: error.stack }
-  }
-  return { message: String(error) }
-}
-
-function deserializeRemoteError(error: RabbitMqCommandReplyEnvelope["error"]): Error {
-  const result = new Error(error?.message ?? "Remote command handling failed")
-  result.name = error?.name ?? "RemoteCommandHandlingError"
-  if (error?.stack) result.stack = error.stack
-  return result
 }
