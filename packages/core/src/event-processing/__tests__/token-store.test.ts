@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { inMemoryTokenStore } from "../token-store.js"
+import { inMemoryTokenStore, isUnableToClaimToken, UnableToClaimTokenError } from "../token-store.js"
 import { globalSequenceToken, replayToken } from "../tracking-token.js"
 
 describe("InMemoryTokenStore", () => {
@@ -111,5 +111,14 @@ describe("InMemoryTokenStore", () => {
 
     const segments = await store.fetchSegments("my-processor")
     expect(segments).toEqual([0])
+  })
+})
+
+describe("isUnableToClaimToken", () => {
+  it("recognises the claim error, and one from another copy of core by its field", () => {
+    expect(isUnableToClaimToken(new UnableToClaimTokenError("p", 0))).toBe(true)
+    expect(isUnableToClaimToken(Object.assign(new Error("held"), { claimRefused: true }))).toBe(true)
+    expect(isUnableToClaimToken(new Error('Unable to claim token for processor "p" segment 0'))).toBe(false)
+    expect(isUnableToClaimToken(undefined)).toBe(false)
   })
 })

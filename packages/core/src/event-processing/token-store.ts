@@ -116,12 +116,22 @@ export type TokenStore<U extends UnitOfWork = UnitOfWork> = {
 
 /**
  * Thrown when a segment claim cannot be acquired (already owned by another instance).
+ *
+ * Ask with {@link isUnableToClaimToken}, not `instanceof`: a token store built
+ * against another installed copy of core throws that copy's class.
  */
 export class UnableToClaimTokenError extends Error {
+  readonly claimRefused: true = true
+
   constructor(processorName: string, segment: number, reason = "already claimed") {
     super(`Unable to claim token for processor "${processorName}" segment ${segment}: ${reason}`)
     this.name = "UnableToClaimTokenError"
   }
+}
+
+/** Whether `error` says a token store refused a segment's claim: another node holds it, or this one lost it. */
+export function isUnableToClaimToken(error: unknown): error is UnableToClaimTokenError {
+  return typeof error === "object" && error !== null && (error as { claimRefused?: unknown }).claimRefused === true
 }
 
 /**
