@@ -1,4 +1,4 @@
-import { messagingAdmission, positiveInteger, withMessagingTimeout } from "@kronos-ts/core"
+import { messagingAdmission, positiveInteger, UnavailableError, withMessagingTimeout } from "@kronos-ts/core"
 import type { Channel, ConsumeMessage } from "amqplib"
 import type {
   RabbitMqCommandEnvelope,
@@ -73,13 +73,13 @@ export function amqpRabbitMqCommandTransport(
 
 
   const requireChannel = (): Channel => {
-    if (!channel) throw new Error("RabbitMQ command transport is not connected")
+    if (!channel) throw new UnavailableError("RabbitMQ command transport is not connected")
     return channel
   }
 
   function sendReply(ch: Channel, queue: string, body: Buffer, properties: Parameters<Channel["sendToQueue"]>[2]) {
     if (!ch.sendToQueue(queue, body, properties)) {
-      const error = new Error("RabbitMQ reply buffer full; delivery outcome is unknown")
+      const error = new UnavailableError("RabbitMQ reply buffer full; delivery outcome is unknown")
       failTransport(error)
       void ch.close().catch(() => {})
       throw error
@@ -109,7 +109,7 @@ export function amqpRabbitMqCommandTransport(
     const ch = requireChannel()
     let activity: ReturnType<typeof admission.enter> | undefined
     try {
-      if (closed) throw new Error("Messaging shutdown in progress")
+      if (closed) throw new UnavailableError("Messaging shutdown in progress")
       if (transportFailure) throw transportFailure
       activity = admission.enter()
       const envelope = JSON.parse(msg.content.toString("utf8")) as RabbitMqCommandEnvelope
@@ -196,7 +196,7 @@ export function amqpRabbitMqCommandTransport(
   const doConnect = async (): Promise<void> => {
     channel = await connection.channel()
     channel.on?.("error", (error: Error) => failTransport(error))
-    channel.on?.("close", () => failTransport(new Error("RabbitMQ channel closed; outstanding delivery outcome is unknown. Recreate the connection.")))
+    channel.on?.("close", () => failTransport(new UnavailableError("RabbitMQ channel closed; outstanding delivery outcome is unknown. Recreate the connection.")))
     channel.on?.("drain", () => { writable = true })
     channel.on?.("return", (msg: ConsumeMessage) => {
       const requestId = msg.properties.correlationId
@@ -228,7 +228,7 @@ export function amqpRabbitMqCommandTransport(
   }
 
   const connect = async (): Promise<void> => {
-    if (closed) throw new Error("RabbitMQ command transport is closed")
+    if (closed) throw new UnavailableError("RabbitMQ command transport is closed")
     if (transportFailure) throw transportFailure
     if (connectPromise) return connectPromise
     connectPromise = doConnect()
@@ -260,13 +260,13 @@ export function amqpRabbitMqCommandTransport(
             // Reject outbound waits so a running parent can unwind during drain.
             for (const request of pending.values()) {
               clearTimeout(request.timer)
-              request.reject(new Error("RabbitMQ command transport closed before reply"))
+              request.reject(new UnavailableError("RabbitMQ command transport closed before reply"))
             }
             pending.clear()
             await Promise.all([...running])
           })(), config.shutdownTimeoutMs ?? 30000, "RabbitMQ command shutdown")
         } finally {
-          failTransport(new Error("RabbitMQ command transport is closed"))
+          failTransport(new UnavailableError("RabbitMQ command transport is closed"))
           await channel?.close().catch(() => {})
         }
       })()
@@ -279,7 +279,7 @@ export function amqpRabbitMqCommandTransport(
       const activity = outboundAdmission.enter(envelope.requestId)
       try {
         await withMessagingTimeout(connect(), envelope.timeoutMs, "RabbitMQ connect")
-        if (closed) throw new Error("RabbitMQ command transport is closed")
+        if (closed) throw new UnavailableError("RabbitMQ command transport is closed")
         const ch = requireChannel()
         const replyTo = replyQueue
         if (!replyTo) throw new Error("RabbitMQ reply queue is not initialized")
@@ -287,7 +287,7 @@ export function amqpRabbitMqCommandTransport(
         if (pending.has(envelope.requestId)) {
           throw new Error(`Request ${envelope.requestId} is already pending`)
         }
-        if (!writable) throw new Error("RabbitMQ publish buffer is full; retry after drain")
+        if (!writable) throw new UnavailableError("RabbitMQ publish buffer is full; retry after drain")
         const body = Buffer.from(JSON.stringify(envelope))
 
         const routingKey = config.topology.commandRoutingKey(envelope.message.name)
@@ -295,7 +295,7 @@ export function amqpRabbitMqCommandTransport(
         return await new Promise<RabbitMqCommandReplyEnvelope>((resolve, reject) => {
           const timer = setTimeout(() => {
             pending.delete(envelope.requestId)
-            reject(new Error(`Command ${routingKey} timed out after ${envelope.timeoutMs}ms`))
+            reject(new UnavailableError(`Command ${routingKey} timed out after ${envelope.timeoutMs}ms`))
           }, Math.max(1, expiresAt - Date.now()))
           pending.set(envelope.requestId, { resolve, reject, timer })
 

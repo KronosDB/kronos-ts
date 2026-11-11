@@ -1,4 +1,4 @@
-import { AppendConditionError, isConflict } from "@kronos-ts/core"
+import { AppendConditionError, isConflict, isUnavailable } from "@kronos-ts/core"
 import { ErrorCode as NativeErrorCode, ErrorCodeNames as NativeErrorCodeNames } from "./protocol/kronosdb-protocol.js"
 
 /**
@@ -52,17 +52,33 @@ export const KronosDbErrorCode = {
 export type KronosDbErrorCodeValue = typeof KronosDbErrorCode[keyof typeof KronosDbErrorCode]
 
 /**
- * Base error for all KronosDB errors.
+ * The codes that mean the server or a handler could not serve the request
+ * now, and the same request later may succeed: core's `unavailable` kind.
+ */
+const UNAVAILABLE_CODES = new Set<string>([
+  KronosDbErrorCode.CONNECTION_FAILED,
+  KronosDbErrorCode.NO_EVENT_STORE_LEADER,
+  KronosDbErrorCode.COMMAND_DISPATCH_ERROR,
+  KronosDbErrorCode.QUERY_DISPATCH_ERROR,
+  KronosDbErrorCode.COMMAND_TIMEOUT,
+  KronosDbErrorCode.CONNECTION_TO_HANDLER_LOST,
+])
+
+/**
+ * Base error for all KronosDB errors. One whose code says to retry later
+ * carries core's `unavailable` kind, so `isUnavailable` recognises it.
  */
 export class KronosDbError extends Error {
   readonly errorCode: string
   readonly transient: boolean
+  readonly kind?: "unavailable"
 
-  constructor(message: string, errorCode: string, transient: boolean) {
-    super(message)
+  constructor(message: string, errorCode: string, transient: boolean, options?: ErrorOptions) {
+    super(message, options)
     this.name = "KronosDbError"
     this.errorCode = errorCode
     this.transient = transient
+    if (UNAVAILABLE_CODES.has(errorCode)) this.kind = "unavailable"
   }
 }
 
@@ -127,8 +143,8 @@ export class ConcurrencyError extends AppendConditionError {
 }
 
 export class ConnectionFailedError extends KronosDbError {
-  constructor(message: string) {
-    super(message, KronosDbErrorCode.CONNECTION_FAILED, true)
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, KronosDbErrorCode.CONNECTION_FAILED, true, options)
     this.name = "ConnectionFailedError"
   }
 }
@@ -220,6 +236,14 @@ export function mapErrorCode(errorCode: string, message: string): KronosDbError 
   }
 }
 
+/**
+ * Whether the error's own `transient` flag is set. That flag is the protocol's
+ * word and does not mean "retry later": a handler's business failure is
+ * transient too.
+ *
+ * @deprecated Use `isUnavailable` (retry later) and `isConflict` (load again)
+ * from `@kronos-ts/core`.
+ */
 export function isTransientError(error: unknown): boolean {
   if (error instanceof KronosDbError || error instanceof ConcurrencyError) return error.transient
   return false
@@ -231,5 +255,7 @@ export function isTransientError(error: unknown): boolean {
  * same kind, and `fallback` otherwise.
  */
 export function handlingFailureCode(error: unknown, fallback: string): string {
-  return isConflict(error) ? KronosDbErrorCode.CONSISTENCY_CONDITION_VIOLATED : fallback
+  if (isConflict(error)) return KronosDbErrorCode.CONSISTENCY_CONDITION_VIOLATED
+  if (isUnavailable(error)) return KronosDbErrorCode.CONNECTION_FAILED
+  return fallback
 }

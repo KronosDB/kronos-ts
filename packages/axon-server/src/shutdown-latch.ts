@@ -10,6 +10,8 @@
  *
  * This is the TypeScript equivalent of AF5's ShutdownLatch pattern.
  */
+
+import { UnavailableError } from "@kronos-ts/core"
 export type ShutdownLatch = {
   /**
    * Register an in-flight activity. Throws if shutdown is in progress.
@@ -37,7 +39,8 @@ export type ActivityHandle = {
   end(): void
 }
 
-export class ShutdownInProgressError extends Error {
+/** Work refused because the connection is shutting down: core's unavailable, so a caller retries elsewhere or later. */
+export class ShutdownInProgressError extends UnavailableError {
   constructor(message: string = "Shutdown in progress") {
     super(message)
     this.name = "ShutdownInProgressError"

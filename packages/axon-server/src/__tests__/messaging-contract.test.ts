@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import {
+  isUnavailable,
   jsonSerializer,
   localCommandBus,
   localQueryBus,
@@ -335,7 +336,9 @@ const backend = "axon"
         void first.catch(() => {})
         await entered.promise
         try {
-          await expect(first).rejects.toThrow(/cancelled/)
+          const failure = await first.then(() => undefined, (e: unknown) => e)
+          expect((failure as Error).message).toMatch(/deadline exceeded/)
+          expect(isUnavailable(failure)).toBe(true)
           expect(h.latch.activeCount).toBe(1)
           await expect(h.dispatch("Slow")).rejects.toThrow(/overloaded/)
         } finally {
@@ -531,7 +534,8 @@ const backend = "axon"
       h.stallQueryCompletion()
       const error = await h.dispatch("Done").catch((error: Error) => error)
       expect(error).toBeInstanceOf(Error)
-      expect((error as Error).message).toMatch(/completion cancelled/)
+      expect((error as Error).message).toMatch(/deadline exceeded/)
+      expect(isUnavailable(error)).toBe(true)
       expect(calls).toBe(1)
       expect(h.completedQueries).toBe(0)
       expect(h.latch.activeCount).toBe(0)

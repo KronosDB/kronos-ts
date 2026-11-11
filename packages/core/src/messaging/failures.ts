@@ -8,6 +8,11 @@
  *   what the decision read between its load and its append. Nothing was
  *   written. Load again and decide again: an edge answers 409, a processor
  *   retries.
+ * - `unavailable`: the store or bus could not serve the request now, and the
+ *   same request later may succeed: unreachable, failing over, shutting down,
+ *   over capacity, or timed out. Retry later: an edge answers 503, a
+ *   processor backs off. A request that was sent and never answered may have
+ *   taken effect, so a resent command must recognise its own earlier attempt.
  *
  * Any other failure carries no kind: it is a bug, a misconfiguration or
  * something for an operator, and retrying it does not help.
@@ -23,7 +28,7 @@
  * `kind` field, which any copy, and an error rebuilt from a wire code, carries
  * the same way. The classes exist so that a store cannot forget the field.
  */
-export type FailureKind = "conflict"
+export type FailureKind = "conflict" | "unavailable"
 
 /**
  * The append condition was violated: nothing was written. Thrown by every
@@ -41,4 +46,23 @@ export class AppendConditionError extends Error {
 /** Whether `error` is a conflict: an append whose condition was violated, here or on another instance. */
 export function isConflict(error: unknown): error is Error & { readonly kind: "conflict" } {
   return typeof error === "object" && error !== null && (error as { kind?: unknown }).kind === "conflict"
+}
+
+/**
+ * The store or bus could not serve the request now; the same request later may
+ * succeed. A store whose own errors have a hierarchy of their own gives those
+ * the `unavailable` kind instead of extending this.
+ */
+export class UnavailableError extends Error {
+  readonly kind: "unavailable" = "unavailable"
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "UnavailableError"
+  }
+}
+
+/** Whether `error` says to retry later: the store or bus could not serve the request now. */
+export function isUnavailable(error: unknown): error is Error & { readonly kind: "unavailable" } {
+  return typeof error === "object" && error !== null && (error as { kind?: unknown }).kind === "unavailable"
 }

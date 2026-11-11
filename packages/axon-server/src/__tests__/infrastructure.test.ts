@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { AppendConditionError, isConflict } from "@kronos-ts/core"
+import { AppendConditionError, isConflict, isUnavailable, UnavailableError } from "@kronos-ts/core"
 import {
   shutdownLatch,
   ShutdownInProgressError,
@@ -17,6 +17,9 @@ import {
   ConnectionFailedError,
   AuthenticationError,
   mapErrorCode,
+  fromGrpc,
+  commandFailureCode,
+  queryFailureCode,
   isTransientError,
 } from "../errors.js"
 import {
@@ -184,13 +187,36 @@ describe("Error mapping", () => {
 
       expect(err).toBeInstanceOf(ConnectionFailedError)
       expect(err.transient).toBe(true)
+      expect(isUnavailable(err)).toBe(true)
     })
 
-    it("maps GRPC_MESSAGE_TOO_LARGE to ConnectionFailedError", () => {
+    it("maps GRPC_MESSAGE_TOO_LARGE to an error that is not retried", () => {
       const err = mapErrorCode(AxonServerErrorCode.GRPC_MESSAGE_TOO_LARGE, "too large")
 
-      expect(err).toBeInstanceOf(ConnectionFailedError)
-      expect(err.transient).toBe(true)
+      expect(err).not.toBeInstanceOf(ConnectionFailedError)
+      expect(err.transient).toBe(false)
+      expect(isUnavailable(err)).toBe(false)
+    })
+
+    it("gives the dispatch and leader codes core's unavailable kind, and execution errors none", () => {
+      for (const code of [AxonServerErrorCode.COMMAND_DISPATCH_ERROR, AxonServerErrorCode.QUERY_DISPATCH_ERROR, AxonServerErrorCode.NO_EVENT_STORE_MASTER_AVAILABLE]) {
+        expect(isUnavailable(mapErrorCode(code, "m"))).toBe(true)
+      }
+      expect(isUnavailable(mapErrorCode(AxonServerErrorCode.COMMAND_EXECUTION_ERROR, "m"))).toBe(false)
+      expect(commandFailureCode(new UnavailableError("store down"))).toBe(AxonServerErrorCode.CONNECTION_FAILED)
+      expect(queryFailureCode(new UnavailableError("store down"))).toBe(AxonServerErrorCode.CONNECTION_FAILED)
+    })
+
+    it("reports a gRPC UNAVAILABLE or DEADLINE_EXCEEDED as a connection failure, and other gRPC errors as they are", () => {
+      const grpc = (code: number) => Object.assign(new Error(`status ${code}`), { name: "ClientError", code })
+      for (const code of [14, 4]) {
+        const translated = fromGrpc(grpc(code))
+        expect(translated).toBeInstanceOf(ConnectionFailedError)
+        expect(isUnavailable(translated)).toBe(true)
+        expect((translated as Error).cause).toBeInstanceOf(Error)
+      }
+      const invalid = grpc(3)
+      expect(fromGrpc(invalid)).toBe(invalid)
     })
 
     it("maps AUTHENTICATION_TOKEN_MISSING to AuthenticationError", () => {

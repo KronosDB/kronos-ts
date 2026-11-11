@@ -12,6 +12,7 @@ import {
   type UnitOfWork,
   type UpdateHandler,
   type SerializedError,
+  UnavailableError,
 } from "@kronos-ts/core"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
 import { deserializeError, serializeError } from "./remote-error.js"
@@ -139,7 +140,7 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
     if (localOwnedHandlers.has(subId)) {
       throw new Error(`Subscription query already registered for identifier "${subId}"`)
     }
-    if (localOwnedHandlers.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
+    if (localOwnedHandlers.size >= 1024) throw new UnavailableError("Subscription capacity 1024 exhausted")
     const handler = updateHandler(message, bufferSize, () => { unregisterSubscription(message); onClose?.() })
     localOwnedHandlers.set(subId, handler)
 

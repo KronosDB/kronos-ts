@@ -25,7 +25,7 @@ import { globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/core"
 import { markerAt, noMarker } from "@kronos-ts/core"
 import type { AxonServerStoreSource } from "./connection.js"
 import { contextView } from "./context-view.js"
-import { AxonServerErrorCode, ConcurrencyError } from "./errors.js"
+import { AxonServerErrorCode, ConcurrencyError, fromGrpc } from "./errors.js"
 import { boundedRead } from "./bounded-read.js"
 import type {
   Criterion,
@@ -279,7 +279,7 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
             })
             responseMarker = response.consistencyMarker
           } catch (err) {
-            if (!isConditionRefused(err)) throw err
+            if (!isConditionRefused(err)) throw fromGrpc(err)
             throw new ConcurrencyError(
               `consistency condition violated: ${String((err as { details?: unknown }).details)}`,
               AxonServerErrorCode.CONCURRENCY_EXCEPTION,
@@ -358,7 +358,8 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
           // Our own cancellation surfaces here as an AbortError; that is the
           // stream closing as asked, not a failure to report.
           if (!completed) {
-            streamError = err instanceof Error ? err : new Error(String(err))
+            const failure = fromGrpc(err)
+            streamError = failure instanceof Error ? failure : new Error(String(failure))
           }
           completed = true
           availableCallback?.()

@@ -12,6 +12,7 @@ import {
   runAfterCommitOrImmediately,
 } from "./subscription-query.js"
 import { type SubscriptionFilter, applySubscriptionFilter } from "./subscription-filter.js"
+import { UnavailableError } from "../messaging/failures.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
 import { isTransactional, type RefusingTransactional } from "../unit-of-work/transactional.js"
 /**
@@ -92,7 +93,7 @@ export function localQueryBus<F extends () => UnitOfWork = () => UnitOfWork>(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
+      if (subscriptions.size >= 1024) throw new UnavailableError("Subscription capacity 1024 exhausted")
       let closeInitial = () => {}
       const handler = updateHandler(message, bufferSize, () => { subscriptions.delete(queryId); closeInitial() })
       subscriptions.set(queryId, handler)
@@ -121,7 +122,7 @@ export function localQueryBus<F extends () => UnitOfWork = () => UnitOfWork>(
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
       }
 
-      if (subscriptions.size >= 1024) throw new Error("Subscription capacity 1024 exhausted")
+      if (subscriptions.size >= 1024) throw new UnavailableError("Subscription capacity 1024 exhausted")
       const handler = updateHandler(message, bufferSize, () => subscriptions.delete(queryId))
       subscriptions.set(queryId, handler)
 

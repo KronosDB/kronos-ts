@@ -27,6 +27,7 @@ import {
   type SubscriptionQueryResult,
   type UnitOfWork,
   type UpdateHandler,
+  UnavailableError,
 } from "@kronos-ts/core"
 import { KronosDbErrorCode, handlingFailureCode, mapErrorCode } from "./errors.js"
 import type { BusHost } from "./kronosdb.js"
@@ -399,7 +400,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
         admission = inboundAdmission.enter()
         if (localHandlers.has(incoming.name)) {
           const message = queryMessage(incoming)
-          if (provided.size >= MAX_SUBSCRIPTIONS && !provided.has(subscriptionId)) throw new Error("Provider subscription capacity exhausted")
+          if (provided.size >= MAX_SUBSCRIPTIONS && !provided.has(subscriptionId)) throw new UnavailableError("Provider subscription capacity exhausted")
           entry = { queryName: incoming.name, payload: message.payload, session, permits, held: [], ending: undefined }
           provided.set(subscriptionId, entry)
           // Every wire query enters the local bus with a fresh unit of work.
@@ -452,7 +453,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
         if (done) return
         done = true
         native?.cancel()
-        reject(new Error(`Messaging deadline exceeded after ${requestTimeoutMs}ms`))
+        reject(new UnavailableError(`Messaging deadline exceeded after ${requestTimeoutMs}ms`))
       }, requestTimeoutMs)
 
       const sink: FrameSink = (kind, flags, buf, start, end) => {
@@ -556,8 +557,8 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
     },
 
     subscriptionQuery(unstamped: QueryMessage, bufferSize?: number): SubscriptionQueryResult {
-      if (shutdownLatch.shuttingDown) throw new Error("Messaging shutdown in progress")
-      if (subscriptions.size >= MAX_SUBSCRIPTIONS) throw new Error(`Subscription capacity ${MAX_SUBSCRIPTIONS} exhausted`)
+      if (shutdownLatch.shuttingDown) throw new UnavailableError("Messaging shutdown in progress")
+      if (subscriptions.size >= MAX_SUBSCRIPTIONS) throw new UnavailableError(`Subscription capacity ${MAX_SUBSCRIPTIONS} exhausted`)
       const queryId = unstamped.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
@@ -610,8 +611,8 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
       // the original promise rejectable without an unhandled rejection on close.
       void initialResult.catch(() => {})
 
-      const initialTimer = setTimeout(() => closeSubscription(new Error("Subscription initial result timed out")), requestTimeoutMs)
-      const removeShutdown = shutdownLatch.onShutdown(() => closeSubscription(new Error("Messaging shutdown in progress")))
+      const initialTimer = setTimeout(() => closeSubscription(new UnavailableError("Subscription initial result timed out")), requestTimeoutMs)
+      const removeShutdown = shutdownLatch.onShutdown(() => closeSubscription(new UnavailableError("Messaging shutdown in progress")))
 
       function closeSubscription(error?: Error) {
         if (subscriptionClosed) return
@@ -737,8 +738,8 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
     },
 
     subscribeToUpdates(unstamped: QueryMessage, bufferSize?: number): AsyncIterable<unknown> & { close(): void } {
-      if (shutdownLatch.shuttingDown) throw new Error("Messaging shutdown in progress")
-      if (subscriptions.size >= MAX_SUBSCRIPTIONS) throw new Error(`Subscription capacity ${MAX_SUBSCRIPTIONS} exhausted`)
+      if (shutdownLatch.shuttingDown) throw new UnavailableError("Messaging shutdown in progress")
+      if (subscriptions.size >= MAX_SUBSCRIPTIONS) throw new UnavailableError(`Subscription capacity ${MAX_SUBSCRIPTIONS} exhausted`)
       const queryId = unstamped.identifier
       if (subscriptions.has(queryId)) {
         throw new Error(`Subscription query already registered for identifier "${queryId}"`)
@@ -746,7 +747,7 @@ export function kronosDbQueryBus<U extends UnitOfWork = UnitOfWork>(
 
       let removeShutdown: (() => void) | undefined
       const handler = updateHandler(unstamped, bufferSize, () => { subscriptions.delete(queryId); removeShutdown?.() })
-      removeShutdown = shutdownLatch.onShutdown(() => handler.completeExceptionally(new Error("Messaging shutdown in progress")))
+      removeShutdown = shutdownLatch.onShutdown(() => handler.completeExceptionally(new UnavailableError("Messaging shutdown in progress")))
       subscriptions.set(queryId, handler)
 
       return {

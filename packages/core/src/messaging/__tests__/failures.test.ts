@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { AppendConditionError, isConflict } from "../failures.js"
+import { AppendConditionError, isConflict, isUnavailable, UnavailableError } from "../failures.js"
+import { MessagingOverloadedError } from "../../messaging-reliability.js"
 
 describe("isConflict", () => {
   test("recognises core's AppendConditionError and its subclasses", () => {
@@ -38,5 +39,20 @@ describe("isConflict", () => {
     expect(error.name).toBe("AppendConditionError")
     expect(error.cause).toBe(cause)
     expect(error.kind).toBe("conflict")
+  })
+})
+
+describe("isUnavailable", () => {
+  test("recognises core's UnavailableError, an overloaded bus, and anything carrying the kind", () => {
+    expect(isUnavailable(new UnavailableError("the store is down"))).toBe(true)
+    expect(isUnavailable(new MessagingOverloadedError("bus", 1))).toBe(true)
+    expect(isUnavailable(Object.assign(new Error("from a transport"), { kind: "unavailable" }))).toBe(true)
+  })
+
+  test("refuses everything else, conflicts included", () => {
+    expect(isUnavailable(new Error("connection refused"))).toBe(false)
+    expect(isUnavailable(new AppendConditionError("lost the race"))).toBe(false)
+    expect(isConflict(new UnavailableError("down"))).toBe(false)
+    expect(isUnavailable(null)).toBe(false)
   })
 })

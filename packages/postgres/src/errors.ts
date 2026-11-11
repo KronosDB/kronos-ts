@@ -43,3 +43,67 @@ export function isDcbViolation(err: unknown): boolean {
     (err as { code: unknown }).code === KRONOS_DCB_VIOLATION_SQLSTATE
   )
 }
+
+/**
+ * SQLSTATEs that mean the server could not serve the statement now: it is
+ * shutting down or not yet accepting connections (57P01–57P03), out of
+ * connections (53300), or a timeout this package's session settings armed
+ * fired (statement 57014, lock 55P03, idle in transaction 25P03). Class 08,
+ * connection exceptions, counts as a whole.
+ */
+const UNAVAILABLE_SQLSTATES = new Set(["57P01", "57P02", "57P03", "53300", "57014", "55P03", "25P03"])
+
+/**
+ * Codes the drivers and the socket layer put on a connection that could not be
+ * made or was lost: the operating system's, postgres.js's and Bun.SQL's.
+ */
+const UNAVAILABLE_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "EPIPE",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EAI_AGAIN",
+  "CONNECT_TIMEOUT",
+  "CONNECTION_CLOSED",
+  "CONNECTION_ENDED",
+  "CONNECTION_DESTROYED",
+  "ERR_POSTGRES_CONNECTION_CLOSED",
+  "ERR_POSTGRES_CONNECTION_REFUSED",
+  "ERR_POSTGRES_CONNECTION_TIMEOUT",
+  "ERR_POSTGRES_IDLE_TIMEOUT",
+  "ERR_POSTGRES_LIFETIME_TIMEOUT",
+])
+
+/** What `pg` says, with no code, when it could not get or keep a connection. */
+const UNAVAILABLE_PG_MESSAGES = [
+  /timeout exceeded when trying to connect/i,
+  /Connection terminated/i,
+  /Client has encountered a connection error/i,
+]
+
+function connectionLost(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false
+  const code = (error as { code?: unknown }).code
+  if (typeof code === "string" && (UNAVAILABLE_CODES.has(code) || UNAVAILABLE_SQLSTATES.has(code) || /^08[0-9A-Z]{3}$/.test(code))) {
+    return true
+  }
+  if (error instanceof AggregateError && error.errors.some(connectionLost)) return true
+  return error instanceof Error && typeof code !== "string" && UNAVAILABLE_PG_MESSAGES.some((m) => m.test(error.message))
+}
+
+/**
+ * Gives a driver error that means "the server could not serve this now" core's
+ * `unavailable` kind, so `isUnavailable` recognises it, and returns it. The
+ * error is marked IN PLACE, not wrapped, so its SQLSTATE stays on `.code`
+ * for `isDcbViolation` and every other reader, and an error that already
+ * carries a kind keeps it.
+ */
+export function markUnavailable(error: unknown): unknown {
+  if (connectionLost(error) && (error as { kind?: unknown }).kind === undefined) {
+    ;(error as { kind?: string }).kind = "unavailable"
+  }
+  return error
+}

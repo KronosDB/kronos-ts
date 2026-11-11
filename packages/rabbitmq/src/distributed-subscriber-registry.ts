@@ -1,5 +1,5 @@
 import type { Channel, ConsumeMessage } from "amqplib"
-import type { SerializedError } from "@kronos-ts/core"
+import { UnavailableError, type SerializedError } from "@kronos-ts/core"
 import type { AmqpChannelSource } from "./connection.js"
 import type { RabbitMqResolvedConfig } from "./rabbitmq.js"
 
@@ -150,7 +150,7 @@ export function amqpDistributedSubscriberRegistry(
 
 
   const requireChannel = (): Channel => {
-    if (!channel) throw new Error("Distributed subscriber registry is not connected")
+    if (!channel) throw new UnavailableError("Distributed subscriber registry is not connected")
     return channel
   }
 
@@ -251,7 +251,7 @@ export function amqpDistributedSubscriberRegistry(
   }
 
   const connect = async (): Promise<void> => {
-    if (closed) throw new Error("Subscription registry is closed")
+    if (closed) throw new UnavailableError("Subscription registry is closed")
     if (failure) throw failure
     if (connectPromise) return connectPromise
     connectPromise = doConnect()
@@ -271,9 +271,9 @@ export function amqpDistributedSubscriberRegistry(
     },
 
     async claim(record: ClusterSubscriberRecord): Promise<void> {
-      if (closed) throw new Error("Subscription registry is closed")
+      if (closed) throw new UnavailableError("Subscription registry is closed")
       if (failure) throw failure
-      if (mirror.size >= 16384 && !mirror.has(record.subId)) throw new Error("Subscription registry capacity exhausted")
+      if (mirror.size >= 16384 && !mirror.has(record.subId)) throw new UnavailableError("Subscription registry capacity exhausted")
       const full: SubscriberRecord = { ...record, ownerInstanceId: instanceId }
       mirror.set(full.subId, full)
       locallyOwnedSubIds.add(full.subId)

@@ -1,4 +1,4 @@
-import { withMessagingTimeout } from "@kronos-ts/core"
+import { UnavailableError, withMessagingTimeout } from "@kronos-ts/core"
 import {
   createChannel,
   waitForChannelReady,  createClient,
@@ -291,7 +291,7 @@ export function connectToAxonServer(config: AxonServerConnectionConfig): AxonSer
     },
 
     reconnect() {
-      if (state === "closed") return Promise.reject(new Error("Connection is permanently closed"))
+      if (state === "closed") return Promise.reject(new UnavailableError("Connection is permanently closed"))
       if (reconnectPromise) return reconnectPromise
       reconnectPromise = (async () => {
         state = "reconnecting"
@@ -320,7 +320,7 @@ export function connectToAxonServer(config: AxonServerConnectionConfig): AxonSer
             if ((state as ConnectionState) === "closed") return
             if (resolvedConfig.maxReconnectAttempts > 0 && attempt >= resolvedConfig.maxReconnectAttempts) {
               state = "disconnected"
-              throw new Error(`Failed to reconnect after ${attempt} attempts: ${error}`)
+              throw new UnavailableError(`Failed to reconnect after ${attempt} attempts: ${error}`, { cause: error })
             }
             const backoff = Math.min(resolvedConfig.reconnectIntervalMs * 2 ** (attempt - 1), 30000)
             await new Promise<void>((resolve) => {

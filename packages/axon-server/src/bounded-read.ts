@@ -15,6 +15,8 @@
  * idempotent, so the answer to a lost one is simply to ask again. A second
  * loss is reported rather than retried forever.
  */
+
+import { ConnectionFailedError, fromGrpc } from "./errors.js"
 export async function boundedRead<T>(
   deadlineMs: number,
   read: (signal: AbortSignal) => Promise<T>,
@@ -25,9 +27,9 @@ export async function boundedRead<T>(
     try {
       return await read(cancel.signal)
     } catch (err) {
-      if (!cancel.signal.aborted) throw err
+      if (!cancel.signal.aborted) throw fromGrpc(err)
       if (attempt === 2) {
-        throw new Error(
+        throw new ConnectionFailedError(
           `Axon Server read did not complete within ${deadlineMs} ms, twice in a row`,
           { cause: err },
         )
