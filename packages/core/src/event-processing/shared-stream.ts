@@ -76,11 +76,15 @@ export function sharedStream(store: EventStore, options: { query?: EventQuery; r
 
   function read() {
     if (inner === null) return
-    // A view handed events by ANOTHER view's read was not woken by the log —
-    // the log called back once, before any of it was read. Wake it here, or a
-    // segment that went to sleep with an empty buffer sleeps on a full one, and
-    // the full one holds the read up for everybody.
-    const given = new Set<View>()
+    // A view moved by ANOTHER view's read was not woken by the log — the log
+    // called back once, before any of it was read. Wake every view the read
+    // moved, not only those it handed events:
+    // - a segment that went to sleep with an empty buffer would sleep on a full
+    //   one, and the full one holds the read up for everybody;
+    // - a segment asleep at the head would never hear that the log went past
+    //   it, and its position would stay behind the other segments' last events
+    //   until an event of its own arrives.
+    const moved = new Set<View>()
     while (!full() && inner.hasNextAvailable()) {
       const event = inner.next()!
       const past = event.token ?? globalSequenceToken(event.sequence + 1n)
@@ -90,13 +94,11 @@ export function sharedStream(store: EventStore, options: { query?: EventQuery; r
         view.next = at
         view.resume = past
         view.looked = past
-        if (view.accepts(event)) {
-          view.buffer.push(event)
-          given.add(view)
-        }
+        moved.add(view)
+        if (view.accepts(event)) view.buffer.push(event)
       }
     }
-    for (const view of given) view.callback?.()
+    for (const view of moved) view.callback?.()
   }
 
   return {

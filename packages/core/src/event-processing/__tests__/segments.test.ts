@@ -372,6 +372,31 @@ describe("segmented", () => {
     expect((await tokens.get("balances", 0))!.kind).toBe("global-sequence")
   })
 
+  it("moves every segment to the head when the last events all belong to one segment", async () => {
+    const log = growingLog()
+    const tokens = inMemoryTokenStore()
+    const { seen, handler } = recorder()
+    const a = node("a", log, tokens, handler, { segments: 4 })
+    await a.start()
+    expect(a.segments()).toHaveLength(4)
+
+    const segments = segmentsOf([0, 1, 2, 3])
+    const segmentOf = (account: string) => segments.find((s) => inSegment(s, sequenceHash(account)))!.id
+    const [quiet, busy] = (() => {
+      const names = accounts(20)
+      const first = names[0]!
+      return [first, names.find((name) => segmentOf(name) !== segmentOf(first))!]
+    })()
+
+    // One event for `quiet`'s segment, then many buffers' worth for `busy`'s,
+    // and nothing after: `quiet`'s segment handles its event early and has to
+    // hear that the log went on past it.
+    log.push({ account: quiet, n: 0 }, ...Array.from({ length: 100 }, (_, n) => ({ account: busy, n })))
+    await until(() => seen.length === 101, "every event")
+    await until(() => a.segments().every((s) => s.position === 101n), "every segment to reach the head")
+    await a.stop()
+  })
+
   it("resets every segment, and refuses while another node holds one", async () => {
     const log = growingLog()
     const tokens = inMemoryTokenStore()
