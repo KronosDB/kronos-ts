@@ -1,5 +1,23 @@
 # @kronos-ts/axon-server
 
+## 0.10.0
+
+### Minor Changes
+
+- c8ba5de: A handler's conflict on another instance fails the caller's `dispatch` or `query` with `ConcurrencyError`, which `isConflict` recognises: the handling side answers a command with `AXONIQ-4004` and a query with `AXONIQ-2000` instead of an execution error. A subscription query completed with an error is rebuilt from its code too, so a non-conflict failure arrives as `QueryExecutionError` instead of a plain `Error`.
+- 014d680: `NoHandlerForCommandError` and `NoHandlerForQueryError` carry core's `no-handler` kind, so `isNoHandler` recognises a command or query nothing handles.
+- 083025e: Failures to retry later carry core's `unavailable` kind, so `isUnavailable` recognises them: `ConnectionFailedError`, the dispatch and no-leader codes, gRPC `UNAVAILABLE` and `DEADLINE_EXCEEDED` from the event store and buses (now a `ConnectionFailedError` with the gRPC error as its cause), a dispatch deadline (reported as the deadline instead of the client's cancellation), a read that timed out twice, a shutdown (`ShutdownInProgressError` now extends core's `UnavailableError`) and a full subscription table. A handler's unavailable failure reaches a caller on another instance as `AXONIQ-3001`. `GRPC_MESSAGE_TOO_LARGE` is no longer a `ConnectionFailedError` and is not transient: retrying does not make a message smaller. `isTransientError` is deprecated in favour of core's `isUnavailable` and `isConflict`.
+
+### Patch Changes
+
+- Updated dependencies [c8ba5de]
+- Updated dependencies [7062b12]
+- Updated dependencies [014d680]
+- Updated dependencies [0ed8665]
+- Updated dependencies [ce0fb14]
+- Updated dependencies [083025e]
+  - @kronos-ts/core@0.10.0
+
 ## 0.9.0
 
 ### Minor Changes

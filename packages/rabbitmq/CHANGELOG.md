@@ -1,5 +1,23 @@
 # @kronos-ts/rabbitmq
 
+## 0.10.0
+
+### Minor Changes
+
+- c8ba5de: A handler's conflict on another instance fails the caller's `dispatch` or `query` with a conflict that `isConflict` recognises: the reply's error carries its `kind`, and the caller rebuilds core's `AppendConditionError` from it, keeping the remote name, message and stack. A subscription query completed with an error does the same.
+- 014d680: A command or query for a name no queue is bound to fails with core's `NoHandlerError`, which `isNoHandler` recognises, instead of a plain `Error`.
+- 083025e: Failures to retry later throw core's `UnavailableError`, which `isUnavailable` recognises: a transport or registry that is not connected or closed, a shutdown, a full publish or reply buffer, a closed channel, a timed-out request and a full subscription table. A handler's unavailable failure reaches a caller on another instance with its kind.
+
+### Patch Changes
+
+- Updated dependencies [c8ba5de]
+- Updated dependencies [7062b12]
+- Updated dependencies [014d680]
+- Updated dependencies [0ed8665]
+- Updated dependencies [ce0fb14]
+- Updated dependencies [083025e]
+  - @kronos-ts/core@0.10.0
+
 ## 0.9.1
 
 ### Patch Changes
