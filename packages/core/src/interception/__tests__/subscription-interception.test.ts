@@ -18,6 +18,7 @@ import type { QueryMessage } from "../../messaging/messages.js"
 const Watch = queryDescriptor({
   name: qn("probe", "Watch"),
   payload: z.object({ id: z.string() }),
+  result: z.number(),
 })
 
 const stamp: Intercept<QueryMessage> = (m) => ({

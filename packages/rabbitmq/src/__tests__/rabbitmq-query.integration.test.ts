@@ -39,11 +39,13 @@ function inMemoryBuses(uow: () => UnitOfWork = unitOfWork) {
 const GetGreeting = query({
   name: qn("rabbitQry", "GetGreeting"),
   payload: z.object({ name: z.string() }),
+  result: z.string(),
 })
 
 const WatchValue = query({
   name: qn("rabbitQry", "WatchValue"),
   payload: z.object({ id: z.string() }),
+  result: z.string(),
 })
 
 const PublishUpdate = command({

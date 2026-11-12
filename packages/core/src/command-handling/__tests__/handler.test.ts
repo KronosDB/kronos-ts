@@ -29,6 +29,7 @@ const CreateCourse = command({
 const GetCourse = query({
   name: qn("university", "GetCourse"),
   payload: z.object({ courseId: z.string() }),
+  result: z.object({ courseId: z.string(), name: z.string() }),
 })
 
 // `on()` (the callback-pairing DSL for evolvers) is deleted — evolvers are now

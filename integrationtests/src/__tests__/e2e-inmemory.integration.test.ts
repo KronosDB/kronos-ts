@@ -223,14 +223,23 @@ const EnrollmentClosed = event({
   tags: { courseId: (p) => p.courseId },
 })
 
+const CourseViewResult = z.object({
+  courseId: z.string(),
+  name: z.string(),
+  capacity: z.number(),
+  enrolledCount: z.number(),
+})
+
 const GetCourseView = query({
   name: qn("university", "GetCourseView"),
   payload: z.object({ courseId: z.string() }),
+  result: CourseViewResult,
 })
 
 const GetAllCourses = query({
   name: qn("university", "GetAllCourses"),
   payload: z.object({}),
+  result: z.array(CourseViewResult),
 })
 
 type CourseState = {
@@ -309,7 +318,7 @@ const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload
 
 // -- Projection (read model) --
 
-type CourseView = { courseId: string; name: string; capacity: number; enrolledCount: number }
+type CourseView = z.output<typeof CourseViewResult>
 
 function createProjection() {
   const courseViews = new Map<string, CourseView>()
@@ -408,8 +417,8 @@ describe("E2E: In-memory full CQRS flow", () => {
     // then
     const view = await query(buses.queryBus, GetCourseView, { courseId: "cs-101" })
     expect(view).toBeDefined()
-    expect((view as CourseView).name).toBe("Intro to CS")
-    expect((view as CourseView).capacity).toBe(30)
+    expect(view.name).toBe("Intro to CS")
+    expect(view.capacity).toBe(30)
   })
 
   it("enforces business rules across commands", async () => {

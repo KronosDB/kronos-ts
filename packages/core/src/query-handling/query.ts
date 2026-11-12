@@ -86,7 +86,7 @@ export function queryFunction(deps: {
  *
  * Declare:
  * ```ts
- * const GetCourse = query({ name: qn("university", "GetCourse"), payload: … })
+ * const GetCourse = query({ name: qn("university", "GetCourse"), payload: …, result: … })
  * ```
  *
  * Dispatch:

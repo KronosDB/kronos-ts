@@ -5,8 +5,9 @@ it. Everything here is `@kronos-ts/core`.
 
 ## Messages and descriptors
 
-A descriptor declares a message type: a qualified name, a payload schema, an
-optional result schema, and — for events — how tags come off the payload.
+A descriptor declares a message type: a qualified name, a payload schema, a
+result schema (required for a query, optional for a command, absent for an
+event), and — for events — how tags come off the payload.
 
 The payload schema is any [Standard Schema](https://standardschema.dev) — zod,
 valibot, arktype, or one you write by hand. Core depends on none of them; the
@@ -27,6 +28,7 @@ const StudentSubscribed = ns.event("StudentSubscribed", {
 
 const GetCourseView = ns.query("GetCourseView", {
   payload: z.object({ courseId: z.string() }),
+  result: z.object({ courseId: z.string(), name: z.string(), enrolled: z.number() }),
 })
 ```
 
@@ -53,7 +55,7 @@ Returning `undefined` or `[]` carries no tag under that key for that payload.
 An event with no `tags` at all has a known key set — the empty one — so a state
 that folds it is refused at boot for sharing no key with it.
 
-`query` is one exported binding doing two jobs — `query({ name, payload })`
+`query` is one exported binding doing two jobs — `query({ name, payload, result })`
 declares a query type, `query(bus, descriptor, payload)` dispatches one. Arity
 tells them apart: the declaration takes a single definition object, the dispatch
 takes a bus first.

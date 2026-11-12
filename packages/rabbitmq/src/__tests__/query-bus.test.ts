@@ -26,6 +26,7 @@ import type { RabbitMqIdentity } from "../topology.js"
 const GetThing = query({
   name: qn("test", "GetThing"),
   payload: z.object({ id: z.string() }),
+  result: z.string(),
 })
 
 const DEFAULT_IDENTITY: RabbitMqIdentity = { serviceName: "svc", instanceId: "inst" }

@@ -13,9 +13,9 @@ import type { QueryHandlerContext } from "./context.js"
  * structurally so all three handler shapes (command / event / query) share the same
  * pattern.
  *
- * Note: queries do NOT carry a result schema on the descriptor (see `QueryDescriptor`
- * in `./descriptor.ts` — no `result` field used here). The result type `R` is
- * inferred from the handler's return type.
+ * The descriptor always declares what the query answers (`result`), and that schema types
+ * `query(bus, …)` and `ctx.query`. The handler's own return type `R` is inferred from the
+ * handler, not checked against it.
  */
 export type QueryHandler<
   Q extends StandardSchemaV1 = StandardSchemaV1,
