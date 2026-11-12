@@ -1,5 +1,23 @@
 # @kronos-ts/kronosdb
 
+## 0.13.0
+
+### Minor Changes
+
+- c8ba5de: A handler's conflict on another instance fails the caller's `dispatch` or `query` with `ConcurrencyError`, which `isConflict` recognises: the handling side answers with `KRONOS-2000` instead of an execution error. A subscription query completed with an error is rebuilt from its code too, so a non-conflict failure arrives as `QueryExecutionError` instead of a plain `Error`.
+- 014d680: A command, query or subscription query nothing handles fails with an error `isNoHandler` recognises: `NoHandlerForCommandError` and `NoHandlerForQueryError` carry core's `no-handler` kind, and the native protocol's new `no_handler` status becomes a `KronosDbRequestError` with status `"no_handler"`, the same kind, and `transient: false`. KronosDB 0.14.0 sends that status; an older server still answers `unavailable`. The vendored protocol codec is updated to the server's current schema.
+- 083025e: Failures to retry later carry core's `unavailable` kind, so `isUnavailable` recognises them: `ConnectionFailedError`, a native `unavailable` refusal, the dispatch, leader, command-timeout and lost-handler codes, a deadline, a shutdown (`ShutdownInProgressError` now extends core's `UnavailableError`) and a full subscription table. A handler's unavailable failure reaches a caller on another instance as `KRONOS-3001`, rebuilt as `ConnectionFailedError`. `isTransientError` is deprecated in favour of core's `isUnavailable` and `isConflict`.
+
+### Patch Changes
+
+- Updated dependencies [c8ba5de]
+- Updated dependencies [7062b12]
+- Updated dependencies [014d680]
+- Updated dependencies [0ed8665]
+- Updated dependencies [ce0fb14]
+- Updated dependencies [083025e]
+  - @kronos-ts/core@0.10.0
+
 ## 0.12.0
 
 ### Minor Changes

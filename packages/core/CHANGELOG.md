@@ -1,5 +1,19 @@
 # @kronos-ts/core
 
+## 0.10.0
+
+### Minor Changes
+
+- c8ba5de: `SerializedError` has an optional `kind`, the failure's contract kind, for transports that carry a handler's failure back to its caller.
+- 014d680: `NoHandlerError` and `isNoHandler(error)` name a message nothing handles. `localCommandBus` and `localQueryBus` throw `NoHandlerError` for a name with no handler, with the same message as before, and `FailureKind` includes `"no-handler"`.
+- 083025e: `UnavailableError` and `isUnavailable(error)` name a failure to retry later: the store or bus could not serve the request now. `FailureKind` includes `"unavailable"`. `MessagingOverloadedError`, the timeouts of `withMessagingTimeout` and `messagingDeadline`, and a full local subscription table carry it.
+
+### Patch Changes
+
+- 7062b12: A processor recognises a refused segment claim by the new `isUnableToClaimToken(error)` guard, which reads a `claimRefused` field on `UnableToClaimTokenError`, instead of `instanceof`. A token store built against another installed copy of core, such as `@kronos-ts/postgres` pinned to a different core version, no longer makes contention between nodes fail the processor.
+- 0ed8665: A segmented processor moves every segment it holds to the head of the log. A segment whose last event came before other segments' final events no longer stays behind them, reporting `caughtUp: true`, until a new event of its own arrives.
+- ce0fb14: A processor's `stop()` called while an earlier stop is still releasing its segments now waits for that stop too. Before, a second `stop()` resolved at once, so a `resetTokens()` or `start()` after it could claim a segment that the first stop's release, landing late under the same owner, then took away: the reset failed with "the claim is no longer held", and the restarted processor left the segment unhandled until its next claim round.
+
 ## 0.9.0
 
 ### Minor Changes
