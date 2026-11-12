@@ -679,6 +679,99 @@ describe("event processor", () => {
     })
   })
 
+  describe("stopped twice", () => {
+    /**
+     * A token store whose release crosses a round trip (a database token
+     * store), once `slow` is set: the release lands 30ms after it is asked for.
+     * `released` settles when it has.
+     */
+    function slowReleasingTokenStore() {
+      const store = inMemoryTokenStore()
+      let slow = false
+      const released = Promise.withResolvers<void>()
+      const tokenStore: TokenStore = {
+        ...store,
+        async releaseClaim(processorName, segment, owner, uow) {
+          if (!slow) return store.releaseClaim(processorName, segment, owner, uow)
+          await new Promise((r) => setTimeout(r, 30))
+          await store.releaseClaim(processorName, segment, owner, uow)
+          released.resolve()
+        },
+      }
+      return { tokenStore, store, slowDown: () => (slow = true), released: released.promise }
+    }
+
+    const recorded = (delivered: unknown[]): EventHandler<any> => ({
+      kind: "event-handler",
+      descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+      handler: ({ payload }) => {
+        delivered.push(payload)
+      },
+    })
+
+    it("a reset waits for the first stop's release, not only for the second stop", async () => {
+      // given: a processor at the head, whose release is slow from now on
+      const { tokenStore, store, slowDown, released } = slowReleasingTokenStore()
+      // The reset reads the stored token between claiming and writing. Held
+      // until the release has landed, it is where a release still in flight
+      // lands in the middle of the reset.
+      const tokens: TokenStore = {
+        ...tokenStore,
+        async get(processorName, segment, uow) {
+          await released
+          return store.get(processorName, segment, uow)
+        },
+      }
+      const processor = runOver({
+        eventSource: createInMemoryEventSource([makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n)]),
+        eventHandlers: [recorded([])],
+        tokenStore: tokens,
+        pollingIntervalMs: 10,
+      })
+      await processor.start()
+      await waitForPosition(processor, 1n)
+      slowDown()
+
+      // when: stopped, stopped again, and reset
+      processor.stop()
+      processor.stop()
+      await processor.resetTokens(0n)
+
+      // then: the reset is stored, and the segment is free again
+      expect((await store.get("test-processor", 0))?.position()).toBe(0n)
+      expect(await store.fetchAvailableSegments("test-processor")).toEqual([0])
+    })
+
+    it("a start waits for the first stop's release, so the new run keeps its segment", async () => {
+      // given: a processor at the head, whose release is slow from now on
+      const delivered: unknown[] = []
+      const events = [makeEvent(TEST_EVENT_NAME, { value: 1 }, 0n)]
+      const { tokenStore, slowDown, released } = slowReleasingTokenStore()
+      const processor = runOver({
+        eventSource: createInMemoryEventSource(events),
+        eventHandlers: [recorded(delivered)],
+        tokenStore,
+        pollingIntervalMs: 10,
+      })
+      await processor.start()
+      await waitForPosition(processor, 1n)
+      slowDown()
+
+      // when: stopped, stopped again, and started
+      processor.stop()
+      processor.stop()
+      await processor.start()
+      await released
+      events.push(makeEvent(TEST_EVENT_NAME, { value: 2 }, 1n))
+
+      // then: the new run holds the segment and handles what arrives
+      await waitForPosition(processor, 2n, 500)
+      expect(processor.segments()).toHaveLength(1)
+      expect(delivered).toEqual([{ value: 1 }, { value: 2 }])
+      await processor.stop()
+    })
+  })
+
   describe("claims refused by another copy of core", () => {
     it("skips a segment another node holds, by the guard, when the store's core is a different copy", async () => {
       // given: a token store built against another installed copy of core,

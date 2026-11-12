@@ -752,7 +752,13 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       const held = [...workers.values()]
       parked = held.map((w) => w.status())
       workers.clear()
-      stopping = Promise.all([claiming, ...held.map((w) => w.stop(true))]).then(() => undefined)
+      // A stop joins the one still in flight. A second stop holds no workers of
+      // its own, and a start or reset that waited only for it would claim while
+      // the first stop's releases are still on their way: one landing after
+      // that claim, under the same owner, would take it away again. That stop's
+      // failure was its own caller's to handle, so only its end is waited for.
+      const previous = stopping.catch(() => undefined)
+      stopping = Promise.all([previous, claiming, ...held.map((w) => w.stop(true))]).then(() => undefined)
       return stopping
     },
 
