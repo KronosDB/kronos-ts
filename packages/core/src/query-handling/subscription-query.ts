@@ -227,7 +227,7 @@ export function updateHandler(
  */
 export function subscriptionQuery<
   P extends StandardSchemaV1,
-  R extends StandardSchemaV1 | undefined = undefined,
+  R extends StandardSchemaV1,
 >(
   bus: SubscriptionCapableQueryBus,
   descriptor: QueryDescriptor<P, R>,

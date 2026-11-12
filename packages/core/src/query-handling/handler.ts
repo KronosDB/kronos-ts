@@ -23,7 +23,7 @@ export type QueryHandler<
   C extends QueryHandlerContext = QueryHandlerContext,
 > = {
   readonly kind: "query-handler"
-  readonly descriptor: QueryDescriptor<Q, StandardSchemaV1 | undefined>
+  readonly descriptor: QueryDescriptor<Q>
   /**
    * `C` is the context this handler REQUIRES — see the note on
    * {@link import("../command-handling/handler.js").CommandHandler}. An
@@ -56,7 +56,7 @@ export function queryHandler<
   R,
   C extends QueryHandlerContext = QueryHandlerContext,
 >(
-  descriptor: QueryDescriptor<Q, StandardSchemaV1 | undefined>,
+  descriptor: QueryDescriptor<Q>,
   handler: (message: QueryMessage<InferOutput<Q>>, context: C) => Promise<R> | R,
 ): QueryHandler<Q, R, C> {
   return { kind: "query-handler", descriptor, handler }

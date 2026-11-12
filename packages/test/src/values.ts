@@ -126,7 +126,7 @@ export type CommandValue<
 /** A named query with a payload. Only ever an act — a read is not a consequence. */
 export type QueryValue<
   P extends StandardSchemaV1 = StandardSchemaV1,
-  R extends StandardSchemaV1 | undefined = any,
+  R extends StandardSchemaV1 = any,
 > = {
   readonly kind: "query"
   readonly descriptor: QueryDescriptor<P, R>
@@ -164,7 +164,7 @@ export function command<P extends StandardSchemaV1, R extends StandardSchemaV1 |
 }
 
 /** A query: the act for `when`. */
-export function query<P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined = undefined>(
+export function query<P extends StandardSchemaV1, R extends StandardSchemaV1>(
   descriptor: QueryDescriptor<P, R>,
   payload: Expected<InferOutput<P>>,
   metadata?: Metadata,

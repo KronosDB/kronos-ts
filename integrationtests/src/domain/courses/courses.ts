@@ -64,12 +64,22 @@ const StudentUnsubscribed = ns.event("StudentUnsubscribed", {
   tags: { courseId: (p) => p.courseId, studentId: (p) => p.studentId },
 })
 
+const CourseViewResult = z.object({
+  courseId: z.string(),
+  name: z.string(),
+  capacity: z.number(),
+  enrolledCount: z.number(),
+  students: z.array(z.string()),
+})
+
 const GetCourseView = ns.query("GetCourseView", {
   payload: z.object({ courseId: z.string() }),
+  result: CourseViewResult,
 })
 
 const GetAllCourses = ns.query("GetAllCourses", {
   payload: z.object({}),
+  result: z.array(z.object({ courseId: z.string(), name: z.string(), enrolledCount: z.number() })),
 })
 
 // ---------------------------------------------------------------------------

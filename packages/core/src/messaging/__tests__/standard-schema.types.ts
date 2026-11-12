@@ -80,6 +80,7 @@ export const onCourseCreated = eventHandler(CourseCreated, ({ payload, timestamp
 const GetCourse = queryDescriptor({
   name: qn("probe", "GetCourse"),
   payload: z.object({ courseId: z.string() }),
+  result: z.number(),
 })
 
 export const getCourse = queryHandler(GetCourse, async ({ payload }) => payload.courseId.length)

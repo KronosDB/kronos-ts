@@ -107,7 +107,7 @@ export type ContextSendFunction = <P extends StandardSchemaV1, R extends Standar
  * capability command; reach for this when a decision genuinely needs another
  * module's answer, fresh.
  */
-export type ContextQueryFunction = <P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined = undefined>(
+export type ContextQueryFunction = <P extends StandardSchemaV1, R extends StandardSchemaV1>(
   descriptor: QueryDescriptor<P, R>,
   payload: InferOutput<P>,
   metadata?: Metadata,

@@ -49,6 +49,7 @@ const Charged = event({
 const GetBalance = queryDescriptor({
   name: qn("billing", "GetBalance"),
   payload: z.object({ accountId: z.string() }),
+  result: z.number(),
 })
 
 const openAccount = commandHandler(OpenAccount, async ({ payload }) => ({

@@ -446,20 +446,21 @@ export function tagsOf<P extends StandardSchemaV1>(
 }
 
 /**
- * Describes a query message type — its name, payload schema,
- * and optional result schema for typed gateway returns.
+ * Describes a query message type — its name, its payload schema, and the schema of what it answers. A query always
+ * answers something, so its result is required: `query(bus, …)` and `ctx.query` are typed by it, and the answer is
+ * validated against it.
  */
 export type QueryDescriptor<
   P extends StandardSchemaV1 = StandardSchemaV1,
-  R extends StandardSchemaV1 | undefined = undefined,
+  R extends StandardSchemaV1 = StandardSchemaV1,
 > = {
   readonly kind: "query"
   readonly name: QualifiedName
   /** Version of the query. Default: "1.0". */
   readonly version: string
   readonly payload: P
-  /** Optional result schema — enables typed return from `query(bus, …)`. */
-  readonly result?: R
+  /** What the query answers. */
+  readonly result: R
 }
 
 /**
@@ -578,12 +579,6 @@ export function event<P extends StandardSchemaV1>(def: {
  * // query(queryBus, GetCourse, { courseId: "cs-101" }) → Promise<{ courseId: string, name: string }>
  * ```
  */
-export function queryDescriptor<P extends StandardSchemaV1>(def: {
-  name: QualifiedName
-  version?: string
-  payload: P
-}): QueryDescriptor<P, undefined>
-
 export function queryDescriptor<P extends StandardSchemaV1, R extends StandardSchemaV1>(def: {
   name: QualifiedName
   version?: string
@@ -641,10 +636,6 @@ export function withNamespace(namespace: string) {
     return command({ name: qn(namespace, name), ...def } as never)
   }
 
-  function scopedQuery<P extends StandardSchemaV1>(name: string, def: {
-    payload: P
-    version?: string
-  }): ReturnType<typeof queryDescriptor<P>>
   function scopedQuery<P extends StandardSchemaV1, R extends StandardSchemaV1>(name: string, def: {
     payload: P
     result: R

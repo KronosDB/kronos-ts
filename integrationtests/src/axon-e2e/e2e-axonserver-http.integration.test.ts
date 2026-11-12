@@ -191,6 +191,7 @@ const SubscribeStudent = command({
 const GetCourse = query({
   name: qn("e2e", "GetCourse"),
   payload: z.object({ courseId: z.string() }),
+  result: z.unknown(),
 })
 
 const CourseCreated = event({
