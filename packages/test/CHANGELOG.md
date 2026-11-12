@@ -1,5 +1,12 @@
 # @kronos-ts/test
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [258fa1d]
+  - @kronos-ts/core@0.10.1
+
 ## 0.8.0
 
 ### Minor Changes
