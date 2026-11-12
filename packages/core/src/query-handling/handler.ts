@@ -13,9 +13,9 @@ import type { QueryHandlerContext } from "./context.js"
  * structurally so all three handler shapes (command / event / query) share the same
  * pattern.
  *
- * Note: queries do NOT carry a result schema on the descriptor (see `QueryDescriptor`
- * in `./descriptor.ts` — no `result` field used here). The result type `R` is
- * inferred from the handler's return type.
+ * The descriptor always declares what the query answers (`result`), and that schema types
+ * `query(bus, …)` and `ctx.query`. The handler's own return type `R` is inferred from the
+ * handler, not checked against it.
  */
 export type QueryHandler<
   Q extends StandardSchemaV1 = StandardSchemaV1,
@@ -23,7 +23,7 @@ export type QueryHandler<
   C extends QueryHandlerContext = QueryHandlerContext,
 > = {
   readonly kind: "query-handler"
-  readonly descriptor: QueryDescriptor<Q, StandardSchemaV1 | undefined>
+  readonly descriptor: QueryDescriptor<Q>
   /**
    * `C` is the context this handler REQUIRES — see the note on
    * {@link import("../command-handling/handler.js").CommandHandler}. An
@@ -56,7 +56,7 @@ export function queryHandler<
   R,
   C extends QueryHandlerContext = QueryHandlerContext,
 >(
-  descriptor: QueryDescriptor<Q, StandardSchemaV1 | undefined>,
+  descriptor: QueryDescriptor<Q>,
   handler: (message: QueryMessage<InferOutput<Q>>, context: C) => Promise<R> | R,
 ): QueryHandler<Q, R, C> {
   return { kind: "query-handler", descriptor, handler }

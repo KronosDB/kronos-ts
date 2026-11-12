@@ -194,9 +194,17 @@ const SubscribeStudent = command({
   routingKey: "courseId",
 })
 
+const CourseViewResult = z.object({
+  courseId: z.string(),
+  name: z.string(),
+  capacity: z.number(),
+  enrolledCount: z.number(),
+})
+
 const GetCourse = query({
   name: qn("postgres-e2e", "GetCourse"),
   payload: z.object({ courseId: z.string() }),
+  result: CourseViewResult,
 })
 
 const CourseCreated = event({
@@ -275,7 +283,7 @@ const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload
 
 // -- Projection (read model fed by the tracking processor) --
 
-type CourseView = { courseId: string; name: string; capacity: number; enrolledCount: number }
+type CourseView = z.output<typeof CourseViewResult>
 const courseViews = new Map<string, CourseView>()
 
 const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
@@ -450,7 +458,7 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     const courseId = id("cs-101")
     await waitFor(() => courseViews.has(courseId))
 
-    const view = (await query(buses.queryBus, GetCourse, { courseId })) as CourseView
+    const view = await query(buses.queryBus, GetCourse, { courseId })
     expect(view.name).toBe("Intro to Postgres")
     expect(view.enrolledCount).toBe(1)
   })

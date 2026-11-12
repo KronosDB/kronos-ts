@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { emptyMetadata, is, qn, tagKeysOf, tagsOf, type Message } from "../messages.js"
+import { emptyMetadata, is, qn, tagKeysOf, tagsOf, withNamespace, type Message } from "../messages.js"
 import { command, event, query } from "../../index.js"
 
 describe("Message Descriptors", () => {
@@ -44,14 +44,28 @@ describe("Message Descriptors", () => {
   })
 
   describe("query()", () => {
-    it("creates a query descriptor with name and payload", () => {
+    it("creates a query descriptor with name, payload and result", () => {
+      const result = z.object({ courseId: z.string(), name: z.string() })
       const GetCourse = query({
         name: qn("university.courses", "GetCourse"),
         payload: z.object({ courseId: z.string() }),
+        result,
       })
 
       expect(GetCourse.kind).toBe("query")
       expect(GetCourse.payload).toBeDefined()
+      expect(GetCourse.result).toBe(result)
+    })
+
+    it("refuses a query that declares no result, naming it, wherever it is declared", () => {
+      // What a JavaScript caller gets: the type refuses this in TypeScript.
+      const bare = { name: qn("university.courses", "GetCourse"), payload: z.object({ courseId: z.string() }) }
+
+      expect(() => query(bare as never)).toThrow(TypeError)
+      expect(() => query(bare as never)).toThrow(/query "university\.courses\.GetCourse" declares no result/)
+      expect(() => withNamespace("university.courses").query("GetCourse", { payload: bare.payload } as never)).toThrow(
+        /query "university\.courses\.GetCourse" declares no result/,
+      )
     })
   })
 
@@ -160,6 +174,7 @@ describe("Message Descriptors", () => {
     const GetCourse = query({
       name: qn("university", "GetCourse"),
       payload: z.object({ courseId: z.string() }),
+      result: z.object({ courseId: z.string(), name: z.string() }),
     })
     const CourseCreated = event({
       name: qn("university", "CourseCreated"),

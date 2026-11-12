@@ -161,9 +161,17 @@ const SubscribeStudent = command({
   routingKey: "courseId",
 })
 
+const CourseViewResult = z.object({
+  courseId: z.string(),
+  name: z.string(),
+  capacity: z.number(),
+  enrolledCount: z.number(),
+})
+
 const GetCourse = query({
   name: qn("kronosdb-e2e", "GetCourse"),
   payload: z.object({ courseId: z.string() }),
+  result: CourseViewResult,
 })
 
 const CourseCreated = event({
@@ -236,7 +244,7 @@ const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload
 })
 
 // -- Projection --
-type CourseView = { courseId: string; name: string; capacity: number; enrolledCount: number }
+type CourseView = z.output<typeof CourseViewResult>
 const courseViews = new Map<string, CourseView>()
 
 const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
@@ -453,7 +461,7 @@ describe("E2E: KronosDB full stack", () => {
     await waitFor(() => courseViews.has(courseA), 10000)
 
     const result = await query(buses.queryBus, GetCourse, { courseId: courseA })
-    expect((result as CourseView).name).toBe("Course A")
+    expect(result.name).toBe("Course A")
   }, 30_000)
 
   it("stateful automation — an event handler sends a command in its own UoW", async () => {

@@ -12,6 +12,7 @@ import { queryFunction } from "../query.js"
 const GetCourse = queryDescriptor({
   name: qn("university", "GetCourse"),
   payload: z.object({ courseId: z.string() }),
+  result: z.object({ courseId: z.string(), name: z.string() }).nullable(),
 })
 
 // ---------------------------------------------------------------------------

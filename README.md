@@ -41,7 +41,7 @@ const Deposited = ns.event("Deposited", {
   payload: z.object({ accountId: z.string(), amount: z.number() }),
   tags: { accountId: (p) => p.accountId },
 })
-const GetBalance = ns.query("GetBalance", { payload: z.object({ accountId: z.string() }) })
+const GetBalance = ns.query("GetBalance", { payload: z.object({ accountId: z.string() }), result: z.number() })
 
 const Account = state({
   id: { accountId: z.string() },

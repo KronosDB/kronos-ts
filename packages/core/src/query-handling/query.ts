@@ -22,7 +22,7 @@ import { requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work
 // ---------------------------------------------------------------------------
 
 /** `ctx.query` — consult a query handler from inside a handler. */
-export type QueryDispatchFunction = <P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined = undefined>(
+export type QueryDispatchFunction = <P extends StandardSchemaV1, R extends StandardSchemaV1>(
   descriptor: QueryDescriptor<P, R>,
   payload: InferOutput<P>,
   metadata?: Metadata,
@@ -86,7 +86,7 @@ export function queryFunction(deps: {
  *
  * Declare:
  * ```ts
- * const GetCourse = query({ name: qn("university", "GetCourse"), payload: … })
+ * const GetCourse = query({ name: qn("university", "GetCourse"), payload: …, result: … })
  * ```
  *
  * Dispatch:
@@ -94,12 +94,6 @@ export function queryFunction(deps: {
  * const course = await query(queryBus, GetCourse, { courseId: "cs-101" })
  * ```
  */
-export function query<P extends StandardSchemaV1>(def: {
-  name: QualifiedName
-  version?: string
-  payload: P
-}): QueryDescriptor<P, undefined>
-
 export function query<P extends StandardSchemaV1, R extends StandardSchemaV1>(def: {
   name: QualifiedName
   version?: string
@@ -107,7 +101,7 @@ export function query<P extends StandardSchemaV1, R extends StandardSchemaV1>(de
   result: R
 }): QueryDescriptor<P, R>
 
-export function query<P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined = undefined>(
+export function query<P extends StandardSchemaV1, R extends StandardSchemaV1>(
   bus: QueryBus,
   descriptor: QueryDescriptor<P, R>,
   payload: InferOutput<P>,

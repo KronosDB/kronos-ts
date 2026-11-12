@@ -3,12 +3,12 @@
  * `tsconfig.json` `files` array, so `bunx tsc --noEmit` judges it.
  *
  * What it pins: `InferResult<typeof D.result>` is the result schema's output.
- * `result` is optional on the descriptor, so `typeof D.result` carries an
- * `undefined`; that must not turn the answer into `unknown`. A descriptor
- * without a result still reads as `unknown`.
+ * `result` is optional on a command, so `typeof D.result` carries an
+ * `undefined`; that must not turn the answer into `unknown`. A command without
+ * a result still reads as `unknown`. A query always has one.
  */
 import { z } from "zod"
-import { command, qn, queryDescriptor, type InferResult } from "../messages.js"
+import { command, qn, queryDescriptor, withNamespace, type InferResult, type QueryDescriptor } from "../messages.js"
 import type { CommandBus } from "../../command-handling/bus.js"
 import type { CommandHandlerContext } from "../../command-handling/context.js"
 import { send } from "../../command-handling/send.js"
@@ -50,3 +50,19 @@ export const edgeOverBuses = (commandBus: CommandBus, queryBus: QueryBus): Pick<
   send: (descriptor, payload, metadata) => send(commandBus, descriptor, payload, metadata),
   query: (descriptor, payload, metadata) => query(queryBus, descriptor, payload, metadata),
 })
+
+// A query always declares what it answers. Every way of declaring one refuses a
+// definition without `result`.
+const probe = withNamespace("resultprobe")
+
+// @ts-expect-error — `queryDescriptor` without a result
+export const bareDescriptor = queryDescriptor({ name: qn("resultprobe", "Bare"), payload: z.object({}) })
+// @ts-expect-error — `query({ … })` without a result
+export const bareQuery = query({ name: qn("resultprobe", "Bare"), payload: z.object({}) })
+// @ts-expect-error — `ns.query` without a result
+export const bareScoped = probe.query("Bare", { payload: z.object({}) })
+// @ts-expect-error — and no descriptor can be written by hand without one
+export const bareLiteral: QueryDescriptor = { kind: "query", name: qn("resultprobe", "Bare"), version: "1.0", payload: z.object({}) }
+
+// A command may still answer nothing.
+export const voidCommand = probe.command("Archive", { payload: z.object({ itemId: z.string() }) })

@@ -47,10 +47,9 @@ export type SuppliedSubscriptionCapability<Q extends QueryBus<any>> = IfSubscrip
 >
 
 /**
- * Emit a subscription-query update from within the current invocation. The filter reads the query's payload; the
- * query may declare a result or not.
+ * Emit a subscription-query update from within the current invocation. The filter reads the query's payload.
  */
-export type EmitUpdateFunction = <P extends StandardSchemaV1, R extends StandardSchemaV1 | undefined>(
+export type EmitUpdateFunction = <P extends StandardSchemaV1, R extends StandardSchemaV1>(
   query: QueryDescriptor<P, R>,
   filter: SubscriptionFilter<InferOutput<P>>,
   update: unknown,

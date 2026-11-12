@@ -65,6 +65,7 @@ describe("validate — the parsed value, or a throw naming the message type", ()
     const GetCourse = queryDescriptor({
       name: qn("university", "GetCourse"),
       payload: z.object({ courseId: z.string() }),
+      result: z.object({ courseId: z.string(), name: z.string() }),
     })
 
     expect(validate(CourseCreated, { courseId: "cs-101" })).toEqual({ courseId: "cs-101" })

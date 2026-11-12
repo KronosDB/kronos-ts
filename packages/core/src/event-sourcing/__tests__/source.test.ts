@@ -65,6 +65,7 @@ const Subscribe = command({
 const CountSubscribers = queryDescriptor({
   name: qn("raw", "CountSubscribers"),
   payload: z.object({ courseId: z.string() }),
+  result: z.number(),
 })
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

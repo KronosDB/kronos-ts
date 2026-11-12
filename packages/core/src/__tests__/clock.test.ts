@@ -65,13 +65,14 @@ describe("the clock seam", () => {
     const GetTicket = queryVerb({
       name: qn("clock", "GetTicket"),
       payload: z.object({ ticketId: z.string() }),
+      result: z.object({ ticketId: z.string() }),
     })
 
     let seen: QueryMessage | undefined
     const bus = localQueryBus(() => unitOfWork(() => FROZEN))
     bus.subscribe("clock.GetTicket", async (message) => {
       seen = message
-      return undefined
+      return { ticketId: (message.payload as { ticketId: string }).ticketId }
     })
 
     await queryVerb(bus, GetTicket, { ticketId: "t-1" })

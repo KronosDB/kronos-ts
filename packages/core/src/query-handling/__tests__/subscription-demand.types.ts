@@ -27,7 +27,7 @@ import type { Intercept } from "../../interception/intercepting-bus.js"
 import type { QueryMessage, Metadata } from "../../messaging/messages.js"
 
 const Enrolled = event({ name: qn("probe", "Enrolled"), payload: z.object({ id: z.string() }) })
-const Watch = queryDescriptorOf({ name: qn("probe", "Watch"), payload: z.object({ id: z.string() }) })
+const Watch = queryDescriptorOf({ name: qn("probe", "Watch"), payload: z.object({ id: z.string() }), result: z.number() })
 const WatchWithResult = queryDescriptorOf({
   name: qn("probe", "WatchWithResult"),
   payload: z.object({ id: z.string() }),

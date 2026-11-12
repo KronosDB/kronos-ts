@@ -15,6 +15,7 @@ const TEST_CTX = {} as never
 const GetCourseView = query({
   name: qn("university", "GetCourseView"),
   payload: z.object({ courseId: z.string() }),
+  result: z.object({ courseId: z.string(), name: z.string() }),
 })
 
 describe("queryHandler() — singular factory (Phase 11-01)", () => {

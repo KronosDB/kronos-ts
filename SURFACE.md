@@ -194,7 +194,8 @@ type CommandMessage · QueryMessage · EventMessage · SequencedEventMessage
 // fact you can read has an instant. WHEN the instant is settled is unchanged —
 // the bus fills it from uow.now(), a transport from system time at the wire,
 // ctx.append at birth.
-command({ name, payload, result? }) · query({ name, payload, result? })
+command({ name, payload, result? }) · query({ name, payload, result })
+// A query always declares what it answers; a command may answer nothing.
 event({ name, payload, tags?, version? })
 is<D extends MessageDescriptor>(message: Message, descriptor: D): message is <the message type for D>
   // ONE guard, all three kinds: kinds equal AND qualified names equal AND — for

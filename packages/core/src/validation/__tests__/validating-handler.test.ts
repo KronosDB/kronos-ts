@@ -57,6 +57,7 @@ const Notify = command({
 const GetBalance = queryDescriptor({
   name: qn("billing", "GetBalance"),
   payload: z.object({ accountId: z.string() }),
+  result: z.number(),
 })
 
 /** A schema that answers a promise — some libraries' refinements do. */

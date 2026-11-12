@@ -341,11 +341,12 @@ export function withInstant<M extends Message>(message: M, instant: () => number
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * The result type a descriptor's `result` schema promises. `unknown` when the
- * descriptor declares none — the honest answer, not `void`.
+ * The result type a descriptor's `result` schema promises. `unknown` when a
+ * command declares none — the honest answer, not `void`. A query always declares
+ * one.
  *
- * `result` is an optional field, so `typeof AddItem.result` is the schema OR
- * `undefined`. The `undefined` is set aside rather than distributed over:
+ * A command's `result` is an optional field, so `typeof AddItem.result` is the
+ * schema OR `undefined`. The `undefined` is set aside rather than distributed over:
  * `InferResult<typeof AddItem.result>` is the schema's output, not the
  * `output | unknown` that collapses to `unknown`.
  */
@@ -446,20 +447,21 @@ export function tagsOf<P extends StandardSchemaV1>(
 }
 
 /**
- * Describes a query message type — its name, payload schema,
- * and optional result schema for typed gateway returns.
+ * Describes a query message type — its name, its payload schema, and the schema of what it answers. A query always
+ * answers something, so its result is required: `query(bus, …)` and `ctx.query` are typed by it, and the answer is
+ * validated against it.
  */
 export type QueryDescriptor<
   P extends StandardSchemaV1 = StandardSchemaV1,
-  R extends StandardSchemaV1 | undefined = undefined,
+  R extends StandardSchemaV1 = StandardSchemaV1,
 > = {
   readonly kind: "query"
   readonly name: QualifiedName
   /** Version of the query. Default: "1.0". */
   readonly version: string
   readonly payload: P
-  /** Optional result schema — enables typed return from `query(bus, …)`. */
-  readonly result?: R
+  /** What the query answers. */
+  readonly result: R
 }
 
 /**
@@ -558,17 +560,11 @@ export function event<P extends StandardSchemaV1>(def: {
 }
 
 /**
- * Creates a query descriptor.
+ * Creates a query descriptor. A query always answers something, so `result` is
+ * required: it types `query(bus, …)` and `ctx.query`. A definition without one
+ * (from JavaScript, where nothing checks the type) throws a `TypeError` naming
+ * the query.
  *
- * Without result schema:
- * ```
- * const GetCourse = query({
- *   name: qn("university", "GetCourseView"),
- *   payload: z.object({ courseId: z.string() }),
- * })
- * ```
- *
- * With result schema (typed return):
  * ```
  * const GetCourse = query({
  *   name: qn("university", "GetCourseView"),
@@ -578,20 +574,18 @@ export function event<P extends StandardSchemaV1>(def: {
  * // query(queryBus, GetCourse, { courseId: "cs-101" }) → Promise<{ courseId: string, name: string }>
  * ```
  */
-export function queryDescriptor<P extends StandardSchemaV1>(def: {
-  name: QualifiedName
-  version?: string
-  payload: P
-}): QueryDescriptor<P, undefined>
-
 export function queryDescriptor<P extends StandardSchemaV1, R extends StandardSchemaV1>(def: {
   name: QualifiedName
   version?: string
   payload: P
   result: R
-}): QueryDescriptor<P, R>
-
-export function queryDescriptor(def: any): QueryDescriptor {
+}): QueryDescriptor<P, R> {
+  if (def.result === undefined) {
+    throw new TypeError(
+      `query "${qualifiedNameToString(def.name)}" declares no result. A query always answers something: ` +
+        "declare the schema of what it answers as `result`.",
+    )
+  }
   return { kind: "query" as const, version: def.version ?? "1.0", ...def }
 }
 
@@ -617,11 +611,12 @@ export function queryDescriptor(def: any): QueryDescriptor {
  *
  * const CourseCreated = ns.event("CourseCreated", {
  *   payload: z.object({ courseId: z.string(), name: z.string() }),
- *   tags: (p) => [tag("courseId", p.courseId)],
+ *   tags: { courseId: (p) => p.courseId },
  * })
  *
  * const GetCourse = ns.query("GetCourse", {
  *   payload: z.object({ courseId: z.string() }),
+ *   result: z.object({ courseId: z.string(), name: z.string() }),
  * })
  * ```
  */
@@ -641,17 +636,12 @@ export function withNamespace(namespace: string) {
     return command({ name: qn(namespace, name), ...def } as never)
   }
 
-  function scopedQuery<P extends StandardSchemaV1>(name: string, def: {
-    payload: P
-    version?: string
-  }): ReturnType<typeof queryDescriptor<P>>
   function scopedQuery<P extends StandardSchemaV1, R extends StandardSchemaV1>(name: string, def: {
     payload: P
     result: R
     version?: string
-  }): ReturnType<typeof queryDescriptor<P, R>>
-  function scopedQuery(name: string, def: { payload: StandardSchemaV1 }) {
-    return queryDescriptor({ name: qn(namespace, name), ...def } as never)
+  }): ReturnType<typeof queryDescriptor<P, R>> {
+    return queryDescriptor({ name: qn(namespace, name), ...def })
   }
 
   return {
