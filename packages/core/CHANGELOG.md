@@ -1,5 +1,11 @@
 # @kronos-ts/core
 
+## 0.10.1
+
+### Patch Changes
+
+- 258fa1d: `ctx.emitUpdate` accepts a query that declares a result. Its type took `QueryDescriptor<P>`, whose result defaults to `undefined`, so emitting for any query with a `result` schema was refused at compile time. The filter still reads the query's payload.
+
 ## 0.10.0
 
 ### Minor Changes
