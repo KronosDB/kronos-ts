@@ -90,6 +90,17 @@ function built(lists: Root, options: { clock?: AdvanceableClock } = {}) {
   return fixture(app(lists, options))
 }
 
+/** An app of one event handler on a processor of its own. */
+function watching(handler: object) {
+  return Promise.resolve(
+    app(<S extends Shared>({ eventStore, commandBus, queryBus, tokenStore, unitOfWork }: S): Lists<S> => ({
+      eventHandlers: [
+        { ...handler, commandBus, queryBus, processor: eventProcessor("watch", eventStore, tokenStore, unitOfWork) },
+      ] as never,
+    })),
+  )
+}
+
 const intro = (capacity: number) => ({ courseId: "cs-101", name: "Intro", capacity })
 const seat = (studentId: string) => ({ courseId: "cs-101", studentId })
 
@@ -185,23 +196,34 @@ describe("state view", () => {
       .then(error('Course "cs-999" not found'))
   })
 
-  it("folds the givens as a REPLAY — `ctx.isReplay()` is true for history, false for what arrives", async () => {
+  it("hands the givens to the processors live, not as a replay — `ctx.isReplay()` is false", async () => {
     const seen: Array<[string, boolean]> = []
     const watched = eventHandler(StudentSubscribed, ({ payload }, ctx) => {
       seen.push([payload.studentId, ctx.isReplay()])
     })
-    await built(<S extends Shared>({ eventStore, commandBus, queryBus, tokenStore, unitOfWork }: S): Lists<S> => ({
-      eventHandlers: [
-        { ...watched, commandBus, queryBus, processor: eventProcessor("watch", eventStore, tokenStore, unitOfWork) },
-      ],
-    }))
-      .given(event(StudentSubscribed, seat("history")))
-      .when(event(StudentSubscribed, seat("now")))
+    const app = await watching(watched)
+    await fixture(app)
+      .given(event(StudentSubscribed, seat("given")))
+      .when(event(StudentSubscribed, seat("arrived")))
       .then()
     expect(seen).toEqual([
-      ["history", true],
-      ["now", false],
+      ["given", false],
+      ["arrived", false],
     ])
+    expect([...app.processors.values()].map((p) => p.replaying)).toEqual([false])
+  })
+
+  it("keeps the app's processors running, and hands every event to them once", async () => {
+    const seen: string[] = []
+    const watched = eventHandler(StudentSubscribed, ({ payload }) => {
+      seen.push(payload.studentId)
+    })
+    const app = await watching(watched)
+    const f = fixture(app)
+    await f.given(event(StudentSubscribed, seat("a"))).when(event(StudentSubscribed, seat("b"))).then()
+    await f.given(event(StudentSubscribed, seat("c"))).when(event(StudentSubscribed, seat("d"))).then()
+    expect(seen).toEqual(["a", "b", "c", "d"])
+    expect([...app.processors.values()].map((p) => p.running)).toEqual([true])
   })
 })
 
@@ -237,26 +259,40 @@ describe("automation", () => {
     expect(outcome.events.map((e) => e.name.name)).toEqual(["StudentSubscribed", "CourseClosed"])
   })
 
-  it("GIVEN events do not fire the automations — what they would dispatch is held", async () => {
+  it("GIVEN events reach the automations live: the last seat in `given` closes the course before the act", async () => {
+    await built(withAutomation)
+      .given(event(CourseCreated, intro(1)), event(StudentSubscribed, seat("stu-001")))
+      .when(command(SubscribeStudent, seat("stu-002")))
+      .then(error("Course is closed"), noEvents())
+  })
+
+  it("what GIVEN events set off is not in the act's outcome — `when` opens the window", async () => {
     await built(withAutomation)
       .given(event(CourseCreated, intro(1)), event(StudentSubscribed, seat("stu-001")))
       .when(command(CreateCourse, { courseId: "cs-202", name: "Other", capacity: 5 }))
       .then(events(event(CourseCreated, { courseId: "cs-202", name: "Other", capacity: 5 })), noCommands())
   })
 
-  it("and the state the givens describe is real, even though nothing fired", async () => {
+  it("an automation that decides from state does not act twice on what `given` already settled", async () => {
     await built(withAutomation)
       .given(event(CourseCreated, intro(1)), event(StudentSubscribed, seat("stu-001")))
-      .when(command(SubscribeStudent, seat("stu-002")))
-      .then(error((e) => e instanceof CourseFull))
+      .when(event(StudentSubscribed, seat("stu-002")))
+      .then(events(event(StudentSubscribed, seat("stu-002"))), noCommands())
   })
 
-  it("GIVEN events arm no deadlines either", async () => {
+  it("a deadline a GIVEN event arms is armed, and fires when time passes after the act", async () => {
     await built(university)
       .given(event(CourseCreated, intro(5)))
       .when(command(SubscribeStudent, seat("stu-001")))
-      .advance(60_000)
-      .then(events(event(StudentSubscribed, seat("stu-001"))), noCommands())
+      .advance(30_000)
+      .then(
+        events(
+          event(StudentSubscribed, seat("stu-001")),
+          event(EnrolmentClosing, { courseId: "cs-101" }),
+          event(CourseClosed, { courseId: "cs-101" }),
+        ),
+        commands(command(CloseCourse, { courseId: "cs-101" })),
+      )
   })
 })
 
@@ -378,6 +414,14 @@ describe("advance", () => {
     ])
   })
 
+  it("before the act, fires what `given` armed, and keeps what that set off out of the outcome", async () => {
+    await built(university)
+      .given(event(CourseCreated, intro(5)))
+      .advance(30_000)
+      .when(command(SubscribeStudent, seat("stu-001")))
+      .then(error("Course is closed"), noEvents(), noCommands())
+  })
+
   it("an advance shorter than the deadline fires nothing", async () => {
     await built(university)
       .when(command(CreateCourse, intro(5)))
@@ -434,7 +478,7 @@ describe("advance", () => {
       )
   })
 
-  it("a processor the fixture holds settles on its own — no waiting needed", async () => {
+  it("a running processor settles before `then` — no waiting needed", async () => {
     const clock = advanceableClock(1_700_000_000_000)
     const outcome = await built(withAutomation, { clock })
       .given(event(CourseCreated, intro(1)))

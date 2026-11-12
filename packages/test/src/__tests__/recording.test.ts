@@ -223,18 +223,6 @@ describe("recordingEventStore with a clock", () => {
     expect(courses(store.appended)).toEqual(["cs-101"])
   })
 
-  it("while held, arms nothing and cancels nothing", async () => {
-    const { clock, store } = clocked()
-
-    store.hold(true)
-    await unitOfWork(clock).execute((uow) =>
-      store.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN + 1_000), uow),
-    )
-    store.hold(false)
-
-    expect(store.schedules).toHaveLength(0)
-  })
-
   it("refuses to be called outside a handler", async () => {
     const { store } = clocked()
     await expect(store.schedule(message(CourseClosed, { courseId: "cs-101" }), new Date(FROZEN))).rejects.toThrow(

@@ -1005,7 +1005,7 @@ any(schema?: StandardSchemaV1): Any                      // the positional paylo
 // ── the fixture: the running app, and nothing else
 fixture<A extends RecordedApp>(app: A | Promise<A>): Fixture<OutcomeOf<A>>   // the app, and nothing else; many scenarios
 type RecordedApp = App<EventStore & EventRecording, CommandBus & CommandRecording, QueryBus>
-  .given(...events)          → ScenarioStart             // history; repeatable, accumulates in order
+  .given(...events)          → ScenarioStart             // what the act starts from, handled live; repeatable, in order
   .advance(duration)         → same shape                // at any joint, repeatable — ONLY when the log has a clock
   .when(command | query | event) → ScenarioActed         // the act
   .then(...assertions)       → Judged                    // RUNS (after the fixture's earlier scenarios); resolves with the Outcome
@@ -1043,9 +1043,10 @@ await fixture(app).given(event(ItemAdded, a)).when(command(AddItem, b)).then(eve
 
 The fixture BUILDS NOTHING and is handed NOTHING but the app — no options. It
 finds the log and the buses on what the app reports (`app.eventStores`,
-`app.commandBuses`, `app.queryBuses`), takes the app's processors back from
-`kronos` (`app.processors`), folds history into them, performs the act, settles
-them and reads the recorders. It NEVER STOPS THE APP: the test does, with
+`app.commandBuses`, `app.queryBuses`), appends history, performs the act,
+settles the app's processors (`app.processors`) after each, and reads the
+recorders. The processors keep running as `kronos` started them: the fixture
+never stops, resets or replays them. It NEVER STOPS THE APP: the test does, with
 whatever else it opened (a database to drop), in its runner's hooks.
 
 ONE FIXTURE, MANY SCENARIOS. Build the app once per spec file or suite — the
@@ -1087,18 +1088,22 @@ const rejected = (code: string) => ({ result }: Outcome) =>
 ```
 
 Semantics, pinned:
-- `given` events are HISTORY. They are appended, then handed to every processor as
-  a REPLAY (two token resets: to the head, then back to where the history began),
-  so a projection folds them with `ctx.isReplay()` true — the same signal a
-  production replay gives. While they are folded the recorders HOLD: a command an
-  event handler dispatches is not sent (`send` resolves to `undefined`), a deadline
-  it arms is not armed. The automations that would have fired already fired, long
-  ago. None of it is in the outcome. A fact is stamped from the log's clock when
-  it has one, and from now when it does not.
+- `given` events are what the act STARTS FROM, and the app handles them as it
+  handles any event: they are appended through the recorded log, and the running
+  processors handle them LIVE (`ctx.isReplay()` is false — a given event is not a
+  replay). What an event handler does with them HAPPENS: a projection folds them,
+  an automation dispatches its command, a deadline is armed. An automation that
+  decides from the state it loads, not from the single event, is right either way.
+  A fact is stamped from the log's clock when it has one, and from now when it
+  does not.
+- `when` opens a FRESH OBSERVATION WINDOW, then acts. What `given`, and an
+  `advance` before the act, set off is not in the outcome; a deadline they armed
+  is, once it fires or is cancelled.
 - `when(command | query)` dispatches through the app's bus. `when(event)` means the
   event ARRIVES: appended, and the processors DO react.
-- After the act and after each `advance`: QUIESCE — drive every processor to the head
-  of the app's log, settle, repeat until nothing moves.
+- After the history, the act and each `advance`: QUIESCE — wait until every
+  processor is at the head of the app's log and caught up, and the head stays put
+  (what a handler dispatched has finished), rather than polling for an outcome.
 - `advance(d)` moves the log's clock, appends through the log every deadline it
   reached, then quiesces.
 - `then` judges every claim, once, and reports every failure. A throw no claim
@@ -1107,14 +1112,14 @@ Semantics, pinned:
   builder thenable, so this is defined rather than a hang.
 
 ```ts
-// recorders: thing-first decorators, same shape + a readable log, reset() and hold()
-recordingEventStore(store): E & { appended; reset(); hold(on) }      // hold: schedule/cancelSchedule inert
+// recorders: thing-first decorators, same shape + a readable log and reset()
+recordingEventStore(store): E & { appended; reset() }
 recordingEventStore(store, { clock }):
-  E & { appended; reset(); hold(on) } & ScheduleStoreCapability & { clock; schedules; advance(d) }
+  E & { appended; reset() } & ScheduleStoreCapability & { clock; schedules; advance(d) }
   // WITH A CLOCK it also holds the deadlines in memory — no timer — and `advance`
   // fires them through the real store. The LOG stays real (in memory, Postgres,
   // KronosDB); only the deadline book is held, in place of the store's own tier.
-recordingCommandBus(bus):   B & { dispatched; reset(); hold(on) }    // hold: dispatch neither sent nor recorded
+recordingCommandBus(bus):   B & { dispatched; reset() }
 recordingQueryBus(bus):     B & { queried;    reset() }
 ```
 ONE WRAPPER FOR TIME, not a scheduling tier of its own: there is no controllable
