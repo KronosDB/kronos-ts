@@ -93,6 +93,41 @@ describe("postgresTokenStore", () => {
     await expect(shortLived.claimToken("proc", 0, "owner-b")).resolves.toBeDefined()
   })
 
+  /** Every owner claims the segment at once; what each got. */
+  async function claimTogether(owners: number) {
+    const outcomes = await Promise.allSettled(
+      Array.from({ length: owners }, (_, i) => store.claimToken("race", 0, `owner-${i}`)),
+    )
+    return {
+      won: outcomes.filter((o) => o.status === "fulfilled").length,
+      refused: outcomes.filter((o) => o.status === "rejected" && o.reason instanceof UnableToClaimTokenError).length,
+      failed: outcomes.flatMap((o) =>
+        o.status === "rejected" && !(o.reason instanceof UnableToClaimTokenError) ? [o.reason] : [],
+      ),
+    }
+  }
+
+  it("claimToken gives a free segment to exactly one of several owners claiming at once", async () => {
+    for (let round = 0; round < 20; round++) {
+      await pool.query(`TRUNCATE TABLE ${pool.tables.tokens}`)
+      await store.initializeSegments("race", 1)
+      expect(await claimTogether(5)).toEqual({ won: 1, refused: 4, failed: [] })
+    }
+  })
+
+  it("claimToken gives a segment with no row yet to exactly one of several owners, and refuses the rest", async () => {
+    for (let round = 0; round < 20; round++) {
+      await pool.query(`TRUNCATE TABLE ${pool.tables.tokens}`)
+      expect(await claimTogether(5)).toEqual({ won: 1, refused: 4, failed: [] })
+    }
+  })
+
+  it("claimToken by the owner that holds the claim renews it and returns the token", async () => {
+    await store.store("proc", 0, globalSequenceToken(3n))
+    await store.claimToken("proc", 0, "owner-a")
+    expect((await store.claimToken("proc", 0, "owner-a"))!.position()).toBe(3n)
+  })
+
   it("releaseClaim clears ownership so another instance can take the segment", async () => {
     await store.store("proc", 0, globalSequenceToken(0n))
     await store.claimToken("proc", 0, "owner-a")

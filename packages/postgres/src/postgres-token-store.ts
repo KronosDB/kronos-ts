@@ -153,33 +153,23 @@ export function postgresTokenStore(
     },
 
     async claimToken(processorName, segment, ownerId, uow) {
-      const handle = await sql(uow)
-      const row = await rowFor(handle, processorName, segment)
-
-      if (row === undefined) {
-        await handle.query(
-          `INSERT INTO ${table} (processor_name, segment, mask, token_type, token, timestamp, owner)
-           VALUES ($1, $2, 0, NULL, NULL, $3, $4)`,
-          [processorName, segment, nowIso(), ownerId],
-        )
-        return undefined
-      }
-
-      const expired =
-        !row.owner ||
-        !row.timestamp ||
-        Date.now() - new Date(row.timestamp).getTime() > claimTimeoutMs
-
-      if (row.owner === ownerId || expired) {
-        await handle.query(
-          `UPDATE ${table} SET owner = $3, timestamp = $4
-            WHERE processor_name = $1 AND segment = $2`,
-          [processorName, segment, ownerId, nowIso()],
-        )
-        return readToken(row)
-      }
-
-      throw new UnableToClaimTokenError(processorName, segment)
+      // ONE STATEMENT: the row is created claimed, or taken when it is free,
+      // stale or already this owner's, or left alone. Postgres decides it under
+      // the row lock, so of several owners claiming at once exactly one gets a
+      // row back. A read followed by a write let every one of them through.
+      // Free and stale mean what `fetchAvailableSegments` says they mean.
+      const now = Date.now()
+      const rows = await (await sql(uow)).query<TokenRow>(
+        `INSERT INTO ${table} AS t (processor_name, segment, mask, token_type, token, timestamp, owner)
+         VALUES ($1, $2, 0, NULL, NULL, $3, $4)
+         ON CONFLICT (processor_name, segment) DO UPDATE
+           SET owner = EXCLUDED.owner, timestamp = EXCLUDED.timestamp
+           WHERE t.owner IS NULL OR t.owner = EXCLUDED.owner OR t.timestamp IS NULL OR t.timestamp < $5
+         RETURNING t.token_type, t.token, t.timestamp, t.owner`,
+        [processorName, segment, new Date(now).toISOString(), ownerId, new Date(now - claimTimeoutMs).toISOString()],
+      )
+      if (rows.length === 0) throw new UnableToClaimTokenError(processorName, segment)
+      return readToken(rows[0])
     },
 
     async extendClaim(processorName, segment, ownerId, uow) {
