@@ -28,6 +28,11 @@ import type { QueryMessage, Metadata } from "../../messaging/messages.js"
 
 const Enrolled = event({ name: qn("probe", "Enrolled"), payload: z.object({ id: z.string() }) })
 const Watch = queryDescriptorOf({ name: qn("probe", "Watch"), payload: z.object({ id: z.string() }) })
+const WatchWithResult = queryDescriptorOf({
+  name: qn("probe", "WatchWithResult"),
+  payload: z.object({ id: z.string() }),
+  result: z.object({ count: z.number() }),
+})
 
 const eventStore = inMemoryEventStore()
 const commandBus = localCommandBus(unitOfWork)
@@ -142,3 +147,17 @@ export const openedThroughIntercept = subscriptionQuery(
 // A capable bus fills a plain slot; the demand runs one way only.
 export const oneWay: QueryBus = capableBus
 export const metadataStillTyped: Metadata | undefined = undefined
+
+
+// ---------------------------------------------------------------------------
+// (e) A QUERY WITH A RESULT EMITS TOO — the filter reads its payload.
+// ---------------------------------------------------------------------------
+
+export const emitsForAQueryWithAResult = eventHandler(
+  Enrolled,
+  (m, ctx: EventHandlerContext & SubscriptionCapability) => {
+    ctx.emitUpdate(WatchWithResult, (q) => q.id === m.payload.id, { count: 1 })
+    // @ts-expect-error — the filter reads the query's payload, which has no `count`
+    ctx.emitUpdate(WatchWithResult, (q) => q.count === 1, { count: 1 })
+  },
+)
