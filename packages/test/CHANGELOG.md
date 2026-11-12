@@ -1,5 +1,16 @@
 # @kronos-ts/test
 
+## 0.9.0
+
+### Minor Changes
+
+- d0e193f: **Breaking:** `query(descriptor, payload)` and `QueryValue<P, R>` take a query that declares its result, as `@kronos-ts/core` now requires of every query. `R` no longer accepts `undefined`.
+
+### Patch Changes
+
+- Updated dependencies [d0e193f]
+  - @kronos-ts/core@0.11.0
+
 ## 0.8.1
 
 ### Patch Changes
