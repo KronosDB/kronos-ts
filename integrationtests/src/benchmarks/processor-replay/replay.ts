@@ -115,11 +115,17 @@ const { handled: expectedHandled, lastToken } = expected(limit, all)
 // polling the processor: a timer on the loop changes how fast the loop turns.
 let lastHandled!: () => void
 const reached = new Promise<void>((resolve) => (lastHandled = resolve))
+// The wrapper is synchronous when the projection's handler is: an `async` one
+// would add a promise per event and measure that instead.
 const handlers = projection.handlers.map((definition) => ({
   ...definition,
-  handler: async (message: { sequence: bigint }, ctx: unknown) => {
-    await definition.handler(message as any, ctx as any)
-    if (message.sequence === lastToken - 1n) lastHandled()
+  handler: (message: { sequence: bigint }, ctx: unknown) => {
+    const seen = () => {
+      if (message.sequence === lastToken - 1n) lastHandled()
+    }
+    const result: unknown = definition.handler(message as any, ctx as any)
+    if (result instanceof Promise) return result.then(seen)
+    seen()
   },
 }))
 

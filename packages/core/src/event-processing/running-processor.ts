@@ -40,6 +40,11 @@ const MAX_RETRY_DELAY_MS = 60_000
 /** Events per batch while the processor is behind, unless `batched` says otherwise. */
 const DEFAULT_REPLAY_BATCH_SIZE = 1000
 
+const isPromiseLike = (value: unknown): value is PromiseLike<unknown> =>
+  value !== null &&
+  (typeof value === "object" || typeof value === "function") &&
+  typeof (value as { then?: unknown }).then === "function"
+
 /**
  * One event handler as the processor sees it: the definition, plus the buses
  * ITS context reaches. The buses ride on the entry rather than on the
@@ -478,7 +483,8 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
           for (let i = 0; i < batch.length; i++) {
             if (!fresh[i]) continue
             uow.replaying = replaying[i]!
-            await deliverEvent(batch[i]!, uow, replaying[i]!)
+            const pending = deliverEvent(batch[i]!, uow, replaying[i]!)
+            if (pending !== undefined) await pending
           }
         } else {
           uow.replaying = replaying[0] ?? false
@@ -628,7 +634,8 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       [...lanes.values()].map(async (lane) => {
         for (const i of lane) {
           try {
-            await deliverEvent(batch[i]!, uow, replaying[i]!)
+            const pending = deliverEvent(batch[i]!, uow, replaying[i]!)
+            if (pending !== undefined) await pending
           } catch (error) {
             failures.push({ at: i, error })
             return
@@ -639,14 +646,21 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     if (failures.length > 0) throw failures.reduce((first, f) => (f.at < first.at ? f : first)).error
   }
 
-  async function deliverEvent(sequencedEvent: SequencedEvent, uow: U, replaying: boolean) {
+  /**
+   * One event to each of its handlers, in order. A promise comes back only when
+   * a handler returned one, and the handlers after it wait for it; when every
+   * handler returned synchronously (most projections do), the event costs no
+   * microtask turn. A synchronous throw is thrown from here, inside the batch's
+   * task, which rejects with it just as it did when every handler was awaited.
+   */
+  function deliverEvent(sequencedEvent: SequencedEvent, uow: U, replaying: boolean): Promise<void> | undefined {
     const event = sequencedEvent.event
     const eventName = qualifiedNameToString(event.name)
     const entries = handlerMap.get(eventName)
-    if (!entries || entries.length === 0) return
+    if (!entries || entries.length === 0) return undefined
 
     if (deadLetterDelivery) {
-      await deadLetterDelivery.deliver(
+      return deadLetterDelivery.deliver(
         { ...sequencedEvent, event },
         entries.map((entry) => ({
           definition: entry.definition,
@@ -654,15 +668,33 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
         })),
         uow,
       )
-      return
     }
 
-    for (const entry of entries) {
-      await entry.definition.handler(
-        { ...event, sequence: sequencedEvent.sequence },
-        contextFor(uow, entry, replaying),
-      )
+    for (let i = 0; i < entries.length; i++) {
+      const result = invoke(entries[i]!, sequencedEvent, uow, replaying)
+      if (isPromiseLike(result)) return deliverRest(result, entries, i + 1, sequencedEvent, uow, replaying)
     }
+    return undefined
+  }
+
+  function invoke(entry: ProcessorHandlerEntry<U, E>, sequencedEvent: SequencedEvent, uow: U, replaying: boolean): unknown {
+    return entry.definition.handler(
+      { ...sequencedEvent.event, sequence: sequencedEvent.sequence },
+      contextFor(uow, entry, replaying),
+    )
+  }
+
+  /** The handlers from `from` on, after `pending` settles, each awaited in turn. */
+  async function deliverRest(
+    pending: PromiseLike<unknown>,
+    entries: ReadonlyArray<ProcessorHandlerEntry<U, E>>,
+    from: number,
+    sequencedEvent: SequencedEvent,
+    uow: U,
+    replaying: boolean,
+  ): Promise<void> {
+    await pending
+    for (let i = from; i < entries.length; i++) await invoke(entries[i]!, sequencedEvent, uow, replaying)
   }
 
   // Replay a parked dead letter through the handlers, with a context built the
