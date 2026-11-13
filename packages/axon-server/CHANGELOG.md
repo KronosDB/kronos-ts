@@ -1,5 +1,12 @@
 # @kronos-ts/axon-server
 
+## 0.10.3
+
+### Patch Changes
+
+- Updated dependencies [f8a07cb]
+  - @kronos-ts/core@0.11.1
+
 ## 0.10.2
 
 ### Patch Changes

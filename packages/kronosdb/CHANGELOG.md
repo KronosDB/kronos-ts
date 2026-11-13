@@ -1,5 +1,13 @@
 # @kronos-ts/kronosdb
 
+## 0.13.3
+
+### Patch Changes
+
+- c974f3b: Protocol strings and tag text are decoded with `TextDecoder` at every length. The vendored codec is regenerated from KronosDB; the schema hash is unchanged.
+- Updated dependencies [f8a07cb]
+  - @kronos-ts/core@0.11.1
+
 ## 0.13.2
 
 ### Patch Changes
