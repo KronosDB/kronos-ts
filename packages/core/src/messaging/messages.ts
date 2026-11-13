@@ -40,11 +40,20 @@ export function qn(namespace: string, name: string): QualifiedName {
   return { namespace, name }
 }
 
+// One string per name object, built on first use. A QualifiedName is
+// immutable: its members are `readonly`.
+const qualifiedNameStrings = new WeakMap<QualifiedName, string>()
+
 /**
  * Serializes a {@link QualifiedName} to its wire format: `"namespace.name"`.
  */
 export function qualifiedNameToString(qn: QualifiedName): string {
-  return `${qn.namespace}.${qn.name}`
+  let text = qualifiedNameStrings.get(qn)
+  if (text === undefined) {
+    text = `${qn.namespace}.${qn.name}`
+    qualifiedNameStrings.set(qn, text)
+  }
+  return text
 }
 
 /**
