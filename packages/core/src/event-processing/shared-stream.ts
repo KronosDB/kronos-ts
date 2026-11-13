@@ -1,7 +1,7 @@
 import type { EventStore } from "../event-sourcing/event-store.js"
 import type { EventQuery } from "../event-sourcing/dcb-query.js"
 import type { MessageStream, SequencedEvent, StreamingCondition } from "./source.js"
-import { globalSequenceToken, type TrackingToken } from "./tracking-token.js"
+import { tokenPast, type TrackingToken } from "./tracking-token.js"
 
 /**
  * ONE READ OF THE LOG, HANDED TO EVERY SEGMENT A NODE HOLDS. Each segment opens
@@ -32,10 +32,15 @@ type View = {
    * a lower position than the one before it, and that event is new.
    */
   skipBelow: bigint
-  /** The token that resumes the log at `next` — what a reopen starts from. */
-  resume: TrackingToken | undefined
-  /** The token just past the last event this view looked at. */
-  looked: TrackingToken | undefined
+  /** The token the view was opened with: what a reopen starts from until it has looked at an event. */
+  readonly opened: TrackingToken | undefined
+  /**
+   * The last event this view looked at. Its token is worked out when somebody
+   * asks for it (a reopen, `progressToken`), not for every event read.
+   */
+  last: SequencedEvent | undefined
+  /** `last`'s token, once worked out. */
+  lastToken: TrackingToken | undefined
   readonly accepts: (event: SequencedEvent) => boolean
   readonly buffer: SequencedEvent[]
   head: number
@@ -49,6 +54,8 @@ export function sharedStream(store: EventStore, options: { query?: EventQuery; r
   let at = 0n
 
   const ready = (view: View) => view.buffer.length - view.head
+  /** The token just past the last event this view looked at. */
+  const looked = (view: View) => (view.last === undefined ? undefined : (view.lastToken ??= tokenPast(view.last)))
 
   function reopen() {
     inner?.close()
@@ -58,9 +65,11 @@ export function sharedStream(store: EventStore, options: { query?: EventQuery; r
     if (from === undefined) return
     at = from.next
     for (const view of views) view.skipBelow = view.next > from.next ? view.next : 0n
+    // The token that resumes the log at `from.next`.
+    const resume = looked(from) ?? from.opened
     inner = store.open({
       position: from.next,
-      ...(from.resume !== undefined ? { token: from.resume } : {}),
+      ...(resume !== undefined ? { token: resume } : {}),
       ...(options.query !== undefined ? { query: options.query } : {}),
       readAhead: options.readAhead,
     })
@@ -87,13 +96,12 @@ export function sharedStream(store: EventStore, options: { query?: EventQuery; r
     const moved = new Set<View>()
     while (!full() && inner.hasNextAvailable()) {
       const event = inner.next()!
-      const past = event.token ?? globalSequenceToken(event.sequence + 1n)
       at = event.sequence + 1n
       for (const view of views) {
         if (event.sequence < view.skipBelow) continue
         view.next = at
-        view.resume = past
-        view.looked = past
+        view.last = event
+        view.lastToken = undefined
         moved.add(view)
         if (view.accepts(event)) view.buffer.push(event)
       }
@@ -106,8 +114,9 @@ export function sharedStream(store: EventStore, options: { query?: EventQuery; r
       const view: View = {
         next: condition.position,
         skipBelow: 0n,
-        resume: condition.token,
-        looked: undefined,
+        opened: condition.token,
+        last: undefined,
+        lastToken: undefined,
         accepts,
         buffer: [],
         head: 0,
@@ -156,8 +165,9 @@ export function sharedStream(store: EventStore, options: { query?: EventQuery; r
           // Caught up with the log underneath, a store that filters may have
           // looked further than the last event it handed out.
           const beyond = view.next >= at && inner !== null && !inner.hasNextAvailable() ? inner.progressToken?.() : undefined
-          if (beyond !== undefined && (view.looked === undefined || beyond.position() > view.looked.position())) return beyond
-          return view.looked
+          const seen = looked(view)
+          if (beyond !== undefined && (seen === undefined || beyond.position() > seen.position())) return beyond
+          return seen
         },
       }
     },

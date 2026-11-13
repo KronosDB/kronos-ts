@@ -23,6 +23,7 @@ import {
   handledByMergedHalf,
   mergedToken,
   reachedBy,
+  tokenPast,
 } from "./tracking-token.js"
 import { isUnableToClaimToken } from "./token-store.js"
 import { type Segment, inSegment, mergeableSegmentId, segmentsOf, sequenceHash, splitSegment } from "./segment.js"
@@ -465,14 +466,23 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       // Whether each event is new to this segment. Only false just after a
       // merge, for an event the half that was ahead had already handled.
       const fresh: boolean[] = []
-      for (const sequencedEvent of batch) {
-        // Prefer the engine's own cursor token (carries the commit-order key for
-        // gap-free resume); fall back to a position+1 token for dense-sequence
-        // engines that don't supply one.
-        const past = sequencedEvent.token ?? globalSequenceToken(sequencedEvent.sequence + 1n)
+      let i = 0
+      // A replay or a merge needs each event's token.
+      for (; i < batch.length && (isReplayToken(batchEndToken) || isMergedToken(batchEndToken)); i++) {
+        const sequencedEvent = batch[i]!
+        const past = tokenPast(sequencedEvent)
         replaying.push(isReplayToken(batchEndToken) && batchEndToken.tokenAtReset.covers(past))
         fresh.push(!(isMergedToken(batchEndToken) && handledByMergedHalf(batchEndToken, hashOf(sequencedEvent.event), past)))
         batchEndToken = advanceTokenTo(batchEndToken, past)
+      }
+      // A plain token is replaced by each event's token in turn, so the rest of
+      // the batch needs only the last one.
+      if (i < batch.length) {
+        for (; i < batch.length; i++) {
+          replaying.push(false)
+          fresh.push(true)
+        }
+        batchEndToken = tokenPast(batch[batch.length - 1]!)
       }
 
       // The MINTED handle is the batch's task — see the note in `localCommandBus`
