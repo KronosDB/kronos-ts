@@ -185,15 +185,6 @@ function readTagText(r: Reader): string {
   if (r.pos + len > r.end) throw new ProtocolError(`truncated: need ${len} bytes at offset ${r.pos}`)
   const start = r.pos
   r.pos += len
-  if (len <= 64) {
-    let s = ""
-    for (let i = start; i < r.pos; i++) {
-      const c = r.buf[i]!
-      if (c >= 0x80) return utf8.decode(r.buf.subarray(start, r.pos))
-      s += String.fromCharCode(c)
-    }
-    return s
-  }
   return utf8.decode(r.buf.subarray(start, r.pos))
 }
 
