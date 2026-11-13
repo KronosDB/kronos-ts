@@ -62,6 +62,15 @@ export type GlobalSequenceToken = TrackingToken & {
 }
 
 /**
+ * The token that resumes a stream just past `event`: the engine's own cursor
+ * token when it supplied one (it carries the commit-order key a gap-free resume
+ * needs), and otherwise a position+1 token, for dense-sequence engines.
+ */
+export function tokenPast(event: { readonly sequence: bigint; readonly token?: TrackingToken }): TrackingToken {
+  return event.token ?? globalSequenceToken(event.sequence + 1n)
+}
+
+/**
  * Creates a token for a global-sequence event store (monotonically increasing positions).
  * This is the default token type for in-memory stores and Axon Server.
  */

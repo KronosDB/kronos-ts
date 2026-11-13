@@ -1097,6 +1097,23 @@ events wake it sooner either way. Both functions take anything with the field
 they set, so the Postgres scheduling store's worker is tuned the same way:
 `polling(batched(postgresSchedulingEventStore(next, pg, uow), 200), 250)`.
 
+### Write a handler synchronously when you can
+
+The processor awaits a handler only when it returns a promise. A handler that
+returns nothing costs no microtask turn, so a batch of synchronous handlers runs
+straight through. An `async` handler always returns a promise, even when it never
+awaits, so mark a handler `async` only when it awaits something. In a replay of
+an in-memory projection, `async` on a handler that never awaited cost about 10%
+of throughput. Order and failure are the same either way: the next handler waits
+for the promise, and a synchronous throw fails the batch just as a rejection does.
+
+```ts
+// Synchronous: the processor does not wait on it.
+eventHandler(Deposited, ({ payload }) => {
+  balances.set(payload.account, (balances.get(payload.account) ?? 0) + payload.amount)
+})
+```
+
 ### Sequences are a function
 
 ```ts

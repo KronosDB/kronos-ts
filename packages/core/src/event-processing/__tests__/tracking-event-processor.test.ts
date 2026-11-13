@@ -215,6 +215,97 @@ describe("event processor", () => {
     })
   })
 
+  // Delivery awaits a handler only when it returns a promise. These pin what
+  // must not change because of that: the order, and a synchronous throw
+  // failing the whole batch.
+  describe("synchronous and asynchronous handlers", () => {
+    const handlerOf = (handle: (sequence: bigint) => Promise<void> | void): EventHandler<any> => ({
+      kind: "event-handler",
+      descriptor: { kind: "event", name: TEST_EVENT_NAME, version: "1.0", payload: {} as any },
+      handler: ({ sequence }: any) => handle(sequence),
+    })
+    const threeEvents = () => [0n, 1n, 2n].map((sequence) => makeEvent(TEST_EVENT_NAME, {}, sequence))
+
+    let errorLog: ReturnType<typeof spyOn>
+    beforeEach(() => {
+      errorLog = spyOn(console, "error").mockImplementation(() => {})
+    })
+    afterEach(() => {
+      errorLog.mockRestore()
+    })
+
+    it("keeps the order of events and of handlers, whichever of them return a promise", async () => {
+      // given -- the first handler is async on odd events; the second is always sync
+      const log: string[] = []
+      const first = handlerOf(async (sequence) => {
+        if (sequence % 2n === 1n) await new Promise((r) => setTimeout(r, 5))
+        log.push(`first ${sequence}`)
+      })
+      const second = handlerOf((sequence) => {
+        log.push(`second ${sequence}`)
+      })
+      const processor = runOver({ eventSource: createInMemoryEventSource(threeEvents()), eventHandlers: [first, second], pollingIntervalMs: 10 })
+
+      // when
+      await processor.start()
+      await waitForPosition(processor, 3n)
+      processor.stop()
+
+      // then -- the second handler waited for the first's promise on event 1
+      expect(log).toEqual(["first 0", "second 0", "first 1", "second 1", "first 2", "second 2"])
+    })
+
+    /** Start, and return the status as of the first failed batch. The retry is seconds away. */
+    async function firstFailure(processor: ReturnType<typeof runOver>) {
+      await processor.start()
+      const deadline = Date.now() + 2000
+      while (processor.status().error === undefined && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
+      const status = processor.status()
+      processor.stop()
+      return status
+    }
+
+    it("fails the batch on a synchronous throw: the events after it wait, and the token stays put", async () => {
+      // given -- one batch of three events; the handler throws synchronously on event 1
+      const delivered: bigint[] = []
+      const handler = handlerOf((sequence) => {
+        delivered.push(sequence)
+        if (sequence === 1n) throw new Error("sync boom")
+      })
+      const processor = runOver({ eventSource: createInMemoryEventSource(threeEvents()), eventHandlers: [handler], pollingIntervalMs: 1000 })
+
+      // when
+      const status = await firstFailure(processor)
+
+      // then -- event 2 was never handed over, and event 0 was not committed alone
+      expect(delivered).toEqual([0n, 1n])
+      expect(status.position).toBe(0n)
+      expect(status.error?.message).toBe("sync boom")
+    })
+
+    it("fails the batch on a synchronous throw from a handler after one that returned a promise", async () => {
+      // given -- an async handler first, then one that throws synchronously on event 1
+      const delivered: string[] = []
+      const first = handlerOf(async (sequence) => {
+        await Promise.resolve()
+        delivered.push(`first ${sequence}`)
+      })
+      const second = handlerOf((sequence) => {
+        delivered.push(`second ${sequence}`)
+        if (sequence === 1n) throw new Error("sync boom after async")
+      })
+      const processor = runOver({ eventSource: createInMemoryEventSource(threeEvents()), eventHandlers: [first, second], pollingIntervalMs: 1000 })
+
+      // when
+      const status = await firstFailure(processor)
+
+      // then
+      expect(delivered).toEqual(["first 0", "second 0", "first 1", "second 1"])
+      expect(status.position).toBe(0n)
+      expect(status.error?.message).toBe("sync boom after async")
+    })
+  })
+
   describe("position tracking", () => {
     it("advances position after each batch", async () => {
       // given
