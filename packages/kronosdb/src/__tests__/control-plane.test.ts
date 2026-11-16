@@ -1,11 +1,26 @@
 import { describe, expect, it } from "bun:test"
+import {
+  concurrent,
+  event,
+  eventHandler,
+  eventProcessor,
+  inMemoryEventStore,
+  inMemoryTokenStore,
+  kronos,
+  localCommandBus,
+  localQueryBus,
+  qn,
+  segmented,
+  unitOfWork,
+} from "@kronos-ts/core"
+import { z } from "zod"
 import { kronosDbControlPlane, type ManagedEventProcessor } from "../control-plane.js"
 import type {
   InstructionHandler,
   PlatformConnection,
   PlatformInstruction,
 } from "../platform-service.js"
-import type { ProcessorStatusSupplier } from "../event-processor-info.js"
+import { toEventProcessorInfo, type ProcessorStatusSupplier } from "../event-processor-info.js"
 
 /**
  * A PlatformConnection double that records the ORDER of lifecycle calls, so the
@@ -107,10 +122,57 @@ describe("kronosDbControlPlane", () => {
 
       await platform.push({ kind: "pause-processor", processorName: "proc-a" })
       await platform.push({ kind: "start-processor", processorName: "proc-a" })
-      await platform.push({ kind: "split-segment", processorName: "proc-a", segmentId: 2 })
 
-      // split/merge/release are ignored: one lane per processor
       expect(proc.events).toEqual(["stop", "start"])
+    })
+
+    it("routes split, merge and release to the named processor's segment", async () => {
+      const platform = fakePlatform()
+      const calls: string[] = []
+      const proc: ManagedEventProcessor = {
+        name: "proc-a",
+        splitSegment: async (id) => void calls.push(`split ${id}`),
+        mergeSegment: async (id) => void calls.push(`merge ${id}`),
+        releaseSegment: async (id) => void calls.push(`release ${id}`),
+      }
+      kronosDbControlPlane({ platform }, [proc])
+
+      await platform.push({ kind: "split-segment", processorName: "proc-a", segmentId: 2 })
+      await platform.push({ kind: "merge-segment", processorName: "proc-a", segmentId: 6 })
+      await platform.push({ kind: "release-segment", processorName: "proc-a", segmentId: 1 })
+
+      expect(calls).toEqual(["split 2", "merge 6", "release 1"])
+    })
+
+    it("fails the instruction when the processor refuses it, so the platform stream reports why", async () => {
+      const platform = fakePlatform()
+      const proc: ManagedEventProcessor = {
+        name: "proc-a",
+        splitSegment: async () => {
+          throw new Error("wrap it in segmented(p, count, sequenceOf)")
+        },
+      }
+      kronosDbControlPlane({ platform }, [proc])
+
+      await expect(platform.push({ kind: "split-segment", processorName: "proc-a", segmentId: 0 })).rejects.toThrow(
+        "segmented(p, count, sequenceOf)",
+      )
+    })
+
+    it("waits for a pause to finish stopping the processor", async () => {
+      const platform = fakePlatform()
+      let stopped = false
+      const proc: ManagedEventProcessor = {
+        name: "proc-a",
+        stop: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          stopped = true
+        },
+      }
+      kronosDbControlPlane({ platform }, [proc])
+
+      await platform.push({ kind: "pause-processor", processorName: "proc-a" })
+      expect(stopped).toBe(true)
     })
 
     it("ignores an instruction for an unknown processor without throwing", async () => {
@@ -203,6 +265,52 @@ describe("kronosDbControlPlane", () => {
       const [status] = platform.status()
       expect(status).toEqual({ name: "proc-a", running: true, caughtUp: false, replaying: true, position: 4n, error: "boom" })
     })
+
+    it("reports the segments this node holds, each as one part of the whole", () => {
+      const platform = fakePlatform()
+      const proc: ManagedEventProcessor = {
+        name: "proc-a",
+        running: true,
+        segments: () => [
+          { segment: 0, mask: 1, position: 10n, caughtUp: true, replaying: false },
+          { segment: 3, mask: 3, position: 8n, caughtUp: false, replaying: true, error: new Error("boom") },
+        ],
+      }
+      kronosDbControlPlane({ platform }, [proc])
+
+      const [status] = platform.status()
+      expect(status!.segments).toEqual([
+        { segment: 0, onePartOf: 2, position: 10n, caughtUp: true, replaying: false, error: undefined },
+        { segment: 3, onePartOf: 4, position: 8n, caughtUp: false, replaying: true, error: "boom" },
+      ])
+    })
+  })
+
+  describe("wire mapping", () => {
+    it("puts each held segment on the wire, one active thread per segment", () => {
+      const info = toEventProcessorInfo({
+        name: "proc-a",
+        running: true,
+        caughtUp: false,
+        replaying: false,
+        position: 8n,
+        segments: [
+          { segment: 0, onePartOf: 2, position: 10n, caughtUp: true, replaying: false },
+          { segment: 3, onePartOf: 4, position: 8n, caughtUp: false, replaying: true, error: "boom" },
+        ],
+      })
+      expect(info.activeThreads).toBe(2)
+      expect(info.segments).toEqual([
+        { segmentId: 0, caughtUp: true, replaying: false, onePartOf: 2, tokenPosition: 10n, errorState: "" },
+        { segmentId: 3, caughtUp: false, replaying: true, onePartOf: 4, tokenPosition: 8n, errorState: "boom" },
+      ])
+    })
+
+    it("reports no segments for a node that holds none", () => {
+      const info = toEventProcessorInfo({ name: "p", running: true, caughtUp: false, replaying: false, position: 0n, segments: [] })
+      expect(info.activeThreads).toBe(0)
+      expect(info.segments).toEqual([])
+    })
   })
 
   describe("teardown", () => {
@@ -221,5 +329,53 @@ describe("kronosDbControlPlane", () => {
       const control = kronosDbControlPlane({ platform }, [])
       expect(control.platform).toBe(platform)
     })
+  })
+})
+
+describe("kronosDbControlPlane with a real segmented processor", () => {
+  it("splits, merges and releases the processor's segments and reports each one", async () => {
+    const Opened = event({ name: qn("test", "Opened"), payload: z.object({ id: z.string() }), tags: { id: (p) => p.id } })
+    const byId = (e: { payload: unknown }) => (e.payload as { id: string }).id
+    const eventStore = inMemoryEventStore()
+    const processor = segmented(
+      concurrent(eventProcessor("projection", eventStore, inMemoryTokenStore(), unitOfWork), byId),
+      2,
+      byId,
+    )
+    const app = kronos({
+      eventHandlers: [
+        {
+          ...eventHandler(Opened, () => {}),
+          commandBus: localCommandBus(unitOfWork),
+          queryBus: localQueryBus(unitOfWork),
+          processor,
+        },
+      ],
+    })
+    const platform = fakePlatform()
+    kronosDbControlPlane({ platform }, app.processors)
+    const held = () => platform.status()[0]!.segments!.map((s) => `${s.segment}/${s.onePartOf}`)
+
+    try {
+      // kronos starts the processor; its first claim round takes both segments.
+      const deadline = Date.now() + 2000
+      while (held().length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
+      expect(held()).toEqual(["0/2", "1/2"])
+
+      await platform.push({ kind: "split-segment", processorName: "projection", segmentId: 1 })
+      expect(held()).toEqual(["0/2", "1/4", "3/4"])
+
+      await platform.push({ kind: "merge-segment", processorName: "projection", segmentId: 3 })
+      expect(held()).toEqual(["0/2", "1/2"])
+
+      await platform.push({ kind: "release-segment", processorName: "projection", segmentId: 0 })
+      expect(held()).toEqual(["1/2"])
+
+      await expect(platform.push({ kind: "merge-segment", processorName: "projection", segmentId: 7 })).rejects.toThrow(
+        "no segment 7",
+      )
+    } finally {
+      await app.stop()
+    }
   })
 })

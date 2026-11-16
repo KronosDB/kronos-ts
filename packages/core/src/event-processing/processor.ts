@@ -6,8 +6,8 @@ import type { Sequence } from "./sequence.js"
 
 /**
  * A point-in-time snapshot of a processor's progress — the kronos analog of
- * AF5's `EventTrackerStatus`. kronos processors are single-segment, so this is
- * one snapshot per processor rather than a per-segment map.
+ * AF5's `EventTrackerStatus`, summed over the segments this node holds. Each
+ * segment's own is on `RunningProcessor.segments()`.
  */
 export type EventProcessorStatus = {
   /** Whether the processor's polling/streaming loop is active. */

@@ -5,12 +5,11 @@
  * This is not persistence and it is not transport. It is the pair of duties
  * Axon Server's admin surface needs from a client:
  *
- *   1. inbound — Axon Server pushes processor instructions (pause-processor,
- *      start-processor) which have to be routed to the live processor of that
- *      name; segment instructions (split, merge, release) are ignored, a kronos
- *      processor has one lane;
- *   2. outbound — the client periodically reports each processor's status so
- *      the Axon Dashboard can render it.
+ *   1. inbound — Axon Server pushes processor instructions (pause and start a
+ *      processor; split, merge and release one of its segments) which have to
+ *      be routed to the live processor of that name;
+ *   2. outbound — the client periodically reports each processor's status,
+ *      with the segments this node holds, so the Axon Dashboard can render it.
  *
  * It lived inside the backend's `start()` only because it shares the gRPC
  * connection with the data path. It is now separate and OPT-IN: a service that
@@ -40,7 +39,7 @@
  * caller to get wrong.
  */
 import type { AxonServerPlatformSource } from "./connection.js"
-import type { ProcessorStatus } from "./event-processor-info.js"
+import type { ProcessorStatus, SegmentReport } from "./event-processor-info.js"
 
 /**
  * A processor Axon Server is allowed to observe and control. `RunningProcessor`
@@ -53,13 +52,25 @@ export type ManagedEventProcessor = {
   readonly replaying?: boolean
   readonly position?: bigint
   start?(): Promise<void> | void
-  stop?(): void
+  stop?(): Promise<void> | void
   status?(): {
     readonly caughtUp?: boolean
     readonly replaying?: boolean
     readonly position?: bigint
     readonly error?: Error
   }
+  /** The segments this node holds. `mask + 1` is how many such segments make the whole. */
+  segments?(): ReadonlyArray<{
+    readonly segment: number
+    readonly mask: number
+    readonly position: bigint
+    readonly caughtUp: boolean
+    readonly replaying: boolean
+    readonly error?: Error
+  }>
+  releaseSegment?(segment: number): Promise<void>
+  splitSegment?(segment: number): Promise<void>
+  mergeSegment?(segment: number): Promise<void>
 }
 
 /**
@@ -87,6 +98,16 @@ function processorStatuses(processors: Iterable<ManagedEventProcessor>): Process
       replaying: status?.replaying ?? proc.replaying ?? false,
       position: status?.position ?? proc.position ?? 0n,
       error: status?.error?.message,
+      segments: proc.segments?.().map(
+        (s): SegmentReport => ({
+          segment: s.segment,
+          onePartOf: s.mask + 1,
+          position: s.position,
+          caughtUp: s.caughtUp,
+          replaying: s.replaying,
+          error: s.error?.message,
+        }),
+      ),
     }
   })
 }
@@ -125,13 +146,27 @@ export async function axonServerControlPlane(
 
   platform.onInstruction(async (instruction) => {
     switch (instruction.kind) {
-      case "pause-processor":
-        byName.get(instruction.processorName)?.stop?.()
+      case "pause-processor": {
+        // Not awaited: instructions run inside the stream's read loop, and a
+        // stop waits for the batch in flight — heartbeats would wait with it.
+        const stopped = byName.get(instruction.processorName)?.stop?.()
+        if (stopped) {
+          stopped.catch((err) => console.error(`Axon Server control plane: pausing "${instruction.processorName}" failed:`, err))
+        }
         break
+      }
       case "start-processor":
         await byName.get(instruction.processorName)?.start?.()
         break
-      // release/split/merge-segment: a kronos processor has one lane. Ignored.
+      case "release-segment":
+        await byName.get(instruction.processorName)?.releaseSegment?.(instruction.segmentId)
+        break
+      case "split-segment":
+        await byName.get(instruction.processorName)?.splitSegment?.(instruction.segmentId)
+        break
+      case "merge-segment":
+        await byName.get(instruction.processorName)?.mergeSegment?.(instruction.segmentId)
+        break
     }
   })
 

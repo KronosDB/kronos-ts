@@ -20,7 +20,7 @@ import type {
   InstructionHandler,
   PlatformInstruction,
 } from "../platform-service.js"
-import type { ProcessorStatusSupplier } from "../event-processor-info.js"
+import { toEventProcessorInfo, type ProcessorStatusSupplier } from "../event-processor-info.js"
 import { axonServerControlPlane, type ManagedEventProcessor } from "../control-plane.js"
 
 type FakePlatform = PlatformConnection & {
@@ -132,11 +132,37 @@ describe("axonServerControlPlane — instruction routing", () => {
 
     await platform.emit({ kind: "pause-processor", processorName: "proc-a" })
     await platform.emit({ kind: "start-processor", processorName: "proc-a" })
-    await platform.emit({ kind: "split-segment", processorName: "proc-a", segmentId: 4 })
 
-    // split/merge/release are ignored: one lane per processor
     expect(a.calls).toEqual(["stop", "start"])
     expect(b.calls).toEqual([])
+  })
+
+  it("routes split, merge and release to the named processor's segment", async () => {
+    const platform = fakePlatform()
+    const calls: string[] = []
+    const { proc } = spyProcessor("proc-a", {
+      splitSegment: async (id) => void calls.push(`split ${id}`),
+      mergeSegment: async (id) => void calls.push(`merge ${id}`),
+      releaseSegment: async (id) => void calls.push(`release ${id}`),
+    })
+    await axonServerControlPlane({ platform }, [proc])
+
+    await platform.emit({ kind: "split-segment", processorName: "proc-a", segmentId: 4 })
+    await platform.emit({ kind: "merge-segment", processorName: "proc-a", segmentId: 6 })
+    await platform.emit({ kind: "release-segment", processorName: "proc-a", segmentId: 1 })
+
+    expect(calls).toEqual(["split 4", "merge 6", "release 1"])
+  })
+
+  it("does not hold the instruction up while a paused processor finishes stopping", async () => {
+    const platform = fakePlatform()
+    let finish: () => void = () => {}
+    const { proc } = spyProcessor("proc-a", { stop: () => new Promise<void>((resolve) => (finish = resolve)) })
+    await axonServerControlPlane({ platform }, [proc])
+
+    // Resolves although stop() has not: instructions run in the stream's read loop.
+    await platform.emit({ kind: "pause-processor", processorName: "proc-a" })
+    finish()
   })
 
   it("ignores instructions for unknown processor names", async () => {
@@ -192,6 +218,31 @@ describe("axonServerControlPlane — status reporting", () => {
 
     const [status] = platform.statuses()
     expect(status).toEqual({ name: "p", running: true, caughtUp: false, replaying: true, position: 9n, error: "boom" })
+  })
+
+  it("reports the segments this node holds, each as one part of the whole", async () => {
+    const platform = fakePlatform()
+    const proc: ManagedEventProcessor = {
+      name: "p",
+      running: true,
+      segments: () => [
+        { segment: 1, mask: 1, position: 5n, caughtUp: true, replaying: false },
+        { segment: 2, mask: 3, position: 3n, caughtUp: false, replaying: false, error: new Error("boom") },
+      ],
+    }
+    await axonServerControlPlane({ platform }, [proc])
+
+    const [status] = platform.statuses()
+    expect(status!.segments).toEqual([
+      { segment: 1, onePartOf: 2, position: 5n, caughtUp: true, replaying: false, error: undefined },
+      { segment: 2, onePartOf: 4, position: 3n, caughtUp: false, replaying: false, error: "boom" },
+    ])
+    const info = toEventProcessorInfo(status!)
+    expect(info.activeThreads).toBe(2)
+    expect(info.segmentStatus).toEqual([
+      { segmentId: 1, caughtUp: true, replaying: false, onePartOf: 2, tokenPosition: 5n, errorState: "" },
+      { segmentId: 2, caughtUp: false, replaying: false, onePartOf: 4, tokenPosition: 3n, errorState: "boom" },
+    ])
   })
 
   it("reads LIVE processor state on every report", async () => {

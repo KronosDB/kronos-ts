@@ -3,10 +3,10 @@
  * backend.
  *
  * This is not persistence and not transport. KronosDB pushes instructions at a
- * connected client (pause-processor, start-processor) and the client reports
- * processor status back so the admin UI can render it. Segment instructions
- * (split, merge, release) exist on the wire for Axon clients; a kronos
- * processor has one lane and ignores them. It only ever lived inside the backend because it
+ * connected client (pause and start a processor; split, merge and release one
+ * of its segments) and the client reports each processor's status, with the
+ * segments this node holds, so the admin UI can render it. It only ever lived
+ * inside the backend because it
  * shares the same connection as the data path — so it takes that
  * connection's platform stream as an argument and is otherwise independent.
  *
@@ -31,7 +31,7 @@
  */
 import type { PlatformConnection } from "./platform-service.js"
 import type { KronosDbConnectionHandle } from "./kronosdb.js"
-import type { ProcessorStatus } from "./event-processor-info.js"
+import type { ProcessorStatus, SegmentReport } from "./event-processor-info.js"
 
 /**
  * The subset of a live processor the control plane drives and reports on.
@@ -44,13 +44,25 @@ export type ManagedEventProcessor = {
   readonly replaying?: boolean
   readonly position?: bigint
   start?(): Promise<void> | void
-  stop?(): void
+  stop?(): Promise<void> | void
   status?(): {
     readonly caughtUp?: boolean
     readonly replaying?: boolean
     readonly position?: bigint
     readonly error?: Error
   }
+  /** The segments this node holds. `mask + 1` is how many such segments make the whole. */
+  segments?(): ReadonlyArray<{
+    readonly segment: number
+    readonly mask: number
+    readonly position: bigint
+    readonly caughtUp: boolean
+    readonly replaying: boolean
+    readonly error?: Error
+  }>
+  releaseSegment?(segment: number): Promise<void>
+  splitSegment?(segment: number): Promise<void>
+  mergeSegment?(segment: number): Promise<void>
 }
 
 /**
@@ -126,6 +138,16 @@ function toProcessorStatus(proc: ManagedEventProcessor): ProcessorStatus {
     replaying: status?.replaying ?? proc.replaying ?? false,
     position: status?.position ?? proc.position ?? 0n,
     error: status?.error?.message,
+    segments: proc.segments?.().map(
+      (s): SegmentReport => ({
+        segment: s.segment,
+        onePartOf: s.mask + 1,
+        position: s.position,
+        caughtUp: s.caughtUp,
+        replaying: s.replaying,
+        error: s.error?.message,
+      }),
+    ),
   }
 }
 
@@ -159,19 +181,26 @@ export function kronosDbControlPlane(
   processors: ManagedProcessorSource,
 ): KronosDbControlPlane {
   const { platform } = connection
+  // A control that throws (a split of a processor that is not segmented, a
+  // merge of a replaying segment) fails the instruction, and the platform
+  // stream reports why.
   platform.onInstruction(async (instruction) => {
     switch (instruction.kind) {
-      case "pause-processor": {
-        const proc = findProcessor(processors, instruction.processorName)
-        if (proc?.stop) proc.stop()
+      case "pause-processor":
+        await findProcessor(processors, instruction.processorName)?.stop?.()
         break
-      }
-      case "start-processor": {
-        const proc = findProcessor(processors, instruction.processorName)
-        if (proc?.start) await proc.start()
+      case "start-processor":
+        await findProcessor(processors, instruction.processorName)?.start?.()
         break
-      }
-      // release/split/merge-segment: a kronos processor has one lane. Ignored.
+      case "release-segment":
+        await findProcessor(processors, instruction.processorName)?.releaseSegment?.(instruction.segmentId)
+        break
+      case "split-segment":
+        await findProcessor(processors, instruction.processorName)?.splitSegment?.(instruction.segmentId)
+        break
+      case "merge-segment":
+        await findProcessor(processors, instruction.processorName)?.mergeSegment?.(instruction.segmentId)
+        break
     }
   })
 
