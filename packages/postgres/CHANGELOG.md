@@ -1,5 +1,12 @@
 # @kronos-ts/postgres
 
+## 0.21.3
+
+### Patch Changes
+
+- Updated dependencies [f8a07cb]
+  - @kronos-ts/core@0.11.1
+
 ## 0.21.2
 
 ### Patch Changes
