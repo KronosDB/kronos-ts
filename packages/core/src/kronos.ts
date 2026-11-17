@@ -13,6 +13,7 @@ import { subscribeQueryHandlers } from "./query-handling/subscribe.js"
 import type { EventProcessor, RunningProcessor } from "./event-processing/processor.js"
 import { runEventProcessor, type ProcessorHandlerEntry } from "./event-processing/running-processor.js"
 import { chainError } from "./composition/describe.js"
+import { qualifiedNameToString } from "./messaging/messages.js"
 
 // ---------------------------------------------------------------------------
 // An app is THREE LISTS. That is the whole surface.
@@ -174,6 +175,34 @@ function requireEventStore<E extends EventStore>(
 }
 
 /**
+ * Refuses two entries that would subscribe a handler for the same message name
+ * on the same bus object. Called before anything is subscribed, so the second
+ * subscription cannot fail half-way through a boot.
+ */
+function refuseDuplicateSubscriptions(
+  kind: "command" | "query",
+  entries: ReadonlyArray<{ readonly bus: object; readonly descriptor: { readonly name: any }; readonly label: string }>,
+): void {
+  const seen = new Map<object, Map<string, string>>()
+  for (const { bus, descriptor, label } of entries) {
+    let byName = seen.get(bus)
+    if (!byName) {
+      byName = new Map()
+      seen.set(bus, byName)
+    }
+    const messageName = qualifiedNameToString(descriptor.name)
+    const first = byName.get(messageName)
+    if (first !== undefined) {
+      throw new Error(
+        `kronos: two ${kind} handlers subscribe to ${kind} "${messageName}" on the same ${kind} bus. ` +
+          `Entries: "${first}" and "${label}". A bus has one handler per ${kind}.`,
+      )
+    }
+    byName.set(messageName, label)
+  }
+}
+
+/**
  * Which fields of two processor values disagree.
  *
  * Objects and functions compare by IDENTITY, because that is what they mean
@@ -307,8 +336,11 @@ export function kronos<
     eventHandlers?: ReadonlyArray<EventHandlerEntry<U, E, Q>>
   },
 ): App<EventStoresOf<L>, CommandBusesOf<L>, QueryBusesOf<L>> {
-  // ---- Refuse a wrapper chain that cannot work ---------------------------
-  // Before ANYTHING is subscribed or started. Wrappers that described
+  // ---- Validate everything before ANYTHING is subscribed or started -------
+  // A boot that fails leaves the buses as they were, so the same buses can be
+  // handed to `kronos` again once the lists are fixed.
+
+  // A wrapper chain that cannot work. Wrappers that described
   // themselves (`describe`) are walked outermost-in; a wrapper using a
   // capability nothing outside it supplies, a capability supplied twice, or a
   // message stamp inside the wrapper that reads it, is a boot error naming the
@@ -323,29 +355,25 @@ export function kronos<
     if (problem) throw problem
   }
 
-  // ---- Subscribe the two synchronous kinds -------------------------------
-  // Plainly-typed loops over flat lists. Each entry brings its OWN buses and
-  // its OWN site, so there is nothing to group, nothing to resolve and nothing
-  // to look up at dispatch: the invocation closes over exactly these objects.
-  for (const handler of opts.commandHandlers ?? []) {
-    // Command handlers always need a log: the handler's UnitOfWork flushes its
-    // appended events at PREPARE_COMMIT, and there is nowhere to flush to.
-    const eventStore = requireEventStore(handler, "is a command handler and appends to a log")
-    subscribeCommandHandlers([handler], {
-      commandBus: handler.commandBus,
-      queryBus: handler.queryBus,
-      eventStore,
-    })
-  }
+  const commandHandlers: ReadonlyArray<CommandHandlerEntry<U, E, Q>> = opts.commandHandlers ?? []
+  const queryHandlers: ReadonlyArray<QueryHandlerEntry<U, E>> = opts.queryHandlers ?? []
 
-  for (const handler of opts.queryHandlers ?? []) {
-    // A query handler is the only one that legitimately has no log — a read
-    // model served from a projection table needs no event store to answer.
-    subscribeQueryHandlers([handler], {
-      queryBus: handler.queryBus,
-      ...(handler.eventStore !== undefined ? { eventStore: handler.eventStore } : {}),
-    })
-  }
+  // Command handlers always need a log: the handler's UnitOfWork flushes its
+  // appended events at PREPARE_COMMIT, and there is nowhere to flush to.
+  const commandSites = commandHandlers.map((handler) => ({
+    handler,
+    eventStore: requireEventStore(handler, "is a command handler and appends to a log"),
+  }))
+
+  // One handler per message name per bus.
+  refuseDuplicateSubscriptions(
+    "command",
+    commandHandlers.map((h) => ({ bus: h.commandBus, descriptor: h.descriptor, label: labelOf(h) })),
+  )
+  refuseDuplicateSubscriptions(
+    "query",
+    queryHandlers.map((h) => ({ bus: h.queryBus, descriptor: h.descriptor, label: labelOf(h) })),
+  )
 
   // ---- Group event handlers by PROCESSOR NAME ----------------------------
   // Not by object identity: a token persists under the processor's NAME, so two
@@ -397,6 +425,27 @@ export function kronos<
       }
     }
     existing.handlers.push(processorEntry(handler))
+  }
+
+  // ---- Subscribe the two synchronous kinds -------------------------------
+  // Plainly-typed loops over flat lists. Each entry brings its OWN buses and
+  // its OWN site, so there is nothing to group, nothing to resolve and nothing
+  // to look up at dispatch: the invocation closes over exactly these objects.
+  for (const { handler, eventStore } of commandSites) {
+    subscribeCommandHandlers([handler], {
+      commandBus: handler.commandBus,
+      queryBus: handler.queryBus,
+      eventStore,
+    })
+  }
+
+  for (const handler of queryHandlers) {
+    // A query handler is the only one that legitimately has no log — a read
+    // model served from a projection table needs no event store to answer.
+    subscribeQueryHandlers([handler], {
+      queryBus: handler.queryBus,
+      ...(handler.eventStore !== undefined ? { eventStore: handler.eventStore } : {}),
+    })
   }
 
   // TWO-PHASE START. Every handler is subscribed before ANY processor runs, so

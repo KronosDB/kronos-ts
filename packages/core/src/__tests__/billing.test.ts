@@ -16,6 +16,8 @@ import {
   localCommandBus,
   localQueryBus,
   polling,
+  query,
+  queryHandler,
   type UnitOfWork,
 } from "../index.js"
 import { state } from "../event-sourcing/state.js"
@@ -343,5 +345,108 @@ describe("boot errors", () => {
     expect(() =>
       kronos({ commandHandlers: [{ ...openBill, ...buses }] }),
     ).toThrow(/no event store was attached/)
+  })
+
+  // A failed boot leaves the buses as they were, so the same buses boot again
+  // once the lists are fixed.
+  describe("a failed boot subscribes nothing", () => {
+    const BillTotal = query({
+      name: qn("billing", "BillTotal"),
+      payload: z.object({ billId: z.string() }),
+      result: z.object({ total: z.number() }),
+    })
+    const billTotal = queryHandler(BillTotal, async () => ({ total: 0 }))
+
+    function bootAgain(buses: ReturnType<typeof inMemoryBuses>, eventStore = inMemoryEventStore()) {
+      return kronos({
+        commandHandlers: [{ ...openBill, ...buses, eventStore }],
+        queryHandlers: [{ ...billTotal, ...buses }],
+      })
+    }
+
+    it("after an event handler with no processor", async () => {
+      const buses = inMemoryBuses()
+      const eventStore = inMemoryEventStore()
+      expect(() =>
+        kronos({
+          commandHandlers: [{ ...openBill, ...buses, eventStore }],
+          queryHandlers: [{ ...billTotal, ...buses }],
+          eventHandlers: [{ ...onOpened, ...buses } as never],
+        }),
+      ).toThrow(/has no processor/)
+
+      const app = bootAgain(buses)
+      await app.stop()
+    })
+
+    it("after a processor conflict", async () => {
+      const buses = inMemoryBuses()
+      const eventStore = inMemoryEventStore()
+      const tokenStore = inMemoryTokenStore()
+      expect(() =>
+        kronos({
+          commandHandlers: [{ ...openBill, ...buses, eventStore }],
+          queryHandlers: [{ ...billTotal, ...buses }],
+          eventHandlers: [
+            { ...onOpened, ...buses, processor: eventProcessor("bill-projection", inMemoryEventStore(), tokenStore, unitOfWork) },
+            {
+              ...eventHandler(LineBilled, async () => {}),
+              ...buses,
+              processor: eventProcessor("bill-projection", inMemoryEventStore(), tokenStore, unitOfWork),
+            },
+          ],
+        }),
+      ).toThrow(/disagree on eventStore/)
+
+      const app = bootAgain(buses)
+      await app.stop()
+    })
+
+    it("after a later command handler with no event store", async () => {
+      const buses = inMemoryBuses()
+      expect(() =>
+        kronos({
+          commandHandlers: [
+            { ...openBill, ...buses, eventStore: inMemoryEventStore() },
+            { ...billLine(newLedger()), ...buses },
+          ],
+        }),
+      ).toThrow(/no event store was attached/)
+
+      const app = bootAgain(buses)
+      await app.stop()
+    })
+
+    it("after two handlers for one command on one bus", async () => {
+      const buses = inMemoryBuses()
+      const eventStore = inMemoryEventStore()
+      const otherOpenBill = commandHandler(OpenBill, async () => {})
+      expect(() =>
+        kronos({
+          commandHandlers: [
+            { ...openBill, ...buses, eventStore, name: "open-bill" },
+            { ...otherOpenBill, ...buses, eventStore, name: "other-open-bill" },
+          ],
+        }),
+      ).toThrow(/billing\.OpenBill[\s\S]*open-bill[\s\S]*other-open-bill/)
+
+      const app = bootAgain(buses)
+      await app.stop()
+    })
+
+    it("after two handlers for one query on one bus", async () => {
+      const buses = inMemoryBuses()
+      expect(() =>
+        kronos({
+          queryHandlers: [
+            { ...billTotal, ...buses },
+            { ...queryHandler(BillTotal, async () => ({ total: 1 })), ...buses },
+          ],
+        }),
+      ).toThrow(/billing\.BillTotal/)
+
+      const app = bootAgain(buses)
+      await app.stop()
+    })
   })
 })
