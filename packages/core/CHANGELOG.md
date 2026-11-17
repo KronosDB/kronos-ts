@@ -1,5 +1,14 @@
 # @kronos-ts/core
 
+## 0.11.2
+
+### Patch Changes
+
+- 67c568c: `kronos()` runs every boot check before it subscribes a handler: the wrapper-chain check, a command handler without an event store, an event handler without a processor, conflicting processors under one name, and (new) two entries subscribing a handler for the same command or query on the same bus. A failed boot leaves the buses unchanged, so the same buses can be passed to `kronos()` again.
+- 6616907: A processor whose first claim round fails (for example, its token store is down when the app boots) keeps running: the failure is logged, reported as `status().error`, and the claim round is retried every claim interval until it succeeds. `start()` no longer rejects for it, so `kronos()` no longer leaves an unhandled rejection and a stopped processor behind. A later claim round that fails is reported the same way.
+- 0da2e42: A state and its `snapshot(state, key, when)` copy get separate repositories on the same event store. Loading one no longer decides whether snapshots apply to the other, and a snapshotted state over a log without `storeSnapshot` is refused even after the plain state was loaded through it.
+- a33243d: `upcastingEventStore` translates type filters to their stored names on `source()` and on the query of an append condition passed to `append` or `appendEvents`, as it already did on `open()`. A state that folds a renamed event now sees the events stored under the old name, and an append conditioned on the new name conflicts with an event appended under the old one. Without `storedTypes`, `source()` drops the type filter, upcasts, and returns only the asked types; an append condition drops its type filter and checks every event carrying its tags.
+
 ## 0.11.1
 
 ### Patch Changes
