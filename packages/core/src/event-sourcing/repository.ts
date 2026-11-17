@@ -266,19 +266,22 @@ async function applyEvent<Id, S>(
 // ---------------------------------------------------------------------------
 
 /**
- * eventStore → state identity → repository.
+ * eventStore → state identity → snapshot config → repository.
  *
- * TWO LEVELS, not three. There used to be a snapshot store in the middle,
- * because a site was a PAIR of objects and either one changing meant a
- * different fold. A site is ONE object now — the log, capability and all — so
- * the cache is keyed on the one thing it was always really keyed on.
+ * `snapshot(state, key, when)` keeps the state's identity, so the identity
+ * alone does not tell the plain state from its snapshotted copy. The snapshot
+ * config object (or its absence) is the last level: each copy gets its own
+ * repository, and loading one never changes how the other loads.
  *
  * WEAK on the store, so a site that goes out of scope takes its repositories
  * with it — a fixture per test case leaks nothing. STRONG on the state
  * identity, because a state is a module-level value that outlives everything
- * anyway, and the inner map dies with the site above it.
+ * anyway, and the inner maps die with the site above them.
  */
-const repositories = new WeakMap<EventStore, Map<string, StateRepository<any, any>>>()
+const repositories = new WeakMap<
+  EventStore,
+  Map<string, Map<SnapshotConfigOf, StateRepository<any, any>>>
+>()
 
 /**
  * The repository for ONE state at ONE site — built on first use, remembered by
@@ -307,11 +310,20 @@ export function repositoryFor<Id, S>(
   }
 
   // Keyed on the definition's `identity` — the handle `state()` assigns per
-  // definition — not on the object reference, which a spread would break.
-  const existing = byState.get(state.identity)
+  // definition — not on the object reference, which a spread would break. The
+  // snapshot config survives a spread too, and separates the plain state from
+  // its snapshotted copy.
+  let bySnapshot = byState.get(state.identity)
+  if (!bySnapshot) {
+    bySnapshot = new Map()
+    byState.set(state.identity, bySnapshot)
+  }
+
+  const snapshotConfig: SnapshotConfigOf = state.snapshot
+  const existing = bySnapshot.get(snapshotConfig)
   if (existing) return existing as StateRepository<Id, S>
 
   const created = eventSourcedRepository(state, eventStore)
-  byState.set(state.identity, created)
+  bySnapshot.set(snapshotConfig, created)
   return created
 }

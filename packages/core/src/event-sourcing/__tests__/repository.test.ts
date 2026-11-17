@@ -4,7 +4,9 @@ import { qn, emptyMetadata, event, type EventMessage, tagsOf } from "../../messa
 import { generateIdentifier } from "../../messaging/identifier.js"
 import { state } from "../state.js"
 import { inMemoryEventStore } from "../in-memory.js"
-import { eventSourcedRepository } from "../repository.js"
+import { eventSourcedRepository, repositoryFor } from "../repository.js"
+import { inMemorySnapshottingEventStore } from "../in-memory-snapshotting-event-store.js"
+import { afterEvents, snapshot, type Snapshot } from "../snapshot.js"
 
 // -- Fixtures --
 
@@ -210,5 +212,70 @@ describe("EventSourcedRepository", () => {
       expect(state.studentEnrolled).toBe(true)
       expect(state.studentsInCourse).toBe(1)
     })
+  })
+})
+
+describe("repositoryFor", () => {
+  /** A capable log that counts the snapshots it is asked to store. */
+  function countingSnapshotLog() {
+    const store = inMemorySnapshottingEventStore(inMemoryEventStore())
+    const writes: string[] = []
+    return {
+      writes,
+      store: {
+        ...store,
+        async storeSnapshot(key: string, snap: Snapshot) {
+          writes.push(key)
+          await store.storeSnapshot(key, snap)
+        },
+      },
+    }
+  }
+
+  async function settled() {
+    await new Promise((r) => setTimeout(r, 5))
+  }
+
+  it("a snapshotted state loads with its policy after the plain state loaded through the same log", async () => {
+    const { store, writes } = countingSnapshotLog()
+    const Cached = snapshot(Course, "course-cache-v1", afterEvents(0))
+    await store.append([
+      eventMsg(CourseCreated, { courseId: "cs-201", name: "Compilers", capacity: 20 }),
+    ])
+
+    // when — the plain state is loaded first
+    await repositoryFor(Course, store).load({ courseId: "cs-201" })
+    await repositoryFor(Cached, store).load({ courseId: "cs-201" })
+    await settled()
+
+    // then — the snapshotted copy still wrote its entry
+    expect(writes).toEqual(['course-cache-v1:{"courseId":"cs-201"}'])
+  })
+
+  it("the plain state never snapshots after its snapshotted copy loaded through the same log", async () => {
+    const { store, writes } = countingSnapshotLog()
+    const Cached = snapshot(Course, "course-cache-v1", afterEvents(0))
+    await store.append([
+      eventMsg(CourseCreated, { courseId: "cs-202", name: "Databases", capacity: 20 }),
+    ])
+
+    // when — the snapshotted copy is loaded first, then more events arrive
+    await repositoryFor(Cached, store).load({ courseId: "cs-202" })
+    await settled()
+    await store.append([eventMsg(CourseCapacityChanged, { courseId: "cs-202", capacity: 40 })])
+    await repositoryFor(Course, store).load({ courseId: "cs-202" })
+    await settled()
+
+    // then — only the snapshotted load wrote an entry
+    expect(writes).toHaveLength(1)
+  })
+
+  it("a snapshotted state over a bare log is refused even after the plain state loaded through it", async () => {
+    const store = inMemoryEventStore()
+    const Cached = snapshot(Course, "course-cache-v1", afterEvents(0))
+
+    await repositoryFor(Course, store).load({ courseId: "cs-203" })
+
+    expect(() => repositoryFor(Cached, store)).toThrow(/declares a snapshot policy/)
   })
 })
