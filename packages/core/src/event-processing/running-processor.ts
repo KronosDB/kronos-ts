@@ -179,6 +179,9 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   const current = (r: number) => isRunning && r === run
   let claimTimer: ReturnType<typeof setInterval> | null = null
   let claiming: Promise<void> | null = null
+  // Why the last claim round of this run failed, until one succeeds. Reported
+  // by `status()` while no segment has an error of its own.
+  let claimError: Error | undefined
   let stopping: Promise<void> = Promise.resolve()
   const workers = new Map<number, Worker>()
   // How the segments stood when the processor last stopped — what `status()`
@@ -227,9 +230,21 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     }
   }
 
+  /** Run claim round `r`; a failure is logged and kept for `status()`, and the next round retries. */
+  async function claimOrReport(r: number) {
+    try {
+      await claimRound(r)
+      if (current(r)) claimError = undefined
+    } catch (error) {
+      if (!current(r)) return
+      claimError = error instanceof Error ? error : new Error(String(error))
+      console.error(`Event processor "${name}": claiming segments failed, retrying in ${claimIntervalMs}ms:`, error)
+    }
+  }
+
   function claimSoon() {
     if (claiming !== null || !isRunning) return
-    track(claimRound(run).catch((error) => console.error(`Event processor "${name}": claiming segments failed:`, error)))
+    track(claimOrReport(run))
   }
 
   /** Make `round` the claim round a stop waits for. */
@@ -747,7 +762,7 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
 
     status(): EventProcessorStatus {
       const held = workers.size > 0 || isRunning ? [...workers.values()].map((w) => w.status()) : parked
-      const error = held.find((s) => s.error !== undefined)?.error
+      const error = held.find((s) => s.error !== undefined)?.error ?? (isRunning ? claimError : undefined)
       return {
         running: isRunning,
         ...(error !== undefined ? { error } : {}),
@@ -767,18 +782,14 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       if (isRunning) return
       isRunning = true
       const r = ++run
+      claimError = undefined
       backlogEnd = await eventStore.getHeadPosition().catch(() => undefined)
       if (!current(r)) return
-      // Tracked like any other round, so a stop meanwhile waits for it.
-      const round = claimRound(r)
+      // Tracked like any other round, so a stop meanwhile waits for it. A first
+      // round that fails is retried on the claim timer like any later one.
+      const round = claimOrReport(r)
       track(round)
-      try {
-        await round
-      } catch (error) {
-        if (!current(r)) return
-        isRunning = false
-        throw error
-      }
+      await round
       if (!current(r)) return
       claimTimer = setInterval(claimSoon, claimIntervalMs)
       claimTimer.unref?.()

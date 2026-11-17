@@ -255,6 +255,75 @@ describe("correlation", () => {
 })
 
 // ---------------------------------------------------------------------------
+// A processor whose token store is down when the app boots
+// ---------------------------------------------------------------------------
+
+describe("a processor that cannot claim at boot", () => {
+  /** A token store that fails its first `failures` segment lookups. */
+  function flakyTokenStore(failures: number) {
+    const inner = inMemoryTokenStore(100) // claims renewed every 50 ms
+    let remaining = failures
+    return {
+      ...inner,
+      async fetchSegments(name: string) {
+        if (remaining > 0) {
+          remaining--
+          throw new Error("token store is down")
+        }
+        return inner.fetchSegments(name)
+      },
+    }
+  }
+
+  async function until(condition: () => boolean, timeoutMs = 2000) {
+    const start = Date.now()
+    while (!condition()) {
+      if (Date.now() - start > timeoutMs) throw new Error("timed out")
+      await new Promise((r) => setTimeout(r, 10))
+    }
+  }
+
+  it("reports the failure on its status, retries, and delivers once the token store is back", async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on("unhandledRejection", onUnhandled)
+    const originalError = console.error
+    const logged: unknown[][] = []
+    console.error = (...args: unknown[]) => logged.push(args)
+    try {
+      const buses = inMemoryBuses()
+      const eventStore = inMemoryEventStore()
+      const opened: string[] = []
+      const processor = eventProcessor("bill-projection", eventStore, flakyTokenStore(2), unitOfWork)
+      const app = kronos({
+        commandHandlers: [{ ...openBill, ...buses, eventStore }],
+        eventHandlers: [
+          { ...eventHandler(BillOpened, async ({ payload }) => void opened.push(payload.billId)), ...buses, processor },
+        ],
+      })
+      const running = app.processors.get("bill-projection")!
+
+      await until(() => running.status().error !== undefined)
+      expect(running.status().running).toBe(true)
+      expect(running.status().error?.message).toBe("token store is down")
+
+      await send(buses.commandBus, OpenBill, { billId: "b-flaky" }, emptyMetadata())
+      await until(() => opened.length === 1)
+      expect(opened).toEqual(["b-flaky"])
+      expect(running.status().error).toBeUndefined()
+
+      await app.stop()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(unhandled).toEqual([])
+      expect(logged.some((args) => String(args[0]).includes("bill-projection"))).toBe(true)
+    } finally {
+      process.off("unhandledRejection", onUnhandled)
+      console.error = originalError
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Boot errors — persistence is attached at composition, and kronos says so
 // ---------------------------------------------------------------------------
 

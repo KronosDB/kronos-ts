@@ -13,8 +13,10 @@ export type EventProcessorStatus = {
   /** Whether the processor's polling/streaming loop is active. */
   readonly running: boolean
   /**
-   * The most recent unrecovered processing error, if any. Cleared on the next
-   * successful batch. A non-undefined value is the kronos `isErrorState`.
+   * The most recent unrecovered processing error, if any: a segment's failed
+   * batch, cleared by its next successful batch, or else a failed claim round
+   * (the token store could not be read), cleared by the next round that
+   * succeeds. A non-undefined value is the kronos `isErrorState`.
    */
   readonly error?: Error
   /** Current committed position in the event stream. */
@@ -284,6 +286,10 @@ export type RunningProcessor = {
   /**
    * Run: claim every segment that is free, now and every few seconds after,
    * and handle each one this node holds. A node that holds none waits.
+   *
+   * A claim round that fails, the first included, is logged, reported by
+   * {@link status} as its `error`, and retried on the next round; it does not
+   * reject `start()` or stop the processor.
    */
   start(): Promise<void>
   /** Stop handling, write where each segment got to, and release the claims. */
