@@ -3,6 +3,8 @@ import { z } from "zod"
 import { upcastingEventStore, type Upcast } from "../upcasting-event-store.js"
 import { inMemoryEventStore } from "../../event-sourcing/in-memory.js"
 import { event, is, qn, type EventMessage } from "../../messaging/messages.js"
+import { state } from "../../event-sourcing/state.js"
+import { eventSourcedRepository } from "../../event-sourcing/repository.js"
 
 // The descriptor as it stands TODAY — version 2.0, capacity required. Events
 // written under 1.0 are still in the log and still have to fold.
@@ -292,5 +294,91 @@ describe("upcastingEventStore and a filtered stream", () => {
     const plain = upcastingEventStore(log, renamed).open({ position: 0n })
     expect(plain.progressToken).toBeUndefined()
     plain.close()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The renaming translation on the DCB read, and on the append condition built
+// from it.
+// ---------------------------------------------------------------------------
+
+describe("upcastingEventStore and a sourced read", () => {
+  const Placed = qn("shop", "OrderPlaced")
+  const Created = qn("shop", "OrderCreated")
+  const OrderCreated = event({
+    name: Created,
+    version: "2.0",
+    payload: z.object({ orderId: z.string() }),
+    tags: { orderId: (p) => p.orderId },
+  })
+  const renamed: Upcast = (e) =>
+    e.name.namespace === Placed.namespace && e.name.name === Placed.name ? { ...e, name: Created, version: "2.0" } : e
+  const storedTypes = (type: string) => (type === "shop.OrderCreated" ? [type, "shop.OrderPlaced"] : [type])
+
+  function order(name: typeof Placed, orderId = "o-1"): EventMessage {
+    return stored({
+      name,
+      version: name === Placed ? "1.0" : "2.0",
+      payload: { orderId },
+      tags: [{ key: "orderId", value: orderId }],
+    })
+  }
+
+  async function seeded() {
+    const log = inMemoryEventStore()
+    await log.append([order(Placed), stored({ name: qn("shop", "Shipped"), tags: [{ key: "orderId", value: "o-1" }] }), order(Created)])
+    return log
+  }
+
+  const Order = state({
+    id: { orderId: z.string() },
+    tags: ({ orderId }) => ({ orderId }),
+    evolve: [() => ({ created: 0 }), [OrderCreated, (s) => ({ created: s.created + 1 })]],
+  })
+
+  it("sources events stored under the old name of a type the query asks for", async () => {
+    const store = upcastingEventStore(await seeded(), renamed, { storedTypes })
+
+    const { events } = await store.source({ query: { tags: { orderId: "o-1" }, types: [Created] } })
+
+    expect(events.map((e) => `${e.name.name}@${e.version}`)).toEqual(["OrderCreated@2.0", "OrderCreated@2.0"])
+  })
+
+  it("a state folding the renamed event sees the events stored under the old name", async () => {
+    const store = upcastingEventStore(await seeded(), renamed, { storedTypes })
+
+    const { state: loaded } = await eventSourcedRepository(Order, store).load({ orderId: "o-1" })
+
+    expect(loaded).toEqual({ created: 2 })
+  })
+
+  it("WITHOUT being told, widens the read and hands back only the asked types", async () => {
+    const store = upcastingEventStore(await seeded(), renamed)
+
+    const { events } = await store.source({ query: { tags: { orderId: "o-1" }, types: [Created] } })
+
+    expect(events.map((e) => e.name.name)).toEqual(["OrderCreated", "OrderCreated"])
+  })
+
+  it("an append condition on the new name conflicts with an event appended under the old name", async () => {
+    const store = upcastingEventStore(await seeded(), renamed, { storedTypes })
+    const query = { tags: { orderId: "o-1" }, types: [Created] }
+    const { marker } = await store.source({ query })
+
+    await store.append([order(Placed)])
+
+    await expect(store.append([order(Created)], { query, marker })).rejects.toThrow(/Append condition violated/)
+  })
+
+  it("translates every read an append condition carries", async () => {
+    const store = upcastingEventStore(await seeded(), renamed, { storedTypes })
+    const query = { tags: { orderId: "o-1" }, types: [Created] }
+    const { marker } = await store.source({ query })
+
+    await store.append([order(Placed)])
+
+    await expect(
+      store.append([order(Created)], { query, marker, reads: [{ query, marker }] }),
+    ).rejects.toThrow(/Append condition violated/)
   })
 })

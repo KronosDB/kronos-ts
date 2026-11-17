@@ -42,8 +42,9 @@
 //
 //   upcastingEventStore(store, (e) => v3(v2(v1(e))))
 
-import type { EventMessage } from "../messaging/messages.js"
+import { qualifiedNameToString, type EventMessage } from "../messaging/messages.js"
 import type { SequencedEvent } from "../event-processing/source.js"
+import type { AppendCondition } from "../event-sourcing/append-condition.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
 import { queryItems, resolveTypeName, type EventQuery, type QueryItem } from "../event-sourcing/dcb-query.js"
 
@@ -89,24 +90,26 @@ export type Upcast = (event: EventMessage) => EventMessage
 /**
  * What the wrapper cannot know about an upcaster, said as data.
  *
- * A reader of a stream may ask for only some TYPES (a processor asks for the
- * ones it handles), and the store it asks keeps the names events were WRITTEN
- * under. An upcaster is a total function — there is no way to run it backwards
+ * A reader may ask for only some TYPES (a processor asks for the ones it
+ * handles, a state for the ones it folds), and the store it asks keeps the
+ * names events were WRITTEN under. An upcaster is a total function — there is no way to run it backwards
  * — so which stored types become a type the reader asked for has to be told.
  */
 export type UpcastingOptions = {
   /**
    * The stored type names that upcast to `type` — `type` itself included when
-   * events are still written under it. Called once per type a stream asks for.
+   * events are still written under it. Called once per type a read, a stream
+   * or an append condition asks for.
    *
    * ```ts
    * storedTypes: (type) => (type === "shop.OrderCreated" ? [type, "shop.OrderPlaced"] : [type])
    * ```
    *
    * ABSENT MEANS THE FILTER IS WIDENED, NOT TRUSTED. Without it a type
-   * restriction on a stream is dropped (its tag restriction stays, tags are not
-   * re-derived by an upcast) and the reader discards what it does not want
-   * itself: nothing is missed, but nothing is saved either. The alternative —
+   * restriction is dropped (its tag restriction stays, tags are not re-derived
+   * by an upcast): `source()` drops what was not asked for after upcasting, a
+   * stream's reader discards it itself, and an append condition checks every
+   * event carrying its tags. Nothing is missed, but nothing is saved either. The alternative —
    * assuming no upcaster renames anything — would lose every renamed event
    * with no error anywhere, which is not a default to hand out.
    *
@@ -124,15 +127,15 @@ export type UpcastingOptions = {
  * `EventStore` of exactly the same shape, so it drops into a state entry, a
  * handler entry or an `eventProcessor` wherever the bare one went.
  *
- * READ PATHS ONLY:
+ * READ PATHS:
  * - `source()` — the DCB read a `ctx.load` fold is built from
- * - `open()` — the stream a processor's deliveries come off. A type filter on
- *   it is translated to the stored names (see {@link UpcastingOptions})
- * - `subscribe()` — push delivery, which is a read that arrives at you
+ * - `open()` — the stream a processor's deliveries come off
  *
- * Everything else is passed straight to the wrapped store: `append`,
- * `appendEvents`, `publish`, and the token/position members, which carry no
- * events at all. Nothing this wrapper does can change what is in the log.
+ * A type filter on either is translated to the stored names (see
+ * {@link UpcastingOptions}), and so is the query of an append condition passed
+ * to `append` or `appendEvents`, so a write is checked against the same events
+ * the read returned. The events being appended pass through untouched, as does
+ * every other member: nothing this wrapper does can change what is in the log.
  *
  * ```typescript
  * const eventStore = upcastingEventStore(
@@ -161,12 +164,36 @@ export function upcastingEventStore<E extends EventStore>(
     return items.length === 1 ? items[0]! : items
   }
 
+  /** An append condition checked against the names events are stored under. */
+  function storedCondition(condition: AppendCondition | undefined): AppendCondition | undefined {
+    if (condition === undefined) return undefined
+    return {
+      ...condition,
+      query: storedQuery(condition.query),
+      ...(condition.reads !== undefined
+        ? { reads: condition.reads.map((read) => ({ ...read, query: storedQuery(read.query) })) }
+        : {}),
+    }
+  }
+
   return {
     ...next,
 
     async source(condition) {
-      const result = await next.source(condition)
-      return { ...result, events: result.events.map(upcast) }
+      const result = await next.source({ ...condition, query: storedQuery(condition.query) })
+      // The log was asked for the stored names, or for every type when it was
+      // not told them, so what is handed back is narrowed to the query as asked.
+      const asked = queryItems(condition.query)
+      const events = result.events.map(upcast).filter((event) => asked.some((item) => matchesItem(event, item)))
+      return { ...result, events }
+    },
+
+    appendEvents(events, condition, uow) {
+      return next.appendEvents(events, storedCondition(condition), uow)
+    },
+
+    append(events, condition, uow) {
+      return next.append(events, storedCondition(condition), uow)
     },
 
     open(condition) {
@@ -193,4 +220,20 @@ export function upcastingEventStore<E extends EventStore>(
     // capability away, so a genuinely capable configuration would be rejected
     // by a compile-time demand for a capability it actually has.
   } as E
+}
+
+/**
+ * Whether an upcast event matches one item of the query a reader asked with.
+ * Tags are the stored ones, which the log already matched; the type is the
+ * upcast one.
+ */
+function matchesItem(event: EventMessage, item: QueryItem): boolean {
+  if (item.types !== undefined && item.types.length > 0) {
+    const type = qualifiedNameToString(event.name)
+    if (!item.types.some((asked) => resolveTypeName(asked) === type)) return false
+  }
+  if (item.tags === undefined) return true
+  return Object.entries(item.tags).every(([key, value]) =>
+    event.tags.some((tag) => tag.key === key && tag.value === value),
+  )
 }
