@@ -316,6 +316,7 @@ describe("validatingHandler — outbound births", () => {
 
     await validatingHandler(async (_m: Message, c: typeof queryish) => {
       seen = c as unknown as Record<string, unknown>
+      return 0
     }, GetBalance)(commandMessage({ accountId: "a-1" }, GetBalance.name), queryish)
 
     expect(Object.keys(seen ?? {}).sort()).toEqual(["query", "unitOfWork"])
@@ -364,6 +365,107 @@ describe("validatingHandler — the log never accepts a lie", () => {
       // A buggy handler's garbage fails at the moment of the lie, not later in a
       // replay that did nothing wrong.
       expect(await stored()).toHaveLength(1)
+    } finally {
+      await app.stop()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// THE ANSWER — what a command or query handler returns is what its descriptor
+// says it answers.
+// ---------------------------------------------------------------------------
+
+const IssueReceipt = command({
+  name: qn("billing", "IssueReceipt"),
+  payload: z.object({ accountId: z.string() }),
+  result: z.object({ receiptId: z.string(), currency: z.string().default("EUR") }),
+})
+
+const SlowReceipt = command({
+  name: qn("billing", "SlowReceipt"),
+  payload: z.object({ accountId: z.string() }),
+  result: slowly<string>((v) => typeof v === "string"),
+})
+
+describe("validatingHandler — the answer", () => {
+  it("returns the PARSED answer when it matches the descriptor's result", async () => {
+    const wrapped = validatingHandler(async () => ({ receiptId: "r-1" }), IssueReceipt)
+    const { ctx } = recordingContext()
+
+    expect(await wrapped(commandMessage({ accountId: "a-1" }, IssueReceipt.name), ctx)).toEqual({
+      receiptId: "r-1",
+      currency: "EUR",
+    })
+  })
+
+  it("refuses a command answer that is not its result, naming the command", async () => {
+    const wrapped = validatingHandler(async () => ({ receipt: 42 }), IssueReceipt)
+    const { ctx } = recordingContext()
+
+    await expect(wrapped(commandMessage({ accountId: "a-1" }, IssueReceipt.name), ctx)).rejects.toThrow(
+      /billing\.IssueReceipt.*result.*failed validation/s,
+    )
+  })
+
+  it("refuses a query answer that is not its result, naming the query", async () => {
+    const wrapped = validatingHandler(async () => "a lot", GetBalance)
+    const { ctx } = recordingContext()
+    const message = { ...commandMessage({ accountId: "a-1" }, GetBalance.name), kind: "query" as const }
+
+    await expect(wrapped(message as never, ctx)).rejects.toThrow(/billing\.GetBalance.*result.*failed validation/s)
+  })
+
+  it("AWAITS an asynchronous result schema", async () => {
+    const { ctx } = recordingContext()
+    const message = commandMessage({ accountId: "a-1" }, SlowReceipt.name)
+
+    expect(await validatingHandler(async () => "r-1", SlowReceipt)(message, ctx)).toBe("r-1")
+    await expect(validatingHandler(async () => 7, SlowReceipt)(message, ctx)).rejects.toThrow(
+      /the slow schema said no/,
+    )
+  })
+
+  it("leaves the answer of a command that declares no result untouched", async () => {
+    const answer = { anything: ["goes"] }
+    const wrapped = validatingHandler(async () => answer, RecordCharge)
+    const { ctx } = recordingContext()
+
+    expect(await wrapped(commandMessage({ accountId: "a-1", amount: 1 }), ctx)).toBe(answer)
+  })
+
+  it("does not check ctx.emitUpdate — an update need not have the query's result shape", async () => {
+    const emitted: unknown[] = []
+    const ctx = {
+      emitUpdate: (_d: unknown, _filter: unknown, update: unknown) => void emitted.push(update),
+    }
+    const wrapped = validatingHandler(async (_m: Message, c: typeof ctx) => {
+      c.emitUpdate(GetBalance, () => true, { change: "added", item: { accountId: "a-1" } })
+      return 0
+    }, GetBalance)
+
+    await wrapped(commandMessage({ accountId: "a-1" }, GetBalance.name), ctx)
+
+    expect(emitted).toEqual([{ change: "added", item: { accountId: "a-1" } }])
+  })
+
+  it("a refused answer rolls back what the command appended", async () => {
+    const eventStore = inMemoryEventStore()
+    const commandBus = localCommandBus(unitOfWork)
+    const queryBus = localQueryBus(unitOfWork)
+    const issue = commandHandler(IssueReceipt, async ({ payload }, ctx) => {
+      ctx.append(Settled, { accountId: payload.accountId })
+      return { receiptId: 7 } as never
+    })
+    const app = kronos({
+      commandHandlers: [{ ...issue, handler: validatingHandler(issue.handler, issue.descriptor), commandBus, queryBus, eventStore }],
+    })
+
+    try {
+      await expect(send(commandBus, IssueReceipt, { accountId: "a-1" })).rejects.toThrow(
+        /billing\.IssueReceipt.*result.*failed validation/s,
+      )
+      expect((await eventStore.source(sourcingCondition({}))).events).toHaveLength(0)
     } finally {
       await app.stop()
     }

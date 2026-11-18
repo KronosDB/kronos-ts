@@ -1,11 +1,11 @@
 import type { Message, Metadata, MessageDescriptor } from "../messaging/messages.js"
-import { validate, validatedNow } from "./validate.js"
+import { validate, validatedNow, validateResult } from "./validate.js"
 import { describe, type Described } from "../composition/describe.js"
 
 /**
  * VALIDATION IS THE GATE MECHANISM: nothing crosses a handling boundary
- * unparsed — not the message coming IN, and not a single message the handling
- * gives birth to on the way out.
+ * unparsed — not the message coming IN, not a single message the handling
+ * gives birth to on the way out, and not the answer it returns.
  *
  * The descriptor is the second argument because the wrapper composes exactly
  * where a descriptor and a handler already sit together — the ENTRY:
@@ -18,7 +18,7 @@ import { describe, type Described } from "../composition/describe.js"
  * })
  * ```
  *
- * Two things happen per invocation, and they are two different questions:
+ * Three things happen per invocation, and they are three different questions:
  *
  * 1. INBOUND — the message's payload is validated against the ENTRY's
  *    descriptor, the one this handler was declared for. A message off a wire is
@@ -31,11 +31,19 @@ import { describe, type Described } from "../composition/describe.js"
  *    fails at the moment of the lie, before the store ever sees it, rather than
  *    years later in a replay that did nothing wrong.
  *
- * IN BOTH DIRECTIONS THE PARSED VALUE REPLACES THE INPUT. Standard validation
+ * 3. RESULT — what the handler returns is validated against the ENTRY's
+ *    descriptor's `result` schema, and the parsed value is what the caller
+ *    gets. A bad answer throws inside the handler's unit of work, so a command
+ *    that appended events and then answered wrongly rolls them back. A
+ *    descriptor without a `result` (an event, or a command that declares none)
+ *    is not checked. `ctx.emitUpdate` is not wrapped: an update need not have
+ *    the shape of the query's result.
+ *
+ * IN EVERY DIRECTION THE PARSED VALUE REPLACES THE INPUT. Standard validation
  * is a parse — coercions, defaults and transforms are part of what a schema
  * says — so `next` is handed a message whose payload is what the schema
- * produced, and each wrapped verb gives birth to the produced value, never the
- * one the caller happened to pass.
+ * produced, each wrapped verb gives birth to the produced value, never the
+ * one the caller happened to pass, and the caller gets the parsed answer.
  *
  * Which verbs exist is asked of the context, not assumed: a query context has
  * neither `send` nor `append`, an event context has no `append`, and one wrapper
@@ -65,7 +73,8 @@ export function validatingHandler<H extends (message: any, context: any) => any>
   Described<{ readonly name: "validatingHandler"; readonly next: H }> {
   const wrapped = async (message: Message, context: Parameters<H>[1]): Promise<Awaited<ReturnType<H>>> => {
     const payload = await validate(descriptor, message.payload)
-    return await next({ ...message, payload }, overlaid(context))
+    const answer = await next({ ...message, payload }, overlaid(context))
+    return (await validateResult(descriptor, answer)) as Awaited<ReturnType<H>>
   }
   return describe(wrapped, { name: "validatingHandler", next } as const)
 }

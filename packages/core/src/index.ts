@@ -300,9 +300,9 @@ export { correlation } from "./correlation/correlation.js"
 // there is nothing to look up and nothing to register:
 //
 //   validate(descriptor, payload)              the primitive, anywhere
-//   validatingHandler(next, descriptor)        inbound, and every ctx birth
+//   validatingHandler(next, descriptor)        inbound, every ctx birth, the answer
 //
-// The parsed value REPLACES the input on both paths, because standard
+// The parsed value REPLACES the input on every path, because standard
 // validation is a parse and a schema's coercions and defaults are part of what
 // it says.
 export { validate } from "./validation/validate.js"

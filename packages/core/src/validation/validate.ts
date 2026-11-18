@@ -71,19 +71,36 @@ export function validatedNow(
 }
 
 /**
+ * VALIDATE A HANDLER'S ANSWER AGAINST THE RESULT ITS MESSAGE TYPE DECLARES.
+ *
+ * The parsed answer, or a throw naming the message type. A descriptor without a
+ * `result` (an event, or a command that declares none) has nothing to check, and
+ * the answer comes back as it was. Sync in, sync out, as {@link validate}.
+ */
+export function validateResult(descriptor: MessageDescriptor, answer: unknown): unknown {
+  const schema = "result" in descriptor ? descriptor.result : undefined
+  if (schema === undefined) return answer
+  const outcome = schema["~standard"].validate(answer)
+  return outcome instanceof Promise
+    ? outcome.then((settled: StandardSchemaResult<unknown>) => accepted(descriptor, settled, "result"))
+    : accepted(descriptor, outcome as StandardSchemaResult<unknown>, "result")
+}
+
+/**
  * What a settled standard result means: the parsed value, or an error naming the
  * message type and everything the schema found wrong with it.
  *
  * `issues` is the discriminant — the standard says a success carries no issues —
- * so this is the union narrowing, written once for both readings above.
+ * so this is the union narrowing, written once for every reading above.
  */
 function accepted<D extends MessageDescriptor>(
   descriptor: D,
   outcome: StandardSchemaResult<unknown>,
+  part?: "result",
 ): InferOutput<D["payload"]> {
   if (outcome.issues) {
     throw new Error(
-      `validate: "${qualifiedNameToString(descriptor.name)}" failed validation — ` +
+      `validate: "${qualifiedNameToString(descriptor.name)}"${part === undefined ? "" : ` ${part}`} failed validation — ` +
         outcome.issues.map((issue) => issue.message).join("; "),
     )
   }

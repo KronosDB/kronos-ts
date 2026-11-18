@@ -798,6 +798,10 @@ validatingHandler(next, descriptor): (message, ctx) => Promise<Awaited<R>>
   // with (append's batch form: per tuple). `send`/`query` already answer
   // promises, so an async schema is awaited; `append`/`schedule` give birth in
   // the caller's turn, so an async schema there throws, naming the verb.
+  // RESULT: what the handler returns is validated against the entry
+  // descriptor's `result` schema (none declared: not checked), and the caller
+  // gets the parse. A bad answer throws inside the handler's unit of work, so a
+  // command's appends roll back. `ctx.emitUpdate` is not wrapped.
   // It demands NOTHING of `C`, so a wrapped handler wires against exactly the
   // buses the unwrapped one did, and it composes with `correlatingHandler` and
   // `otlpHandler` in any order.
