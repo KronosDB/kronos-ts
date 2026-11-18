@@ -355,10 +355,15 @@ ctx.append(Charged, { accountId })     // ← missing `amount`: throws HERE,
                                        //   not in a replay years from now
 ```
 
-**The parsed value replaces the input**, on both paths. Standard validation is a
+**The answer** a command or query handler returns is checked against the entry's
+descriptor's `result` schema. A bad answer throws inside the handler's unit of
+work, so a command's appended events roll back with it. A command that declares
+no `result` is not checked, and `ctx.emitUpdate` is not wrapped.
+
+**The parsed value replaces the input**, on every path. Standard validation is a
 *parse* — coercions, defaults and transforms are part of what a schema says — so
-the handler is handed the message the schema produced, and each verb gives birth
-to the produced value.
+the handler is handed the message the schema produced, each verb gives birth
+to the produced value, and the caller gets the parsed answer.
 
 `ctx.send` and `ctx.query` already answer promises, so a schema that validates
 asynchronously is simply awaited. `ctx.append` returns `void` and `ctx.schedule`

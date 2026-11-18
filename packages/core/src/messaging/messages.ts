@@ -375,7 +375,10 @@ export type CommandDescriptor<
   /** Version of the command. Default: "1.0". */
   readonly version: string
   readonly payload: P
-  /** Optional result schema — enables typed return from `send(bus, …)`. */
+  /**
+   * Optional result schema — enables typed return from `send(bus, …)`. A handler wrapped in `validatingHandler` has
+   * its answer validated against it.
+   */
   readonly result?: R
   /**
    * The payload field that contains the routing key for distributed command routing.
@@ -457,8 +460,8 @@ export function tagsOf<P extends StandardSchemaV1>(
 
 /**
  * Describes a query message type — its name, its payload schema, and the schema of what it answers. A query always
- * answers something, so its result is required: `query(bus, …)` and `ctx.query` are typed by it, and the answer is
- * validated against it.
+ * answers something, so its result is required: `query(bus, …)` and `ctx.query` are typed by it, and a handler wrapped
+ * in `validatingHandler` has its answer validated against it.
  */
 export type QueryDescriptor<
   P extends StandardSchemaV1 = StandardSchemaV1,
