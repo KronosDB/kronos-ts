@@ -129,17 +129,14 @@ const Student = snapshot(state({
 const OpenCourse = command({
   name: qn("university", "OpenCourse"),
   payload: z.object({ courseId: z.string(), title: z.string(), capacity: z.number() }),
-  routingKey: "courseId",
 })
 const RegisterStudent = command({
   name: qn("university", "RegisterStudent"),
   payload: z.object({ studentId: z.string(), name: z.string(), maxCourses: z.number() }),
-  routingKey: "studentId",
 })
 const EnrollStudent = command({
   name: qn("university", "EnrollStudent"),
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  routingKey: "courseId",
 })
 
 // THE CONTEXT THIS APP'S COMMAND HANDLERS GET, NAMED ONCE.

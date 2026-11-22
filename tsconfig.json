@@ -29,6 +29,7 @@
     "packages/rabbitmq/src/__tests__/topology-config.types.ts",
     "packages/core/src/messaging/__tests__/standard-schema.types.ts",
     "packages/core/src/messaging/__tests__/descriptor-result.types.ts",
+    "packages/core/src/messaging/__tests__/command-descriptor.types.ts",
     "packages/core/src/event-sourcing/__tests__/state-initial.types.ts",
     "packages/core/src/validation/__tests__/validation-composition.types.ts",
     "packages/core/src/logging/__tests__/logging-demand.types.ts",

@@ -100,7 +100,6 @@ async function uowDb(ctx: { unitOfWork: UnitOfWork }) {
 const EditWidget = command({
   name: qn("tx-commands", "EditWidget"),
   payload: z.object({ id: z.string(), name: z.string(), boom: z.boolean().optional() }),
-  routingKey: "id",
 })
 
 const WidgetUpdated = event({
