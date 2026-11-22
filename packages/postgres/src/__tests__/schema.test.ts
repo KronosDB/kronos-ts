@@ -178,18 +178,45 @@ describe("buildScheduledEventsIndexesDDL", () => {
   })
 })
 
-function makeMockAdapter(): { adapter: SchemaBootstrapAdapter; calls: string[]; throwOn?: RegExp } {
-  const state: { adapter: SchemaBootstrapAdapter; calls: string[]; throwOn?: RegExp } = {
+/**
+ * An adapter that records each transaction it opens and the statements run in
+ * it. `calls` is every statement in order, across transactions.
+ */
+function makeMockAdapter(): {
+  adapter: SchemaBootstrapAdapter
+  calls: string[]
+  transactions: Array<{ statements: string[]; outcome: "open" | "committed" | "rolled back" }>
+  throwOn?: RegExp
+} {
+  const state: ReturnType<typeof makeMockAdapter> = {
     calls: [],
+    transactions: [],
     adapter: undefined as unknown as SchemaBootstrapAdapter,
   }
   state.adapter = {
-    async query(sql: string, _params?: unknown[]) {
-      state.calls.push(sql)
-      if (state.throwOn && state.throwOn.test(sql)) {
-        throw new Error("simulated DDL failure")
+    async transaction(_isolationLevel, fn) {
+      const transaction: (typeof state.transactions)[number] = { statements: [], outcome: "open" }
+      state.transactions.push(transaction)
+      try {
+        const result = await fn({
+          unwrap<T = unknown>(): T {
+            return undefined as T
+          },
+          async query<R>(sql: string): Promise<R[]> {
+            state.calls.push(sql)
+            transaction.statements.push(sql)
+            if (state.throwOn && state.throwOn.test(sql)) {
+              throw new Error("simulated DDL failure")
+            }
+            return []
+          },
+        })
+        transaction.outcome = "committed"
+        return result
+      } catch (error) {
+        transaction.outcome = "rolled back"
+        throw error
       }
-      return []
     },
   }
   return state
@@ -243,21 +270,24 @@ describe("buildDeadLettersIndexesDDL", () => {
 })
 
 describe("bootstrapSchema", () => {
-  it("acquires session-scoped advisory lock BEFORE issuing any CREATE TABLE", async () => {
+  it("runs each DDL statement in its own transaction, after that transaction took the schema lock", async () => {
     const mock = makeMockAdapter()
     await bootstrapSchema(mock.adapter)
-    const lockIdx = mock.calls.findIndex((c) => c.includes("pg_advisory_lock"))
-    const firstDDLIdx = mock.calls.findIndex((c) => c.includes("CREATE TABLE"))
-    expect(lockIdx).toBeGreaterThanOrEqual(0)
-    expect(firstDDLIdx).toBeGreaterThan(lockIdx)
+    // events table + indexes, snapshots, scheduled table + index, tokens, dead letters table + index
+    expect(mock.transactions).toHaveLength(8)
+    for (const transaction of mock.transactions) {
+      expect(transaction.statements).toHaveLength(2)
+      expect(transaction.statements[0]).toBe("SELECT pg_advisory_xact_lock($1)")
+      expect(transaction.statements[1]).toContain("CREATE")
+      expect(transaction.outcome).toBe("committed")
+    }
   })
 
-  it("releases the advisory lock after DDL completes", async () => {
+  it("takes no session-level lock, so there is nothing to unlock", async () => {
     const mock = makeMockAdapter()
     await bootstrapSchema(mock.adapter)
-    const unlockIdx = mock.calls.findIndex((c) => c.includes("pg_advisory_unlock"))
-    const lastDDLIdx = mock.calls.map((c, i) => c.includes("CREATE") ? i : -1).filter((i) => i >= 0).pop() ?? -1
-    expect(unlockIdx).toBeGreaterThan(lastDDLIdx)
+    expect(mock.calls.some((c) => c.includes("pg_advisory_lock("))).toBe(false)
+    expect(mock.calls.some((c) => c.includes("pg_advisory_unlock"))).toBe(false)
   })
 
   it("issues DDL in order: events table, events indexes, snapshots table", async () => {
@@ -294,7 +324,7 @@ describe("bootstrapSchema", () => {
     expect(mock.calls.some((c) => c.includes("kronos_dead_letters"))).toBe(false)
   })
 
-  it("releases the lock even when a DDL statement throws", async () => {
+  it("rolls back the transaction of a DDL statement that throws, and runs none after it", async () => {
     const mock = makeMockAdapter()
     mock.throwOn = /tags_gin/
     let caught: Error | undefined
@@ -303,9 +333,10 @@ describe("bootstrapSchema", () => {
     } catch (e) {
       caught = e as Error
     }
-    expect(caught).toBeDefined()
     expect(caught?.message).toContain("simulated DDL failure")
-    expect(mock.calls.some((c) => c.includes("pg_advisory_unlock"))).toBe(true)
+    // The events table committed; the events indexes failed; nothing followed.
+    expect(mock.transactions.map((t) => t.outcome)).toEqual(["committed", "rolled back"])
+    expect(mock.calls.some((c) => c.includes("kronos_snapshots"))).toBe(false)
   })
 
   it("is idempotent — running twice does not error", async () => {
