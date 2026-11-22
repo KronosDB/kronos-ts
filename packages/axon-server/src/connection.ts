@@ -368,17 +368,11 @@ export type AxonServerConnectionOptions = AxonServerConnectionConfig & {
   /** Platform stream tuning — heartbeat and processor-status cadence. */
   platformService?: PlatformServiceOptions
   /**
-   * How long {@link AxonServerConnectionHandle.start} waits for Axon Server's
-   * routing tables to register the subscribe frames sent on the command/query
-   * streams. This is the entire data-path readiness barrier.
-   *
-   * It is a timed wait rather than an observed signal because nothing on the
-   * client can observe it: subscribes travel on the bus streams, and the
-   * platform stream — which is where an ack would arrive — is a different
-   * stream that Axon Server holds open silently after `register`. Default:
-   * 1000, matching the legacy enhancer.
+   * How long {@link AxonServerConnectionHandle.start} waits for Axon Server to
+   * acknowledge the handler subscriptions sent on the command and query
+   * streams before it rejects. Default: 30000ms.
    */
-  busSubscriptionAckDelayMs?: number
+  startTimeoutMs?: number
 }
 
 /**
@@ -391,7 +385,11 @@ export type AxonServerStoreSource = {
   readonly serializer: Serializer
 }
 
-/** What a BUS borrows: a store's two, plus the drain latch and the retry policy. */
+/**
+ * What a BUS borrows: a store's two, plus the drain latch and the retry policy.
+ * A bus built by hand against a narrower source (a test, a custom composition)
+ * need not provide `registerReadiness`: it then has no start barrier to join.
+ */
 export type AxonServerBusSource = AxonServerStoreSource & {
   /**
    * The connection-wide drain latch. In-flight dispatches register on it and
@@ -400,6 +398,14 @@ export type AxonServerBusSource = AxonServerStoreSource & {
    */
   readonly shutdown: ShutdownLatch
   readonly resilience?: Partial<ResilienceConfig>
+  /**
+   * Buses register what {@link AxonServerConnectionHandle.start} must wait for
+   * here: a function that resolves once Axon Server has acknowledged every
+   * handler subscription the bus has sent.
+   *
+   * @internal
+   */
+  readonly registerReadiness?: (acknowledged: () => Promise<void>) => void
 }
 
 /** What the CONTROL PLANE borrows: the platform stream, and only that. */
@@ -424,12 +430,13 @@ export type AxonServerConnectionHandle = AxonServerBusSource & AxonServerPlatfor
    * DATA-PATH START. Two things, both data path:
    *
    *   1. arm heartbeat-driven reconnect detection on the platform stream, and
-   *   2. wait until Axon Server can route to the handlers subscribed on the bus
-   *      streams.
+   *   2. wait until Axon Server has acknowledged every handler subscription the
+   *      buses have sent.
    *
-   * Call AFTER `kronos` — the subscribe frames must already be on the wire for
-   * the readiness wait to mean anything. Takes no arguments and arms no
-   * control-plane state.
+   * Call AFTER `kronos`: a handler subscribed later is not waited for. Rejects
+   * with an `UnavailableError` when the acknowledgements have not arrived
+   * within `startTimeoutMs`, and with the server's error when it refuses a
+   * subscription. Takes no arguments and arms no control-plane state.
    */
   start(): Promise<void>
   /** Drain in-flight bus work, stop the platform stream, close the channel. */
@@ -454,7 +461,7 @@ export type AxonServerConnectionHandle = AxonServerBusSource & AxonServerPlatfor
  *   axonServerQueryBus(localQueryBus(unitOfWork), axon), correlation)
  *
  * const app = kronos({ commandHandlers, queryHandlers })
- * await axon.start()                  // readiness barrier: the server can route to us
+ * await axon.start()                  // the server has acknowledged our handler subscriptions
  * // opt in to remote administration
  * const control = await axonServerControlPlane(axon, app.processors)
  * // …
@@ -486,7 +493,7 @@ export async function axonServerConnection(
     serializer,
     resilience,
     platformService,
-    busSubscriptionAckDelayMs,
+    startTimeoutMs,
     ...connectionConfig
   } = options
 
@@ -517,6 +524,8 @@ export async function axonServerConnection(
   // not anyone opted in.
   const platform = platformConnection(connection, platformService)
 
+  const readiness: Array<() => Promise<void>> = []
+
   return {
     connection,
     config: connection.config,
@@ -524,6 +533,9 @@ export async function axonServerConnection(
     resilience,
     shutdown,
     platform,
+    registerReadiness(acknowledged) {
+      readiness.push(acknowledged)
+    },
 
     async start() {
       // RECONNECT DETECTION IS DATA PATH. The heartbeat on the platform stream
@@ -540,15 +552,17 @@ export async function axonServerConnection(
       // are idempotent, so either order works.
       await platform.armConnectionMonitoring()
 
-      // The only thing the data path has to wait for: Axon Server's
-      // command/query routing tables registering the subscribe frames sent on
-      // the BUS streams. It cannot be derived from the platform stream, because
-      // subscribes travel on a different stream entirely — and the platform
-      // stream's own `subscriptionsAcked()` latch says nothing about them (it
-      // latches unconditionally once `register` has been flushed). So this
-      // barrier is the settle wait, deliberately independent of whether the
-      // platform stream is up at all. The legacy enhancer carried the same wait.
-      await new Promise((r) => setTimeout(r, busSubscriptionAckDelayMs ?? 1000))
+      // Axon Server answers each subscribe instruction with an InstructionAck
+      // on the bus stream that sent it, once the node this client is connected
+      // to has registered the handler. That says nothing about the other nodes
+      // of a cluster: a command or query that enters through another node can
+      // still find no handler until the registration has reached it, and the
+      // protocol reports nothing for that.
+      await withMessagingTimeout(
+        Promise.all(readiness.map((acknowledged) => acknowledged())),
+        startTimeoutMs ?? 30000,
+        "Handler registration",
+      )
     },
 
     async close() {

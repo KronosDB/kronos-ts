@@ -5,7 +5,8 @@ import assert from "node:assert/strict"
  *
  * Written on the functional composition shape: the connection is the shared
  * resource, the stores and buses are plain functions over it, and `start()`
- * waits for the server's routing tables. Requires docker (testcontainers).
+ * waits for the server to acknowledge the handler subscriptions. Requires
+ * docker (testcontainers).
  *
  * Coverage parity with the original deferred suite:
  *   1. dispatches a command through Axon Server and sources state
@@ -23,7 +24,7 @@ import assert from "node:assert/strict"
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
 import { z } from "zod"
-import { qn } from "@kronos-ts/core"
+import { qn, qualifiedNameToString } from "@kronos-ts/core"
 import { command, event, commandHandler, jsonSerializer, send, unitOfWork } from "@kronos-ts/core"
 import { state } from "@kronos-ts/core"
 import {
@@ -227,9 +228,9 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       ],
     })
 
-    // Handlers are subscribed by now — wait until the server can route to them.
+    // Handlers are subscribed by now — wait until the server has acknowledged them.
     // NOTE: this is the DATA PATH only. `start()` arms heartbeat-driven
-    // reconnect detection on the platform stream and waits for bus routability;
+    // reconnect detection on the platform stream and waits for those acknowledgements;
     // it arms NO remote administration. No `axonServerControlPlane` is built
     // until the dedicated test below, so every command/query/event test in
     // between runs with instruction routing and processor status reporting
@@ -340,6 +341,38 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     }
     // close() tears down the SHARED stream — see the note on PlatformConnection.stop().
     expect(axon.platform.connected).toBe(false)
+  }, 60_000)
+
+  it("start() resolves on the server's acknowledgement, and the handler is routable at once", async () => {
+    const handling = await axonServerConnection({
+      componentName: "axon-it-acks",
+      host,
+      port: grpcPort,
+      context: "default",
+      serializer: jsonSerializer(),
+      platformService: { heartbeatTimeoutMs: 60_000 },
+    })
+    try {
+      const handlerBus = axonServerCommandBus(localCommandBus(unitOfWork), handling)
+      const acknowledged = qn("axon-it", `Acknowledged-${crypto.randomUUID()}`)
+      handlerBus.subscribe(
+        qualifiedNameToString(acknowledged),
+        async (message) => `handled ${(message.payload as { n: number }).n}`,
+      )
+      await handling.start()
+
+      // Dispatched from the suite's own connection, so the server routes it.
+      const answer = await commandBus.dispatch({
+        kind: "command",
+        identifier: crypto.randomUUID(),
+        name: acknowledged,
+        payload: { n: 7 },
+        metadata: {},
+      })
+      expect(answer).toBe("handled 7")
+    } finally {
+      await handling.close()
+    }
   }, 60_000)
 
   it("snapshot roundtrip via axonServerSnapshottingEventStore", async () => {

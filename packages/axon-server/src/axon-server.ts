@@ -54,6 +54,7 @@ import type { AxonServerBusSource } from "./connection.js"
 import { contextView } from "./context-view.js"
 import { metadataToProto, metadataFromProto } from "./metadata-conversion.js"
 import { outboundStream, type OutboundStream } from "./outbound-stream.js"
+import { subscriptionAcks } from "./subscription-acks.js"
 import type { Command } from "./generated/command.js"
 import type { ShutdownLatch } from "./shutdown-latch.js"
 import { mapErrorCode, AxonServerErrorCode, commandFailureCode, fromGrpc, queryFailureCode } from "./errors.js"
@@ -285,6 +286,8 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
   let providerAbort = new AbortController()
   connection.onDisconnect?.(() => { providerAbort.abort(); outbound.close() })
   let permits = 0n
+  const acks = subscriptionAcks()
+  conn.registerReadiness?.(() => acks.acknowledged())
 
   function ensureStreamStarted() {
     if (streamStarted) return
@@ -304,6 +307,7 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
   }
 
   function sendSubscribe(commandName: string) {
+    const instructionId = generateIdentifier()
     outbound.send({
       subscribe: {
         messageId: generateIdentifier(),
@@ -312,8 +316,9 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
         clientId: connection.config.clientId,
         loadFactor,
       },
-      instructionId: generateIdentifier(),
+      instructionId,
     })
+    acks.sent(instructionId)
   }
 
   /**
@@ -331,6 +336,7 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
     outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
+    acks.reset()
     ensureStreamStarted()
     // Re-subscribe all handlers FIRST
     for (const commandName of subscribedNames) sendSubscribe(commandName)
@@ -424,6 +430,7 @@ export function axonServerCommandBus<U extends UnitOfWork = UnitOfWork>(
         // deadlock when every admitted parent is waiting for a queued child.
         if (permits <= THRESHOLD && !shutdownLatch.shuttingDown) grantPermits()
 
+        if (message.ack) acks.received(message.ack)
         if (!message.command) continue
 
         // Each invocation owns its response and shutdown activity. Keep reading
@@ -600,6 +607,8 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
   let providerAbort = new AbortController()
   connection.onDisconnect?.(() => { cancelResponseCredits(); providerAbort.abort(); outbound.close() })
   let permits = 0n
+  const acks = subscriptionAcks()
+  conn.registerReadiness?.(() => acks.acknowledged())
 
   function ensureStreamStarted() {
     if (streamStarted) return
@@ -618,6 +627,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
   }
 
   function sendSubscribe(queryName: string) {
+    const instructionId = generateIdentifier()
     outbound.send({
       subscribe: {
         messageId: generateIdentifier(),
@@ -626,8 +636,9 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
         componentName: connection.config.componentName,
         clientId: connection.config.clientId,
       },
-      instructionId: generateIdentifier(),
+      instructionId,
     })
+    acks.sent(instructionId)
   }
 
   /**
@@ -644,6 +655,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
     outbound = outboundStream<any>()
     streamStarted = false
     permits = 0n
+    acks.reset()
     ensureStreamStarted()
     for (const queryName of subscribedNames) sendSubscribe(queryName)
     grantQueryPermits()
@@ -756,6 +768,7 @@ export function axonServerQueryBus<U extends UnitOfWork = UnitOfWork>(
         // one-credit window between otherwise successful requests.
         permits--
         if (permits <= THRESHOLD && !shutdownLatch.shuttingDown) grantQueryPermits()
+        if (message.ack) acks.received(message.ack)
         if (message.queryFlowControl?.permits > 0n) {
           const identifier = message.queryFlowControl.queryReference?.requestId
           if (identifier) {
