@@ -102,7 +102,7 @@ export type ContextSendFunction = <P extends StandardSchemaV1, R extends Standar
 
 /**
  * `query` as a context capability. Consults a query handler — local or across
- * the distributed bus — inside the handler's own UnitOfWork. The AF5 analogue
+ * the distributed bus — in a unit of work of the query's own. The AF5 analogue
  * is injecting the query gateway into a handler. Prefer a projection or a
  * capability command; reach for this when a decision genuinely needs another
  * module's answer, fresh.
@@ -113,13 +113,10 @@ export type ContextQueryFunction = <P extends StandardSchemaV1, R extends Standa
   metadata?: Metadata,
 ) => Promise<InferResult<R>>
 
-// THE SCHEDULING VERBS ARE NOT DECLARED HERE. They used to be — three context
-// capability types beside these, duplicating the three in
-// `event-scheduling/schedule.ts` — because a context ALWAYS had them and the
-// only question was whether the field they read was populated. It is not always
-// so any more: `SuppliedScheduleCapability<E>` contributes them, and only to a context whose
-// entry wired a log that can hold events that have not happened yet. They live
-// with the tier that adds them.
+// THE SCHEDULING VERBS ARE NOT DECLARED HERE. `SuppliedScheduleCapability<E>`
+// contributes them, and only to a context whose entry wired a log that can hold
+// events that have not happened yet. They live with the tier that adds them, in
+// `event-scheduling/schedule.ts`.
 
 /**
  * Capabilities available to command handlers: everything an event handler has,
@@ -161,9 +158,7 @@ export type HandlerContextDeps<
    * fused read, refuse a snapshotting state on an unwrapped one, and hand out
    * the scheduling verbs only where there is somewhere to schedule INTO. There
    * is no second store field beside this one and there never will be: a
-   * capability the log has is a capability this entry has.
-   *
-   * THE `eventScheduler` FIELD THAT USED TO SIT HERE IS GONE. A schedule fires
+   * capability the log has is a capability this entry has. A schedule fires
    * into a log, so the log is what holds it — see `event-scheduling/scheduler.ts`.
    */
   readonly eventStore?: E

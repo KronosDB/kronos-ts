@@ -71,7 +71,7 @@ type EventHandlerContextBase<U extends UnitOfWork = UnitOfWork> = {
   readonly source: ContextSourceFunction
   /** Dispatch a command; it is handled in its own fresh UnitOfWork. */
   readonly send: ContextSendFunction
-  /** Consult a query handler (cross-module read) within this UnitOfWork. */
+  /** Consult a query handler (cross-module read). The query runs in a unit of work of its own. */
   readonly query: ContextQueryFunction
   // `emitUpdate` IS NOT DECLARED HERE. It is the subscription tier's capability —
   // `SuppliedSubscriptionCapability<Q>` contributes it, and only to a context

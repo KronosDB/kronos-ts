@@ -1,9 +1,8 @@
 /**
  * postgresEventStore — the Postgres EventStore.
  *
- * Plan 12-04 delivered: source, appendEvents, append.
- * Plan 12-05 adds: open (gap-free tailing via xid8 + pg_snapshot_xmin),
- *   getHeadPosition, firstToken, latestToken, publish, subscribe.
+ * Members: source, appendEvents, append, open (gap-free tailing via xid8 +
+ *   pg_snapshot_xmin), getHeadPosition, firstToken, latestToken.
  *
  * Append path:
  *   1. open transaction at READ COMMITTED
@@ -20,7 +19,7 @@
  *   - Watermark query: (transaction_id, sequence_position) > ($xid, $pos)
  *     AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
  *   - Wake-up via LISTEN/NOTIFY on `kronos_events_${tables.events}` channel
- *   - Fallback to 250ms polling if LISTEN is not supported
+ *   - A 250ms poll runs beside it, and alone if LISTEN is not supported
  *
  * The conflict check + INSERT run as direct parameterised SQL inside the
  * append transaction (see checkAndInsert), not via a stored procedure.
@@ -570,8 +569,8 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       }
 
       // Start polling immediately so we don't miss events that were committed
-      // before the LISTEN subscription is established. The poll interval is
-      // replaced by NOTIFY-driven pumps once LISTEN is up.
+      // before the LISTEN subscription is established. The poll keeps running
+      // once LISTEN is up.
       let pollInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
         if (closed) {
           clearInterval(pollInterval)
