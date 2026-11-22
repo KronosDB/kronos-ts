@@ -139,8 +139,9 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
       ? deadLetteringDelivery({ queue: deadLetterQueue, processingGroup: name, sequence })
       : undefined
 
-  // Replays a parked letter through the same handlers, with a context built
-  // from the reprocess unit of work exactly as live delivery does.
+  // Replays a parked letter through the handlers that have not handled it,
+  // with a context built from the reprocess unit of work exactly as live
+  // delivery does.
   const reprocessor: DeadLetterReprocessor | undefined = deadLetterQueue
     ? deadLetterReprocessor({
         queue: deadLetterQueue,
@@ -722,8 +723,12 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
     for (let i = from; i < entries.length; i++) await invoke(entries[i]!, sequencedEvent, uow, replaying)
   }
 
-  // Replay a parked dead letter through the handlers, with a context built the
-  // same way live delivery builds one so dependencies resolve identically.
+  // Replay a parked dead letter, with a context built the same way live
+  // delivery builds one so dependencies resolve identically. A letter that
+  // records the handler that failed (`diagnostics.handlerIndex`) is replayed
+  // from that handler on: the handlers before it succeeded when the event was
+  // delivered, and the ones after it were never called. A letter without one,
+  // or with one past the end of the handlers, is replayed through all of them.
   // Throws on the first handler failure so the reprocessor can requeue the
   // letter (delivery is at-least-once → handlers must be idempotent).
   async function replayDeadLetter(letter: DeadLetter, uow: U): Promise<void> {
@@ -734,7 +739,11 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
 
     const position =
       typeof letter.diagnostics.position === "number" ? BigInt(letter.diagnostics.position) : 0n
-    for (const entry of entries) {
+    const failed = letter.diagnostics.handlerIndex
+    const from =
+      typeof failed === "number" && Number.isInteger(failed) && failed >= 0 && failed < entries.length ? failed : 0
+    for (let i = from; i < entries.length; i++) {
+      const entry = entries[i]!
       await entry.definition.handler({ ...event, sequence: position }, contextFor(uow, entry, uow.replaying))
     }
   }

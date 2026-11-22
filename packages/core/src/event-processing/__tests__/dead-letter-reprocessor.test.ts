@@ -145,6 +145,134 @@ describe("dead-letter reprocessing", () => {
     expect(await dlq.contains("reproc-cap", "A")).toBe(true)
   })
 
+  describe("several handlers for one event", () => {
+    const descriptor = { kind: "event" as const, name: EVENT_NAME, version: "1.0", payload: {} as any }
+
+    /** A handler that records each event it is called with under `name`. */
+    function recording(name: string, calls: string[], fails: () => boolean = () => false): EventHandler<any> {
+      return {
+        kind: "event-handler",
+        descriptor,
+        handler: ({ payload }: { payload: { v: number } }) => {
+          calls.push(`${name}:${payload.v}`)
+          if (fails()) throw new Error(`${name} is down`)
+        },
+      }
+    }
+
+    function run(name: string, events: SequencedEvent[], dlq: ReturnType<typeof inMemoryDeadLetterQueue>, handlers: EventHandler<any>[]) {
+      return runEventProcessor({
+        processor: polling(
+          deadLettering(eventProcessor(name, createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork), dlq, byId),
+          10,
+        ),
+        handlers: handlers.map((definition) => ({ definition })),
+      })
+    }
+
+    it("records which handler failed and replays that handler, not the ones that succeeded", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      const calls: string[] = []
+      let broken = true
+      const processor = run("reproc-second", [makeEvent({ v: 1 }, 0n, "A")], dlq, [
+        recording("first", calls),
+        recording("second", calls, () => broken),
+      ])
+
+      await processor.start()
+      await waitForPosition(processor, 1n)
+      expect(calls).toEqual(["first:1", "second:1"])
+      const [letter] = await dlq.deadLetterSequence("reproc-second", "A")
+      expect(letter!.diagnostics.handlerIndex).toBe(1)
+      expect(letter!.diagnostics.handlerName).toBeUndefined()
+
+      broken = false
+      expect(await processor.reprocessDeadLetters()).toBe(true)
+      processor.stop()
+
+      expect(await dlq.size("reproc-second")).toBe(0)
+      expect(calls).toEqual(["first:1", "second:1", "second:1"])
+    })
+
+    it("replays the handlers after the failed one, which were not called", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      const calls: string[] = []
+      let broken = true
+      const processor = run("reproc-middle", [makeEvent({ v: 1 }, 0n, "A")], dlq, [
+        recording("first", calls),
+        recording("second", calls, () => broken),
+        recording("third", calls),
+      ])
+
+      await processor.start()
+      await waitForPosition(processor, 1n)
+      expect(calls).toEqual(["first:1", "second:1"])
+
+      broken = false
+      expect(await processor.reprocessDeadLetters()).toBe(true)
+      processor.stop()
+
+      expect(await dlq.size("reproc-middle")).toBe(0)
+      expect(calls).toEqual(["first:1", "second:1", "second:1", "third:1"])
+    })
+
+    it("replays every handler for a letter parked behind another", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      const calls: string[] = []
+      let broken = true
+      const processor = run("reproc-blocked", [makeEvent({ v: 1 }, 0n, "A"), makeEvent({ v: 2 }, 1n, "A")], dlq, [
+        recording("first", calls),
+        recording("second", calls, () => broken),
+      ])
+
+      await processor.start()
+      await waitForPosition(processor, 2n)
+      expect(calls).toEqual(["first:1", "second:1"])
+      const lane = await dlq.deadLetterSequence("reproc-blocked", "A")
+      expect(lane.map((l) => l.diagnostics.handlerIndex)).toEqual([1, undefined])
+      expect(lane.map((l) => l.diagnostics.blocked)).toEqual([undefined, true])
+
+      broken = false
+      expect(await processor.reprocessDeadLetters()).toBe(true)
+      processor.stop()
+
+      expect(await dlq.size("reproc-blocked")).toBe(0)
+      expect(calls).toEqual(["first:1", "second:1", "second:1", "first:2", "second:2"])
+    })
+
+    it("keeps the recorded handler when the replay fails again", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      const calls: string[] = []
+      const processor = run("reproc-again", [makeEvent({ v: 1 }, 0n, "A")], dlq, [
+        recording("first", calls),
+        recording("second", calls, () => true),
+      ])
+
+      await processor.start()
+      await waitForPosition(processor, 1n)
+      expect(await processor.reprocessDeadLetters()).toBe(true)
+      expect(await processor.reprocessDeadLetters()).toBe(true)
+      processor.stop()
+
+      const [letter] = await dlq.deadLetterSequence("reproc-again", "A")
+      expect(letter!.diagnostics.handlerIndex).toBe(1)
+      expect(calls).toEqual(["first:1", "second:1", "second:1", "second:1"])
+    })
+
+    it("replays every handler when the recorded one is past the end of the handlers", async () => {
+      const dlq = inMemoryDeadLetterQueue()
+      const calls: string[] = []
+      const event = makeEvent({ v: 1 }, 0n, "A").event
+      await dlq.enqueue("reproc-stale", deadLetter(event, new Error("parked"), "A", { position: 0, handlerIndex: 5 }))
+      const processor = run("reproc-stale", [], dlq, [recording("first", calls), recording("second", calls)])
+
+      expect(await processor.reprocessDeadLetters()).toBe(true)
+
+      expect(await dlq.size("reproc-stale")).toBe(0)
+      expect(calls).toEqual(["first:1", "second:1"])
+    })
+  })
+
   describe("deadLetterReprocessor", () => {
     function parked(dlq: ReturnType<typeof inMemoryDeadLetterQueue>, ...names: string[]) {
       return Promise.all(

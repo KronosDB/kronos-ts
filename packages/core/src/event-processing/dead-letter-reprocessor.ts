@@ -2,10 +2,12 @@ import type { DeadLetter, SequencedDeadLetterQueue } from "./dead-letter-queue.j
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
 
 /**
- * Replays a single dead letter through its handlers. Resolves on success and
- * rejects with the handler's error on failure. Supplied by the owning
- * processor, which builds a handler context from the reprocess unit of work
- * exactly as it does for live delivery.
+ * Replays a single dead letter. Resolves on success and rejects with the
+ * handler's error on failure. Supplied by the owning processor, which builds a
+ * handler context from the reprocess unit of work exactly as it does for live
+ * delivery, and calls the handler the letter records as failed
+ * (`diagnostics.handlerIndex`) and the handlers after it; every handler of the
+ * event when the letter records none.
  */
 export type DeadLetterReplay<U extends UnitOfWork = UnitOfWork> = (letter: DeadLetter, uow: U) => Promise<void>
 
