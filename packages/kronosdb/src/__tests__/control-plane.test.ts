@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import {
   concurrent,
   event,
@@ -15,11 +15,14 @@ import {
 } from "@kronos-ts/core"
 import { z } from "zod"
 import { kronosDbControlPlane, type ManagedEventProcessor } from "../control-plane.js"
-import type {
-  InstructionHandler,
-  PlatformConnection,
-  PlatformInstruction,
+import {
+  platformConnection,
+  type InstructionHandler,
+  type PlatformConnection,
+  type PlatformInstruction,
 } from "../platform-service.js"
+import { ProcessorAction } from "../protocol/kronosdb-protocol.js"
+import { rig, until, type Rig } from "./bus-test-kit.js"
 import { toEventProcessorInfo, type ProcessorStatusSupplier } from "../event-processor-info.js"
 
 /**
@@ -175,12 +178,21 @@ describe("kronosDbControlPlane", () => {
       expect(stopped).toBe(true)
     })
 
-    it("ignores an instruction for an unknown processor without throwing", async () => {
+    it("fails an instruction for an unknown processor, naming it", async () => {
       const platform = fakePlatform()
       const proc = fakeProcessor("proc-a")
       kronosDbControlPlane({ platform }, [proc])
 
-      await platform.push({ kind: "pause-processor", processorName: "nope" })
+      const instructions: PlatformInstruction[] = [
+        { kind: "pause-processor", processorName: "nope" },
+        { kind: "start-processor", processorName: "nope" },
+        { kind: "release-segment", processorName: "nope", segmentId: 0 },
+        { kind: "split-segment", processorName: "nope", segmentId: 0 },
+        { kind: "merge-segment", processorName: "nope", segmentId: 0 },
+      ]
+      for (const instruction of instructions) {
+        await expect(platform.push(instruction)).rejects.toThrow('No event processor named "nope" in this application')
+      }
       expect(proc.events).toEqual([])
     })
 
@@ -329,6 +341,46 @@ describe("kronosDbControlPlane", () => {
       const control = kronosDbControlPlane({ platform }, [])
       expect(control.platform).toBe(platform)
     })
+  })
+})
+
+describe("kronosDbControlPlane on a platform stream", () => {
+  let r: Rig | undefined
+  afterEach(async () => {
+    await r?.close()
+    r = undefined
+  })
+
+  it("reports an instruction for an unknown processor to the server as failed, naming it", async () => {
+    r = await rig()
+    const server = r.server
+    const proc = fakeProcessor("orders")
+    const platform = platformConnection(r.client.connection, { processorsNotificationInitialDelayMs: 60_000 })
+    const control = kronosDbControlPlane({ platform }, [proc])
+    const results = () =>
+      (server.platforms[0]?.connection.received ?? []).flatMap((f) => (f.frame.name === "InstructionResult" ? [f.frame.body] : []))
+    const pause = (instructionId: string, processorName: string) =>
+      server.toPlatform(0, { name: "ProcessorInstruction", body: { instructionId, action: ProcessorAction.pause, processorName, segment: 0 } })
+
+    const originalError = console.error
+    console.error = () => {}
+    try {
+      await until(() => server.platforms.length === 1, "the platform stream")
+      pause("i-1", "nope")
+      pause("i-2", "orders")
+      await until(() => results().length === 2, "both results")
+    } finally {
+      console.error = originalError
+      await control.close()
+    }
+
+    expect(results()[0]).toMatchObject({
+      instructionId: "i-1",
+      success: false,
+      error: { message: 'No event processor named "nope" in this application' },
+    })
+    expect(results()[1]).toMatchObject({ instructionId: "i-2", success: true })
+    expect(proc.events).toEqual(["stop"])
   })
 })
 
