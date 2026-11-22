@@ -7,9 +7,9 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
 
 /**
  * Subscribes query handlers onto the query bus, each with a per-invocation
- * context closed over the unit of work the bus handed in — freshly opened for
- * a primary query, or the CALLER'S when a handler consulted this read via
- * `ctx.query`, so the nested read shares its transaction.
+ * context closed over the unit of work the bus handed in. The bus opens a
+ * unit of work for every query, so a read a handler consulted via `ctx.query`
+ * runs in one of its own and does not share the caller's transaction.
  *
  * `eventStore` is optional, and a query handler is the one kind that
  * legitimately has none — a read model served from a projection table needs no

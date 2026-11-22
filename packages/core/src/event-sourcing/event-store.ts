@@ -51,12 +51,10 @@ export type AppendTransaction = {
  * THE LOG. A source you can read by condition, append to under a condition,
  * and open as a stream from a position.
  *
- * ONE TYPE. It used to be `EventStorageEngine & EventBus`, with the bus half
- * carrying `publish` and `subscribe` — Axon 4's decomposition. Nothing read
- * through `subscribe`: processors open a stream and are woken by the store
- * (LISTEN/NOTIFY, a gRPC stream, an in-memory listener), and `publish` was an
- * append without a condition. Both are gone; what is left is what the DCB
- * model needs.
+ * ONE TYPE. An event enters the log through `append`, with or without a
+ * condition. A processor reads the log by opening a stream with `open`, and
+ * the store wakes the stream when there is more to read (LISTEN/NOTIFY, a gRPC
+ * stream, an in-memory listener).
  *
  * ── THIS CONTRACT MENTIONS SNAPSHOTS NOWHERE, AND THAT IS THE POINT ─────────
  *
