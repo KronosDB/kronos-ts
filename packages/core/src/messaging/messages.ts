@@ -380,13 +380,6 @@ export type CommandDescriptor<
    * its answer validated against it.
    */
   readonly result?: R
-  /**
-   * The payload field that contains the routing key for distributed command routing.
-   *
-   * Used by the command gateway to extract the routing key before dispatch.
-   * Commands with the same routing key are routed to the same handler instance.
-   */
-  readonly routingKey?: string
 }
 
 /**
@@ -505,7 +498,6 @@ export type MessageDescriptor =
  * const CreateCourse = command({
  *   name: qn("university", "CreateCourse"),
  *   payload: z.object({ courseId: z.string(), name: z.string() }),
- *   routingKey: "courseId",
  * })
  * ```
  *
@@ -515,7 +507,6 @@ export type MessageDescriptor =
  *   name: qn("university", "CreateCourse"),
  *   payload: z.object({ courseId: z.string() }),
  *   result: z.object({ courseId: z.string() }),
- *   routingKey: "courseId",
  * })
  * // send(commandBus, CreateCourse, { courseId: "cs-101" }) → Promise<{ courseId: string }>
  * ```
@@ -524,7 +515,6 @@ export function command<P extends StandardSchemaV1>(def: {
   name: QualifiedName
   version?: string
   payload: P
-  routingKey?: string
 }): CommandDescriptor<P, undefined>
 
 export function command<P extends StandardSchemaV1, R extends StandardSchemaV1>(def: {
@@ -532,7 +522,6 @@ export function command<P extends StandardSchemaV1, R extends StandardSchemaV1>(
   version?: string
   payload: P
   result: R
-  routingKey?: string
 }): CommandDescriptor<P, R>
 
 export function command(def: any): CommandDescriptor {
@@ -636,13 +625,11 @@ export function withNamespace(namespace: string) {
   function scopedCommand<P extends StandardSchemaV1>(name: string, def: {
     payload: P
     version?: string
-    routingKey?: string
   }): ReturnType<typeof command<P>>
   function scopedCommand<P extends StandardSchemaV1, R extends StandardSchemaV1>(name: string, def: {
     payload: P
     result: R
     version?: string
-    routingKey?: string
   }): ReturnType<typeof command<P, R>>
   function scopedCommand(name: string, def: { payload: StandardSchemaV1 }) {
     return command({ name: qn(namespace, name), ...def } as never)

@@ -53,13 +53,11 @@ import { axonServerSnapshottingEventStore } from "../axon-server-snapshotting-ev
 const CreateCourse = command({
   name: qn("axon-it", "CreateCourse"),
   payload: z.object({ courseId: z.string(), name: z.string(), capacity: z.number() }),
-  routingKey: "courseId",
 })
 
 const EnrollStudent = command({
   name: qn("axon-it", "EnrollStudent"),
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  routingKey: "courseId",
 })
 
 const CourseCreated = event({
