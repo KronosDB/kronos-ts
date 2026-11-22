@@ -98,10 +98,16 @@ export type Judged<O extends Outcome = Outcome> = Promise<O> & {
  * happen, what it shows then — each state judged once the events before it are
  * handled. A storyline is awaited as it is; there is no `then` to write.
  *
+ * It has a promise's `then`, `catch` and `finally`. The story is told once, when
+ * the storyline is first awaited or one of the three is first called, and each
+ * of them settles with that one telling. `shows` and `after` return a new
+ * storyline, which is told on its own. A storyline is not a `Promise` instance:
+ * for something that requires one, pass `Promise.resolve(storyline)`.
+ *
  * `shows` takes the expected answer (deep-strict, `any()` holes) or any
  * {@link Assertion}, judged with the query as the act.
  */
-export type Storyline<O extends Outcome = Outcome> = PromiseLike<void> & {
+export type Storyline<O extends Outcome = Outcome> = Promise<void> & {
   shows(expected: unknown): Storyline<O>
   after(...events: EventValue<any>[]): Storyline<O>
 }
@@ -398,12 +404,16 @@ type Beat =
   | { readonly kind: "after"; readonly events: ReadonlyArray<EventValue<any>> }
 
 function beats(home: Home, read: QueryValue<any, any>, so_far: ReadonlyArray<Beat>): Storyline {
+  // Told once, on the first `then`, `catch` or `finally`; all three share it.
+  let told: Promise<void> | undefined
+  const telling = () => (told ??= tell(home, read, so_far))
   return {
     shows: (expected) => beats(home, read, [...so_far, { kind: "shows", expected }]),
     after: (...events) => beats(home, read, [...so_far, { kind: "after", events }]),
-    then(onFulfilled, onRejected) {
-      return tell(home, read, so_far).then(onFulfilled, onRejected)
-    },
+    then: (onFulfilled, onRejected) => telling().then(onFulfilled, onRejected),
+    catch: (onRejected) => telling().catch(onRejected),
+    finally: (onFinally) => telling().finally(onFinally),
+    [Symbol.toStringTag]: "Storyline",
   }
 }
 

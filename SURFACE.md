@@ -1014,7 +1014,7 @@ type RecordedApp = App<EventStore & EventRecording, CommandBus & CommandRecordin
   .advance(duration)         → same shape                // at any joint, repeatable — ONLY when the log has a clock
   .when(command | query | event) → ScenarioActed         // the act
   .then(...assertions)       → Judged                    // RUNS (after the fixture's earlier scenarios); resolves with the Outcome
-  .storyline(query(Q, p))    → .shows(expected | assertion) · .after(...events)   // a PromiseLike
+  .storyline(query(Q, p))    → .shows(expected | assertion) · .after(...events)   // Promise<void> & { shows; after }, told once
 type Judged<O> = Promise<O> & { and: ScenarioStart<O> }  // `and`: the same world, continued
 
 // ── the claims: functions of what happened
