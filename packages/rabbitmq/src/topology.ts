@@ -20,7 +20,6 @@ export type RabbitMqTopologyConfig = {
   readonly queriesExchange?: string
   readonly subscribersGossipExchange?: string
   readonly subscribersDirectExchange?: string
-  readonly durableQueues?: boolean
 }
 
 export type RabbitMqTopologyNames = {
