@@ -370,6 +370,44 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     await assert.rejects(send(commandBus, EnrollStudent, { courseId: "course-dup", studentId: "student-X" }), /Already enrolled/)
   }, 60_000)
 
+  it("open() delivers every event in order to a reader slower than the server", async () => {
+    const lessonOf = `read-ahead-${crypto.randomUUID()}`
+    const total = 600
+    for (let from = 0; from < total; from += 200) {
+      await eventStore.append(
+        Array.from({ length: 200 }, (_, index) => ({
+          kind: "event" as const,
+          identifier: crypto.randomUUID(),
+          name: qn("axon-it", "Lesson"),
+          version: "",
+          payload: { n: from + index, notes: "x".repeat(2000) },
+          metadata: {},
+          timestamp: Date.now(),
+          tags: [{ key: "lessonOf", value: lessonOf }],
+        })),
+      )
+    }
+
+    // The stream may hold 16 events; the reader takes 5 every few milliseconds.
+    const stream = eventStore.open({ position: 0n, query: { tags: { lessonOf } }, readAhead: 16 })
+    try {
+      const taken: Array<{ sequence: bigint; n: number }> = []
+      const deadline = Date.now() + 30_000
+      while (taken.length < total && Date.now() < deadline) {
+        for (let n = 0; n < 5; n++) {
+          const next = stream.next()
+          if (next) taken.push({ sequence: next.sequence, n: (next.event.payload as { n: number }).n })
+        }
+        await new Promise((r) => setTimeout(r, 2))
+      }
+      assert.equal(stream.error(), undefined)
+      expect(taken.map((event) => event.n)).toEqual(Array.from({ length: total }, (_, n) => n))
+      expect(taken.every((event, index) => index === 0 || event.sequence > taken[index - 1]!.sequence)).toBe(true)
+    } finally {
+      stream.close()
+    }
+  }, 60_000)
+
   it("start() arms the data path's platform stream; the control plane layers admin on top", async () => {
     // The data path owns reconnect detection, so `axon.start()` has the platform
     // stream up already — a service nobody administers still notices a dead

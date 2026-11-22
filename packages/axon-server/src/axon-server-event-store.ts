@@ -21,7 +21,7 @@ import type {
   AppendTransaction,
 } from "@kronos-ts/core"
 import type { TrackingToken } from "@kronos-ts/core"
-import { globalSequenceToken, FIRST_TOKEN } from "@kronos-ts/core"
+import { globalSequenceToken, FIRST_TOKEN, positiveInteger } from "@kronos-ts/core"
 import { markerAt, noMarker } from "@kronos-ts/core"
 import type { AxonServerStoreSource } from "./connection.js"
 import { contextView } from "./context-view.js"
@@ -404,6 +404,8 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
     },
 
     open(condition: StreamingCondition): MessageStream<SequencedEvent> {
+      // How many events the stream holds ready: 1000 when its reader names none.
+      const readAhead = positiveInteger(condition.readAhead ?? 1000, "readAhead")
       const criterions = condition.query ? criteriaToCriterions(compileQuery(condition.query)) : []
 
       const request = {
@@ -414,7 +416,7 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
       // `close()` must reach the server. This is a server-streaming call: the
       // client sends nothing after the request, so the only way to end it from
       // this side is to cancel it. Abandoning the async iterator does not do
-      // that — the `for await` below stays parked on the call until the next
+      // that — the read below stays parked on the call until the next
       // event arrives, which at the head of a quiet stream is never, and every
       // closed stream leaves a live call behind on the server. With enough of
       // them open, Axon Server stops answering later `source` reads (a 2-CPU
@@ -426,21 +428,34 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
         signal: cancel.signal,
       })
 
-      // Internal buffer for events pulled from the gRPC stream
+      const responses = grpcStream[Symbol.asyncIterator]()
+
+      // Events read from the call and not yet taken: at most `readAhead`.
       const buffer: SequencedEvent[] = []
       let availableCallback: (() => void) | null = null
       let completed = false
       let streamError: Error | undefined
       let reading = false
 
-      // Background reader: pulls from gRPC stream into buffer
-      async function startReading() {
+      // Reads from the call until the buffer holds `readAhead` events, then
+      // stops; `next()` starts it again. The DCB `Stream` call has no permits
+      // to grant. What slows the server is HTTP/2 flow control: a message is
+      // taken off the call only when it is asked for here, so while the buffer
+      // is full the call's receive window fills and the server cannot send.
+      async function read() {
         if (reading) return
         reading = true
         try {
-          for await (const response of grpcStream) {
+          while (!completed && buffer.length < readAhead) {
+            const response = await responses.next()
             if (completed) break
-            const taggedEvent = response.event
+            if (response.done) {
+              // Stream ended (shouldn't happen for infinite stream)
+              completed = true
+              availableCallback?.()
+              break
+            }
+            const taggedEvent = response.value.event
             if (taggedEvent?.event) {
               buffer.push({
                 sequence: taggedEvent.sequence,
@@ -449,9 +464,6 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
               availableCallback?.()
             }
           }
-          // Stream ended (shouldn't happen for infinite stream)
-          completed = true
-          availableCallback?.()
         } catch (err) {
           // Our own cancellation surfaces here as an AbortError; that is the
           // stream closing as asked, not a failure to report.
@@ -461,14 +473,18 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
           }
           completed = true
           availableCallback?.()
+        } finally {
+          reading = false
         }
       }
 
-      startReading()
+      void read()
 
       return {
         next() {
-          return buffer.shift()
+          const event = buffer.shift()
+          if (event !== undefined) void read()
+          return event
         },
 
         peek() {
