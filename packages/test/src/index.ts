@@ -58,6 +58,7 @@ export {
   type RecordingQueryBus,
   type EventRecording,
   type CommandRecording,
+  type QueryRecording,
   type ScheduleRecord,
   type ScheduleRecording,
   recordingEventStore,

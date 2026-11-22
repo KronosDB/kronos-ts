@@ -8,7 +8,9 @@
  * - the query bus need not be recorded;
  * - a processor reading an unrecorded log counts as an unrecorded log;
  * - `advance`, `scheduled` and `cancelled` exist only when the log was given a
- *   clock — `recordingEventStore(store, { clock })`.
+ *   clock — `recordingEventStore(store, { clock })`;
+ * - every type a recorder's signature names is exported from the package;
+ * - a storyline is a `Promise<void>`.
  */
 import {
   commandHandler,
@@ -31,6 +33,7 @@ import { advanceableClock } from "../clock.js"
 import { recordingCommandBus, recordingEventStore, recordingQueryBus } from "../recording.js"
 import { fixture } from "../scenario.js"
 import { cancelled, command, event, events, type Outcome, scheduled } from "../values.js"
+import type { CommandRecording, EventRecording, QueryRecording, RecordingQueryBus, Storyline } from "../index.js"
 
 const Open = commandDescriptor({ name: qn("t", "Open"), payload: z.object({ id: z.string() }) })
 const Opened = eventDescriptor({ name: qn("t", "Opened"), payload: z.object({ id: z.string() }), tags: { id: (p) => p.id } })
@@ -124,3 +127,20 @@ export const unrecordedProcessorLog = fixture(
     ],
   }),
 )
+
+// ---------------------------------------------------------------------------
+// (d) What a recorder adds is nameable from the package.
+// ---------------------------------------------------------------------------
+
+export const queryRecording: QueryRecording = recordingQueryBus(queryBus)
+export const namedQueryBus: RecordingQueryBus = recordingQueryBus(queryBus)
+export const commandRecording: CommandRecording = recordedBus
+export const eventRecording: EventRecording = log
+
+// ---------------------------------------------------------------------------
+// (e) A storyline is a promise: `then`, `catch` and `finally`.
+// ---------------------------------------------------------------------------
+
+export const asPromise = (storyline: Storyline): Promise<void> => storyline
+export const caught = (storyline: Storyline): Promise<void | Error> => storyline.catch((failure: Error) => failure)
+export const settled = (storyline: Storyline): Promise<void> => storyline.finally(() => {})
