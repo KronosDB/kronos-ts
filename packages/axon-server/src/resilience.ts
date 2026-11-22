@@ -121,10 +121,11 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
  * Resolves WITHOUT throwing on success OR after `thresholdMs` elapses with
  * the probe still pending — production loops should NEVER stall on a flaky
  * health probe. Failures (rejection or threshold breach) emit a single warn
- * via `log` and otherwise resolve normally.
+ * via `log` and otherwise resolve normally. The probe is handed the instant
+ * the threshold ends, for a probe that takes a deadline.
  */
 export async function healthCheck(
-  fn: () => Promise<void>,
+  fn: (deadline: Date) => Promise<void>,
   opts: { thresholdMs?: number; log?: (msg: string) => void } = {},
 ): Promise<void> {
   const threshold = opts.thresholdMs ?? DEFAULTS.healthCheckThresholdMs
@@ -132,7 +133,7 @@ export async function healthCheck(
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     await Promise.race([
-      fn(),
+      fn(new Date(Date.now() + threshold)),
       new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error("health-check threshold exceeded")),

@@ -142,6 +142,8 @@ for (const backend of ["axon"] as const) {
       componentName: "shutdown",
       serializer: jsonSerializer(),
       shutdownTimeoutMs: 10,
+      // Nothing listens here; do not wait the default 5 s for the channel.
+      resilience: { healthCheckThresholdMs: 10, log: () => {} },
     }
     const connection = await axonServerConnection(options)
     const latch = connection.shutdown
@@ -156,6 +158,61 @@ for (const backend of ["axon"] as const) {
     }
   })
 }
+
+describe("axonServerConnection and the channel", () => {
+  const READY = 2
+
+  async function listeningServer() {
+    const server = createServer()
+    server.add(CommandServiceDefinition, {
+      async dispatch() {
+        return {}
+      },
+      async *openStream() {},
+    })
+    return { server, port: await server.listen("127.0.0.1:0") }
+  }
+
+  it("returns a handle whose channel is ready when the server is reachable", async () => {
+    const { server, port } = await listeningServer()
+    const warnings: string[] = []
+    const axon = await axonServerConnection({
+      host: "127.0.0.1",
+      port,
+      componentName: "health",
+      serializer: jsonSerializer(),
+      resilience: { log: (message) => warnings.push(message) },
+    })
+    try {
+      expect(axon.connection.channel.getConnectivityState(false)).toBe(READY)
+      expect(warnings).toEqual([])
+    } finally {
+      await axon.close()
+      server.forceShutdown()
+    }
+  })
+
+  it("logs once and returns the handle when the server is not reachable within the threshold", async () => {
+    const { server, port } = await listeningServer()
+    server.forceShutdown()
+    const warnings: string[] = []
+    const started = Date.now()
+    const axon = await axonServerConnection({
+      host: "127.0.0.1",
+      port,
+      componentName: "health",
+      serializer: jsonSerializer(),
+      resilience: { healthCheckThresholdMs: 50, log: (message) => warnings.push(message) },
+    })
+    try {
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toContain("health-check soft-failed")
+      expect(Date.now() - started).toBeLessThan(2000)
+    } finally {
+      await axon.close()
+    }
+  })
+})
 
 import { streamRecovery as axonRecovery } from "../stream-recovery.js"
 

@@ -359,7 +359,11 @@ export type AxonServerConnectionOptions = AxonServerConnectionConfig & {
   shutdownTimeoutMs?: number
   /** Payload codec for every message this client exchanges with Axon Server. */
   serializer: Serializer
-  /** Retry / health-check policy for the initial connect and stream re-establishment. */
+  /**
+   * Retry policy for the initial connect and stream re-establishment, and
+   * `healthCheckThresholdMs`: how long opening the connection waits for the
+   * channel to be ready before it logs a warning and returns the handle anyway.
+   */
   resilience?: Partial<ResilienceConfig>
   /** Platform stream tuning — heartbeat and processor-status cadence. */
   platformService?: PlatformServiceOptions
@@ -491,15 +495,16 @@ export async function axonServerConnection(
     ...resilience,
   })
 
-  // Health-check ping with warn-then-continue (D-100). AxonServerConnection has
-  // no dedicated probe surface today; the gRPC channel itself is created
-  // eagerly in connectToAxonServer so the meaningful probe is a round-trip — we
-  // approximate via a soft no-op promise that satisfies the threshold contract.
-  // Real network failure is surfaced by the first bus call against the channel.
-  await healthCheck(async () => undefined, {
-    thresholdMs: resilience?.healthCheckThresholdMs,
-    log: resilience?.log,
-  })
+  // Creating the channel does not connect it. Wait until it is ready, for at
+  // most `healthCheckThresholdMs`. An unreachable server is logged once and the
+  // handle is returned anyway; the channel keeps trying to connect.
+  await healthCheck(
+    (deadline) =>
+      waitForChannelReady(connection.channel, deadline).catch(() => {
+        throw new Error("the channel to Axon Server is not ready")
+      }),
+    { thresholdMs: resilience?.healthCheckThresholdMs, log: resilience?.log },
+  )
 
   // ONE latch for the connection. Both buses ride the same channel, so "drain
   // in-flight work before the transport goes away" is one question, not two.
