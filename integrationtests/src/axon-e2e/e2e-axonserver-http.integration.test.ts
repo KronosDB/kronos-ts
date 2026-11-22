@@ -179,13 +179,11 @@ import {
 const CreateCourse = command({
   name: qn("e2e", "CreateCourse"),
   payload: z.object({ courseId: z.string(), name: z.string(), capacity: z.number() }),
-  routingKey: "courseId",
 })
 
 const SubscribeStudent = command({
   name: qn("e2e", "SubscribeStudent"),
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  routingKey: "courseId",
 })
 
 const CourseViewResult = z.object({
@@ -216,7 +214,6 @@ const StudentSubscribed = event({
 const CloseEnrollment = command({
   name: qn("e2e", "CloseEnrollment"),
   payload: z.object({ courseId: z.string() }),
-  routingKey: "courseId",
 })
 
 const EnrollmentClosed = event({

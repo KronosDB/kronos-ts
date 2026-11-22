@@ -35,7 +35,11 @@ export type ResilienceConfig = {
   multiplier: number
   /** Health-check threshold (ms) before warn-then-continue. Default: 5000. */
   healthCheckThresholdMs: number
-  /** Optional logger. Defaults to console.warn. */
+  /**
+   * Called with one line per stream reconnect; defaults to `console.warn`
+   * there. The wait for the server's acknowledgement in `start()` reports its
+   * rounds only to a log given here.
+   */
   log?: (msg: string) => void
   /** Per-attempt classification: returns false to short-circuit (terminal error). */
   isRetryable?: (err: unknown) => boolean

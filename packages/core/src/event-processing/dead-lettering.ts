@@ -1,4 +1,3 @@
-import { qualifiedNameToString } from "../messaging/messages.js"
 import type { EventHandler } from "./handler.js"
 import type { SequencedEvent } from "./source.js"
 import type { Sequence } from "./sequence.js"
@@ -40,6 +39,10 @@ export function deadLetteringDelivery<U extends UnitOfWork = UnitOfWork>(options
     /**
      * Deliver an event to its handlers, parking on failure.
      *
+     * A letter parked for a failed handler records that handler's position in
+     * `targets` as `diagnostics.handlerIndex`. A letter parked behind another
+     * was delivered to no handler and records none.
+     *
      * `uow` is the batch's unit of work, handed to every queue call so the
      * enqueue commits in the same transaction as the token update.
      */
@@ -66,7 +69,8 @@ export function deadLetteringDelivery<U extends UnitOfWork = UnitOfWork>(options
       )
       if (blocked) return
 
-      for (const target of targets) {
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i]!
         try {
           await target.definition.handler(
             { ...event, sequence: sequencedEvent.sequence },
@@ -78,12 +82,13 @@ export function deadLetteringDelivery<U extends UnitOfWork = UnitOfWork>(options
             processingGroup,
             deadLetter(event, cause, lane, {
               position: Number(sequencedEvent.sequence),
-              handlerName: qualifiedNameToString(target.definition.descriptor.name),
+              handlerIndex: i,
             }),
             uow,
           )
           // The error is consumed by the queue — the lane is parked, and the
-          // batch stays committable so the token can advance past it.
+          // batch stays committable so the token can advance past it. The
+          // targets after this one are not called; a replay starts at this one.
           return
         }
       }

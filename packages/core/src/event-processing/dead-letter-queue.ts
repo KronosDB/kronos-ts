@@ -14,7 +14,15 @@ export type DeadLetter = {
   readonly enqueuedAt: number
   /** When this letter was last touched (enqueued or requeued). */
   readonly lastTouched: number
-  /** Additional diagnostics metadata about the failure. */
+  /**
+   * Additional diagnostics metadata about the failure. A processor records
+   * `position` (the event's position in the log) and one of:
+   * - `handlerIndex`: which handler failed, as its position among the
+   *   processor's handlers for the event, in the order `kronos()` was given
+   *   them. A replay calls that handler and the ones after it.
+   * - `blocked: true`: the event was parked behind an earlier letter of its
+   *   lane and delivered to no handler. A replay calls every handler.
+   */
   readonly diagnostics: Record<string, unknown>
   /** The sequence identifier — the lane — this letter belongs to. */
   readonly sequenceIdentifier: string

@@ -30,12 +30,6 @@ export {
 } from "./control-plane.js"
 
 export {
-  type MessageSizeConfig,
-  MessageSizeExceededError,
-  messageSizeValidator,
-} from "./message-size.js"
-
-export {
   type ProcessorStatus,
   type ProcessorStatusSupplier,
   toEventProcessorInfo,

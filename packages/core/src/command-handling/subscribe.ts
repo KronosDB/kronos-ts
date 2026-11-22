@@ -20,11 +20,7 @@ import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
 // the handler can reach is exactly what was passed here.
 // ---------------------------------------------------------------------------
 
-/**
- * Everything `commandInvocation` needs, resolved once at subscribe time.
- * Replaces the `MinimalConfiguration` shim, which existed only so the
- * invocation could seed ambient async storage from string-keyed components.
- */
+/** Everything `commandInvocation` needs, resolved once at subscribe time. */
 export type CommandInvocationDeps<
   U extends UnitOfWork = UnitOfWork,
   E extends EventStore = EventStore,
@@ -44,8 +40,8 @@ export type CommandInvocationDeps<
 
 /**
  * Creates a command handler invocation function: given the incoming command
- * and the unit of work the bus opened for it, seed correlation, register the
- * event flush, build the context and call the handler.
+ * and the unit of work the bus opened for it, register the event flush, build
+ * the context and call the handler.
  */
 export function commandInvocation<U extends UnitOfWork, E extends EventStore = EventStore>(
   handler: CommandHandler<any, any, CommandHandlerContext<E, SubscriptionCapableQueryBus<U>, U>>,

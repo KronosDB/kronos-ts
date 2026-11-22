@@ -15,6 +15,8 @@ const FAST: Partial<ResilienceConfig> = {
   initialDelayMs: 1,
   maxDelayMs: 50,
   multiplier: 2,
+  // Retries are expected here; keep them out of the test output.
+  log: () => {},
 }
 
 function deferredRandom(values: number[]): () => number {
@@ -119,6 +121,7 @@ describe("withRetry", () => {
           multiplier: 2,
           maxDelayMs: 15,
           sleep,
+          log: () => {},
         })
         expect(observed[0]).toBe(10)
         expect(observed[1]).toBe(15)
@@ -190,6 +193,33 @@ describe("withRetry", () => {
     } finally {
       rndSpy.mockRestore()
     }
+  })
+
+  it("writes each retry to console.warn when no log is given", async () => {
+    const lines: string[] = []
+    const warn = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(" "))
+    })
+    try {
+      await withRetry(failsThenSucceeds(1, "ok"), { event: "initial-connect", initialDelayMs: 1 })
+    } finally {
+      warn.mockRestore()
+    }
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain("[kronos:resilience] initial-connect attempt 1/10 failed")
+    expect(lines[0]).toContain("transient 1")
+  })
+
+  it("writes to the given log instead of console.warn", async () => {
+    const given: string[] = []
+    const warn = spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      await withRetry(failsThenSucceeds(1, "ok"), { event: "initial-connect", ...FAST, log: (m) => given.push(m) })
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+    expect(given).toHaveLength(1)
   })
 
   it("Test 8: log fires on retry, NOT on success or terminal short-circuit", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { qn } from "@kronos-ts/core"
+import { isNoHandler, isUnavailable, qn } from "@kronos-ts/core"
 import { amqpRabbitMqQueryTransport } from "../amqp-query-transport.js"
 import { amqpChannelSource } from "../connection.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
@@ -125,14 +125,22 @@ describe("AMQP RabbitMQ query transport", () => {
     await expect(resultPromise).resolves.toEqual({ requestId: "qry-1", ok: true, result: "ok" })
   })
 
-  it("times out pending query dispatches", async () => {
+  it("fails a query that is queued and never answered as unavailable at the timeout, naming what is known", async () => {
     const fake = fakeAmqp()
     const transport = amqpRabbitMqQueryTransport(config(), amqpChannelSource("amqp://test", async () => fake.connection))
     await transport.connect()
 
     const resultPromise = transport.dispatch({ ...envelope(), timeoutMs: 1 })
 
-    await expect(resultPromise).rejects.toThrow(/timed out/)
+    // The fake broker accepts the publish and returns nothing, as RabbitMQ does
+    // for a queue that is bound and has no consumer.
+    const error = await resultPromise.then(() => undefined, (e: Error) => e)
+    expect(isUnavailable(error)).toBe(true)
+    expect(isNoHandler(error)).toBe(false)
+    expect(error?.message).toBe(
+      "Query faculty.GetThing timed out after 1ms. " +
+      "A queue is bound for the name, and RabbitMQ does not report whether a handler is consuming it",
+    )
   })
 
   it("declares query queues and sends replies for consumed queries", async () => {

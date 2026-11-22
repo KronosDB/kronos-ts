@@ -179,19 +179,16 @@ function mergeSited(
 const CreateCourse = command({
   name: qn("university", "CreateCourse"),
   payload: z.object({ courseId: z.string(), name: z.string(), capacity: z.number() }),
-  routingKey: "courseId",
 })
 
 const ChangeCourseCapacity = command({
   name: qn("university", "ChangeCourseCapacity"),
   payload: z.object({ courseId: z.string(), capacity: z.number() }),
-  routingKey: "courseId",
 })
 
 const SubscribeStudent = command({
   name: qn("university", "SubscribeStudent"),
   payload: z.object({ courseId: z.string(), studentId: z.string() }),
-  routingKey: "courseId",
 })
 
 const CourseCreated = event({

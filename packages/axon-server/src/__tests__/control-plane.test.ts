@@ -165,12 +165,21 @@ describe("axonServerControlPlane — instruction routing", () => {
     finish()
   })
 
-  it("ignores instructions for unknown processor names", async () => {
+  it("fails an instruction for an unknown processor, naming it", async () => {
     const platform = fakePlatform()
     const a = spyProcessor("proc-a")
     await axonServerControlPlane({ platform }, [a.proc])
 
-    await platform.emit({ kind: "pause-processor", processorName: "nope" })
+    const instructions: PlatformInstruction[] = [
+      { kind: "pause-processor", processorName: "nope" },
+      { kind: "start-processor", processorName: "nope" },
+      { kind: "release-segment", processorName: "nope", segmentId: 0 },
+      { kind: "split-segment", processorName: "nope", segmentId: 0 },
+      { kind: "merge-segment", processorName: "nope", segmentId: 0 },
+    ]
+    for (const instruction of instructions) {
+      await expect(platform.emit(instruction)).rejects.toThrow('No event processor named "nope" in this application')
+    }
     expect(a.calls).toEqual([])
   })
 

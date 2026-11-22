@@ -35,7 +35,7 @@ export type QueryHandlerContext<U extends UnitOfWork = UnitOfWork> = {
    * `append` to condition — but the same read, off the same store.
    */
   readonly source: ContextSourceFunction
-  /** Consult a query handler (cross-module read) within this UnitOfWork. */
+  /** Consult a query handler (cross-module read). The query runs in a unit of work of its own. */
   readonly query: ContextQueryFunction
   /**
    * The unit of work this context was built for — see the note on

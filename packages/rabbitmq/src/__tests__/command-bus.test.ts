@@ -48,8 +48,8 @@ function recordingTransport() {
 }
 
 /**
- * The composition under test: the transport owns its own client-side routing,
- * over the caller's local segment, with correlation OUTSIDE the fork.
+ * The composition under test: the RabbitMQ bus over the caller's local
+ * segment, with correlation outside it.
  */
 function busOver(
   transport: RabbitMqCommandTransport,

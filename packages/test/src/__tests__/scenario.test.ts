@@ -337,6 +337,67 @@ describe("storyline", () => {
       .after(event(CourseCreated, intro(2)))
       .shows(({ result }: Outcome) => expect((result as { enrolled: number }).enrolled).toBe(0))
   })
+
+  it("hands a failed beat to `catch`", async () => {
+    const failure = await built(university)
+      .storyline(query(GetCourseView, { courseId: "cs-101" }))
+      .after(event(CourseCreated, intro(2)))
+      .shows({ courseId: "cs-101", name: "Intro", enrolled: 5, closed: false })
+      .catch((e: Error) => e)
+
+    expect(failure).toBeInstanceOf(ScenarioAssertionError)
+    expect((failure as Error).message).toContain("storyline of GetCourseView, beat 2 (after CourseCreated)")
+  })
+
+  it("runs `finally` after a story that held, and after one that did not", async () => {
+    const ran: string[] = []
+    await built(university)
+      .storyline(query(GetCourseView, { courseId: "cs-101" }))
+      .after(event(CourseCreated, intro(2)))
+      .shows({ courseId: "cs-101", name: "Intro", enrolled: 0, closed: false })
+      .finally(() => void ran.push("held"))
+
+    const failure = await built(university)
+      .storyline(query(GetCourseView, { courseId: "cs-101" }))
+      .after(event(CourseCreated, intro(2)))
+      .shows({ courseId: "cs-101", name: "Intro", enrolled: 5, closed: false })
+      .finally(() => void ran.push("failed"))
+      .then(
+        () => undefined,
+        (e: Error) => e,
+      )
+
+    expect(ran).toEqual(["held", "failed"])
+    expect(failure).toBeInstanceOf(ScenarioAssertionError)
+  })
+
+  it("is told once, however many times it is awaited", async () => {
+    let asked = 0
+    const story = built(university)
+      .storyline(query(GetCourseView, { courseId: "cs-101" }))
+      .after(event(CourseCreated, intro(2)))
+      .shows(() => void asked++)
+
+    await story
+    await story
+    await story.catch(() => undefined)
+    await story.finally(() => undefined)
+    expect(asked).toBe(1)
+
+    // A storyline built from it is another story, told on its own.
+    await story.after(event(StudentSubscribed, seat("stu-001"))).shows(() => void asked++)
+    expect(asked).toBe(3)
+  })
+
+  it("is a native promise through `Promise.resolve`", async () => {
+    const story = built(university)
+      .storyline(query(GetCourseView, { courseId: "cs-101" }))
+      .after(event(CourseCreated, intro(2)))
+      .shows({ courseId: "cs-101", name: "Intro", enrolled: 5, closed: false })
+
+    expect(Object.prototype.toString.call(story)).toBe("[object Storyline]")
+    await expect(Promise.resolve(story)).rejects.toBeInstanceOf(ScenarioAssertionError)
+  })
 })
 
 // ===========================================================================

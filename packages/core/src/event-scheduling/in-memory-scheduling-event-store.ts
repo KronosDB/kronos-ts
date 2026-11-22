@@ -17,7 +17,7 @@
 import type { EventMessage } from "../messaging/messages.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
 import type { CancelResult, ScheduleStoreCapability, ScheduleToken } from "./scheduler.js"
-import { NoActiveUnitOfWork, requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work.js"
+import { NoActiveUnitOfWork, Phase, requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work.js"
 import { generateIdentifier } from "../messaging/identifier.js"
 
 type RecordStatus = "pending" | "appended" | "cancelled"
@@ -26,6 +26,8 @@ type ScheduleRecord = {
   status: RecordStatus
   event: EventMessage
   fireAt: number
+  /** Whether the task that scheduled it has committed. Only then does it have a timer. */
+  committed: boolean
   timer?: ReturnType<typeof setTimeout>
 }
 
@@ -77,15 +79,14 @@ export type InMemorySchedulingControl = {
  * - `schedule()` must be handed a unit of work in its INVOCATION phase. The
  *   record is staged immediately so a `cancelSchedule()` in the SAME task sees
  *   it, but the `setTimeout` arming is deferred to AFTER_COMMIT — so a rolled
- *   back task schedules nothing. `onError` drops the staged record, so a
- *   post-rollback cancel answers `not-found` rather than `cancelled`.
+ *   back task schedules nothing. `onError` drops the staged record, cancelled
+ *   in that task or not, so a post-rollback cancel answers `not-found`.
  *
  * - `cancelSchedule()` may be called inside or outside a task. The state change
- *   is applied immediately for caller visibility, which means a task that
- *   cancels and then rolls back does NOT restore the schedule's timer. That
- *   differs from the postgres tier (genuinely transactional) and is acceptable
- *   for an in-memory remit. Write tests that depend on cancel-rollback
- *   semantics against postgres.
+ *   is applied immediately for caller visibility. Handed a unit of work that
+ *   later fails, the cancel is undone: the schedule is pending again and its
+ *   timer is armed again for its fire time, or for now when that has passed.
+ *   Called without a unit of work, the cancel is final at once.
  *
  * ── NOT PRODUCTION ─────────────────────────────────────────────────────────
  *
@@ -135,20 +136,22 @@ export function inMemorySchedulingEventStore<E extends EventStore>(
         status: "pending",
         event,
         fireAt: at.getTime(),
+        committed: false,
       }
       records.set(id, record)
 
       uow.onAfterCommit(() => {
         const rec = records.get(id)
-        if (!rec || rec.status !== "pending") return
-        armTimer(id, rec)
+        if (!rec) return
+        rec.committed = true
+        if (rec.status === "pending") armTimer(id, rec)
       })
 
       uow.onError(() => {
-        // Roll the staged record back so a post-rollback cancel sees
-        // `not-found` rather than `cancelled`.
+        // Roll the staged record back, cancelled in this task or not, so a
+        // post-rollback cancel sees `not-found`.
         const rec = records.get(id)
-        if (rec && rec.status === "pending") records.delete(id)
+        if (rec && !rec.committed) records.delete(id)
       })
 
       return { id }
@@ -166,15 +169,18 @@ export function inMemorySchedulingEventStore<E extends EventStore>(
         rec.timer = undefined
       }
 
-      // Best-effort task participation: inside a task that later errors, revert
-      // the cancel so the schedule's pending state re-materialises. The original
-      // timer (if armed) has already been cleared and the AFTER_COMMIT re-arm
-      // cycle is not re-driven, so a cancel + rollback in a post-commit window
-      // would not re-fire. Acceptable for an in-memory remit.
+      // Task participation: when the task later fails, the cancel is undone.
+      // The schedule is pending again, and a schedule whose own task had
+      // committed gets its timer back. One still staged by this same task has
+      // no timer to restore; its own `onError` drops the record. A task that
+      // fails after its commit has committed, and the cancel stands.
       if (uow !== undefined && !uow.closed) {
-        uow.onError(() => {
+        uow.onError((_error, failedPhase) => {
+          if (failedPhase === Phase.AFTER_COMMIT) return
           const r = records.get(token.id)
-          if (r && r.status === "cancelled") r.status = "pending"
+          if (!r || r.status !== "cancelled") return
+          r.status = "pending"
+          if (r.committed) armTimer(token.id, r)
         })
       }
 

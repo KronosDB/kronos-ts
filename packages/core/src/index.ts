@@ -438,7 +438,6 @@ export {
   globalSequenceToken,
   gapAwareToken,
   FIRST_TOKEN,
-  LATEST_TOKEN,
   replayToken,
   isReplayToken,
   isGlobalSequenceToken,

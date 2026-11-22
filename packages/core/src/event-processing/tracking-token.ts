@@ -136,20 +136,6 @@ export function gapAwareToken(sequence: bigint, gapKey: string): GapAwareToken {
  */
 export const FIRST_TOKEN: TrackingToken = globalSequenceToken(0n)
 
-/**
- * Sentinel token representing the tail of the event stream.
- * A processor starting with LATEST_TOKEN will skip all existing events
- * and only process new events appended after startup.
- */
-export const LATEST_TOKEN: TrackingToken = {
-  kind: "latest",
-  position: () => BigInt(Number.MAX_SAFE_INTEGER),
-  covers: () => true,
-  lowerBound: (other) => other,
-  upperBound: () => LATEST_TOKEN,
-  samePositionAs: (other) => other === LATEST_TOKEN || (other.kind === "latest"),
-}
-
 // ---------------------------------------------------------------------------
 // ReplayToken
 // ---------------------------------------------------------------------------

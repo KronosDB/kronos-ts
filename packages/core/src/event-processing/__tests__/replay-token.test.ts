@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test"
 import { globalSequenceToken, replayToken, isReplayToken, isGlobalSequenceToken, isReplaying, advanceToken, unwrapToken, wasProcessedBeforeReset, type TrackingToken, type ReplayToken } from "../tracking-token.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
 import { inUoW } from "./_helpers/in-uow.js"
+import * as trackingTokens from "../tracking-token.js"
+import * as core from "../../index.js"
 
 describe("TrackingToken", () => {
   describe("GlobalSequenceToken", () => {
@@ -188,6 +190,14 @@ describe("TrackingToken", () => {
 
     it("a bare unit of work is not replaying", () => {
       expect(unitOfWork().replaying).toBe(false)
+    })
+  })
+
+  describe("sentinel tokens", () => {
+    it("exports FIRST_TOKEN and no LATEST_TOKEN", () => {
+      expect(core.FIRST_TOKEN.position()).toBe(0n)
+      expect("LATEST_TOKEN" in core).toBe(false)
+      expect("LATEST_TOKEN" in trackingTokens).toBe(false)
     })
   })
 

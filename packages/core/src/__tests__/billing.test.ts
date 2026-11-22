@@ -503,6 +503,74 @@ describe("boot errors", () => {
       await app.stop()
     })
 
+    it("after a command an earlier boot subscribed on the same bus", async () => {
+      const buses = inMemoryBuses()
+      const eventStore = inMemoryEventStore()
+      const ledger = newLedger()
+      const first = kronos({ commandHandlers: [{ ...openBill, ...buses, eventStore, name: "open-bill" }] })
+
+      // BillLine comes first in the list, and OpenBill is the name already taken.
+      expect(() =>
+        kronos({
+          commandHandlers: [
+            { ...billLine(ledger), ...buses, eventStore },
+            { ...commandHandler(OpenBill, async () => {}), ...buses, eventStore, name: "other-open-bill" },
+          ],
+          queryHandlers: [{ ...billTotal, ...buses }],
+        }),
+      ).toThrow(/billing\.OpenBill[\s\S]*earlier kronos\(\) call[\s\S]*"open-bill"[\s\S]*"other-open-bill"/)
+
+      // Neither BillLine nor BillTotal was subscribed, and the first app's handler still answers.
+      const second = kronos({
+        commandHandlers: [{ ...billLine(ledger), ...buses, eventStore }],
+        queryHandlers: [{ ...billTotal, ...buses }],
+      })
+      await send(buses.commandBus, OpenBill, { billId: "b-1" }, emptyMetadata())
+      await send(buses.commandBus, BillLine, { billId: "b-1", amount: 5 }, emptyMetadata())
+      expect(ledger.lines).toEqual(["b-1:5"])
+      await first.stop()
+      await second.stop()
+    })
+
+    it("after a query an earlier boot subscribed on the same bus", async () => {
+      const buses = inMemoryBuses()
+      const eventStore = inMemoryEventStore()
+      const first = kronos({ queryHandlers: [{ ...billTotal, ...buses, name: "bill-total" }] })
+
+      expect(() =>
+        kronos({
+          commandHandlers: [{ ...openBill, ...buses, eventStore }],
+          queryHandlers: [{ ...queryHandler(BillTotal, async () => ({ total: 1 })), ...buses, name: "other-bill-total" }],
+        }),
+      ).toThrow(/billing\.BillTotal[\s\S]*earlier kronos\(\) call[\s\S]*"bill-total"[\s\S]*"other-bill-total"/)
+
+      // OpenBill was not subscribed, and the first app's handler still answers.
+      const second = kronos({ commandHandlers: [{ ...openBill, ...buses, eventStore }] })
+      expect(await query(buses.queryBus, BillTotal, { billId: "b-1" })).toEqual({ total: 0 })
+      await first.stop()
+      await second.stop()
+    })
+
+    it("a name stays taken after the app that subscribed it has stopped", async () => {
+      const buses = inMemoryBuses()
+      const eventStore = inMemoryEventStore()
+      const first = kronos({ commandHandlers: [{ ...openBill, ...buses, eventStore }] })
+      await first.stop()
+
+      expect(() => kronos({ commandHandlers: [{ ...openBill, ...buses, eventStore }] })).toThrow(
+        /billing\.OpenBill[\s\S]*earlier kronos\(\) call/,
+      )
+    })
+
+    it("two boots share a bus when their names differ, and the same name is free on another bus", async () => {
+      const buses = inMemoryBuses()
+      const eventStore = inMemoryEventStore()
+      const first = kronos({ commandHandlers: [{ ...openBill, ...buses, eventStore }] })
+      const second = kronos({ commandHandlers: [{ ...billLine(newLedger()), ...buses, eventStore }] })
+      const third = kronos({ commandHandlers: [{ ...openBill, ...inMemoryBuses(), eventStore }] })
+      await Promise.all([first.stop(), second.stop(), third.stop()])
+    })
+
     it("after two handlers for one query on one bus", async () => {
       const buses = inMemoryBuses()
       expect(() =>

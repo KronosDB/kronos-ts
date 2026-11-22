@@ -174,14 +174,34 @@ function requireEventStore<E extends EventStore>(
   return entry.eventStore
 }
 
+/** For each bus object, the message names `kronos` has subscribed on it and the entry that took each. */
+type TakenNames = WeakMap<object, Map<string, string>>
+
+// A bus keeps a subscription for as long as it lives: the bus contracts have no
+// `unsubscribe`, so a name stays taken after the app that took it has stopped.
+const takenCommands: TakenNames = new WeakMap()
+const takenQueries: TakenNames = new WeakMap()
+
+/** Record that `label` now holds `messageName` on `bus`. */
+function take(taken: TakenNames, bus: object, messageName: string, label: string): void {
+  let byName = taken.get(bus)
+  if (!byName) {
+    byName = new Map()
+    taken.set(bus, byName)
+  }
+  byName.set(messageName, label)
+}
+
 /**
- * Refuses two entries that would subscribe a handler for the same message name
- * on the same bus object. Called before anything is subscribed, so the second
- * subscription cannot fail half-way through a boot.
+ * Refuses an entry that would subscribe a handler for a message name that
+ * already has one on the same bus object: from another entry of this call, or
+ * from an earlier `kronos` call (`taken`). Called before anything is
+ * subscribed, so the second subscription cannot fail half-way through a boot.
  */
 function refuseDuplicateSubscriptions(
   kind: "command" | "query",
   entries: ReadonlyArray<{ readonly bus: object; readonly descriptor: { readonly name: any }; readonly label: string }>,
+  taken: TakenNames,
 ): void {
   const seen = new Map<object, Map<string, string>>()
   for (const { bus, descriptor, label } of entries) {
@@ -191,6 +211,14 @@ function refuseDuplicateSubscriptions(
       seen.set(bus, byName)
     }
     const messageName = qualifiedNameToString(descriptor.name)
+    const earlier = taken.get(bus)?.get(messageName)
+    if (earlier !== undefined) {
+      throw new Error(
+        `kronos: ${kind} "${messageName}" already has a handler on this ${kind} bus, subscribed by an earlier ` +
+          `kronos() call. Entries: "${earlier}" (subscribed) and "${label}". A bus has one handler per ${kind}, ` +
+          `and keeps it after the app that subscribed it has stopped.`,
+      )
+    }
     const first = byName.get(messageName)
     if (first !== undefined) {
       throw new Error(
@@ -365,14 +393,17 @@ export function kronos<
     eventStore: requireEventStore(handler, "is a command handler and appends to a log"),
   }))
 
-  // One handler per message name per bus.
+  // One handler per message name per bus, counting the names earlier `kronos`
+  // calls subscribed on the same bus objects.
   refuseDuplicateSubscriptions(
     "command",
     commandHandlers.map((h) => ({ bus: h.commandBus, descriptor: h.descriptor, label: labelOf(h) })),
+    takenCommands,
   )
   refuseDuplicateSubscriptions(
     "query",
     queryHandlers.map((h) => ({ bus: h.queryBus, descriptor: h.descriptor, label: labelOf(h) })),
+    takenQueries,
   )
 
   // ---- Group event handlers by PROCESSOR NAME ----------------------------
@@ -437,6 +468,7 @@ export function kronos<
       queryBus: handler.queryBus,
       eventStore,
     })
+    take(takenCommands, handler.commandBus, qualifiedNameToString(handler.descriptor.name), labelOf(handler))
   }
 
   for (const handler of queryHandlers) {
@@ -446,6 +478,7 @@ export function kronos<
       queryBus: handler.queryBus,
       ...(handler.eventStore !== undefined ? { eventStore: handler.eventStore } : {}),
     })
+    take(takenQueries, handler.queryBus, qualifiedNameToString(handler.descriptor.name), labelOf(handler))
   }
 
   // TWO-PHASE START. Every handler is subscribed before ANY processor runs, so
