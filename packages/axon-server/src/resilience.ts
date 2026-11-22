@@ -35,7 +35,7 @@ export type ResilienceConfig = {
   multiplier: number
   /** Health-check threshold (ms) before warn-then-continue. Default: 5000. */
   healthCheckThresholdMs: number
-  /** Optional logger. Defaults to console.warn. */
+  /** Called with one line per retry. Defaults to `console.warn`; pass `() => {}` to silence. */
   log?: (msg: string) => void
   /** Per-attempt classification: returns false to short-circuit (terminal error). */
   isRetryable?: (err: unknown) => boolean
@@ -92,6 +92,7 @@ export async function withRetry<T>(
   opts: { event: RetryEvent } & Partial<ResilienceConfig>,
 ): Promise<T> {
   const cfg = resolveConfig(opts.event, opts)
+  const log = cfg.log ?? ((m: string) => console.warn(m))
   let lastErr: unknown
   for (let attempt = 0; attempt < cfg.maxAttempts; attempt++) {
     try {
@@ -101,7 +102,7 @@ export async function withRetry<T>(
       if (cfg.isRetryable && !cfg.isRetryable(err)) throw err
       if (attempt === cfg.maxAttempts - 1) break
       const delay = fullJitterDelay(attempt, cfg)
-      cfg.log?.(
+      log(
         `[kronos:resilience] ${opts.event} attempt ${attempt + 1}/${cfg.maxAttempts} ` +
           `failed; retrying in ${Math.round(delay)}ms — ${
             (err as Error)?.message ?? String(err)
