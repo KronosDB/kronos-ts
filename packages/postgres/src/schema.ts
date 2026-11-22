@@ -16,6 +16,8 @@
  *   (Serializer returns Uint8Array; no JSONB roundtrip cost).
  */
 
+import { IsolationLevel, type PostgresAdapter } from "./adapter.js"
+
 export type TableNames = {
   readonly events: string
   readonly snapshots: string
@@ -37,14 +39,14 @@ export const DEFAULT_TABLE_NAMES: TableNames = {
 }
 
 /**
- * Session-scoped advisory lock key for the schema bootstrap.
+ * Advisory lock key for the schema bootstrap.
  *
  * Value `-89001n` matches kraken-tech's `ensureInstalled()` key, so an
  * operator running both libraries against the same database experiences
- * serialised bootstraps instead of duplicate-key races. Held with
- * `pg_advisory_lock` (session-scoped, NOT xact-scoped) because some
- * Postgres versions implicitly commit DDL — xact-scoped locks would
- * release mid-bootstrap.
+ * serialised bootstraps instead of duplicate-key races. Taken with
+ * `pg_advisory_xact_lock` in the transaction of each DDL statement, so it is
+ * held on the connection that runs the statement and released when that
+ * transaction ends.
  */
 export const KRONOS_SCHEMA_LOCK_KEY: bigint = -89001n
 
@@ -242,30 +244,29 @@ export function buildDeadLettersIndexesDDL(tables: TableNames): string {
 }
 
 /**
- * Minimal adapter contract bootstrapSchema needs. A subset of the full
- * PostgresAdapter interface authored in Plan 12-03 — structurally
- * compatible so Plan 12-04's adapter instance can be passed in directly.
- * Kept local to schema.ts to keep this plan independent of Plan 03.
+ * What `bootstrapSchema` needs of an adapter: its `transaction`. A
+ * `PostgresAdapter` and a `postgresPool` both satisfy it.
  */
-export type SchemaBootstrapAdapter = {
-  query(sql: string, params?: unknown[]): Promise<unknown>
-}
+export type SchemaBootstrapAdapter = Pick<PostgresAdapter, "transaction">
 
 export type BootstrapSchemaOptions = {
-  /** Override `kronos_events` / `kronos_snapshots`. */
+  /** Override the default table names. */
   readonly tableNames?: TableNames
 }
 
 /**
  * Idempotently create the event-store schema.
  *
- * Holds a session-scoped advisory lock (KRONOS_SCHEMA_LOCK_KEY) for the
- * duration so concurrent bootstraps (e.g. two app instances starting
- * simultaneously) serialise instead of racing on CREATE TABLE.
+ * Each DDL statement runs in its own transaction, which first takes the
+ * transaction-scoped advisory lock {@link KRONOS_SCHEMA_LOCK_KEY}. Concurrent
+ * bootstraps (two app instances starting at once) therefore run their
+ * statements one at a time instead of racing on CREATE TABLE.
  *
- * The lock is RELEASED in a finally block — partial-DDL-then-throw must
- * NEVER leak a session lock that would block all subsequent bootstraps
- * on the same connection.
+ * The lock and its statement share one connection, and the lock is released
+ * when the transaction commits or rolls back, so nothing is left held when a
+ * statement fails or the connection is lost. No session-level lock is taken.
+ * A table lock a statement takes is released with its transaction, before the
+ * next statement starts.
  */
 export async function bootstrapSchema(
   adapter: SchemaBootstrapAdapter,
@@ -273,23 +274,21 @@ export async function bootstrapSchema(
 ): Promise<void> {
   const tables = options.tableNames ?? DEFAULT_TABLE_NAMES
 
-  // Acquire migration lock. Session-scoped is intentional: some Postgres
-  // versions implicitly commit DDL, which would release an xact-scoped
-  // lock mid-bootstrap.
-  await adapter.query(`SELECT pg_advisory_lock($1)`, [KRONOS_SCHEMA_LOCK_KEY])
+  const statements = [
+    buildEventsTableDDL(tables),
+    buildEventsIndexesDDL(tables),
+    buildSnapshotsTableDDL(tables),
+    buildScheduledEventsTableDDL(tables),
+    buildScheduledEventsIndexesDDL(tables),
+    buildTokensTableDDL(tables),
+    buildDeadLettersTableDDL(tables),
+    buildDeadLettersIndexesDDL(tables),
+  ]
 
-  try {
-    await adapter.query(buildEventsTableDDL(tables))
-    await adapter.query(buildEventsIndexesDDL(tables))
-    await adapter.query(buildSnapshotsTableDDL(tables))
-    await adapter.query(buildScheduledEventsTableDDL(tables))
-    await adapter.query(buildScheduledEventsIndexesDDL(tables))
-    await adapter.query(buildTokensTableDDL(tables))
-    await adapter.query(buildDeadLettersTableDDL(tables))
-    await adapter.query(buildDeadLettersIndexesDDL(tables))
-  } finally {
-    // Release even on partial-DDL failure. The error (if any) propagates
-    // to the caller after the lock has been freed.
-    await adapter.query(`SELECT pg_advisory_unlock($1)`, [KRONOS_SCHEMA_LOCK_KEY])
+  for (const ddl of statements) {
+    await adapter.transaction(IsolationLevel.READ_COMMITTED, async (tx) => {
+      await tx.query(`SELECT pg_advisory_xact_lock($1)`, [KRONOS_SCHEMA_LOCK_KEY])
+      await tx.query(ddl)
+    })
   }
 }

@@ -331,6 +331,12 @@ The `pg_snapshot_xmin` watermark hides events from in-flight transactions, preve
 The last two are the SAME column sets the ORM families write, so a deployment
 can move between families without a migration.
 
+Each DDL statement runs in its own transaction, which first takes a
+transaction-scoped advisory lock (`KRONOS_SCHEMA_LOCK_KEY`). Instances that
+start at the same time create the schema one statement at a time, and the lock
+is released when each transaction ends. `bootstrapSchema(adapter)` does the
+same when you call it yourself.
+
 Custom table names are a property of the pool, not of each store:
 
 ```typescript
