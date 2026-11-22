@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { type Serializer, type SerializedObject } from "@kronos-ts/core"
-import { payloadEquals, localQueryBus, unitOfWork } from "@kronos-ts/core"
+import { payloadEquals, localQueryBus, qn, unitOfWork } from "@kronos-ts/core"
 import { axonServerQueryBus } from "../axon-server.js"
 import { shutdownLatch } from "../shutdown-latch.js"
 import type { AxonServerBusSource, AxonServerConnection } from "../connection.js"
@@ -401,5 +401,47 @@ describe("axonServerQueryBus — subscription queries", () => {
     const ex = captured.outbound.filter((o) => o.subscriptionQueryResponse?.completeExceptionally)
     expect(ex).toHaveLength(1)
     expect(ex[0].subscriptionQueryResponse.completeExceptionally.errorMessage.message).toBe("boom")
+  })
+})
+
+describe("axonServerQueryBus — query timeout", () => {
+  const TIMEOUT = 2
+
+  async function timeoutSentWith(options?: { timeoutMs?: number }): Promise<bigint | undefined> {
+    const connection = fakeConnection({ outbound: [] }, controllableInbound().iterable)
+    const requests: any[] = []
+    ;(connection.queries as any).query = (request: any) => {
+      requests.push(request)
+      return (async function* () {
+        yield { errorCode: "", payload: jsonSerializer.serialize("answer", "result", "") }
+      })()
+    }
+    const latch = shutdownLatch()
+    const bus = axonServerQueryBus(
+      localQueryBus(unitOfWork),
+      { connection, serializer: jsonSerializer, shutdown: latch },
+      options,
+    )
+    try {
+      await bus.query({
+        kind: "query",
+        identifier: "query-1",
+        name: qn("kronos.test", "ReadValue"),
+        payload: {},
+        metadata: {},
+      })
+    } finally {
+      await latch.initiateShutdown()
+    }
+    return requests[0].processingInstructions.find((instruction: any) => instruction.key === TIMEOUT)?.value
+      ?.numberValue
+  }
+
+  it("sends 30000 ms to Axon Server as a query's timeout by default", async () => {
+    expect(await timeoutSentWith()).toBe(30000n)
+  })
+
+  it("sends the timeoutMs option as a query's timeout", async () => {
+    expect(await timeoutSentWith({ timeoutMs: 1500 })).toBe(1500n)
   })
 })

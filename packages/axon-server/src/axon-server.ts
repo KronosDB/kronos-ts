@@ -61,7 +61,7 @@ import { mapErrorCode, AxonServerErrorCode, commandFailureCode, fromGrpc, queryF
 /** Default flow control settings — aligned with Java's 5000 permits. */
 const DEFAULT_PERMITS = 5000n
 
-/** Default query dispatch timeout — aligned with Java's one hour. */
+/** Default query timeout in ms: the client-side deadline, and the timeout sent to Axon Server with the query. */
 const DEFAULT_QUERY_TIMEOUT_MS = 30_000
 
 /** Default command handler load factor — aligned with Java's 100. */
@@ -73,20 +73,21 @@ const DEFAULT_LOAD_FACTOR = 100
 export type FlowControlConfig = {
   /** Initial permits granted to Axon Server. Default: 5000 (aligned with Java). */
   permits?: number
-  /** Threshold at which to request more permits. Default: 2500 (aligned with Java). */
+  /** Remaining permits at which more are granted. Default: half of `permits`. */
   refillThreshold?: number
 }
 
 /**
- * Processing instructions attached to outbound messages.
- * Controls routing, priority, and timeout behavior on Axon Server.
+ * Processing instructions for an outbound command, read from the command's
+ * `metadata.processingInstructions`. Controls routing, priority, and timeout
+ * behavior on Axon Server. A query's instructions are built by the bus.
  */
 export type ProcessingInstructions = {
   /** Routing key for consistent hashing (e.g., aggregate ID). */
   routingKey?: string
   /** Priority (higher = processed first). Default: 0 */
   priority?: number
-  /** Timeout in ms. Axon Server cancels the command/query if not handled in time. */
+  /** Timeout in ms. Axon Server cancels the command if not handled in time. */
   timeoutMs?: number
 }
 
@@ -124,8 +125,8 @@ export type AxonServerQueryBusOptions = {
   /** Flow control for the query stream. */
   flowControl?: FlowControlConfig
   /**
-   * Default timeout for query dispatch in ms. Default: 30000ms.
-   * Aligned with Java's processing instruction timeout.
+   * Client-side deadline for a query in ms, also sent to Axon Server as the
+   * query's timeout. Default: 30000ms.
    */
   timeoutMs?: number
   /** Retry policy for stream re-establishment. Default: the connection's. */
