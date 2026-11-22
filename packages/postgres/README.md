@@ -60,6 +60,11 @@ postgresPool(pgAdapter({ connectionString, poolConfig: { max: 40 } }))
 postgresPool(bunSqlAdapter({ connectionString }), { bootstrap: false })
 ```
 
+`idleInTransactionTimeoutMs` and `statementTimeoutMs` are options of the
+adapter. Beside a connection string, `postgresPool` passes them to the `pg`
+adapter it loads. Beside an adapter you built it refuses them, as a compile
+error and by throwing: set them on the adapter.
+
 ### The family shares one transaction
 
 Every function above is built from the same `pg`, and that is what makes them

@@ -61,6 +61,10 @@ export type PostgresResource = PostgresAdapter & {
   close(): Promise<void>
 }
 
+/**
+ * Options for a pool built from a connection string. The two session timeouts
+ * configure the `pg` adapter the connection string loads.
+ */
 export type PostgresPoolOptions = SessionTimeoutOptions & {
   /**
    * Create the schema during {@link PostgresResource.start}. Defaults to true.
@@ -72,6 +76,14 @@ export type PostgresPoolOptions = SessionTimeoutOptions & {
   readonly tableNames?: TableNames
   /** Retry policy for the initial connect + bootstrap. */
   readonly resilience?: Partial<ResilienceConfig>
+}
+
+/**
+ * Options for a pool wrapping an adapter you built. The session timeouts are
+ * the adapter's own options, so they are not accepted here.
+ */
+export type PostgresAdapterPoolOptions = Omit<PostgresPoolOptions, keyof SessionTimeoutOptions> & {
+  readonly [K in keyof SessionTimeoutOptions]?: never
 }
 
 /**
@@ -91,11 +103,30 @@ export type PostgresPoolOptions = SessionTimeoutOptions & {
  * Passing an adapter hands over its lifecycle too: `start()` connects it and
  * `close()` disconnects it, so a host still has exactly one pair of calls to
  * write down.
+ *
+ * `idleInTransactionTimeoutMs` and `statementTimeoutMs` belong to the adapter.
+ * With a connection string they configure the `pg` adapter it loads; with an
+ * adapter you built, set them on that adapter. Passing them here beside an
+ * adapter is a compile error and throws.
  */
+export function postgresPool(connectionString: string, options?: PostgresPoolOptions): PostgresResource
+export function postgresPool(adapter: PostgresAdapter, options?: PostgresAdapterPoolOptions): PostgresResource
+export function postgresPool(source: string | PostgresAdapter, options?: PostgresAdapterPoolOptions): PostgresResource
 export function postgresPool(
   source: string | PostgresAdapter,
-  options: PostgresPoolOptions = {},
+  options: PostgresPoolOptions | PostgresAdapterPoolOptions = {},
 ): PostgresResource {
+  if (typeof source !== "string") {
+    const given = (["idleInTransactionTimeoutMs", "statementTimeoutMs"] as const).filter(
+      (name) => options[name] !== undefined,
+    )
+    if (given.length > 0) {
+      throw new Error(
+        `postgresPool: ${given.join(" and ")} cannot be set on a pool built from an adapter. ` +
+          `Set ${given.length > 1 ? "them" : "it"} on the adapter, for example pgAdapter({ connectionString, ${given[0]}: … }).`,
+      )
+    }
+  }
   const tables = options.tableNames ?? DEFAULT_TABLE_NAMES
   const bootstrap = options.bootstrap ?? true
   const { resilience } = options
