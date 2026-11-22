@@ -22,10 +22,7 @@ import {
   queryFailureCode,
   isTransientError,
 } from "../errors.js"
-import {
-  messageSizeValidator,
-  MessageSizeExceededError,
-} from "../message-size.js"
+import * as surface from "../index.js"
 
 describe("ShutdownLatch", () => {
   it("starts with zero active count and not shutting down", () => {
@@ -305,103 +302,8 @@ describe("Error mapping", () => {
   })
 })
 
-describe("MessageSizeValidator", () => {
-  it("accepts messages under the limit", () => {
-    const validator = messageSizeValidator({ maxMessageSize: 100 })
-    const data = new Uint8Array(50)
-
-    // should not throw
-    expect(() => validator.validate(data)).not.toThrow()
-  })
-
-  it("throws when message exceeds the limit", () => {
-    const validator = messageSizeValidator({ maxMessageSize: 100 })
-    const data = new Uint8Array(101)
-
-    expect(() => validator.validate(data)).toThrow(MessageSizeExceededError)
-  })
-
-  it("MessageSizeExceededError carries size details", () => {
-    const validator = messageSizeValidator({ maxMessageSize: 100 })
-    const data = new Uint8Array(200)
-
-    try {
-      validator.validate(data)
-      expect.unreachable("should have thrown")
-    } catch (e) {
-      expect(e).toBeInstanceOf(MessageSizeExceededError)
-      const err = e as MessageSizeExceededError
-      expect(err.actualSize).toBe(200)
-      expect(err.maxSize).toBe(100)
-      expect(err.message).toContain("200")
-      expect(err.message).toContain("100")
-    }
-  })
-
-  it("warns when message exceeds warning threshold but not max", () => {
-    // Use custom threshold of 0.5 (50%)
-    const validator = messageSizeValidator({
-      maxMessageSize: 100,
-      warningThreshold: 0.5,
-    })
-    const data = new Uint8Array(60) // 60% > 50% threshold
-
-    // Should not throw (under max), but internally warns
-    expect(() => validator.validate(data)).not.toThrow()
-  })
-
-  it("does not warn when under the warning threshold", () => {
-    const validator = messageSizeValidator({
-      maxMessageSize: 100,
-      warningThreshold: 0.75,
-    })
-    const data = new Uint8Array(50) // 50% < 75% threshold
-
-    expect(() => validator.validate(data)).not.toThrow()
-  })
-
-  it("uses default max size of 4MB", () => {
-    const validator = messageSizeValidator()
-
-    expect(validator.maxSize).toBe(4 * 1024 * 1024)
-  })
-
-  it("estimateSize returns byte length of JSON-serialized payload", () => {
-    const validator = messageSizeValidator()
-
-    const size = validator.estimateSize({ key: "value" })
-
-    // JSON.stringify({ key: "value" }) = '{"key":"value"}' = 15 bytes
-    expect(size).toBe(15)
-  })
-
-  it("estimateSize handles nested objects", () => {
-    const validator = messageSizeValidator()
-
-    const size = validator.estimateSize({ a: { b: "c" } })
-
-    expect(size).toBeGreaterThan(0)
-  })
-
-  it("validate includes context in warning message", () => {
-    // This tests that context parameter is accepted without error
-    const validator = messageSizeValidator({ maxMessageSize: 100 })
-    const data = new Uint8Array(10)
-
-    expect(() => validator.validate(data, "command-dispatch")).not.toThrow()
-  })
-
-  it("exactly at max size does not throw", () => {
-    const validator = messageSizeValidator({ maxMessageSize: 100 })
-    const data = new Uint8Array(100)
-
-    expect(() => validator.validate(data)).not.toThrow()
-  })
-
-  it("one byte over max size throws", () => {
-    const validator = messageSizeValidator({ maxMessageSize: 100 })
-    const data = new Uint8Array(101)
-
-    expect(() => validator.validate(data)).toThrow(MessageSizeExceededError)
+describe("package exports", () => {
+  it("has no message size validator", () => {
+    expect(Object.keys(surface).filter((name) => /messageSize/i.test(name))).toEqual([])
   })
 })
