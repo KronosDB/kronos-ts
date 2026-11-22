@@ -32,8 +32,12 @@ import {
   correlation,
   localCommandBus,
   localQueryBus,
+  upcastingEventStore,
   type CommandBus,
+  type EventMessage,
   type EventStore,
+  type SequencedEvent,
+  type Tag,
   type QueryBus,
   type Snapshot,
   type SnapshotCapableEventStore,
@@ -285,6 +289,50 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     expect(eventsB.events.length).toBe(1)
     expect((eventsA.events[0]!.payload as any).name).toBe("Course A")
     expect((eventsB.events[0]!.payload as any).name).toBe("Course B")
+  }, 60_000)
+
+  it("events read back carry the tags they were appended with", async () => {
+    const courseId = `course-tags-${crypto.randomUUID()}`
+    const appended: EventMessage[] = [0, 1].map((n) => ({
+      kind: "event",
+      identifier: crypto.randomUUID(),
+      name: qn("axon-it", "Tagged"),
+      version: "",
+      payload: { n },
+      metadata: {},
+      timestamp: Date.now(),
+      tags: [
+        { key: "courseId", value: courseId },
+        { key: "lesson", value: `lesson-${n}` },
+      ],
+    }))
+    await eventStore.append(appended)
+
+    // Axon Server returns an event's tags in its own order.
+    const byKey = (tags: ReadonlyArray<Tag>) => [...tags].sort((a, b) => a.key.localeCompare(b.key))
+    const expected = appended.map((event) => byKey(event.tags))
+
+    const sourced = await eventStore.source({ query: { tags: { courseId } } })
+    expect(sourced.events.map((event) => byKey(event.tags))).toEqual(expected)
+
+    // A wrapper that matches events against the query by their tags finds them.
+    const upcasting = upcastingEventStore(eventStore, (event) => event)
+    expect((await upcasting.source({ query: { tags: { courseId } } })).events).toHaveLength(2)
+
+    const stream = eventStore.open({ position: 0n, query: { tags: { courseId } } })
+    try {
+      const delivered: SequencedEvent[] = []
+      const deadline = Date.now() + 15_000
+      while (delivered.length < 2 && Date.now() < deadline) {
+        const next = stream.next()
+        if (next) delivered.push(next)
+        else await new Promise((r) => setTimeout(r, 20))
+      }
+      assert.equal(stream.error(), undefined)
+      expect(delivered.map((item) => byKey(item.event.tags))).toEqual(expected)
+    } finally {
+      stream.close()
+    }
   }, 60_000)
 
   it("enforces capacity limits via multi-event entity load", async () => {
