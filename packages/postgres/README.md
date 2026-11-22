@@ -190,7 +190,7 @@ Every handler runs inside a single Unit of Work, and with this extension that Uo
 
 **In a processor**, the batch is the transaction. `postgresHandler` opens it before the handler runs, and the handler's statements, the token update and any dead letters commit — or roll back — together.
 
-**In a command**, the transaction is the append. A handler's appended events are buffered and flushed as one bulk write at commit, in a transaction that opens and commits within milliseconds. The handler's own writes are not part of it: `ctx.sql()` runs them on the pool, while the handler runs, so write them idempotently. Do not open the unit of work's transaction from a command handler with `postgresTransaction(ctx.unitOfWork)`: it pins a connection for the rest of the handler, and a `ctx.load` after it waits for a second one from the same pool — a burst of commands the size of the pool deadlocks.
+**In a command**, the transaction is the append. A handler's appended events are buffered and written at commit, with one `INSERT` statement per 100 events, in a transaction that opens and commits within milliseconds. The handler's own writes are not part of it: `ctx.sql()` runs them on the pool, while the handler runs, so write them idempotently. Do not open the unit of work's transaction from a command handler with `postgresTransaction(ctx.unitOfWork)`: it pins a connection for the rest of the handler, and a `ctx.load` after it waits for a second one from the same pool — a burst of commands the size of the pool deadlocks.
 
 This is the framework's transaction, exposed for you to enroll work into. The package does **not** ship an ORM client — you bring (or wrap) your own. The two pieces you need are the accessor pair:
 

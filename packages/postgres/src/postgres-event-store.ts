@@ -11,7 +11,8 @@
  *      writers run in parallel
  *   3. Conflict check: SELECT count(*) WHERE sequence_position > marker AND query
  *   4. If conflict count > 0 → throw AppendConditionError (code KR001)
- *   5. INSERT events returning sequence_position for the ConsistencyMarker
+ *   5. INSERT the events, one statement per 100 of them, returning
+ *      sequence_position for the ConsistencyMarker
  *   6. commit() → COMMIT; afterCommit() → marker; rollback() → fire-and-forget
  *      ROLLBACK (synchronous void per the framework contract)
  *
@@ -61,6 +62,13 @@ import { AppendConditionError, isDcbViolation, KRONOS_DCB_VIOLATION_SQLSTATE } f
 import type { PostgresResource } from "./postgres-pool.js"
 import { sharedPostgresTransaction } from "./postgres-transaction.js"
 import { decodeEvent, type EventRow, EVENT_COLUMNS } from "./event-row.js"
+
+/**
+ * Events inserted per statement. The statement's text depends on its row
+ * count, so this is also the number of distinct INSERT statements a connection
+ * can be sent.
+ */
+const INSERT_BATCH_ROWS = 100
 
 /**
  * The DCB event store — and NOTHING BUT. `pg` carries both the client and the
@@ -130,8 +138,8 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
    * Check for DCB conflict and INSERT events, within the caller's transaction.
    * Returns the (position, xid) of the last inserted row.
    *
-   * Uses parameterised SQL (no dynamic SQL), so each query is prepared once
-   * and has no $N rebinding complexity.
+   * Every value is a bound parameter. The events go in one INSERT per
+   * INSERT_BATCH_ROWS of them.
    */
   async function checkAndInsert(
     tx: PostgresAdapterTransaction,
@@ -167,33 +175,52 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
     }
 
     // --- Insert events ---
+    // One statement per INSERT_BATCH_ROWS events. With more than one event,
+    // each row carries its index and the rows are inserted ORDER BY it, so
+    // positions are handed out in the order the events were given. RETURNING
+    // promises no order, so the last row is the one with the highest position.
     let lastPosition = -1n
     let lastXid = ""
 
-    for (const e of events) {
-      const encodedTags = encodedTagsOf(e)
-      const type = eventTypeOf(e)
-      const payload = e.payload ?? {}
-      const metadata = e.metadata ?? {}
-
-      const rows = await tx.query<{ sequence_position: string; transaction_id: string }>(
-        `INSERT INTO ${tables.events} (event_id, type, tags, payload, metadata, version, timestamp)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING sequence_position, transaction_id`,
-        [
+    for (let offset = 0; offset < events.length; offset += INSERT_BATCH_ROWS) {
+      const batch = events.slice(offset, offset + INSERT_BATCH_ROWS)
+      const params: unknown[] = []
+      const values = batch.map((e, index) => {
+        const p = params.length
+        params.push(
           e.identifier,
-          type,
-          encodedTags,
-          JSON.stringify(payload),
-          JSON.stringify(metadata),
+          eventTypeOf(e),
+          encodedTagsOf(e),
+          JSON.stringify(e.payload ?? {}),
+          JSON.stringify(e.metadata ?? {}),
           e.version,
           e.timestamp,
-        ],
+        )
+        return `(${index}, $${p + 1}::uuid, $${p + 2}::text, $${p + 3}::text[], $${p + 4}::jsonb, $${p + 5}::jsonb, $${p + 6}::text, $${p + 7}::bigint)`
+      })
+      const source =
+        batch.length === 1
+          ? `VALUES ($1, $2, $3, $4, $5, $6, $7)`
+          : `SELECT v.event_id, v.type, v.tags, v.payload, v.metadata, v.version, v.timestamp
+             FROM (VALUES ${values.join(", ")})
+               AS v(ord, event_id, type, tags, payload, metadata, version, timestamp)
+             ORDER BY v.ord`
+      const rows = await tx.query<{ sequence_position: string; transaction_id: string }>(
+        `INSERT INTO ${tables.events} (event_id, type, tags, payload, metadata, version, timestamp)
+         ${source}
+         RETURNING sequence_position, transaction_id`,
+        params,
       )
-      const row = rows[0]
-      if (!row) throw new Error("INSERT returned no rows")
-      lastPosition = BigInt(row.sequence_position)
-      lastXid = row.transaction_id
+      if (rows.length !== batch.length) {
+        throw new Error(`INSERT returned ${rows.length} rows for ${batch.length} events`)
+      }
+      for (const row of rows) {
+        const position = BigInt(row.sequence_position)
+        if (position > lastPosition) {
+          lastPosition = position
+          lastXid = row.transaction_id
+        }
+      }
     }
 
     if (lastPosition < 0n) {
