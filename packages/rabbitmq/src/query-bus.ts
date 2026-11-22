@@ -48,8 +48,8 @@ const DEFAULT_TIMEOUT_MS = 30_000
 
 /**
  * What the bus borrows from the connection. `subscriberRegistry` is optional
- * because a connection without one leaves subscription queries next-only
- * rather than failing.
+ * because a connection without one leaves subscription queries working inside
+ * this process only, rather than failing.
  */
 export type RabbitMqQueryBusSource = {
   readonly config: RabbitMqResolvedConfig
@@ -60,10 +60,11 @@ export type RabbitMqQueryBusSource = {
 /**
  * A RabbitMQ-backed query bus over YOUR next segment.
  *
- * Direct request/reply queries fork exactly as {@link rabbitMqCommandBus} does:
- * a query this instance subscribed goes to `next`, anything else over the
- * broker — durable per-query queues with competing consumers, an identity-named
- * exclusive reply queue, correlation-id matched replies.
+ * Request/reply queries go over the broker as commands do on
+ * {@link rabbitMqCommandBus}, including a query this instance subscribed:
+ * durable per-query queues with competing consumers, an identity-named
+ * exclusive reply queue, correlation-id matched replies. `localFirstQueryBus`
+ * over this bus answers a co-located query without the broker.
  *
  * ## Subscription queries
  *
@@ -79,8 +80,8 @@ export type RabbitMqQueryBusSource = {
  * never crosses the wire. `completeSubscription` and
  * `completeSubscriptionExceptionally` follow the same path.
  *
- * Without a registry the bus degrades to next-only subscription queries rather
- * than failing.
+ * Without a registry, updates reach only the subscribers in this process,
+ * rather than failing.
  *
  * ## Where the interceptors go
  *
@@ -210,8 +211,8 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
       const message = { ...unstamped, timestamp: unstamped.timestamp ?? Date.now() }
       let closeInitial = () => {}
       const handler = registerSubscription(message, bufferSize, () => closeInitial())
-      // Through `bus.query`, so the initial result takes the same routing fork
-      // a plain query does.
+      // Through `bus.query`, so the initial result goes over the broker as a
+      // plain query does.
       const initial = subscriptionInitialResult(bus.query(message), (error) => handler.completeExceptionally(error))
       closeInitial = initial.close
       return {
@@ -249,7 +250,7 @@ export function rabbitMqQueryBus<U extends UnitOfWork = UnitOfWork>(
           return
         }
 
-        // Local-only mode: filter and offer against the next subscriber set.
+        // No registry: filter and offer against this process's subscribers.
         for (const [id, handler] of localOwnedHandlers) {
           if (!handler.active) {
             localOwnedHandlers.delete(id)

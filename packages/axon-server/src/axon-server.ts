@@ -4,9 +4,9 @@ import { messagingAdmission, messagingDeadline, positiveInteger, UnavailableErro
  * The Axon Server command and query buses.
  *
  * Axon Server is a SMART HUB: outbound dispatch always goes to the server, and
- * the server decides which node handles it — there is no client-side
- * prefer-next fork here, which is the whole difference from the dumb-pipe
- * broker in `@kronos-ts/rabbitmq`.
+ * the server decides which node handles it. `@kronos-ts/rabbitmq` also sends
+ * every dispatch out, but its broker only delivers to whichever consumer is
+ * bound to the queue.
  *
  * Both buses are plain functions over the shared connection and YOUR next bus:
  *
