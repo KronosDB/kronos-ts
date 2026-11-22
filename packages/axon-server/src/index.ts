@@ -27,6 +27,7 @@ export {
   axonServerControlPlane,
   type AxonServerControlPlane,
   type ManagedEventProcessor,
+  type ManagedProcessorSource,
 } from "./control-plane.js"
 
 export {

@@ -456,7 +456,7 @@ export type AxonServerConnectionHandle = AxonServerBusSource & AxonServerPlatfor
  * const app = kronos({ commandHandlers, queryHandlers })
  * await axon.start()                  // readiness barrier: the server can route to us
  * // opt in to remote administration
- * const control = await axonServerControlPlane(axon, app.processors.values())
+ * const control = await axonServerControlPlane(axon, app.processors)
  * // …
  * await app.stop(); await control.close(); await axon.close()
  * ```

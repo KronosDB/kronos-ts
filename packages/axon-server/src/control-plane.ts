@@ -23,7 +23,7 @@
  * await axon.start()                                  // data path only
  *
  * // opt in to remote administration
- * const control = await axonServerControlPlane(axon, app.processors.values())
+ * const control = await axonServerControlPlane(axon, app.processors)
  * // …
  * await app.stop(); await control.close(); await axon.close()
  * ```
@@ -74,17 +74,73 @@ export type ManagedEventProcessor = {
 }
 
 /**
+ * Where the control plane reads live processors from.
+ *
+ * A name-keyed map, which is what `app.processors` is, or an iterable such as
+ * an array. Values that do not look like a {@link ManagedEventProcessor} are
+ * ignored.
+ *
+ * A map or an array is read again on every instruction and every status
+ * report, so a processor added to it after the control plane was created is
+ * reported and addressable, and one removed from it is not.
+ *
+ * An iterator, such as `app.processors.values()`, can be read only once. It is
+ * copied when the control plane is created, and processors added afterwards to
+ * the map it came from are not seen. Pass the map.
+ */
+export type ManagedProcessorSource =
+  | Iterable<ManagedEventProcessor>
+  | ReadonlyMap<string, unknown>
+
+/**
  * A running control plane. The platform stream is live; instructions are being
  * routed and status is being reported until `close()`.
  */
 export type AxonServerControlPlane = {
   /**
-   * The processors this control plane addresses, keyed by name — the snapshot
-   * taken at construction. Exposed for introspection and tests.
+   * The processors this control plane addresses now, keyed by name. Read from
+   * the source at each access. Exposed for introspection and tests.
    */
   readonly processors: ReadonlyMap<string, ManagedEventProcessor>
   /** Stop the platform stream. Idempotent, and safe to call before `axon.close()`. */
   close(): Promise<void>
+}
+
+function isManagedEventProcessor(value: unknown): value is ManagedEventProcessor {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { name?: unknown }).name === "string"
+  )
+}
+
+/**
+ * A name-keyed view of a {@link ManagedProcessorSource}. `get`, `values` and
+ * `current` each read the source when they are called.
+ */
+function processorsByName(source: ManagedProcessorSource) {
+  const mapLike = source as { get?: unknown; values?: unknown }
+  const isMap = typeof mapLike.get === "function" && typeof mapLike.values === "function"
+  // An iterator is its own iterable and yields each value once, so it is
+  // copied here. Anything else is read again at each call.
+  const iterable = source as Iterable<unknown>
+  const isIterator = !isMap && (iterable[Symbol.iterator]() as unknown) === iterable
+  const readable = isIterator ? Array.from(iterable) : iterable
+
+  const current = (): Map<string, ManagedEventProcessor> => {
+    const values = isMap ? (source as ReadonlyMap<string, unknown>).values() : readable
+    const byName = new Map<string, ManagedEventProcessor>()
+    for (const value of values) {
+      if (isManagedEventProcessor(value)) byName.set(value.name, value)
+    }
+    return byName
+  }
+
+  return {
+    current,
+    get: (name: string) => current().get(name),
+    values: () => current().values(),
+  }
 }
 
 /** Map the managed processors into the status shape the platform stream reports. */
@@ -122,27 +178,21 @@ function processorStatuses(processors: Iterable<ManagedEventProcessor>): Process
  *
  * `processors` are the LIVE processor instances, which only exist after
  * `kronos` has built them — that is why this cannot be folded back into the
- * backend factory. Pass `app.processors.values()`.
+ * backend factory. Pass `app.processors`.
  *
- * Caveat on that call: `kronos` types `processors` as
- * `ReadonlyMap<string, unknown>`, so `.values()` needs a cast today —
- * `app.processors.values() as Iterable<ManagedEventProcessor>`. Narrowing that
- * map in `@kronos-ts/core` would remove the cast; this package cannot.
- *
- * The collection is SNAPSHOTTED into a name-keyed map here, once. That is
- * deliberate: a one-shot iterator (`Map.values()` is one) would otherwise yield
- * nothing on the second status report. The processor OBJECTS are live, so each
- * report still reads current `running` / `position` / segment state off them —
- * only the membership of the set is fixed at construction.
+ * The source is read again on every instruction and every status report, so
+ * a processor added to the map after this call is reported and addressable.
+ * Each report reads current `running` / `position` / segment state off the
+ * processor objects. An iterator such as `app.processors.values()` is copied
+ * once instead — see {@link ManagedProcessorSource}.
  */
 export async function axonServerControlPlane(
   conn: AxonServerPlatformSource,
-  processors: Iterable<ManagedEventProcessor> = [],
+  processors: ManagedProcessorSource = [],
 ): Promise<AxonServerControlPlane> {
   const { platform } = conn
   // Name-keyed view so server-initiated instructions route to the right one.
-  const byName = new Map<string, ManagedEventProcessor>()
-  for (const proc of processors) byName.set(proc.name, proc)
+  const byName = processorsByName(processors)
 
   // An instruction for a processor this application does not have throws.
   // The platform stream logs an instruction that threw; it sends Axon Server
@@ -187,7 +237,9 @@ export async function axonServerControlPlane(
   await platform.start()
 
   return {
-    processors: byName,
+    get processors() {
+      return byName.current()
+    },
     async close() {
       platform.stop()
     },
