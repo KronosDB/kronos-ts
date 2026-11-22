@@ -203,6 +203,8 @@ export function amqpRabbitMqQueryTransport(
     channel.on?.("error", (error: Error) => failTransport(error))
     channel.on?.("close", () => failTransport(new UnavailableError("RabbitMQ channel closed; outstanding delivery outcome is unknown. Recreate the connection.")))
     channel.on?.("drain", () => { writable = true })
+    // The broker returns a request that no queue is bound for, and only that.
+    // See `dispatch` for a queue that is bound and has no consumer.
     channel.on?.("return", (msg: ConsumeMessage) => {
       const requestId = msg.properties.correlationId
       const request = pending.get(requestId)
@@ -297,10 +299,27 @@ export function amqpRabbitMqQueryTransport(
 
         const routingKey = config.topology.queryRoutingKey(envelope.message.name)
 
+        // WHAT THE CALLER LEARNS WHEN NOTHING HANDLES THE NAME
+        //
+        // - No queue is bound for it: the broker returns the request, and the
+        //   caller fails at once with `no-handler`.
+        // - A queue is bound and nothing consumes it, as after its handler
+        //   stopped: the broker queues the request like any other, and the
+        //   caller fails at the timeout with `unavailable`, as it does for a
+        //   handler that is slow. RabbitMQ reports an unroutable publish, not
+        //   a queue without consumers, and a queue's consumer count can only
+        //   be asked for by the queue's name, which holds the handling
+        //   service's name and so is not known here.
+        //
+        // The request expires in the queue when the caller's wait ends, so a
+        // handler that starts later is not given it.
         return await new Promise<RabbitMqQueryReplyEnvelope>((resolve, reject) => {
           const timer = setTimeout(() => {
             pending.delete(envelope.requestId)
-            reject(new UnavailableError(`Query ${routingKey} timed out after ${envelope.timeoutMs}ms`))
+            reject(new UnavailableError(
+              `Query ${routingKey} timed out after ${envelope.timeoutMs}ms. ` +
+              "A queue is bound for the name, and RabbitMQ does not report whether a handler is consuming it",
+            ))
           }, Math.max(1, expiresAt - Date.now()))
           pending.set(envelope.requestId, { resolve, reject, timer })
 

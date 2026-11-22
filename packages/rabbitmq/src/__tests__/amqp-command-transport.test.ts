@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { qn } from "@kronos-ts/core"
+import { isNoHandler, isUnavailable, qn } from "@kronos-ts/core"
 import { amqpRabbitMqCommandTransport } from "../amqp-command-transport.js"
 import { amqpChannelSource } from "../connection.js"
 import { resolveRabbitMqConfig } from "../rabbitmq.js"
@@ -125,7 +125,7 @@ describe("AMQP RabbitMQ command transport", () => {
     await expect(resultPromise).resolves.toEqual({ requestId: "cmd-1", ok: true, result: "ok" })
   })
 
-  it("times out pending command dispatches", async () => {
+  it("fails a command that is queued and never answered as unavailable at the timeout, naming what is known", async () => {
     const fake = fakeAmqp()
     const transport = amqpRabbitMqCommandTransport(
       resolveRabbitMqConfig({
@@ -138,7 +138,15 @@ describe("AMQP RabbitMQ command transport", () => {
 
     const resultPromise = transport.dispatch({ ...envelope(), timeoutMs: 1 })
 
-    await expect(resultPromise).rejects.toThrow(/timed out/)
+    // The fake broker accepts the publish and returns nothing, as RabbitMQ does
+    // for a queue that is bound and has no consumer.
+    const error = await resultPromise.then(() => undefined, (e: Error) => e)
+    expect(isUnavailable(error)).toBe(true)
+    expect(isNoHandler(error)).toBe(false)
+    expect(error?.message).toBe(
+      "Command faculty.DoThing timed out after 1ms. " +
+      "A queue is bound for the name, and RabbitMQ does not report whether a handler is consuming it",
+    )
   })
 
   it("declares command queues and sends replies for consumed commands", async () => {
