@@ -51,6 +51,7 @@ export {
   postgresPool,
   type PostgresResource,
   type PostgresPoolOptions,
+  type PostgresAdapterPoolOptions,
 } from "./postgres-pool.js"
 
 // The stores.
