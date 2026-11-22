@@ -122,8 +122,9 @@ function recordingLoopbackTransport(): RecordingLoopbackTransport {
 
 /**
  * The composition this file exists to pin: correlation wraps the TRANSPORT
- * bus, which then forks between the local segment and the broker. Both
- * branches are therefore downstream of the same single interception.
+ * bus, or `localFirstCommandBus` over it when `preferLocalHandlers` is set.
+ * Every dispatch, to the broker or to the local segment, is therefore
+ * downstream of the same single interception.
  */
 function busOver(
   transport: RabbitMqCommandTransport,

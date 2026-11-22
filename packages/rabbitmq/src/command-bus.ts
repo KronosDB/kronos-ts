@@ -56,19 +56,17 @@ export type RabbitMqCommandBusSource = {
 /**
  * A RabbitMQ-backed command bus over YOUR next segment.
  *
- * `dispatch` forks: a command this instance subscribed goes to `next`, and
- * anything else goes over the broker. `subscribe` does BOTH — it registers on
- * `next` and announces the name to the broker, so a remote instance can route
+ * `dispatch` publishes every command to the broker, including one this
+ * instance subscribed. The broker delivers it to one consumer of the command's
+ * queue, which may be this process. `subscribe` does BOTH — it registers on
+ * `next` and binds the command's queue on the broker, so the broker can route
  * work here.
  *
- * The fork used to live in core, behind a connector seam, with this package
- * supplying only the wire half. It is one function again because the two halves
- * were never separable in practice: the reply timeout, the identity-named reply
- * queue and the prefer-next decision are one routing policy, and splitting
- * them across a package boundary bought an interface nobody else implemented.
+ * To handle a co-located command without the broker, wrap the bus:
+ * `localFirstCommandBus(rabbitMqCommandBus(local, rabbit), local)`.
  *
- * Below the fork, unchanged: competing consumers on durable per-command queues,
- * an identity-named exclusive reply queue, correlation-id matched replies,
+ * On the broker: competing consumers on durable per-command queues, an
+ * identity-named exclusive reply queue, correlation-id matched replies,
  * dead-lettering.
  *
  * ## Where the interceptors go
@@ -79,18 +77,19 @@ export type RabbitMqCommandBusSource = {
  * interceptingCommandBus(rabbitMqCommandBus(next, rabbit), correlation)
  * ```
  *
- * Interception at the top covers BOTH branches of the fork. Wrapping on the
- * inside is the classic correlation defect: a command routed over the wire leaves
- * with no `correlationId` / `causationId` at all, because only the next branch
- * reaches the intercepting bus.
+ * Interception at the top covers every dispatch. It goes outside
+ * `localFirstCommandBus` too, so that it covers the local path and the broker
+ * path. An intercept on `next` alone runs only where the command is handled:
+ * the command leaves this process with no `correlationId` / `causationId`.
  *
  * ## Inbound
  *
  * A command the broker routes here is dispatched into `next` — not into a
  * privately-held handler reference. That is what makes the unit-of-work policy
  * you chose for `next` (say `postgresUnitOfWork(unitOfWork, pg)`) apply to
- * remote-origin work exactly as it applies to next work. Correlation rides on the
- * message metadata, which crosses the wire intact.
+ * work the broker delivers exactly as it applies to work dispatched on `next`
+ * directly. Correlation rides on the message metadata, which crosses the wire
+ * intact.
  */
 export function rabbitMqCommandBus<U extends UnitOfWork = UnitOfWork>(
   next: CommandBus<U>,

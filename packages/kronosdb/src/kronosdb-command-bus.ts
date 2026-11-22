@@ -96,7 +96,8 @@ export type KronosDbCommandBusOptions = {
  *
  * Server-side routing is unchanged: KronosDB is a smart hub, so an outbound
  * dispatch ALWAYS goes to the server, even for a command this instance handles.
- * There is no client-side prefer-next fork here (that is RabbitMQ's model).
+ * `localFirstCommandBus` over this bus is what handles a co-located command
+ * without the server.
  *
  * ## The bus is a NAME, not a context
  *

@@ -43,8 +43,7 @@ const tracedUow = (): Traced => Object.assign(unitOfWork(), { probe: true as con
 /**
  * THE FULL CHAIN, in the order a distributed host writes it: a branded
  * factory at the bottom, the local bus over it, the transport over that, and
- * interception OUTERMOST so it covers both branches of the transport's
- * local-vs-remote fork.
+ * interception OUTERMOST so it covers every dispatch.
  */
 export const chainKeepsTraced: CommandBus<Traced> = interceptingCommandBus(
   rabbitMqCommandBus(localCommandBus(tracedUow), rabbit),

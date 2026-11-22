@@ -190,10 +190,10 @@ describe("RabbitMQ command transport integration", () => {
    * correlation over a REAL broker, not a loopback transport.
    *
    * This is what the composition order buys: `interceptingCommandBus` wraps the
-   * DISTRIBUTED bus, so the stamp lands above the local-vs-remote fork and a
-   * command that leaves the process over AMQP arrives on the far side with its
-   * `correlationId` / `causationId` intact. Wrapping inside the fork — the old
-   * shape — loses both the moment the command is routed to the broker.
+   * DISTRIBUTED bus, so the stamp lands before the command is published and it
+   * arrives on the far side with its `correlationId` / `causationId` intact.
+   * An intercept on the local segment alone runs only on the handling side,
+   * so the command would leave this process with neither.
    */
   it("carries correlationId/causationId across the broker into the remote handler", async () => {
     const prefix = `kronos.it.${Date.now()}.correlation`
