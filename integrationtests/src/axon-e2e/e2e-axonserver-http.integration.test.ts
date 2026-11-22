@@ -401,7 +401,7 @@ async function initClusterWithDcb(host: string, httpPort: number): Promise<void>
 //     axonServerCommandBus(localCommandBus(unitOfWork), axon), correlation)
 //   kronos({ commandHandlers, queryHandlers, eventHandlers })
 //   await axon.start()                                       // data-path readiness
-//   await axonServerControlPlane(axon, app.processors.values())  // opt-in remote admin
+//   await axonServerControlPlane(axon, app.processors)  // opt-in remote admin
 // The connection is the shared RESOURCE — one gRPC channel, the platform stream
 // on it, start()/close(). The serializer lives on it because it is a property
 // of this client's wire; the unit-of-work policy lives on the LOCAL bus each
@@ -516,7 +516,7 @@ describe("E2E: Axon Server full stack", () => {
 
     // Platform stream + subscription-ack wait, AFTER handlers are subscribed.
     await axon.start()
-    control = await axonServerControlPlane(axon, app.processors.values())
+    control = await axonServerControlPlane(axon, app.processors)
 
     // HTTP layer: plain Express, wired after kronos() against the app's buses.
     const expressApp: Express = express()
@@ -787,7 +787,7 @@ describe("E2E: Axon Server full stack", () => {
       ),
     })
     await autoAxon.start()
-    const autoControl = await axonServerControlPlane(autoAxon, autoApp.processors.values())
+    const autoControl = await axonServerControlPlane(autoAxon, autoApp.processors)
     await new Promise((r) => setTimeout(r, 2000))
 
     try {

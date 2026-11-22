@@ -12,7 +12,9 @@
  *   2. instruction → processor-method routing, by name, skipping absent methods
  *   3. the ProcessorStatus mapping (streaming vs subscribing, per-segment vs
  *      the synthetic single segment)
- *   4. a one-shot iterator (`Map.values()`) still reports on every tick
+ *   4. the processor source is read on every instruction and status report;
+ *      a one-shot iterator (`Map.values()`) is copied and still reports on
+ *      every tick
  */
 import { describe, it, expect } from "bun:test"
 import type {
@@ -261,20 +263,89 @@ describe("axonServerControlPlane — status reporting", () => {
     expect(platform.statuses()[0]!.running).toBe(true)
   })
 
-  it("survives a one-shot iterator source (app.processors.values())", async () => {
+  it("exposes the processors by name", async () => {
+    const platform = fakePlatform()
+    const control = await axonServerControlPlane({ platform }, [{ name: "a" }, { name: "b" }])
+    expect([...control.processors.keys()]).toEqual(["a", "b"])
+  })
+})
+
+describe("axonServerControlPlane — processor source", () => {
+  it("accepts a name-keyed map, which is what app.processors is", async () => {
+    const platform = fakePlatform()
+    const a = spyProcessor("proc-a")
+    const appProcessors: ReadonlyMap<string, unknown> = new Map([["proc-a", a.proc]])
+    const control = await axonServerControlPlane({ platform }, appProcessors)
+
+    expect(platform.statuses().map((s) => s.name)).toEqual(["proc-a"])
+    await platform.emit({ kind: "start-processor", processorName: "proc-a" })
+    expect(a.calls).toEqual(["start"])
+    expect(control.processors.get("proc-a")).toBe(a.proc)
+  })
+
+  it("ignores map entries that are not processor-shaped", async () => {
+    const platform = fakePlatform()
+    const appProcessors: ReadonlyMap<string, unknown> = new Map<string, unknown>([
+      ["proc-a", spyProcessor("proc-a").proc],
+      ["junk", 42],
+      ["nullish", null],
+    ])
+    await axonServerControlPlane({ platform }, appProcessors)
+
+    expect(platform.statuses().map((s) => s.name)).toEqual(["proc-a"])
+  })
+
+  it("reports and controls a processor added to the map after the control plane was created", async () => {
+    const platform = fakePlatform()
+    const live = new Map<string, unknown>()
+    const control = await axonServerControlPlane({ platform }, live)
+
+    expect(platform.statuses()).toEqual([])
+
+    const late = spyProcessor("late")
+    live.set("late", late.proc)
+
+    expect(platform.statuses().map((s) => s.name)).toEqual(["late"])
+    await platform.emit({ kind: "start-processor", processorName: "late" })
+    expect(late.calls).toEqual(["start"])
+    expect([...control.processors.keys()]).toEqual(["late"])
+  })
+
+  it("stops reporting a processor removed from the map", async () => {
+    const platform = fakePlatform()
+    const live = new Map<string, unknown>([["p", { name: "p" }]])
+    await axonServerControlPlane({ platform }, live)
+
+    expect(platform.statuses()).toHaveLength(1)
+    live.delete("p")
+    expect(platform.statuses()).toEqual([])
+  })
+
+  it("reads an array again on every report", async () => {
+    const platform = fakePlatform()
+    const live: ManagedEventProcessor[] = []
+    await axonServerControlPlane({ platform }, live)
+
+    expect(platform.statuses()).toEqual([])
+
+    const late = spyProcessor("late")
+    live.push(late.proc)
+
+    expect(platform.statuses().map((s) => s.name)).toEqual(["late"])
+    await platform.emit({ kind: "start-processor", processorName: "late" })
+    expect(late.calls).toEqual(["start"])
+  })
+
+  it("copies a one-shot iterator source (app.processors.values()), which can be read only once", async () => {
     const platform = fakePlatform()
     const live = new Map<string, ManagedEventProcessor>([["p", { name: "p" }]])
-    // Map.values() is single-use — the control plane must snapshot it, or the
-    // second status tick would report no processors at all.
     await axonServerControlPlane({ platform }, live.values())
 
     expect(platform.statuses()).toHaveLength(1)
     expect(platform.statuses()).toHaveLength(1)
-  })
 
-  it("exposes the snapshotted processors by name", async () => {
-    const platform = fakePlatform()
-    const control = await axonServerControlPlane({ platform }, [{ name: "a" }, { name: "b" }])
-    expect([...control.processors.keys()]).toEqual(["a", "b"])
+    // The iterator was copied: the map it came from is not read again.
+    live.set("late", { name: "late" })
+    expect(platform.statuses().map((s) => s.name)).toEqual(["p"])
   })
 })
