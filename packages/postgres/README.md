@@ -16,7 +16,7 @@ bun add postgres           # for postgresAdapter (porsager — Node + Bun)
 # bunSqlAdapter has no external dep (uses Bun.sql built-in, requires Bun >= 1.2)
 ```
 
-Requires Postgres 14+ (for `xid8` and `pg_snapshot_xmin`).
+Requires Postgres 14+. The event store relies on `xid8` and `pg_snapshot_xmin`.
 
 ## Usage
 
@@ -69,7 +69,7 @@ error and by throwing: set them on the adapter.
 
 Every function above is built from the same `pg`, and that is what makes them
 one transaction. `postgresUnitOfWork` puts a (lazily opened) transaction on each
-unit of work; the token store, the dead-letter queue, the event store and a
+unit of work; the token store, the dead-letter queue, the event store and an
 event handler's own `ctx.sql()` all read it. A crash cannot advance a
 processor's token while losing the work that token accounts for. A command
 handler's `ctx.sql()` is the exception: it runs on the pool (see below).
@@ -100,7 +100,7 @@ kronos({
 ```
 
 `postgresHandler` wraps the handler FUNCTION, not the entry — it is a plain
-`(next, pg) => (message, ctx) => result` with `<M, C, R>` inferred, so nothing
+`(next, pg) => (message, ctx) => result` with the handler's type inferred, so nothing
 about a handler entry appears in its type and the host keeps ownership of the
 spread. One wrapper covers command, event and query handlers alike: they differ
 only in the context they receive, and the capability is added the same way to
@@ -186,7 +186,7 @@ const adapter = bunSqlAdapter({
 
 ## Transactions
 
-Every handler runs inside a single Unit of Work, and with this extension that UoW carries a Postgres transaction. It is **lazy**: it opens on the first writer and never opens for pure-read work, so a read claims no connection it does not use.
+A command or event handler runs inside a single Unit of Work, and when its bus or processor was built with `postgresUnitOfWork`, that UoW carries a Postgres transaction. A query handler's does not: `localQueryBus` refuses a transactional factory. The transaction is **lazy**: it opens on the first writer and never opens for pure-read work, so a read claims no connection it does not use.
 
 **In a processor**, the batch is the transaction. `postgresHandler` opens it before the handler runs, and the handler's statements, the token update and any dead letters commit — or roll back — together.
 
@@ -306,7 +306,7 @@ The engine implements [Dynamic Consistency Boundaries](https://dcb.events):
 - **Criteria-based sourcing** with `@>` (contains-all) tag semantics
 - **Gap-free tailing** using `xid8` + `pg_snapshot_xmin(pg_current_snapshot())`
 
-Concurrent writers on **disjoint tags** run in parallel (advisory-lock taxonomy permits this). Concurrent writers on the **same tag** serialise — exactly one commits; the other receives `AppendConditionError`.
+Concurrent writers on **disjoint tags** run in parallel (advisory-lock taxonomy permits this). Concurrent writers on the **same tag** serialise: the second waits until the first has committed. Without a condition both commit. When both carry a condition on that tag from the same marker, the first commits and the second receives `AppendConditionError`.
 
 A writer locks the tags its condition reads **and** the tags its events carry, with or without a condition. A position is assigned at insert and becomes visible at commit, so unserialised writers of one tag could commit out of position order and leave a read unable to see an event below its own marker. A read that matches nothing is anchored below its start rather than at the log head, for the same reason. When a condition carries `reads`, each read is checked against its own marker.
 
@@ -323,7 +323,7 @@ The `pg_snapshot_xmin` watermark hides events from in-flight transactions, preve
 
 `postgresPool(..., { bootstrap: true })` (the default) auto-creates these tables on `start()`:
 - `kronos_events` — append-only event log with `xid8` watermark, BIGSERIAL position, JSONB payload, GIN index on tags
-- `kronos_snapshots` — composite-PK `(state_name, state_id)` with BYTEA payload
+- `kronos_snapshots` — one row per snapshot key (`key` is the primary key), with BYTEA payload
 - `kronos_scheduled_events` — durable schedules, tombstoned on fire/cancel
 - `kronos_token_entries` — processor tokens, PK `(processor_name, segment)`
 - `kronos_dead_letters` — parked letters, partitioned by `processing_group`
@@ -340,9 +340,9 @@ postgresPool(connectionString, {
 })
 ```
 
-## SQLSTATE
+## Append conflicts
 
-DCB violations raise SQLSTATE `KR001`. The adapter catches this and throws core's `AppendConditionError`, the conflict every store throws. To detect violations from your own code, ask with core's guard:
+The store finds a violated append condition with its own check inside the append transaction; Postgres raises no error for it. The store then throws core's `AppendConditionError`, the conflict every store throws, with `code` set to `KR001`. An event whose id is already in the log (unique violation `23505`) is thrown as the same error, without that code. To detect either from your own code, ask with core's guard:
 
 ```typescript
 import { isConflict } from "@kronos-ts/core"
@@ -356,15 +356,15 @@ try {
 }
 ```
 
-If you're working directly against the driver (bypassing the adapter), `isDcbViolation(err)` from `@kronos-ts/postgres` inspects a raw pg / postgres.js / Bun.sql error's `.code` field for the KR001 SQLSTATE.
+`isDcbViolation(err)` from `@kronos-ts/postgres` answers whether an error's `code` is `KR001`. No error raised by Postgres or a driver carries that code, so it is true only for the store's own condition error.
 
 ## FAQ
 
 **Q: Can I run my own migrations?** Yes — set `bootstrap: false` and apply equivalent DDL via your own migration tooling. Every builder is exported: `buildEventsTableDDL`, `buildEventsIndexesDDL`, `buildSnapshotsTableDDL`, `buildScheduledEventsTableDDL`, `buildScheduledEventsIndexesDDL`, `buildTokensTableDDL`, `buildDeadLettersTableDDL`, `buildDeadLettersIndexesDDL` — plus `bootstrapSchema` if you want the whole thing in one call.
 
-**Q: PgBouncer compatibility?** Yes — the adapter uses xact-scoped advisory locks (never session-scoped), so transaction-pooling mode is safe.
+**Q: PgBouncer compatibility?** The package's own statements do not depend on a session: its advisory locks are transaction-scoped and its timeouts are set with `SET LOCAL`. Two things do. `LISTEN` is a session feature; a stream that receives no notification still polls every 250ms. And `postgresAdapter` and `bunSqlAdapter` run with their drivers' defaults, which leave prepared statements on a connection. Check both against your pooler's transaction mode.
 
-**Q: Older Postgres support?** No. `xid8` requires PG14+. PG14 has been GA since 2021 and is universally supported across managed services.
+**Q: Older Postgres support?** No. Postgres 14 is the oldest supported version, and the test suites run on Postgres 16.
 
 **Q: Is Bun.sql LISTEN available in all Bun versions?** `Bun.SQL` was introduced in Bun 1.2. The `bunSqlAdapter` feature-detects native LISTEN; if unavailable (older Bun), it falls back to a 250ms polling shim. For production streaming workloads, use Bun 1.2+ or switch to `pgAdapter` / `postgresAdapter` which always have native LISTEN.
 
