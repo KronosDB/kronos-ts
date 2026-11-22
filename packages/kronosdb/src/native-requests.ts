@@ -9,7 +9,8 @@
 // A transport can die between the steps. If it did before anything was sent
 // the request simply goes to its replacement; once the frame is written a
 // failure is the caller's to see, because an append that was written may have
-// been applied.
+// been applied. The event store is the caller that knows what to do with
+// that: it sends the same append again, to a server that recognises it.
 // ---------------------------------------------------------------------------
 
 import { KronosDbError, KronosDbErrorCode } from "./errors.js"

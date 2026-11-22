@@ -12,7 +12,7 @@ import type {
   StreamingCondition,
   TrackingToken,
 } from "@kronos-ts/core"
-import { compileQuery, FIRST_TOKEN, globalSequenceToken, markerAt, noMarker } from "@kronos-ts/core"
+import { compileQuery, FIRST_TOKEN, globalSequenceToken, isUnavailable, markerAt, noMarker } from "@kronos-ts/core"
 import { ConcurrencyError } from "./errors.js"
 import type { KronosDbConnectionHandle } from "./kronosdb.js"
 import { subscription, type SubscriptionOptions } from "./kronosdb-subscription.js"
@@ -27,6 +27,7 @@ import {
   type WireCriterion,
 } from "./native-events.js"
 import { contextRequest, contextStream, unexpected } from "./native-requests.js"
+import type { NativeTransport } from "./native-transport.js"
 import {
   FLAG_END,
   FrameKind,
@@ -87,6 +88,16 @@ function parseAppended(kind: number, buf: Uint8Array, start: number, end: number
 /** How often a filtered stream hears how far the server has looked (ms). */
 const PROGRESS_INTERVAL_MS = 1000
 
+/** The wait before an append is sent again: this at first, doubling up to the longest (ms). */
+const RETRY_FIRST_WAIT_MS = 50
+const RETRY_LONGEST_WAIT_MS = 1000
+
+/** A wait before try `attempt + 1`, between half and all of the doubled step so tries from many clients spread out. */
+function retryWait(attempt: number): number {
+  const step = Math.min(RETRY_FIRST_WAIT_MS * 2 ** attempt, RETRY_LONGEST_WAIT_MS)
+  return step * (0.5 + Math.random() * 0.5)
+}
+
 /**
  * Creates an EventStore backed by KronosDB's native protocol.
  *
@@ -107,6 +118,14 @@ const PROGRESS_INTERVAL_MS = 1000
  * ({@link kronosDbSubscription}), the log's tail, a position's tags, and a
  * timestamp's position ({@link kronosDbTail}, {@link kronosDbTagsAt},
  * {@link kronosDbPositionAt}).
+ *
+ * An append the server answers `unavailable`, or whose connection is lost
+ * before the answer, may or may not have been written. It is sent again, with
+ * the same events, for up to the connection's `appendRetryMs`: a server that
+ * already holds them answers with the positions they have and writes nothing.
+ * So an append rides through a failover or a restart, and fails as
+ * unavailable only when the server stayed unreachable for that long. A
+ * conflict is never sent again.
  */
 export function kronosDbEventStore(
   kdb: Pick<KronosDbConnectionHandle, "connection" | "serializer">,
@@ -116,19 +135,58 @@ export function kronosDbEventStore(
   const link = kdb.connection.native
   const serializer = kdb.serializer
 
-  function send(events: ReadonlyArray<OutboundEvent>, condition: AppendCondition | undefined): Promise<bigint> {
+  const retryMs = kdb.connection.config.appendRetryMs
+
+  async function send(events: ReadonlyArray<OutboundEvent>, condition: AppendCondition | undefined): Promise<bigint> {
     const wired = wireCondition(condition)
-    return contextRequest(
-      link,
-      context,
-      FrameKind.Append,
-      (w, id) => {
-        writeU16(w, id)
-        writeCondition(w, wired)
-        writeRecords(w, events)
-      },
-      parseAppended,
-    )
+    const once = () =>
+      contextRequest(
+        link,
+        context,
+        FrameKind.Append,
+        (w, id) => {
+          writeU16(w, id)
+          writeCondition(w, wired)
+          writeRecords(w, events)
+        },
+        parseAppended,
+      )
+
+    let failure: unknown
+    try {
+      return await once()
+    } catch (error) {
+      failure = error
+    }
+
+    // The server recognises a retry by its events' identifiers, so an event
+    // without one would be written a second time.
+    if (retryMs <= 0 || events.some(({ event }) => event.identifier === "")) throw failure
+    const until = Date.now() + retryMs
+    for (let attempt = 0; ; attempt++) {
+      // A conflict, a refusal, bad credentials: another try changes nothing.
+      if (!isUnavailable(failure)) throw failure
+      const wait = retryWait(attempt)
+      if (Date.now() + wait >= until) throw failure
+      await new Promise((resolve) => setTimeout(resolve, wait))
+      if (kdb.connection.state === "closed") throw failure
+
+      let transport: NativeTransport
+      try {
+        transport = link.current() ?? (await link.ready())
+      } catch (error) {
+        // No server to send it to yet.
+        failure = error
+        continue
+      }
+      // The server that gets the retry is the one that must recognise it.
+      if (!transport.welcome.retrySafeAppends) throw failure
+      try {
+        return await once()
+      } catch (error) {
+        failure = error
+      }
+    }
   }
 
   async function head(): Promise<bigint> {

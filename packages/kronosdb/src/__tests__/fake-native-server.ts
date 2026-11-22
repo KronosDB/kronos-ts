@@ -46,6 +46,8 @@ export type FakeNativeServerOptions = {
   onClose?: (connection: FakeConnection) => void
   /** Answer the handshake with this failure instead of Welcome. */
   refuse?: { code: number; message: string }
+  /** The feature bits this server grants a client that asks for them. Default: retry-safe appends, as a current server. */
+  features?: bigint
   maxFrame?: number
   heartbeatMs?: number
   principal?: string
@@ -139,7 +141,7 @@ export async function fakeNativeServer(options: FakeNativeServerOptions = {}): P
               name: "Welcome",
               body: {
                 version: 2,
-                features: 0n,
+                features: hello.features & (options.features ?? 1n),
                 recordFormat: 3,
                 serverName: "fake",
                 principal: options.principal ?? "fake:tester",

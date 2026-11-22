@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { AppendConditionError, isConflict, jsonSerializer, markerAt, noMarker, qn, type EventMessage } from "@kronos-ts/core"
+import { AppendConditionError, isConflict, isUnavailable, jsonSerializer, markerAt, noMarker, qn, type EventMessage } from "@kronos-ts/core"
 import { connectToKronosDb, type KronosDbConnection } from "../connection.js"
 import { ConcurrencyError, KronosDbRequestError } from "../errors.js"
 import { kronosDbEventStore } from "../kronosdb-event-store.js"
@@ -21,12 +21,26 @@ afterEach(async () => {
   server = undefined
 })
 
-async function against(answer: (conn: FakeConnection, received: ReceivedFrame) => void) {
-  server = await fakeNativeServer({ onFrame: answer })
-  connection = connectToKronosDb({ host: "127.0.0.1", port: server.port, componentName: "store-test" })
+async function against(
+  answer: (conn: FakeConnection, received: ReceivedFrame) => void,
+  options: { features?: bigint; appendRetryMs?: number } = {},
+) {
+  server = await fakeNativeServer({ onFrame: answer, features: options.features })
+  connection = connectToKronosDb({
+    host: "127.0.0.1",
+    port: server.port,
+    componentName: "store-test",
+    ...(options.appendRetryMs !== undefined ? { appendRetryMs: options.appendRetryMs } : {}),
+  })
   const kdb = { connection, serializer }
   return { kdb, sent: () => server!.connections[0]!.received }
 }
+
+/** The Append frames a connection received, as the events each carried. */
+const appendsOn = (conn: FakeConnection) =>
+  conn.received.flatMap((r) => (r.frame.name === "Append" ? [r.frame.body.events] : []))
+
+const appended = (marker: bigint): Frame => ({ name: "Appended", body: { firstPosition: marker - 1n, count: 1, marker } })
 
 const sample = (id: string, extra: Partial<EventMessage> = {}): EventMessage => ({
   kind: "event",
@@ -57,6 +71,124 @@ const record = (position: bigint, id: string, payload: unknown = { id }): { flag
 const failed = (code: number, message: string): Frame => ({ name: "RequestFailed", body: { code, message } })
 
 describe("kronosDbEventStore (native)", () => {
+  describe("an append the server could not answer", () => {
+    it("is sent again after `unavailable`, with the same events, and answers the marker", async () => {
+      let asked = 0
+      const { kdb, sent } = await against((conn, r) =>
+        conn.reply(r.stream, FLAG_END, ++asked === 1 ? failed(ErrorCode.unavailable, "send the same append again") : appended(7n)),
+      )
+      const marker = await kronosDbEventStore(kdb).append([sample("a"), sample("b")])
+
+      expect(marker).toEqual(markerAt(7n))
+      expect(sent()).toHaveLength(2)
+      const [first, second] = appendsOn(server!.connections[0]!)
+      expect(first!.map((e) => e.event.identifier)).toEqual(["a", "b"])
+      expect(second).toEqual(first)
+    })
+
+    it("is sent again on a new connection when the first one dies before the answer", async () => {
+      const { kdb } = await against((conn, r) => {
+        if (server!.connections.length === 1) conn.destroy()
+        else conn.reply(r.stream, FLAG_END, appended(3n))
+      })
+      const tx = await kronosDbEventStore(kdb).appendEvents([sample("a")])
+      await tx.commit()
+
+      expect(await tx.afterCommit()).toEqual(markerAt(3n))
+      expect(server!.connections).toHaveLength(2)
+      expect(appendsOn(server!.connections[1]!)).toEqual(appendsOn(server!.connections[0]!))
+    })
+
+    it("keeps its condition when it is sent again", async () => {
+      let asked = 0
+      const { kdb, sent } = await against((conn, r) =>
+        conn.reply(r.stream, FLAG_END, ++asked === 1 ? failed(ErrorCode.unavailable, "no leader") : appended(9n)),
+      )
+      const condition = { marker: markerAt(4n), query: { criteria: [{ tags: [{ key: "orderId", value: "a" }] }] } }
+      await kronosDbEventStore(kdb).append([sample("a")], condition)
+
+      const conditions = sent().map((r) => (r.frame.name === "Append" ? r.frame.body.condition : undefined))
+      expect(conditions).toHaveLength(2)
+      expect(conditions[0]?.marker).toBe(4n)
+      expect(conditions[1]).toEqual(conditions[0])
+    })
+
+    it("is not sent again to a server that does not recognise a retry", async () => {
+      const { kdb, sent } = await against(
+        (conn, r) => conn.reply(r.stream, FLAG_END, failed(ErrorCode.unavailable, "it may have been written")),
+        { features: 0n },
+      )
+      const refusal = await kronosDbEventStore(kdb)
+        .append([sample("a")])
+        .then(() => undefined, (e) => e)
+
+      expect(isUnavailable(refusal)).toBe(true)
+      expect(sent()).toHaveLength(1)
+    })
+
+    it("is not sent again when an event has no identifier, which no server recognises", async () => {
+      const { kdb, sent } = await against((conn, r) => conn.reply(r.stream, FLAG_END, failed(ErrorCode.unavailable, "no leader")))
+      const refusal = await kronosDbEventStore(kdb)
+        .append([sample("a"), sample("")])
+        .then(() => undefined, (e) => e)
+
+      expect(isUnavailable(refusal)).toBe(true)
+      expect(sent()).toHaveLength(1)
+    })
+
+    it("is not sent again after a conflict, or a refusal that another try cannot change", async () => {
+      const answers: Frame[] = [{ name: "AppendConflict", body: { conflictingPosition: 12n } }, failed(ErrorCode.permission_denied, "no")]
+      const { kdb, sent } = await against((conn, r) => conn.reply(r.stream, FLAG_END, answers.shift()!))
+      const store = kronosDbEventStore(kdb)
+
+      expect(await store.append([sample("a")]).then(() => undefined, (e) => e)).toBeInstanceOf(ConcurrencyError)
+      expect(await store.append([sample("b")]).then(() => undefined, (e) => e)).toBeInstanceOf(KronosDbRequestError)
+      expect(sent()).toHaveLength(2)
+    })
+
+    it("gives up with the server's refusal once `appendRetryMs` has passed", async () => {
+      const { kdb, sent } = await against(
+        (conn, r) => conn.reply(r.stream, FLAG_END, failed(ErrorCode.unavailable, "no leader")),
+        { appendRetryMs: 250 },
+      )
+      const started = Date.now()
+      const refusal = await kronosDbEventStore(kdb)
+        .append([sample("a")])
+        .then(() => undefined, (e) => e)
+
+      expect(refusal).toBeInstanceOf(KronosDbRequestError)
+      expect(isUnavailable(refusal)).toBe(true)
+      expect(sent().length).toBeGreaterThan(1)
+      expect(Date.now() - started).toBeLessThan(2000)
+    })
+
+    it("is never sent again with `appendRetryMs: 0`", async () => {
+      const { kdb, sent } = await against(
+        (conn, r) => conn.reply(r.stream, FLAG_END, failed(ErrorCode.unavailable, "no leader")),
+        { appendRetryMs: 0 },
+      )
+      const refusal = await kronosDbEventStore(kdb)
+        .append([sample("a")])
+        .then(() => undefined, (e) => e)
+
+      expect(isUnavailable(refusal)).toBe(true)
+      expect(sent()).toHaveLength(1)
+    })
+
+    it("stops when the connection is closed", async () => {
+      const { kdb, sent } = await against((conn, r) => {
+        conn.reply(r.stream, FLAG_END, failed(ErrorCode.unavailable, "no leader"))
+        connection!.close()
+      })
+      const refusal = await kronosDbEventStore(kdb)
+        .append([sample("a")])
+        .then(() => undefined, (e) => e)
+
+      expect(isUnavailable(refusal)).toBe(true)
+      expect(sent()).toHaveLength(1)
+    })
+  })
+
   describe("append", () => {
     it("sends the events in one Append frame and answers the marker from Appended", async () => {
       const { kdb, sent } = await against((conn, r) =>
@@ -140,7 +272,7 @@ describe("kronosDbEventStore (native)", () => {
     })
 
     it("surfaces the server's refusal with its status", async () => {
-      const { kdb } = await against((conn, r) => conn.reply(r.stream, FLAG_END, failed(ErrorCode.unavailable, "not the leader")))
+      const { kdb } = await against((conn, r) => conn.reply(r.stream, FLAG_END, failed(ErrorCode.unavailable, "not the leader")), { features: 0n })
       const refusal = await kronosDbEventStore(kdb)
         .append([sample("a")])
         .then(() => undefined, (e) => e)

@@ -32,6 +32,15 @@ export type KronosDbConnectionConfig = {
   /** Time allowed to connect and complete the handshake, per server, in ms. Default: 10000. */
   connectTimeoutMs?: number
   /**
+   * How long an append keeps being sent again, in ms, when the server answers
+   * `unavailable` or the connection is lost before the answer. The same events
+   * go out each time, and a server that already wrote them answers with the
+   * positions they have, so nothing is written twice. Needs KronosDB 0.17 or
+   * later; against an older server an append is sent once. 0 sends every
+   * append once. Default: 30000.
+   */
+  appendRetryMs?: number
+  /**
    * Bytes the server may send on each stream ahead of this client, in total
    * frame bytes (length prefix included). The client grants consumed bytes
    * back as its consumers take frames, so a consumer that falls behind slows its
@@ -99,6 +108,7 @@ export function connectToKronosDb(config: KronosDbConnectionConfig): KronosDbCon
     reconnectIntervalMs: config.reconnectIntervalMs ?? 2000,
     maxReconnectAttempts: config.maxReconnectAttempts ?? 0,
     connectTimeoutMs: config.connectTimeoutMs ?? 10_000,
+    appendRetryMs: config.appendRetryMs ?? 30_000,
     window: validWindow(config.window),
     servers: config.servers,
     ssl: config.ssl,

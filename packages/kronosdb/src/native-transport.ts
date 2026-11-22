@@ -74,7 +74,16 @@ export type NativeWelcome = {
   readonly maxFrame: number
   /** How often the server pings an idle connection, in milliseconds. */
   readonly heartbeatMs: number
+  /**
+   * The server recognises an append sent again and answers with the positions
+   * its events already have. False for a server that does not: there a second
+   * send of an append that was written is written again.
+   */
+  readonly retrySafeAppends: boolean
 }
+
+/** Feature bit 0 of Hello and Welcome: appends that can be sent again. */
+const FEATURE_RETRY_SAFE_APPENDS = 1n
 
 export type NativeTransportOptions = {
   readonly host: string
@@ -439,6 +448,7 @@ export function openNativeTransport(options: NativeTransportOptions): Promise<Na
         principal: w1.principal,
         maxFrame: w1.maxFrame,
         heartbeatMs: w1.heartbeat,
+        retrySafeAppends: (w1.features & FEATURE_RETRY_SAFE_APPENDS) !== 0n,
       }
       maxFrame = w1.maxFrame
       clearTimeout(handshakeTimer)
@@ -701,7 +711,7 @@ export function openNativeTransport(options: NativeTransportOptions): Promise<Na
       try {
         encodeHello(first, {
           version: PROTOCOL_VERSION,
-          features: 0n,
+          features: FEATURE_RETRY_SAFE_APPENDS,
           recordFormat: RECORD_FORMAT,
           clientName: options.clientName,
           clientId: options.clientId,
