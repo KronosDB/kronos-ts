@@ -1217,7 +1217,10 @@ A parked lane is replayed whenever something calls `reprocessDeadLetters`. The
 lane is walked head to tail with a unit of work per letter: a letter that
 replays is evicted in the same transaction as its handlers' writes, and the
 first that fails has its unit of work rolled back, is requeued and stops the
-walk.
+walk. A letter parked because a handler failed records that handler as
+`diagnostics.handlerIndex`, and its replay calls that handler and the ones
+after it, not the handlers that had already succeeded. A letter parked behind
+another was delivered to no handler, so its replay calls all of them.
 `deadLetterBackoff` wraps a queue so a lane that keeps failing is skipped until
 its delay has passed. It only delays: nothing is evicted however many times a
 letter fails, because giving up on a letter is an operator's decision.
