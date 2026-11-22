@@ -128,6 +128,16 @@ function findProcessor(
   return undefined
 }
 
+/**
+ * The processor an instruction names. An instruction for a name the source
+ * does not hold throws, which fails the instruction.
+ */
+function requireProcessor(source: ManagedProcessorSource, name: string): ManagedEventProcessor {
+  const processor = findProcessor(source, name)
+  if (!processor) throw new Error(`No event processor named "${name}" in this application`)
+  return processor
+}
+
 /** Maps one live processor onto the status shape the admin UI consumes. */
 function toProcessorStatus(proc: ManagedEventProcessor): ProcessorStatus {
   const status = proc.status?.()
@@ -183,23 +193,24 @@ export function kronosDbControlPlane(
   const { platform } = connection
   // A control that throws (a split of a processor that is not segmented, a
   // merge of a replaying segment) fails the instruction, and the platform
-  // stream reports why.
+  // stream reports why. So does an instruction for a processor this
+  // application does not have.
   platform.onInstruction(async (instruction) => {
     switch (instruction.kind) {
       case "pause-processor":
-        await findProcessor(processors, instruction.processorName)?.stop?.()
+        await requireProcessor(processors, instruction.processorName).stop?.()
         break
       case "start-processor":
-        await findProcessor(processors, instruction.processorName)?.start?.()
+        await requireProcessor(processors, instruction.processorName).start?.()
         break
       case "release-segment":
-        await findProcessor(processors, instruction.processorName)?.releaseSegment?.(instruction.segmentId)
+        await requireProcessor(processors, instruction.processorName).releaseSegment?.(instruction.segmentId)
         break
       case "split-segment":
-        await findProcessor(processors, instruction.processorName)?.splitSegment?.(instruction.segmentId)
+        await requireProcessor(processors, instruction.processorName).splitSegment?.(instruction.segmentId)
         break
       case "merge-segment":
-        await findProcessor(processors, instruction.processorName)?.mergeSegment?.(instruction.segmentId)
+        await requireProcessor(processors, instruction.processorName).mergeSegment?.(instruction.segmentId)
         break
     }
   })

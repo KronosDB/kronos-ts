@@ -144,28 +144,37 @@ export async function axonServerControlPlane(
   const byName = new Map<string, ManagedEventProcessor>()
   for (const proc of processors) byName.set(proc.name, proc)
 
+  // An instruction for a processor this application does not have throws.
+  // The platform stream logs an instruction that threw; it sends Axon Server
+  // no result for an instruction.
+  const requireProcessor = (name: string): ManagedEventProcessor => {
+    const processor = byName.get(name)
+    if (!processor) throw new Error(`No event processor named "${name}" in this application`)
+    return processor
+  }
+
   platform.onInstruction(async (instruction) => {
     switch (instruction.kind) {
       case "pause-processor": {
         // Not awaited: instructions run inside the stream's read loop, and a
         // stop waits for the batch in flight — heartbeats would wait with it.
-        const stopped = byName.get(instruction.processorName)?.stop?.()
+        const stopped = requireProcessor(instruction.processorName).stop?.()
         if (stopped) {
           stopped.catch((err) => console.error(`Axon Server control plane: pausing "${instruction.processorName}" failed:`, err))
         }
         break
       }
       case "start-processor":
-        await byName.get(instruction.processorName)?.start?.()
+        await requireProcessor(instruction.processorName).start?.()
         break
       case "release-segment":
-        await byName.get(instruction.processorName)?.releaseSegment?.(instruction.segmentId)
+        await requireProcessor(instruction.processorName).releaseSegment?.(instruction.segmentId)
         break
       case "split-segment":
-        await byName.get(instruction.processorName)?.splitSegment?.(instruction.segmentId)
+        await requireProcessor(instruction.processorName).splitSegment?.(instruction.segmentId)
         break
       case "merge-segment":
-        await byName.get(instruction.processorName)?.mergeSegment?.(instruction.segmentId)
+        await requireProcessor(instruction.processorName).mergeSegment?.(instruction.segmentId)
         break
     }
   })
