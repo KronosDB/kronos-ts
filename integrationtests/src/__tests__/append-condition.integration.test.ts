@@ -140,12 +140,16 @@ describe("append condition — kronosdb", () => {
     await server?.stop()
   })
 
+  // An append to a server that is gone is sent again for `appendRetryMs`
+  // before it fails as unavailable. The contract waits for that failure, so
+  // these connections keep trying for two seconds rather than the default 30.
   const connect = async (host: string, port: number) => {
     const opened = await kronosDbConnection({
       componentName: "event-store-contract",
       host,
       port,
       context: "default",
+      appendRetryMs: 2_000,
       serializer: jsonSerializer(),
     })
     connections.push(opened)

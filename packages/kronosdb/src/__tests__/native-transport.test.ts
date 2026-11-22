@@ -58,7 +58,20 @@ describe("native transport — handshake", () => {
       credential: "secret",
     })
     expect(connection.hello.credentialKind).toBe(1)
-    expect(transport.welcome).toEqual({ version: 2, serverName: "fake", principal: "token:ci", maxFrame: 4096, heartbeatMs: 5000 })
+    expect(transport.welcome).toEqual({
+      version: 2,
+      serverName: "fake",
+      principal: "token:ci",
+      maxFrame: 4096,
+      heartbeatMs: 5000,
+      retrySafeAppends: true,
+    })
+  })
+
+  it("asks for retry-safe appends in Hello, and reports whether Welcome granted them", async () => {
+    const { transport, connection } = await connected({ features: 0n }, "secret")
+    expect(connection.hello.features).toBe(1n)
+    expect(transport.welcome.retrySafeAppends).toBe(false)
   })
 
   it("grants each stream a window in Hello: 8 MiB unless told otherwise", async () => {

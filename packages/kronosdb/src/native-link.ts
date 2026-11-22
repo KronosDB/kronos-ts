@@ -21,8 +21,8 @@
 //
 // Reconnection is deliberately NOT a loop in here. A request that finds the
 // socket gone gets one fresh attempt (per address) and reports its failure; the
-// caller's own retry — a processor's backoff, a command's resilience wrapper —
-// decides whether to try again. Anything running longer than a request hears
+// caller's own retry — a processor's backoff, a command's resilience wrapper,
+// the event store sending an append again — decides whether to try again. Anything running longer than a request hears
 // about the loss through `onClose`.
 // ---------------------------------------------------------------------------
 
