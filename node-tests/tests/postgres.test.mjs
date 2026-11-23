@@ -60,14 +60,14 @@ async function withDatabase(adapterFor, body) {
   }
 }
 
-function toolStore(pg) {
+function toolStore(pg, commandHandlers = [addTool, rentTool]) {
   const processing = postgresUnitOfWork(unitOfWork, pg)
   const eventStore = postgresEventStore(pg)
   const commandBus = localCommandBus(processing)
   const queryBus = localQueryBus(unitOfWork)
   const processor = eventProcessor("inventory-view", eventStore, postgresTokenStore(pg), processing)
   const app = kronos({
-    commandHandlers: [addTool, rentTool].map((entry) => ({ ...entry, eventStore, commandBus, queryBus })),
+    commandHandlers: commandHandlers.map((entry) => ({ ...entry, eventStore, commandBus, queryBus })),
     eventHandlers: projection.map((entry) => ({
       ...entry,
       handler: postgresHandler(entry.handler, pg),
@@ -117,7 +117,20 @@ for (const [driver, adapterFor] of Object.entries(adapters)) {
 
   test(`${driver}: two decisions on the same events, one fails its append condition`, { skip }, async () => {
     await withDatabase(adapterFor, async (pg) => {
-      const { app, commandBus } = toolStore(pg)
+      // Each rental decides, then waits for the other to decide, so both decide on the same events.
+      let decided = 0
+      let release
+      const bothDecided = new Promise((resolve) => (release = resolve))
+      const heldRentTool = {
+        ...rentTool,
+        handler: async (message, ctx) => {
+          const result = await rentTool.handler(message, ctx)
+          if (++decided === 2) release()
+          await bothDecided
+          return result
+        },
+      }
+      const { app, commandBus } = toolStore(pg, [addTool, heldRentTool])
       try {
         await send(commandBus, AddTool, { toolId: "t-1", name: "Cordless drill" })
         const attempts = await Promise.allSettled([
