@@ -292,6 +292,17 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
     )
   }
 
+  /**
+   * The marker for a read from `start` that found nothing because it started
+   * at or past the head. An Axon Server marker is the next sequence: the
+   * caller accounted for everything before `start`, and nothing exists at or
+   * after the head, so the marker is whichever of the two comes first.
+   */
+  async function markerPastHead(start: bigint, signal: AbortSignal): Promise<ConsistencyMarker> {
+    const { sequence: head } = await connection.eventStore.getHead({}, { metadata: createAxonMetadata(), signal })
+    return markerAt(head < start ? head : start)
+  }
+
   async function sourceOnce(condition: SourcingCondition, signal: AbortSignal): Promise<SourcingResult> {
     const criterions = criteriaToCriterions(compileQuery(condition.query))
     const start = condition.start ?? 0n
@@ -315,21 +326,20 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
         }
       }
     } catch (err) {
-      // READING PAST THE HEAD IS AN EMPTY ANSWER, NOT AN ERROR — and Axon
-      // Server disagrees, so this is where the two vocabularies are
-      // reconciled. `Source` fails OUT_OF_RANGE with "Start sequence cannot
-      // be larger than end sequence" whenever `fromSequence` is beyond the
-      // global head, which is the ORDINARY STEADY STATE of a snapshotted
-      // load: an entry written at the head means the very next read resumes
-      // at head + 1 and legitimately finds nothing.
-      //
-      // The marker is `start - 1`, and it is exact rather than conservative:
-      // the caller has already accounted for everything up to there (that is
-      // what asking to start later MEANS), and nothing can exist after it or
-      // the server would not have refused. So an append conditioned on this
-      // read is checked against precisely the range that was read.
+      // Reading past the head finds nothing; it is not an error. Axon Server
+      // 2025.2 fails `Source` with OUT_OF_RANGE when `fromSequence` is beyond
+      // the head.
       if (!isStartPastHead(err)) throw err
-      return { events: [], marker: start > 0n ? markerAt(start - 1n) : noMarker() }
+      return { events: [], marker: await markerPastHead(start, signal) }
+    }
+
+    // Axon Server 2026.1 answers a read past the head with no events and the
+    // start as its marker, and then refuses every append conditioned on it,
+    // because that marker is after its head. A read that starts exactly at the
+    // head gets the same answer, which is valid as it is, so only the head can
+    // tell the two apart.
+    if (found.length === 0 && start > 0n && marker.position === start) {
+      return { events: [], marker: await markerPastHead(start, signal) }
     }
 
     const events: EventMessage[] = []
