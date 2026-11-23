@@ -171,7 +171,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
   let grpcPort: number
 
   beforeAll(async () => {
-    container = await new GenericContainer("axoniq/axonserver:2025.2.5")
+    container = await new GenericContainer("axoniq/axonserver:2026.1.8")
       .withExposedPorts(8024, 8124)
       .withEnvironment({ AXONIQ_AXONSERVER_DEVMODE_ENABLED: "true" })
       .withWaitStrategy(Wait.forHttp("/actuator/health", 8024).forStatusCode(200))
@@ -508,6 +508,50 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       await direct.close()
     }
   }, 60_000)
+
+  /** An event tagged `marker=<id>`, so a query finds only one test's events. */
+  const markerEvent = (id: string, n: number): EventMessage => ({
+    kind: "event",
+    identifier: crypto.randomUUID(),
+    name: qn("axon-it", "Marked"),
+    version: "",
+    payload: { n },
+    metadata: {},
+    timestamp: Date.now(),
+    tags: [{ key: "marker", value: id }],
+  })
+
+  it("a load from a snapshot sees the first event appended after it", async () => {
+    const id = crypto.randomUUID()
+    const query = { tags: { marker: id } }
+    const key = `marker-v1:${id}`
+    await eventStore.append([markerEvent(id, 0)])
+    const first = await eventStore.source({ query })
+    await eventStore.storeSnapshot(key, { state: { seen: 1 }, position: first.marker.position })
+
+    // Nothing else is appended in between, so this event lands at the head
+    // the snapshot was taken at.
+    await eventStore.append([markerEvent(id, 1)])
+
+    const resumed = await eventStore.source({ query, snapshot: { key } })
+    expect(resumed.snapshot?.position).toBe(first.marker.position)
+    expect(resumed.events.map((event) => (event.payload as { n: number }).n)).toEqual([1])
+  }, 60_000)
+
+  it("an append is accepted on the marker of a read that started at or past the head", async () => {
+    const id = crypto.randomUUID()
+    const query = { tags: { marker: id } }
+    await eventStore.append([markerEvent(id, 0)])
+    const head = await eventStore.getHeadPosition()
+
+    for (const start of [head, head + 1n, head + 5n]) {
+      const read = await eventStore.source({ query, start })
+      expect(read.events).toEqual([])
+      expect(read.marker.position).toBe(await eventStore.getHeadPosition())
+      await eventStore.append([markerEvent(id, Number(start))], { query, marker: read.marker })
+    }
+  }, 60_000)
+
   for (const kind of ["command", "query"] as const) {
     it(`${kind}: nested dispatch returns through the same real server connection`, async () => {
       const trace: Array<{ event: string; depth: number; detail?: string }> = []

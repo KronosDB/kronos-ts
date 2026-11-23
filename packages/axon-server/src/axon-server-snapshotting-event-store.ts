@@ -9,9 +9,13 @@
 //   axoniq/axonserver:2025.2.5   DcbSnapshotStore/GetLast   → answers
 //                                SnapshottedDcbEventStore/Source → UNIMPLEMENTED
 //   axoniq/axonserver:2026.0.4   same, both ways
+//   axoniq/axonserver:2026.1.8   both answer, but the fused `Source` resumes
+//                                AFTER the stored sequence, skipping the event
+//                                at it, and is deprecated for that reason; its
+//                                successor `SourceWithSnapshot` is not served
 //
-// So there is no server-side fusion to call here — there is nothing on the
-// other end of the wire. The READ is therefore fused CLIENT-SIDE: `GetLast` for
+// An entry is filed at the marker of the read it was folded from, the
+// convention `SourceWithSnapshot` expects. The READ is fused CLIENT-SIDE: `GetLast` for
 // the entry, then a source after its position, assembled into the one
 // `SourcingResult` a fold expects. Two round trips, the same answers, correct
 // today.
@@ -181,9 +185,11 @@ export function axonServerSnapshottingEventStore<E extends EventStore>(
       }
       if (snapshot === undefined) return next.source(plain)
 
-      // Resume AFTER the position the snapshot already folded; a condition that
-      // independently asked to start later keeps its own floor.
-      const resumeFrom = snapshot.position + 1n
+      // Resume AT the snapshot's position. It is the Axon Server marker of the
+      // read the state was folded from, which is already the next sequence, so
+      // the event there (if one has landed since) is not in the state yet.
+      // A condition that independently asked to start later keeps its own floor.
+      const resumeFrom = snapshot.position
       const start =
         plain.start !== undefined && plain.start > resumeFrom ? plain.start : resumeFrom
 
