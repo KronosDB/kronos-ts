@@ -19,7 +19,7 @@ describe("bus contract — axon server", () => {
 
   busContract({
     instances: async () => {
-      const started = await new GenericContainer("axoniq/axonserver:2025.2.5")
+      const started = await new GenericContainer("axoniq/axonserver:2026.1.8")
         .withExposedPorts(8024, 8124)
         .withEnvironment({ AXONIQ_AXONSERVER_DEVMODE_ENABLED: "true" })
         .withWaitStrategy(Wait.forHttp("/actuator/health", 8024).forStatusCode(200))
