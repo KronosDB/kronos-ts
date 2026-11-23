@@ -28,6 +28,64 @@ jobs:
       - name: Unit tests
         run: bun run test:unit
 
+  node:
+    # The packages as npm publishes them, installed into a plain Node project and run with node:test.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    name: node ${{ matrix.node }}
+    permissions:
+      contents: read
+      packages: read   # ghcr.io/kronosdb/kronosdb image pull
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+      kronosdb:
+        image: ghcr.io/kronosdb/kronosdb:0.16.0
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        ports:
+          - 50051:50051
+          - 9240:9240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+
+      - name: Wait for KronosDB
+        run: for attempt in $(seq 1 60); do curl -sf http://localhost:9240/ready && exit 0; sleep 1; done; exit 1
+
+      - name: Node tests
+        run: node scripts/test-node.mjs
+        env:
+          KRONOS_NODE_TESTS_REQUIRE_SERVICES: "1"
+          KRONOS_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          KRONOSDB_HOST: localhost
+          KRONOSDB_PORT: "50051"
+
   integration:
     runs-on: ubuntu-latest
     # Every integration family is gated. Each test file runs in a fresh

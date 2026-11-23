@@ -11,6 +11,7 @@
     "clean": "bun run --filter '@kronos-ts/*' clean",
     "typecheck": "tsc -p tsconfig.json",
     "test": "bun test",
+    "test:node": "bun run build && node scripts/test-node.mjs",
     "test:unit": "bun test $(find packages -path '*/src/*' -name '*.test.ts' -not -name '*.integration.test.ts')",
     "benchmark:kronosdb-postgres": "bun run integrationtests/src/benchmarks/kronosdb-postgres/run.ts",
     "biome:check": "biome check",
