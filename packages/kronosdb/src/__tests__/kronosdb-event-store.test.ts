@@ -104,12 +104,13 @@ describe("kronosDbEventStore (native)", () => {
       const { kdb, sent } = await against((conn, r) =>
         conn.reply(r.stream, FLAG_END, ++asked === 1 ? failed(ErrorCode.unavailable, "no leader") : appended(9n)),
       )
-      const condition = { marker: markerAt(4n), query: { criteria: [{ tags: [{ key: "orderId", value: "a" }] }] } }
+      const condition = { marker: markerAt(4n), query: { tags: { orderId: "a" } } }
       await kronosDbEventStore(kdb).append([sample("a")], condition)
 
       const conditions = sent().map((r) => (r.frame.name === "Append" ? r.frame.body.condition : undefined))
       expect(conditions).toHaveLength(2)
       expect(conditions[0]?.marker).toBe(4n)
+      expect(conditions[0]?.criteria).toHaveLength(1)
       expect(conditions[1]).toEqual(conditions[0])
     })
 
