@@ -132,9 +132,11 @@ Three reference adapters ship with the package:
 
 | Adapter | Runtime | Driver | LISTEN support |
 |---------|---------|--------|----------------|
-| `pgAdapter` | Node, Bun | `pg` (node-postgres) 8.20+ | native |
-| `postgresAdapter` | Node, Bun | `postgres` (porsager) 3.4+ | native |
+| `pgAdapter` | Node, Bun | `pg` (node-postgres) 8, from 8.20.0 | native |
+| `postgresAdapter` | Node, Bun | `postgres` (porsager) 3 from 3.4.9, or 4 from 4.1.1 | native |
 | `bunSqlAdapter` | Bun 1.2+ | built-in `Bun.sql` | native (1.2+) or polling shim |
+
+The peer dependency ranges are `pg` `^8.20.0` and `postgres` `^3.4.9 || ^4.1.1`. The test suites run on `pg` 8.20.0 and on `postgres` 3.4.9 and 4.1.1. Older releases are not tested.
 
 You can also implement your own — `PostgresAdapter` from `@kronos-ts/postgres` is the contract.
 

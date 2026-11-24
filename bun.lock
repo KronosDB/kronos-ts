@@ -38,7 +38,7 @@
     },
     "packages/axon-server": {
       "name": "@kronos-ts/axon-server",
-      "version": "0.10.3",
+      "version": "0.10.5",
       "dependencies": {
         "@bufbuild/protobuf": "^2.3",
         "@grpc/grpc-js": "^1.12",
@@ -56,7 +56,7 @@
     },
     "packages/core": {
       "name": "@kronos-ts/core",
-      "version": "0.11.1",
+      "version": "0.12.0",
       "dependencies": {
         "uuid": "^11",
       },
@@ -67,7 +67,7 @@
     },
     "packages/kronosdb": {
       "name": "@kronos-ts/kronosdb",
-      "version": "0.13.3",
+      "version": "0.13.5",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -78,14 +78,14 @@
     },
     "packages/otlp": {
       "name": "@kronos-ts/otlp",
-      "version": "0.7.5",
+      "version": "0.7.7",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
     },
     "packages/postgres": {
       "name": "@kronos-ts/postgres",
-      "version": "0.21.3",
+      "version": "0.21.5",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -96,8 +96,8 @@
         "testcontainers": "^11.14.0",
       },
       "peerDependencies": {
-        "pg": ">=8.0.0",
-        "postgres": ">=3.0.0",
+        "pg": "^8.20.0",
+        "postgres": "^3.4.9 || ^4.1.1",
       },
       "optionalPeers": [
         "pg",
@@ -106,7 +106,7 @@
     },
     "packages/rabbitmq": {
       "name": "@kronos-ts/rabbitmq",
-      "version": "0.10.3",
+      "version": "0.10.5",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
@@ -125,7 +125,7 @@
     },
     "packages/test": {
       "name": "@kronos-ts/test",
-      "version": "0.9.1",
+      "version": "0.9.3",
       "dependencies": {
         "@kronos-ts/core": "workspace:*",
       },
