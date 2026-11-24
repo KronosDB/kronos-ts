@@ -35,6 +35,7 @@ describe("queryHandler() — singular factory (Phase 11-01)", () => {
     })
 
     const result = await def.handler({
+      kind: "query",
       identifier: "qry-1",
       name: GetCourseView.name,
       payload: { courseId: "cs-101" },
@@ -51,6 +52,7 @@ describe("queryHandler() — singular factory (Phase 11-01)", () => {
     })
 
     const result = def.handler({
+      kind: "query",
       identifier: "qry-1",
       name: GetCourseView.name,
       payload: { courseId: "cs-101" },

@@ -110,7 +110,7 @@ describe("open() — a filtered stream says how far it has looked", () => {
 
     // Everything behind position 4 has been looked at; only position 1 matched.
     await until(() => stream.progressToken?.() !== undefined)
-    expect(stream.progressToken!().position()).toBe(4n)
+    expect(stream.progressToken?.()?.position()).toBe(4n)
 
     // And it keeps going as quiet rows arrive.
     await store.append([makeEvent("Other", []), makeEvent("Other", [])])

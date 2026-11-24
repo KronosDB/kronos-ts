@@ -17,13 +17,13 @@ describe("JsonSerializer", () => {
 
   it("serializes primitives", () => {
     const s1 = serializer.serialize(42, "Number")
-    expect(serializer.deserialize(s1)).toBe(42)
+    expect(serializer.deserialize<number>(s1)).toBe(42)
 
     const s2 = serializer.serialize("hello", "String")
-    expect(serializer.deserialize(s2)).toBe("hello")
+    expect(serializer.deserialize<string>(s2)).toBe("hello")
 
     const s3 = serializer.serialize(true, "Boolean")
-    expect(serializer.deserialize(s3)).toBe(true)
+    expect(serializer.deserialize<boolean>(s3)).toBe(true)
 
     const s4 = serializer.serialize(null, "Null")
     expect(serializer.deserialize(s4)).toBeNull()
@@ -32,7 +32,7 @@ describe("JsonSerializer", () => {
   it("serializes arrays", () => {
     const value = [1, 2, 3]
     const serialized = serializer.serialize(value, "Array")
-    expect(serializer.deserialize(serialized)).toEqual([1, 2, 3])
+    expect(serializer.deserialize<number[]>(serialized)).toEqual([1, 2, 3])
   })
 
   it("defaults revision to empty string", () => {

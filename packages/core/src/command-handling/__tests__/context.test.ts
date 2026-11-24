@@ -74,6 +74,7 @@ function deps(overrides: {
 
 function makeCommandMessage(descriptor: CommandDescriptor, payload: any): CommandMessage {
   return {
+    kind: "command",
     identifier: `cmd-${Date.now()}`,
     name: descriptor.name,
     payload,
@@ -107,10 +108,11 @@ describe("handler context", () => {
     expect(typeof received!.append).toBe("function")
     expect(typeof received!.load).toBe("function")
     expect(typeof received!.send).toBe("function")
+    // @ts-expect-error emitUpdate is typed only against a subscription-capable bus; it is built regardless
     expect(typeof received!.emitUpdate).toBe("function")
     // No `ctx.transaction`: a transaction is reached through the owning
     // adapter's accessor, off `ctx.unitOfWork`.
-    expect(received!.transaction).toBeUndefined()
+    expect("transaction" in received!).toBe(false)
   })
 
   it("ctx.append buffers events onto the unit of work it was built for", async () => {
@@ -188,7 +190,6 @@ describe("handler context", () => {
       void ctx.unitOfWork
       void ctx.load
       void ctx.send
-      void ctx.emitUpdate
     })
     expect(definition.kind).toBe("event-handler")
     expect(definition.handler.length).toBe(2)

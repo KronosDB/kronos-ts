@@ -1,5 +1,14 @@
 import { describe, expect, it } from "bun:test"
-import { Phase, unitOfWork, requireInvocation, requireLive, NoActiveUnitOfWork, WrongUoWPhase, type UnitOfWork } from "../unit-of-work.js"
+import {
+  Phase,
+  unitOfWork,
+  requireInvocation,
+  requireLive,
+  NoActiveUnitOfWork,
+  WrongUoWPhase,
+  type PhaseValue,
+  type UnitOfWork,
+} from "../unit-of-work.js"
 
 /**
  * The unit of work is handed to the action as a parameter. These tests assert
@@ -81,7 +90,7 @@ describe("unitOfWork — the () => UnitOfWork primitive", () => {
     })
 
     it("reports the failing phase to onError", async () => {
-      let failedPhase: number | undefined
+      let failedPhase: PhaseValue | undefined
       await expect(
         unitOfWork().execute(async (uow) => {
           uow.onError((_err, phase) => { failedPhase = phase })

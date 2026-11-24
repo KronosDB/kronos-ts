@@ -97,6 +97,7 @@ describe("eventHandler()", () => {
     })
 
     await def.handler({
+      kind: "event",
       identifier: "evt-1",
       name: CourseCreated.name,
       version: CourseCreated.version,
@@ -126,6 +127,7 @@ describe("queryHandler()", () => {
     })
 
     const result = await def.handler({
+      kind: "query",
       identifier: "qry-1",
       name: GetCourse.name,
       payload: { courseId: "cs-999" },

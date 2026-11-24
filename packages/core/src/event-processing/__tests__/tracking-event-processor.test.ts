@@ -21,6 +21,7 @@ function makeEvent(name: QualifiedName, payload: unknown, sequence: bigint): Seq
   return {
     sequence,
     event: {
+      kind: "event",
       identifier: `evt-${sequence}`,
       name,
       version: "1.0",
@@ -70,6 +71,12 @@ function createInMemoryEventSource(events: SequencedEvent[]): StreamableEventSou
     async getHeadPosition() {
       if (events.length === 0) return 0n
       return events[events.length - 1]!.sequence + 1n
+    },
+    async firstToken() {
+      return globalSequenceToken(0n)
+    },
+    async latestToken() {
+      return globalSequenceToken(await this.getHeadPosition())
     },
   }
 }
@@ -547,7 +554,7 @@ describe("event processor", () => {
         expect(state.deliveries).toBe(before + 1)
       }
 
-      let errorLog: ReturnType<typeof spyOn>
+      let errorLog: ReturnType<typeof spyOn<Console, "error">>
 
       beforeEach(() => {
         jest.useFakeTimers()
@@ -674,6 +681,12 @@ describe("event processor", () => {
         async getHeadPosition() {
           if (mutableEvents.length === 0) return 0n
           return mutableEvents[mutableEvents.length - 1]!.sequence + 1n
+        },
+        async firstToken() {
+          return globalSequenceToken(0n)
+        },
+        async latestToken() {
+          return globalSequenceToken(await this.getHeadPosition())
         },
       }
 

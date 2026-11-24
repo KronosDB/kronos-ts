@@ -5,15 +5,14 @@ import { messageOrigin } from "../message-origin.js"
 import { localQueryBus } from "../../query-handling/local-bus.js"
 import { qn, type Message, type QueryMessage } from "../../messaging/messages.js"
 
-const message = (identifier: string, metadata: Record<string, unknown> = {}) =>
-  ({
-    kind: "command",
-    identifier,
-    name: { namespace: "test", name: "Cause" },
-    payload: {},
-    metadata,
-    timestamp: 0,
-  }) as never
+const message = (identifier: string, metadata: Record<string, unknown> = {}): Message => ({
+  kind: "command",
+  identifier,
+  name: { namespace: "test", name: "Cause" },
+  payload: {},
+  metadata,
+  timestamp: 0,
+})
 
 /** The smallest context the wrapper touches: a task and a `send` that records. */
 function contextFor(uow = unitOfWork()) {
@@ -32,7 +31,7 @@ function contextFor(uow = unitOfWork()) {
 describe("correlatingHandler — the cargo function decides what jumps", () => {
   it("carries the standard cargo when given no cargo function", async () => {
     const { sent, ctx } = contextFor()
-    const handler = correlatingHandler(async (_m: never, c: typeof ctx) => { await c.send(null, null) })
+    const handler = correlatingHandler(async (_m: Message, c: typeof ctx) => { await c.send(null, null) })
 
     await ctx.unitOfWork.execute(async () => {
       await handler(message("cmd-1", { correlationId: "corr-root" }), ctx)
@@ -45,7 +44,7 @@ describe("correlatingHandler — the cargo function decides what jumps", () => {
     const { sent, ctx } = contextFor()
 
     const handler = correlatingHandler(
-      async (_m: never, c: typeof ctx) => { await c.send(null, null) },
+      async (_m: Message, c: typeof ctx) => { await c.send(null, null) },
       // A host's own cargo: the standard pair PLUS a fact it cares about.
       (m) => ({ ...messageOrigin(m), actor: String(m.metadata.actor ?? "") }),
     )
@@ -60,7 +59,7 @@ describe("correlatingHandler — the cargo function decides what jumps", () => {
   it("lets the CALLER's metadata win over the overlay", async () => {
     const { sent, ctx } = contextFor()
 
-    const handler = correlatingHandler(async (_m: never, c: typeof ctx) => {
+    const handler = correlatingHandler(async (_m: Message, c: typeof ctx) => {
       await c.send(null, null, { causationId: "i-mean-it" })
     })
 
@@ -75,7 +74,7 @@ describe("correlatingHandler — the cargo function decides what jumps", () => {
     const uow = unitOfWork()
     const before = Object.keys(uow)
     const { ctx } = contextFor(uow)
-    const handler = correlatingHandler(async (_m: never, c: typeof ctx) => { await c.send(null, null) })
+    const handler = correlatingHandler(async (_m: Message, c: typeof ctx) => { await c.send(null, null) })
 
     await uow.execute(async () => {
       await handler(message("cmd-1"), ctx)
@@ -95,7 +94,7 @@ describe("correlatingHandler — the cargo function decides what jumps", () => {
       },
     }
 
-    const handler = correlatingHandler(async (_m: never, c: typeof queryCtx) => {
+    const handler = correlatingHandler(async (_m: Message, c: typeof queryCtx) => {
       expect("send" in c).toBe(false)
       expect("append" in c).toBe(false)
       await c.query(null, null)
@@ -115,7 +114,7 @@ describe("correlatingHandler — the cargo function decides what jumps", () => {
       append: (list: unknown) => { appended.push(list) },
     }
 
-    const handler = correlatingHandler(async (_m: never, c: typeof ctx) => {
+    const handler = correlatingHandler(async (_m: Message, c: typeof ctx) => {
       c.append([
         ["A", { one: 1 }],
         ["B", { two: 2 }, { tenant: "acme" }],

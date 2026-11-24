@@ -17,9 +17,11 @@ import {
   localQueryBus,
   state,
   unitOfWork,
+  type CommandHandlerContext,
   type CommandMessage,
   type EventMessage,
   type QueryMessage,
+  type ScheduleCapableEventStore,
 } from "../index.js"
 
 // ---------------------------------------------------------------------------
@@ -188,7 +190,7 @@ describe("the clock seam", () => {
     const commandBus = localCommandBus(() => unitOfWork(() => FROZEN))
     const queryBus = localQueryBus(() => unitOfWork(() => FROZEN))
 
-    const openTicket = commandHandler(OpenTicket, async ({ payload }, ctx) => {
+    const openTicket = commandHandler(OpenTicket, async ({ payload }, ctx: CommandHandlerContext<ScheduleCapableEventStore>) => {
       await ctx.scheduleAfter(TicketOpened, { ticketId: payload.ticketId }, 60_000)
     })
 

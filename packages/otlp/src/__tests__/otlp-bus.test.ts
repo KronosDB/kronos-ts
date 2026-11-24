@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import type { CommandBus, CommandMessage, Metadata, QueryBus, QueryMessage } from "@kronos-ts/core"
+import type {
+  CommandBus,
+  CommandMessage,
+  Metadata,
+  QueryBus,
+  QueryMessage,
+  SubscriptionBusCapability,
+} from "@kronos-ts/core"
 import { emptyMetadata, qn } from "@kronos-ts/core"
 import { otlpCommandBus, otlpQueryBus } from "../otlp-bus.js"
 import { SpanKind, otlpExporter } from "../otlp-exporter.js"
@@ -229,7 +236,7 @@ describe("otlpQueryBus", () => {
       async completeSubscriptionExceptionally() {
         calls.push("completeSubscriptionExceptionally")
       },
-    } as unknown as QueryBus
+    } as unknown as QueryBus & SubscriptionBusCapability
 
     const traced = otlpQueryBus(bus, exporter)
     traced.subscribe("q", async () => undefined)

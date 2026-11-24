@@ -94,6 +94,7 @@ describe("event processor over a live event store", () => {
 
       // Append events directly to the store
       await eventStore.append([{
+        kind: "event",
         identifier: "e1",
         name: qn("university", "CourseCreated"),
         version: "1.0",
@@ -108,6 +109,7 @@ describe("event processor over a live event store", () => {
 
       // Second event — should also be pushed
       await eventStore.append([{
+        kind: "event",
         identifier: "e2",
         name: qn("university", "CourseCreated"),
         version: "1.0",
@@ -132,6 +134,7 @@ describe("event processor over a live event store", () => {
 
       // Store some events first
       await eventStore.append([{
+        kind: "event",
         identifier: "e1",
         name: qn("university", "CourseCreated"),
         version: "1.0",
@@ -141,6 +144,7 @@ describe("event processor over a live event store", () => {
         tags: [tag("courseId", "cs-101")],
       }])
       await eventStore.append([{
+        kind: "event",
         identifier: "e2",
         name: qn("university", "CourseCreated"),
         version: "1.0",

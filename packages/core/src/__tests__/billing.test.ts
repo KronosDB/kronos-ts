@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
-import { emptyMetadata, qn } from "../messaging/messages.js"
+import { emptyMetadata, qn, qualifiedNameToString } from "../messaging/messages.js"
 import { inMemoryEventStore } from "../event-sourcing/in-memory.js"
+import type { EventStore } from "../event-sourcing/event-store.js"
 import {
   command,
   commandHandler,
@@ -141,11 +142,12 @@ describe("billing", () => {
     // Each slice resolved its own store — no scope machinery, just object identity.
     expect(billingLedger.lines).toEqual(["b-9:40"])
 
-    // And the stores really are separate.
-    const billingEvents = await billingPersistence.source({
-      query: { tags: { billId: "b-9" } },
-    } as never)
-    expect((billingEvents as { events: unknown[] }).events.length).toBeGreaterThan(0)
+    // And the stores really are separate: each holds its own slice's events
+    // and none of the other's.
+    const namesIn = async (store: EventStore) =>
+      (await store.source({ query: {} })).events.map((e) => qualifiedNameToString(e.name))
+    expect(await namesIn(billingPersistence)).toEqual(["billing.BillOpened", "billing.LineBilled"])
+    expect(await namesIn(orderingPersistence)).toEqual(["ordering.OrderPlaced"])
     await app.stop()
   })
 

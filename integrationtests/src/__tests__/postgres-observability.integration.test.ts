@@ -19,6 +19,7 @@ import { describe, expect, it, beforeAll, afterAll, beforeEach } from "bun:test"
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers"
 import { drizzle } from "drizzle-orm/postgres-js"
 import { pgTable, text } from "drizzle-orm/pg-core"
+import type { Sql } from "postgres"
 import { unitOfWork, type UnitOfWork } from "@kronos-ts/core"
 import {
   postgresPool,
@@ -92,7 +93,7 @@ describe("postgres observability + drizzle over the task's transaction", () => {
       async (message: { id: string; name: string }, ctx: HandlerCtx) => {
         const sql = ctx.sql()
         await sql.query("INSERT INTO obs_markers (id) VALUES ($1)", [message.id])
-        const db = drizzle(sql.unwrap())
+        const db = drizzle(sql.unwrap<Sql>())
         await db.insert(widgets).values({ id: message.id, name: message.name })
       },
       pool,
@@ -124,7 +125,7 @@ describe("postgres observability + drizzle over the task's transaction", () => {
       async (message: { id: string; name: string }, ctx: HandlerCtx) => {
         const sql = ctx.sql()
         await sql.query("INSERT INTO obs_markers (id) VALUES ($1)", [message.id])
-        const db = drizzle(sql.unwrap())
+        const db = drizzle(sql.unwrap<Sql>())
         await db.insert(widgets).values({ id: message.id, name: message.name })
         throw new Error("boom: handler failed after both writes")
       },

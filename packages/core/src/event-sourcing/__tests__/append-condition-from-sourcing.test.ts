@@ -13,7 +13,16 @@ import { qn, emptyMetadata, command, event, type EventMessage } from "../../mess
 import { commandHandler } from "../../command-handling/handler.js"
 import { state } from "../state.js"
 import { kronos } from "../../kronos.js"
-import { send, correlation, interceptingCommandBus, interceptingQueryBus, unitOfWork, localCommandBus, localQueryBus } from "../../index.js"
+import {
+  send,
+  correlation,
+  interceptingCommandBus,
+  interceptingQueryBus,
+  unitOfWork,
+  localCommandBus,
+  localQueryBus,
+  type UnitOfWork,
+} from "../../index.js"
 import { inMemoryEventStore } from "../in-memory.js"
 import type { EventStore } from "../event-store.js"
 import type { AppendCondition } from "../append-condition.js"

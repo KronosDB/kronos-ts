@@ -1,6 +1,9 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    // The messaging reliability test reads the transports' senders out of
+    // their own packages, so the tests' root is the repository, not `src`.
+    "rootDir": "../..",
     "noEmit": true,
     "declaration": false,
     "declarationMap": false,

@@ -8,6 +8,7 @@ import {
   localFirstQueryBus,
   localQueryBus,
   type QueryBus,
+  type SubscriptionCapableQueryBus,
 } from "@kronos-ts/core"
 import {
   rabbitMqQueryBus,
@@ -63,7 +64,7 @@ function busOver(params: {
   subscriberRegistry?: DistributedSubscriberRegistry
   identity?: RabbitMqIdentity
   options?: RabbitMqBusOptions
-}): QueryBus {
+}): SubscriptionCapableQueryBus {
   return interceptingQueryBus(
     rabbitMqQueryBus(
       params.localSegment ?? localQueryBus(unitOfWork),
@@ -87,6 +88,7 @@ describe("RabbitMQ query bus", () => {
     bus.subscribe("test.GetThing", async () => "local-ok")
 
     const result = await bus.query({
+      kind: "query",
       identifier: "qry-1",
       name: GetThing.name,
       payload: { id: "1" },
@@ -105,6 +107,7 @@ describe("RabbitMQ query bus", () => {
     bus.subscribe("test.GetThing", async () => "local-ok")
 
     const result = await bus.query({
+      kind: "query",
       identifier: "qry-1",
       name: GetThing.name,
       payload: { id: "1" },
@@ -121,6 +124,7 @@ describe("RabbitMQ query bus", () => {
     const bus = busOver({ transport, options: {} })
 
     await bus.query({
+      kind: "query",
       identifier: "qry-1",
       name: GetThing.name,
       payload: { id: "1" },
@@ -141,6 +145,7 @@ describe("RabbitMQ query bus", () => {
     const bus = busOver({ transport, options: {} })
 
     await bus.query({
+      kind: "query",
       identifier: "qry-1",
       name: GetThing.name,
       payload: { id: "1" },
@@ -166,6 +171,7 @@ describe("RabbitMQ query bus", () => {
 
     await expect(
       bus.query({
+        kind: "query",
         identifier: "qry-1",
         name: GetThing.name,
         payload: { id: "1" },
@@ -189,7 +195,7 @@ describe("RabbitMQ query bus", () => {
     const bus = busOver({ transport, options: {} })
 
     const failure = await bus
-      .query({ identifier: "qry-1", name: GetThing.name, payload: { id: "1" }, metadata: emptyMetadata(), timestamp: Date.now() })
+      .query({ kind: "query", identifier: "qry-1", name: GetThing.name, payload: { id: "1" }, metadata: emptyMetadata(), timestamp: Date.now() })
       .then(() => undefined, (e) => e)
     expect(isConflict(failure)).toBe(true)
     expect(failure.name).toBe("ConcurrencyError")
@@ -205,7 +211,7 @@ describe("RabbitMQ query bus", () => {
     const reply = await subscriptions.get("test.GetThing")!({
       kind: "query",
       requestId: "qry-1",
-      message: { identifier: "qry-1", name: GetThing.name, payload: { id: "1" }, metadata: emptyMetadata(), timestamp: Date.now() },
+      message: { kind: "query", identifier: "qry-1", name: GetThing.name, payload: { id: "1" }, metadata: emptyMetadata(), timestamp: Date.now() },
       timeoutMs: 1000,
     })
     expect(reply.ok).toBe(false)
@@ -223,6 +229,7 @@ describe("RabbitMQ query bus", () => {
       requestId: "qry-1",
       timeoutMs: 1000,
       message: {
+        kind: "query",
         identifier: "qry-1",
         name: GetThing.name,
         payload: { id: "1" },
@@ -247,6 +254,7 @@ describe("RabbitMQ query bus", () => {
       requestId: "qry-1",
       timeoutMs: 1000,
       message: {
+        kind: "query",
         identifier: "qry-1",
         name: GetThing.name,
         payload: { id: "1" },
@@ -266,6 +274,7 @@ describe("RabbitMQ query bus", () => {
     bus.subscribe("test.GetThing", async () => "initial")
 
     const sub = bus.subscriptionQuery({
+      kind: "query",
       identifier: "sub-1",
       name: GetThing.name,
       payload: { id: "1" },
@@ -285,6 +294,7 @@ describe("RabbitMQ query bus", () => {
 
     bus.subscribe("test.GetThing", async () => "initial")
     const sub = bus.subscriptionQuery({
+      kind: "query",
       identifier: "sub-local",
       name: GetThing.name,
       payload: { id: "1" },
@@ -312,6 +322,7 @@ describe("RabbitMQ query bus", () => {
     })
     busB.subscribe("test.GetThing", async () => "initial-B")
     const sub = busB.subscriptionQuery({
+      kind: "query",
       identifier: "sub-cross",
       name: GetThing.name,
       payload: { id: "x" },
@@ -346,6 +357,7 @@ describe("RabbitMQ query bus", () => {
     })
     busB.subscribe("test.GetThing", async () => "initial")
     const sub1 = busB.subscriptionQuery({
+      kind: "query",
       identifier: "sub-lo",
       name: GetThing.name,
       payload: { id: "1" } as any,
@@ -353,6 +365,7 @@ describe("RabbitMQ query bus", () => {
       timestamp: Date.now(),
     })
     const sub2 = busB.subscriptionQuery({
+      kind: "query",
       identifier: "sub-hi",
       name: GetThing.name,
       payload: { id: "9" } as any,
@@ -393,6 +406,7 @@ describe("RabbitMQ query bus", () => {
     })
     busB.subscribe("test.GetThing", async () => "initial")
     const sub = busB.subscriptionQuery({
+      kind: "query",
       identifier: "sub-late",
       name: GetThing.name,
       payload: { id: "z" } as any,
@@ -425,6 +439,7 @@ describe("RabbitMQ query bus", () => {
     })
     busB.subscribe("test.GetThing", async () => "initial")
     const sub = busB.subscriptionQuery({
+      kind: "query",
       identifier: "sub-rm",
       name: GetThing.name,
       payload: { id: "1" },
@@ -568,7 +583,7 @@ it("releases completed and overflowed subscription claims from every registry mi
     subscriberRegistry: owner,
   })
   const make = (identifier: string) => bus.subscribeToUpdates({
-    identifier, name: GetThing.name, payload: {}, metadata: {},
+    kind: "query", identifier, name: GetThing.name, payload: {}, metadata: {},
   }, 1)
   const completed = make("complete")
   await bus.completeSubscription("test.GetThing")

@@ -13,7 +13,7 @@
  *  - token idempotency refuses a duplicate schedule
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
-import { inMemoryEventStore, qn, qualifiedNameToString, tag } from "@kronos-ts/core"
+import { emptyMetadata, inMemoryEventStore, jsonSerializer, qn, qualifiedNameToString, tag } from "@kronos-ts/core"
 import type { EventMessage, ScheduleStoreCapability } from "@kronos-ts/core"
 import {
   connectToKronosDb,
@@ -25,14 +25,7 @@ import {
 } from "@kronos-ts/kronosdb"
 import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 
-const serializer = {
-  serialize(value: unknown, type: string, revision?: string) {
-    return { data: new TextEncoder().encode(JSON.stringify(value)), type, revision }
-  },
-  deserialize(obj: { data: Uint8Array }) {
-    return JSON.parse(new TextDecoder().decode(obj.data))
-  },
-}
+const serializer = jsonSerializer()
 
 function reminderEvent(orderId: string): EventMessage {
   return {
@@ -41,7 +34,7 @@ function reminderEvent(orderId: string): EventMessage {
     name: qn("scheduler-e2e", "ReminderDue"),
     version: "1.0",
     payload: { orderId },
-    metadata: new Map(),
+    metadata: emptyMetadata(),
     timestamp: Date.now(),
     tags: [tag("orderId", orderId)],
   }

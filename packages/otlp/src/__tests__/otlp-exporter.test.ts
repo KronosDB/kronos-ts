@@ -395,7 +395,7 @@ describe("otlpExporter — log envelope", () => {
     await exporter.close()
 
     const post = fetchStub.posts.find((p: any) => p.url.endsWith("/v1/logs"))
-    const record = post.body.resourceLogs[0].scopeLogs[0].logRecords[0]
+    const record = post?.body.resourceLogs[0].scopeLogs[0].logRecords[0]
     expect(record).toMatchObject({
       timeUnixNano: "1700000000000000000",
       severityNumber: 13,
