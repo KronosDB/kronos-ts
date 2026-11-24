@@ -102,6 +102,7 @@ function fakeConnection(
       keepAliveTimeMs: 0,
       keepAliveTimeoutMs: 0,
       keepAlivePermitWithoutCalls: false,
+      readTimeoutMs: 1000,
     },
     state: "connected",
     onReconnect() {},
@@ -183,7 +184,7 @@ describe("axonServerQueryBus — subscription queries", () => {
     expect(response.subscriptionQueryResponse.subscriptionIdentifier).toBe("sub-1")
     expect(response.subscriptionQueryResponse.initialResult.errorCode).toBe("")
     expect(
-      jsonSerializer.deserialize(response.subscriptionQueryResponse.initialResult.payload),
+      jsonSerializer.deserialize<string>(response.subscriptionQueryResponse.initialResult.payload),
     ).toBe("hello")
   })
 
@@ -239,7 +240,7 @@ describe("axonServerQueryBus — subscription queries", () => {
     const updates = captured.outbound.filter((o) => o.subscriptionQueryResponse?.update)
     expect(updates).toHaveLength(1)
     expect(updates[0].subscriptionQueryResponse.subscriptionIdentifier).toBe("sub-x")
-    expect(jsonSerializer.deserialize(updates[0].subscriptionQueryResponse.update.payload)).toBe(
+    expect(jsonSerializer.deserialize<string>(updates[0].subscriptionQueryResponse.update.payload)).toBe(
       "value-v1",
     )
   })
