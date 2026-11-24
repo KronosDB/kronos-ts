@@ -36,6 +36,7 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
     })
 
     await def.handler({
+      kind: "event",
       identifier: "evt-1",
       name: CourseCreated.name,
       version: CourseCreated.version,
@@ -51,6 +52,7 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
   it("supports destructuring event message details", async () => {
     const metadata = emptyMetadata()
     const message = {
+      kind: "event" as const,
       identifier: "evt-1",
       name: CourseCreated.name,
       version: CourseCreated.version,
@@ -89,6 +91,7 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
     })
 
     await def.handler({
+      kind: "event",
       identifier: "evt-1",
       name: CourseCreated.name,
       version: CourseCreated.version,
@@ -108,6 +111,7 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
     })
 
     const result = def.handler({
+      kind: "event",
       identifier: "evt-1",
       name: CourseCreated.name,
       version: CourseCreated.version,

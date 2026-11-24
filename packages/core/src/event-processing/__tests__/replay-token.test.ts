@@ -210,6 +210,7 @@ describe("TrackingToken", () => {
         covers: (other) => 42n >= other.position(),
         lowerBound: (other) => 42n < other.position() ? pgToken : other,
         upperBound: (other) => 42n > other.position() ? pgToken : other,
+        samePositionAs: (other) => other.position() === 42n,
       }
 
       // Can be used with replay

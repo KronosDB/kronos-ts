@@ -13,6 +13,7 @@ import { isNoHandler, NoHandlerError } from "../../messaging/failures.js"
 
 function commandMsg(name: string, payload: unknown = {}): CommandMessage {
   return {
+    kind: "command",
     identifier: generateIdentifier(),
     name: qn("test", name),
     payload,

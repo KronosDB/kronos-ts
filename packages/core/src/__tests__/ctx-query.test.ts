@@ -17,6 +17,7 @@ import {
   unitOfWork,
   localCommandBus,
   localQueryBus,
+  type UnitOfWork,
 } from "../index.js"
 import { state } from "../event-sourcing/state.js"
 import { z } from "zod"

@@ -14,7 +14,7 @@ const GetCourse = query({
 // Minimal QueryBus mock (only emitUpdate is relevant here)
 function makeMockQueryBus() {
   const emitUpdateSpy = mock(
-    (_name: string, _filter: (q: unknown) => boolean, _update: unknown, _uow?: unknown) => {},
+    (_name: string, _filter: unknown, _update: unknown, _uow?: unknown) => {},
   )
   const bus: QueryBus = {
     query: mock(() => Promise.resolve(null)),

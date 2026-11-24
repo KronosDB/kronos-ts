@@ -6,6 +6,7 @@ import type { EventStore } from "../../event-sourcing/event-store.js"
 import { inMemoryTokenStore } from "../token-store.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
 import type { StreamableEventSource, SequencedEvent } from "../source.js"
+import { globalSequenceToken } from "../tracking-token.js"
 import type { EventHandler } from "../handler.js"
 import { inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
 
@@ -21,6 +22,7 @@ function makeEvent(payload: Payload, sequence: bigint): SequencedEvent {
   return {
     sequence,
     event: {
+      kind: "event",
       identifier: `evt-${sequence}`,
       name: EVENT_NAME,
       version: "1.0",
@@ -54,6 +56,12 @@ function createInMemoryEventSource(events: SequencedEvent[]): StreamableEventSou
     async getHeadPosition() {
       if (events.length === 0) return 0n
       return events[events.length - 1]!.sequence + 1n
+    },
+    async firstToken() {
+      return globalSequenceToken(0n)
+    },
+    async latestToken() {
+      return globalSequenceToken(await this.getHeadPosition())
     },
   }
 }
@@ -211,7 +219,7 @@ describe("batched", () => {
   })
 
   it("tunes anything that works in batches, keeping what it carried", () => {
-    const worker = { startScheduling: async () => {} }
+    const worker: { startScheduling: () => Promise<void>; batchSize?: number } = { startScheduling: async () => {} }
     const tuned = batched(worker, 200)
     expect(tuned).toMatchObject({ batchSize: 200 })
     expect(tuned.startScheduling).toBe(worker.startScheduling)

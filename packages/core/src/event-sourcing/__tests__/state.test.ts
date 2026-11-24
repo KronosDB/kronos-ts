@@ -123,7 +123,7 @@ describe("state()", () => {
     ])
   })
 
-  it("`name` is optional, and every definition still gets a distinct identity", () => {
+  it("a state takes no name, and every definition still gets a distinct identity", () => {
     const def = {
       id: { courseId: z.string() },
       tags: (id: { courseId: string }) => ({ courseId: id.courseId }),
@@ -134,7 +134,7 @@ describe("state()", () => {
     const a = state({ ...def })
     const b = state({ ...def })
 
-    expect(a.name).toBeUndefined()
+    expect("name" in a).toBe(false)
     expect(a.identity).not.toBe(b.identity)
     // The identity rides along when a host spreads the state to attach a log.
     expect({ ...a, eventStore: {} }.identity).toBe(a.identity)

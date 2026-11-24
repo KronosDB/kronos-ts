@@ -35,9 +35,9 @@ describe("serializeToken / deserializeToken", () => {
     // PascalCase label, consistent with GlobalSequenceToken in the same column.
     expect(s.type).toBe("GapAwareToken")
     const back = deserializeToken(s.type, s.data)
-    expect(isGapAwareToken(back!)).toBe(true)
-    expect(back!.position()).toBe(7n)
-    expect((back as { gapKey: string }).gapKey).toBe("98765")
+    if (back === undefined || !isGapAwareToken(back)) throw new Error("expected a GapAwareToken back")
+    expect(back.position()).toBe(7n)
+    expect(back.gapKey).toBe("98765")
   })
 
   it("round-trips a ReplayToken: the replay, where it ends, and the inner gapKey", () => {
@@ -47,10 +47,13 @@ describe("serializeToken / deserializeToken", () => {
     const back = deserializeToken(s.type, s.data)
     expect(isReplayToken(back!)).toBe(true)
     const { currentToken, tokenAtReset } = back as ReplayToken
+    if (!isGapAwareToken(currentToken) || !isGapAwareToken(tokenAtReset)) {
+      throw new Error("expected both halves of the replay to be GapAwareTokens")
+    }
     expect(currentToken.position()).toBe(25n)
-    expect((currentToken as { gapKey: string }).gapKey).toBe("555")
+    expect(currentToken.gapKey).toBe("555")
     expect(tokenAtReset.position()).toBe(100n)
-    expect((tokenAtReset as { gapKey: string }).gapKey).toBe("999")
+    expect(tokenAtReset.gapKey).toBe("999")
   })
 
   it("reads a replay that ends at a plain position", () => {

@@ -14,6 +14,8 @@ import { qn, command, event, queryDescriptor } from "../../messaging/messages.js
 import type {
   CommandMessage,
   EventMessage,
+  Message,
+  Metadata,
   StandardSchemaV1,
 } from "../../index.js"
 import {
@@ -143,7 +145,7 @@ function recordingContext() {
 describe("validatingHandler — inbound", () => {
   it("hands `next` a message whose payload is the PARSED value", async () => {
     let seen: CommandMessage<unknown> | undefined
-    const handler = validatingHandler(async (message: CommandMessage<unknown>) => {
+    const handler = validatingHandler(async (message: CommandMessage<unknown>, _c: object) => {
       seen = message
       return "ok"
     }, RecordCharge)
@@ -159,7 +161,7 @@ describe("validatingHandler — inbound", () => {
 
   it("refuses a message that is not what the entry says it is — `next` never runs", async () => {
     let ran = false
-    const handler = validatingHandler(async () => {
+    const handler = validatingHandler(async (_m: Message, _c: object) => {
       ran = true
     }, RecordCharge)
 
@@ -171,7 +173,7 @@ describe("validatingHandler — inbound", () => {
 
   it("AWAITS an asynchronous schema inbound — the wrapper is async for exactly this", async () => {
     const seen: unknown[] = []
-    const handler = validatingHandler(async (message: CommandMessage<unknown>) => {
+    const handler = validatingHandler(async (message: CommandMessage<unknown>, _c: object) => {
       seen.push(message.payload)
     }, SlowCommand)
 
@@ -336,6 +338,7 @@ describe("validatingHandler — the log never accepts a lie", () => {
       (await eventStore.source(sourcingCondition({}))).events
 
     const honest = commandHandler(RecordCharge, async ({ payload }, ctx) => {
+      // @ts-expect-error append takes the parsed payload; `currency` is left for validation to default
       ctx.append(Charged, { accountId: payload.accountId, amount: payload.amount })
     })
     const buggy = commandHandler(Notify, async (_message, ctx) => {
@@ -359,7 +362,7 @@ describe("validatingHandler — the log never accepts a lie", () => {
       expect(await stored()).toHaveLength(1)
       expect((await stored())[0]?.payload).toEqual({ accountId: "a-1", amount: 10, currency: "EUR" })
 
-      await expect(send(commandBus, Notify, { accountId: "a-2" })).rejects.toThrow(
+      await expect(send(commandBus, Notify, { accountId: "a-2", channel: "email" })).rejects.toThrow(
         /billing\.Charged.*failed validation/s,
       )
       // A buggy handler's garbage fails at the moment of the lie, not later in a
@@ -390,7 +393,11 @@ const SlowReceipt = command({
 
 describe("validatingHandler — the answer", () => {
   it("returns the PARSED answer when it matches the descriptor's result", async () => {
-    const wrapped = validatingHandler(async () => ({ receiptId: "r-1" }), IssueReceipt)
+    // The handler answers without `currency`; the result schema defaults it.
+    const wrapped = validatingHandler(
+      async (_m: Message, _c: object): Promise<{ receiptId: string; currency?: string }> => ({ receiptId: "r-1" }),
+      IssueReceipt,
+    )
     const { ctx } = recordingContext()
 
     expect(await wrapped(commandMessage({ accountId: "a-1" }, IssueReceipt.name), ctx)).toEqual({
@@ -400,7 +407,7 @@ describe("validatingHandler — the answer", () => {
   })
 
   it("refuses a command answer that is not its result, naming the command", async () => {
-    const wrapped = validatingHandler(async () => ({ receipt: 42 }), IssueReceipt)
+    const wrapped = validatingHandler(async (_m: Message, _c: object) => ({ receipt: 42 }), IssueReceipt)
     const { ctx } = recordingContext()
 
     await expect(wrapped(commandMessage({ accountId: "a-1" }, IssueReceipt.name), ctx)).rejects.toThrow(
@@ -409,7 +416,7 @@ describe("validatingHandler — the answer", () => {
   })
 
   it("refuses a query answer that is not its result, naming the query", async () => {
-    const wrapped = validatingHandler(async () => "a lot", GetBalance)
+    const wrapped = validatingHandler(async (_m: Message, _c: object) => "a lot", GetBalance)
     const { ctx } = recordingContext()
     const message = { ...commandMessage({ accountId: "a-1" }, GetBalance.name), kind: "query" as const }
 
@@ -420,15 +427,15 @@ describe("validatingHandler — the answer", () => {
     const { ctx } = recordingContext()
     const message = commandMessage({ accountId: "a-1" }, SlowReceipt.name)
 
-    expect(await validatingHandler(async () => "r-1", SlowReceipt)(message, ctx)).toBe("r-1")
-    await expect(validatingHandler(async () => 7, SlowReceipt)(message, ctx)).rejects.toThrow(
+    expect(await validatingHandler(async (_m: Message, _c: object) => "r-1", SlowReceipt)(message, ctx)).toBe("r-1")
+    await expect(validatingHandler(async (_m: Message, _c: object) => 7, SlowReceipt)(message, ctx)).rejects.toThrow(
       /the slow schema said no/,
     )
   })
 
   it("leaves the answer of a command that declares no result untouched", async () => {
     const answer = { anything: ["goes"] }
-    const wrapped = validatingHandler(async () => answer, RecordCharge)
+    const wrapped = validatingHandler(async (_m: Message, _c: object) => answer, RecordCharge)
     const { ctx } = recordingContext()
 
     expect(await wrapped(commandMessage({ accountId: "a-1", amount: 1 }), ctx)).toBe(answer)
@@ -507,7 +514,7 @@ describe("validatingHandler — composes with the other mechanisms", () => {
     let ran = false
 
     const handler = validatingHandler(
-      correlatingHandler(async () => {
+      correlatingHandler(async (_m: Message, _c: typeof ctx) => {
         ran = true
       }),
       RecordCharge,

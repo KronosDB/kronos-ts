@@ -5,8 +5,12 @@ import { localQueryBus } from "../local-bus.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
 import { updateHandler } from "../subscription-query.js"
 
+/** The bus hands a handler an untyped payload; these queries carry a course id. */
+const courseIdOf = (message: QueryMessage): string => (message.payload as { courseId: string }).courseId
+
 function queryMsg(name: string, payload: unknown = {}): QueryMessage {
   return {
+    kind: "query",
     identifier: generateIdentifier(),
     name: qn("test", name),
     payload,
@@ -114,7 +118,7 @@ describe("LocalQueryBus subscription queries", () => {
     const bus = localQueryBus(unitOfWork)
 
     bus.subscribe("test.GetCourse", async (msg) => {
-      return { id: msg.payload.courseId, name: "Intro" }
+      return { id: courseIdOf(msg), name: "Intro" }
     })
 
     const result = bus.subscriptionQuery(
@@ -131,7 +135,7 @@ describe("LocalQueryBus subscription queries", () => {
     const bus = localQueryBus(unitOfWork)
 
     bus.subscribe("test.GetCourse", async (msg) => {
-      return { id: msg.payload.courseId, name: "Intro" }
+      return { id: courseIdOf(msg), name: "Intro" }
     })
 
     const result = bus.subscriptionQuery(
@@ -164,7 +168,7 @@ describe("LocalQueryBus subscription queries", () => {
     const bus = localQueryBus(unitOfWork)
 
     bus.subscribe("test.GetCourse", async (msg) => {
-      return { id: msg.payload.courseId }
+      return { id: courseIdOf(msg) }
     })
 
     const result1 = bus.subscriptionQuery(
