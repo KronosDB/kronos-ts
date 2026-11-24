@@ -37,17 +37,16 @@ export type PlatformConnection = {
   registerProcessorStatusSupplier(supplier: ProcessorStatusSupplier): void
   readonly connected: boolean
   /**
-   * Resolves with `true` once KronosDB has acknowledged this client's
-   * registration on the platform stream: the server opens every platform
-   * stream with a NodeInfo frame, so the first frame from the server is the
-   * earliest observable point at which it has accepted the registration.
-   * Resolves with `false` if the platform is not yet started.
+   * Whether KronosDB has accepted this client's registration on the platform
+   * stream. Resolves with `true` once the stream is open and the server's
+   * NodeInfo frame, the first frame of every platform stream, has arrived.
+   * Resolves with `false` before `start()`, and after the stream has dropped
+   * until the NodeInfo of the next one.
    *
-   * This replaces the legacy 1-second sleep at
-   * kronosdb-configuration-enhancer.ts:216 (D-102): the kronosDb extension's
-   * `start()` polls this method via `withRetry` so the
-   * application waits exactly long enough for handler subscriptions to be
-   * routable, no longer or shorter.
+   * Despite its name it reports nothing about handler subscriptions. Those are
+   * acknowledged on the command and query streams. `kronosDbConnection`'s
+   * `start()` calls this method until it resolves with `true`, and then waits
+   * for those acknowledgements.
    */
   subscriptionsAcked(): Promise<boolean>
 }

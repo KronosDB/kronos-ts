@@ -80,28 +80,6 @@ export type PlatformConnection = {
   registerProcessorStatusSupplier(supplier: ProcessorStatusSupplier): void
   /** Whether the platform stream is active. */
   readonly connected: boolean
-  /**
-   * Resolves with `true` once Axon Server has acknowledged this client's
-   * registration on the platform stream (we use the first server-originated
-   * inbound message — typically a heartbeat reply or platform instruction —
-   * as the ack signal). Resolves with `false` if the platform is not yet
-   * started.
-   *
-   * This mirrors the kronosdb implementation (Plan 09-03 / D-102): the
-   * native `axonServer` extension's `onStart('processors', ...)` hook polls
-   * this method via `withRetry` so the application waits exactly long enough
-   * for handler subscriptions to be routable, no longer or shorter — the
-   * Axon equivalent of dropping the legacy 1-second sleep.
-   *
-   * Implementation note: while Axon Server's outbound stream maintains a
-   * `pendingSubscriptions` map (per RESEARCH.md), the `register` frame is
-   * sent on the *platform* stream (separate from the bus streams) and Axon
-   * Server replies with a heartbeat tick / topology message at the
-   * configured interval. We treat the first inbound platform-stream frame
-   * as the ack signal — same observable derivation as kronosdb to keep the
-   * two extensions structurally symmetric.
-   */
-  subscriptionsAcked(): Promise<boolean>
 }
 
 export type PlatformServiceOptions = {
@@ -181,11 +159,10 @@ export function platformConnection(
   let serverBeats = false
   let outbound: ReturnType<typeof outboundStream<PlatformInboundInstruction>> | null = null
   /**
-   * Latches once Axon Server sends its first inbound message after
-   * registration — the earliest observable signal that the platform stream
-   * is fully wired (mirror of kronosdb Plan 09-03 / D-102, replaces the
-   * legacy 1-second sleep). Reset on every `start()` so a stop/start cycle
-   * re-arms the latch correctly.
+   * True once a platform stream has sent its `register` frame, and cleared
+   * while a stream is being reopened. The heartbeat timer sends nothing while
+   * it is false. It says nothing about handler subscriptions: those are
+   * acknowledged on the command and query streams (`subscription-acks.ts`).
    */
   let acked = false
 
@@ -221,9 +198,7 @@ export function platformConnection(
     try {
       for await (const message of inbound) {
         if (stream !== outbound || !monitoringArmed) return
-        // First inbound message after start() = the platform has accepted our
-        // registration and is talking back. Latch the ack flag (mirror of
-        // kronosdb Plan 09-03 / D-102 — replaces the legacy 1s sleep).
+        // A message from the server: it has the registration.
         acked = true
         if (message.requestReconnect) scheduleRecovery()
         // Parse instruction type
@@ -407,7 +382,7 @@ export function platformConnection(
       outbound = null
     }
 
-    // Re-arm the ack latch so a stop/start cycle correctly re-waits.
+    // No `register` frame has gone out on the stream opened below yet.
     acked = false
     serverBeats = false
     outbound = outboundStream<PlatformInboundInstruction>()
@@ -435,23 +410,11 @@ export function platformConnection(
     startHeartbeat()
     void processInboundInstructions(inbound, outbound)
 
-    // Axon Server's PlatformService does NOT proactively emit an inbound
-    // frame in response to `register` — the stream is held open silently
-    // until either (a) the server pushes a topology / instruction event,
-    // or (b) one of our heartbeat pings round-trips back. That means the
-    // first-inbound-frame ack signal used by kronosdb (Plan 09-03 / D-102)
-    // doesn't fire deterministically here, and the processors-stage
-    // `withRetry({event: "per-operation"})` poll would otherwise hang.
-    //
-    // Axon-specific ack derivation: latch `acked = true` immediately once
-    // the outbound `register` frame has been flushed to the gRPC layer.
-    // Bus subscriptions (sent on the command/query streams, NOT the
-    // platform stream) are an orthogonal concern handled by the
-    // command/query bus reconnect path — the legacy 1-second sleep that
-    // we replaced was always covering register processing, not bus-side
-    // routability. Structurally this is the Axon Server equivalent of
-    // D-102: drop the magic-number wait, use the earliest deterministic
-    // observable signal that fits the underlying protocol.
+    // Axon Server's PlatformService sends nothing in answer to `register`:
+    // the stream stays silent until the server pushes an instruction or one
+    // of our heartbeats comes back. There is no frame to wait for, so the
+    // flag is set as soon as the `register` frame has been handed to the
+    // stream, and the heartbeat timer may send from here on.
     acked = true
   }
 
@@ -520,10 +483,6 @@ export function platformConnection(
 
     get connected() {
       return isConnected
-    },
-
-    async subscriptionsAcked(): Promise<boolean> {
-      return isConnected && acked
     },
   }
 }
