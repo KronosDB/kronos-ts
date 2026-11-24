@@ -65,8 +65,11 @@ describe("query — UnitOfWork guards", () => {
   it("hands the bus the message only — the read runs in a task of its own", async () => {
     // A query never nests into its caller's task: no unit of work crosses
     // this seam, so a read cannot share the handler's transaction or clock.
+    // The task's clock is fixed, so the stamp is compared to a known instant
+    // and not to a second read of the system clock.
+    const INSTANT = 1_700_000_000_000
     const calls: unknown[][] = []
-    await unitOfWork().execute(async (uow) => {
+    await unitOfWork(() => INSTANT).execute(async (uow) => {
       const query = queryFunction({
         uow,
         queryBus: {
@@ -79,7 +82,7 @@ describe("query — UnitOfWork guards", () => {
       await query(GetCourse, { courseId: "c1" })
       expect(calls).toHaveLength(1)
       expect(calls[0]).toHaveLength(1)
-      expect((calls[0]![0] as { timestamp: number }).timestamp).toBe(uow.now())
+      expect((calls[0]![0] as { timestamp: number }).timestamp).toBe(INSTANT)
     })
   })
 })
