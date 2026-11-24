@@ -78,8 +78,9 @@ export function decodeSnapshot(
 }
 
 /**
- * bunSqlAdapter returns JSONB as a raw string; pgAdapter/postgresAdapter return
- * it parsed. Normalise either way before key lookups.
+ * All three drivers return JSONB parsed. A string is a row written through
+ * postgresAdapter or bunSqlAdapter before the metadata was bound as TEXT: it
+ * holds a JSON string containing the JSON text, and is parsed here.
  */
 export function normaliseMetadata(value: unknown): SnapshotMetadata {
   if (typeof value === "string") {
