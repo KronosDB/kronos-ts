@@ -45,7 +45,15 @@ jobs:
           - packages/axon-server/src/__tests__
           - integrationtests/src/__tests__
           - integrationtests/src/axon-e2e
-    name: integration (${{ matrix.suite }})
+        # The postgres.js the lockfile installs. The Postgres suites run a
+        # second time on the other major the package accepts.
+        postgres-js: ["3.4.9"]
+        include:
+          - suite: packages/postgres/src/__tests__
+            postgres-js: "4.1.1"
+          - suite: integrationtests/src/__tests__
+            postgres-js: "4.1.1"
+    name: integration (${{ matrix.suite }}${{ matrix.postgres-js != '3.4.9' && format(', postgres.js {0}', matrix.postgres-js) || '' }})
     permissions:
       contents: read
       packages: read   # ghcr.io/kronosdb/kronosdb image pull
@@ -60,6 +68,15 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - run: bun install --frozen-lockfile
+
+      - name: Install postgres.js ${{ matrix.postgres-js }}
+        if: matrix.postgres-js != '3.4.9'
+        run: |
+          (cd packages/postgres && bun add --dev postgres@${{ matrix.postgres-js }})
+          (cd integrationtests && bun add --dev postgres@${{ matrix.postgres-js }})
+
+      - name: Check the postgres.js under test is ${{ matrix.postgres-js }}
+        run: bun run scripts/postgres-js-version.ts ${{ matrix.postgres-js }}
 
       - name: Container tests
         run: bun run scripts/run-test-suites.ts ${{ matrix.suite }}
