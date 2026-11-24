@@ -60,21 +60,20 @@ function fakeAdapter(): PostgresAdapter {
   }
 }
 
+/** What postgres.js / Bun.sql hand back: nothing runs until it is awaited. */
+type PendingQuery = PromiseLike<{ label: string }[]> & {
+  values(): PendingQuery
+  raw(): PendingQuery
+}
+
 /** A postgres.js / Bun.sql-shaped fake: callable tag with `.unsafe`, lazy pending queries. */
 function fakePostgresJsLikeClient() {
   let executed = 0
-  function makePending(label: string): {
-    then: (onFulfilled?: unknown, onRejected?: unknown) => Promise<unknown>
-    values: () => ReturnType<typeof makePending>
-    raw: () => ReturnType<typeof makePending>
-  } {
+  function makePending(label: string): PendingQuery {
     return {
-      then(onFulfilled?: unknown, onRejected?: unknown) {
+      then(onFulfilled, onRejected) {
         executed++
-        return Promise.resolve([{ label }]).then(
-          onFulfilled as (v: unknown) => unknown,
-          onRejected as (e: unknown) => unknown,
-        )
+        return Promise.resolve([{ label }]).then(onFulfilled, onRejected)
       },
       values() {
         return makePending(`${label}:values`)
@@ -85,8 +84,8 @@ function fakePostgresJsLikeClient() {
     }
   }
   const client = ((..._args: unknown[]) => makePending("tag")) as unknown as {
-    (...args: unknown[]): ReturnType<typeof makePending>
-    unsafe(text: string, params?: unknown[]): ReturnType<typeof makePending>
+    (...args: unknown[]): PendingQuery
+    unsafe(text: string, params?: unknown[]): PendingQuery
   }
   client.unsafe = (text: string) => makePending(text)
   return { client, executedCount: () => executed }
@@ -96,9 +95,9 @@ function fakePostgresJsLikeClient() {
 function fakePgLikeClient() {
   let calls = 0
   const client = {
-    async query(text: string, _params?: unknown[]) {
+    async query(query: string | { text: string; values?: unknown[] }, _params?: unknown[]) {
       calls++
-      return { rows: [{ text }] }
+      return { rows: [{ text: typeof query === "string" ? query : query.text }] }
     },
     release() {
       /* no-op */
@@ -217,7 +216,7 @@ describe("observedTransactionView() / observedPoolView() — unwrap()", () => {
       async query() {
         return []
       },
-      unwrap: () => client,
+      unwrap: <T>() => client as T,
     }
 
     const view = observedTransactionView(tx, trace)
@@ -245,7 +244,7 @@ describe("observedTransactionView() / observedPoolView() — unwrap()", () => {
       async query() {
         return []
       },
-      unwrap: () => client,
+      unwrap: <T>() => client as T,
     }
 
     const view = observedTransactionView(tx, trace)
@@ -270,7 +269,7 @@ describe("observedTransactionView() / observedPoolView() — unwrap()", () => {
   it("postgres.js / Bun.sql-like tag call: template strings are joined back with $n placeholders", async () => {
     const { trace, spans } = fakeTrace()
     const { client } = fakePostgresJsLikeClient()
-    const view = observedPoolView({ ...fakeAdapter(), unwrap: () => client }, trace)
+    const view = observedPoolView({ ...fakeAdapter(), unwrap: <T>() => client as T }, trace)
     const wrapped = view.unwrap<typeof client>()
 
     const id = "w-1"
