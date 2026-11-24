@@ -9,6 +9,7 @@ import { appendCondition } from "../append-condition.js"
 
 function eventMessage(name: string, payload: unknown, tags: Array<{ key: string; value: string }>): EventMessage {
   return {
+    kind: "event",
     identifier: generateIdentifier(),
     name: qn("test", name),
     version: "1.0",

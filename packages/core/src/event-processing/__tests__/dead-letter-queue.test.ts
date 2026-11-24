@@ -4,6 +4,7 @@ import { qn, type EventMessage } from "../../messaging/messages.js"
 import { inMemoryDeadLetterQueue, deadLetter, type DeadLetter, type EnqueueDecision } from "../dead-letter-queue.js"
 function testEvent(name: string, payload: unknown = {}): EventMessage {
   return {
+    kind: "event",
     identifier: `id-${name}`,
     name: qn("test", name),
     version: "1.0",

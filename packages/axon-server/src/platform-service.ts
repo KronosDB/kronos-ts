@@ -295,8 +295,10 @@ export function platformConnection(
 
     heartbeatTimer = setInterval(() => {
       if (!isConnected || !outbound) return
-      // Not before the server has acknowledged the registration: a heartbeat
-      // from a stream it has not filed yet is an error on its side, not a beat.
+      // Not before this stream's `register` frame has been handed to it.
+      // `openPlatformStream` clears the flag when it replaces the stream and
+      // sets it again once the frame is sent. The server answers `register`
+      // with nothing, so there is no acknowledgement to wait for.
       if (!acked) return
 
       // Judge silence only from a server that has beaten before.

@@ -101,12 +101,18 @@ function fakeLog(initial: SequencedEvent[], options: { reportsProgress?: boolean
   return store as unknown as FakeLog
 }
 
+/** Where a delivered event sat in the stream. A tracking processor always says. */
+function positionOf(message: { readonly sequence?: bigint }): bigint {
+  if (message.sequence === undefined) throw new Error("the event was delivered without a stream position")
+  return message.sequence
+}
+
 function handlerFor(name: QualifiedName, into: bigint[] = []): EventHandler<any> {
   return {
     kind: "event-handler",
     descriptor: { kind: "event", name, version: "1.0", payload: {} as any },
-    handler: ({ sequence }) => {
-      into.push(sequence)
+    handler: (message) => {
+      into.push(positionOf(message))
     },
   }
 }
@@ -314,7 +320,8 @@ describe("parked events and a filtered stream", () => {
     const delivered: bigint[] = []
     const handler: EventHandler<any> = {
       ...handlerFor(Ordered),
-      handler: ({ sequence }) => {
+      handler: (message) => {
+        const sequence = positionOf(message)
         if (failing.has(sequence)) throw new Error("poison")
         delivered.push(sequence)
       },
@@ -436,7 +443,7 @@ describe("resetting a processor", () => {
     const seen: Array<[bigint, boolean]> = []
     return {
       seen,
-      handler: { ...handlerFor(Ordered), handler: ({ sequence }, ctx: any) => void seen.push([sequence, ctx.isReplay()]) },
+      handler: { ...handlerFor(Ordered), handler: (message, ctx: any) => void seen.push([positionOf(message), ctx.isReplay()]) },
     }
   }
 

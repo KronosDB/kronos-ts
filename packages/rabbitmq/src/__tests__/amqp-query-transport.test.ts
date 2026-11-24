@@ -77,6 +77,7 @@ function envelope(): RabbitMqQueryEnvelope {
     requestId: "qry-1",
     timeoutMs: 1000,
     message: {
+      kind: "query",
       identifier: "qry-1",
       name: qn("faculty", "GetThing"),
       payload: { id: "1" },

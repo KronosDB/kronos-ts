@@ -9,12 +9,15 @@ import {
 } from "@kronos-ts/core"
 import type {
   CommandBus,
+  CommandHandlerContext,
   CommandHandlerEntry,
+  EventHandlerContext,
   EventHandlerEntry,
   EventProcessor,
   EventStore,
   QueryBus,
   QueryHandlerEntry,
+  ScheduleCapableEventStore,
   ScheduleStoreCapability,
   SnapshotCapableEventStore,
   TokenStore,
@@ -151,9 +154,12 @@ const closeWhenFull = eventHandler(StudentSubscribed, async ({ payload: e }, ctx
 })
 
 /** A new course gets a thirty-second enrolment window. */
-const armEnrolmentWindow = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
-  await ctx.scheduleAfter(EnrolmentClosing, { courseId: e.courseId }, 30_000)
-})
+const armEnrolmentWindow = eventHandler(
+  CourseCreated,
+  async ({ payload: e }, ctx: EventHandlerContext<ScheduleCapableEventStore>) => {
+    await ctx.scheduleAfter(EnrolmentClosing, { courseId: e.courseId }, 30_000)
+  },
+)
 
 /** The window closing closes the course. */
 const closeOnDeadline = eventHandler(EnrolmentClosing, async ({ payload: e }, ctx) => {
@@ -301,12 +307,15 @@ const Reminder = state({
   evolve: [() => ({ token: "" }), [ReminderArmed, (s, { payload }) => ({ ...s, token: payload.token })]],
 })
 
-const armReminder = commandHandler(ArmReminder, async ({ payload: cmd }, ctx) => {
-  const reminder = await ctx.load(Reminder, { orderId: cmd.orderId })
-  if (reminder.token !== "") await ctx.cancelSchedule({ id: reminder.token })
-  const token = await ctx.scheduleAfter(ReminderDue, { orderId: cmd.orderId }, cmd.afterMs)
-  ctx.append(ReminderArmed, { orderId: cmd.orderId, token: token.id })
-})
+const armReminder = commandHandler(
+  ArmReminder,
+  async ({ payload: cmd }, ctx: CommandHandlerContext<ScheduleCapableEventStore>) => {
+    const reminder = await ctx.load(Reminder, { orderId: cmd.orderId })
+    if (reminder.token !== "") await ctx.cancelSchedule({ id: reminder.token })
+    const token = await ctx.scheduleAfter(ReminderDue, { orderId: cmd.orderId }, cmd.afterMs)
+    ctx.append(ReminderArmed, { orderId: cmd.orderId, token: token.id })
+  },
+)
 
 /** Reminders on their own — one command, one state, one schedule. */
 export function reminders<S extends Shared>({ eventStore, commandBus, queryBus }: S): Lists<S> {

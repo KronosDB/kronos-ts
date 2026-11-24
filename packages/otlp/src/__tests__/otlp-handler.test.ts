@@ -71,7 +71,7 @@ describe("otlpHandler — command and query messages PARENT onto the caller", ()
 
     const handled = otlpHandler(async (_m: CommandMessage) => "done", exporter)
     const delegate: CommandBus = {
-      dispatch: (message) => handled(message as CommandMessage, undefined),
+      dispatch: (message) => handled(message as CommandMessage, {}),
       subscribe: () => {},
     }
 
@@ -103,7 +103,7 @@ describe("otlpHandler — command and query messages PARENT onto the caller", ()
 
     await otlpHandler(async (_m: QueryMessage) => "v", exporter)(
       queryMessage({ traceparent: `00-${remote.traceId}-${remote.spanId}-01` }),
-      undefined,
+      {},
     )
     await exporter.close()
 
@@ -119,7 +119,7 @@ describe("otlpHandler — command and query messages PARENT onto the caller", ()
     fetchStub = stubFetch()
     const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
 
-    await otlpHandler(async (_m: CommandMessage) => "x", exporter)(commandMessage(), undefined)
+    await otlpHandler(async (_m: CommandMessage) => "x", exporter)(commandMessage(), {})
     await exporter.close()
 
     const span = fetchStub.spans()[0]
@@ -133,11 +133,11 @@ describe("otlpHandler — command and query messages PARENT onto the caller", ()
     const exporter = otlpExporter({ endpoint: "http://c:4318", serviceName: "svc" })
     const traced = otlpHandler(async (_m: CommandMessage) => "x", exporter)
 
-    await traced(commandMessage({ traceparent: "not-a-traceparent" }), undefined)
+    await traced(commandMessage({ traceparent: "not-a-traceparent" }), {})
     // …and an all-zero trace id is invalid per W3C, so it is refused too.
     await traced(
       commandMessage({ traceparent: `00-${"0".repeat(32)}-${"3".repeat(16)}-01` }),
-      undefined,
+      {},
     )
     await exporter.close()
 
@@ -164,7 +164,7 @@ describe("otlpHandler — an event message LINKS instead", () => {
 
     await otlpHandler(async (_m: SequencedEventMessage) => {}, exporter)(
       eventMessage({ traceparent: carried }),
-      undefined,
+      {},
     )
     await exporter.close()
 
@@ -187,8 +187,8 @@ describe("otlpHandler — an event message LINKS instead", () => {
     const carried = `00-${producing.traceId}-${producing.spanId}-01`
 
     const handler = otlpHandler(async (_m: SequencedEventMessage) => {}, exporter)
-    await handler(eventMessage({ traceparent: carried }), undefined)
-    await handler(eventMessage({ traceparent: carried }), undefined)
+    await handler(eventMessage({ traceparent: carried }), {})
+    await handler(eventMessage({ traceparent: carried }), {})
     await exporter.close()
 
     const handles = fetchStub.spans().filter((s: any) => s.name === "billing.CardCharged")
@@ -205,7 +205,7 @@ describe("otlpHandler — an event message LINKS instead", () => {
 
     await otlpHandler(async (_m: SequencedEventMessage) => {}, exporter)(
       eventMessage(emptyMetadata()),
-      undefined,
+      {},
     )
     await exporter.close()
 
@@ -223,7 +223,7 @@ describe("otlpHandler — mechanics", () => {
       throw new Error("declined")
     }, exporter)
 
-    await expect(handler(commandMessage(), undefined)).rejects.toThrow("declined")
+    await expect(handler(commandMessage(), {})).rejects.toThrow("declined")
     await exporter.close()
 
     // The error's TYPE, never its message — a message can carry user data.
@@ -284,7 +284,7 @@ describe("otlpHandler — mechanics", () => {
       async (_m: CommandMessage) => "x",
       exporter,
       (m) => `handle(${m.name.name})`,
-    )(commandMessage(), undefined)
+    )(commandMessage(), {})
     await exporter.close()
 
     // A function OF THE MESSAGE — never a per-entry string closed over at
@@ -349,6 +349,7 @@ describe("otlpHandler — composes with core's other handler wrappers", () => {
       {
         ...commandMessage({ correlationId: "corr-1" }),
         name: OpenAccount.name,
+        // @ts-expect-error the message type is the parsed payload, where `tier` is required
         payload: { accountId: "a-1" },
       },
       ctx,
@@ -384,7 +385,7 @@ describe("otlpHandler — composes with core's other handler wrappers", () => {
     await expect(
       chained(
         { ...commandMessage(), name: OpenAccount.name, payload: { accountId: 7 } },
-        undefined,
+        {},
       ),
     ).rejects.toThrow(/accountId must be a string/)
     await exporter.close()

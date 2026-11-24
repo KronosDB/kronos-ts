@@ -44,6 +44,7 @@ import {
   localQueryBus,
   type CommandBus,
   type CommandMessage,
+  type Message,
 } from "@kronos-ts/core"
 import {
   rabbitMqCommandBus,
@@ -184,7 +185,7 @@ function causingCommand(): CommandMessage {
  */
 async function sendFinishFrom(
   bus: CommandBus,
-  cargo?: (parent: CommandMessage) => Metadata,
+  cargo?: (parent: Message) => Metadata,
 ): Promise<void> {
   const uow = unitOfWork()
   await uow.execute(async () => {

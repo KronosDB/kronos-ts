@@ -111,7 +111,7 @@ When the drain deadline expires, close rejects and tears down the transport in `
 
 ```sh
 bun run typecheck
-bun run typecheck:messaging-tests
+bun run typecheck:tests
 bun run build
 bun run test:unit
 bun run test:messaging:integration

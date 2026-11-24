@@ -10,6 +10,7 @@
     "build": "bun run --filter '@kronos-ts/*' build",
     "clean": "bun run --filter '@kronos-ts/*' clean",
     "typecheck": "tsc -p tsconfig.json",
+    "typecheck:tests": "bun run scripts/typecheck-tests.ts",
     "test": "bun test",
     "test:node": "bun run build && node scripts/test-node.mjs",
     "test:unit": "bun test $(find packages -path '*/src/*' -name '*.test.ts' -not -name '*.integration.test.ts')",
@@ -20,8 +21,7 @@
     "version-packages": "changeset version",
     "release": "bun run build && bash scripts/publish.sh",
     "test:messaging:integration": "bun run scripts/test-messaging.ts",
-    "test:integration": "bun run scripts/test-integration.ts",
-    "typecheck:messaging-tests": "tsc -p tsconfig.messaging-tests.json"
+    "test:integration": "bun run scripts/test-integration.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",

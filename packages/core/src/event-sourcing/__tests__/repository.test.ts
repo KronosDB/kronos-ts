@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { qn, emptyMetadata, event, type EventMessage, tagsOf } from "../../messaging/messages.js"
+import {
+  qn,
+  emptyMetadata,
+  event,
+  type EventDescriptor,
+  type EventMessage,
+  tagsOf,
+} from "../../messaging/messages.js"
+import type { InferOutput, StandardSchemaV1 } from "../../messaging/standard-schema.js"
 import { generateIdentifier } from "../../messaging/identifier.js"
 import { state } from "../state.js"
 import { inMemoryEventStore } from "../in-memory.js"
@@ -48,16 +56,16 @@ const Course = state({
   ],
 })
 
-function eventMsg(descriptor: { name: { namespace: string; name: string }; version?: string; tags?: (p: any) => Array<{ key: string; value: string }> }, payload: any): EventMessage {
-  const tags = tagsOf(descriptor, payload, emptyMetadata())
+function eventMsg<P extends StandardSchemaV1>(descriptor: EventDescriptor<P>, payload: InferOutput<P>): EventMessage {
   return {
+    kind: "event",
     identifier: generateIdentifier(),
-    name: qn(descriptor.name.namespace, descriptor.name.name),
-    version: descriptor.version ?? "1.0",
+    name: descriptor.name,
+    version: descriptor.version,
     payload,
     metadata: emptyMetadata(),
     timestamp: Date.now(),
-    tags,
+    tags: tagsOf(descriptor, payload, emptyMetadata()),
   }
 }
 
