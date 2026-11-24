@@ -72,6 +72,7 @@ describe("RabbitMQ command bus", () => {
     bus.subscribe("test.DoThing", async () => "local-ok")
 
     const result = await bus.dispatch({
+      kind: "command",
       identifier: "cmd-1",
       name: DoThing.name,
       payload: { id: "1" },
@@ -90,6 +91,7 @@ describe("RabbitMQ command bus", () => {
     bus.subscribe("test.DoThing", async () => "local-ok")
 
     const result = await bus.dispatch({
+      kind: "command",
       identifier: "cmd-1",
       name: DoThing.name,
       payload: { id: "1" },
@@ -106,6 +108,7 @@ describe("RabbitMQ command bus", () => {
     const bus = busOver(transport, localCommandBus(unitOfWork))
 
     await bus.dispatch({
+      kind: "command",
       identifier: "cmd-1",
       name: DoThing.name,
       payload: { id: "1" },
@@ -128,6 +131,7 @@ describe("RabbitMQ command bus", () => {
     const bus = busOver(transport, localCommandBus(unitOfWork))
 
     await bus.dispatch({
+      kind: "command",
       identifier: "cmd-1",
       name: DoThing.name,
       payload: { id: "1" },
@@ -148,6 +152,7 @@ describe("RabbitMQ command bus", () => {
     const bus = busOver(transport, localCommandBus(unitOfWork))
 
     await bus.dispatch({
+      kind: "command",
       identifier: "cmd-1",
       name: DoThing.name,
       payload: { id: "1" },
@@ -165,6 +170,7 @@ describe("RabbitMQ command bus", () => {
     })
 
     await bus.dispatch({
+      kind: "command",
       identifier: "cmd-1",
       name: DoThing.name,
       payload: { id: "1" },
@@ -187,6 +193,7 @@ describe("RabbitMQ command bus", () => {
       expectsReply: true,
       timeoutMs: 1000,
       message: {
+        kind: "command",
         identifier: "cmd-1",
         name: DoThing.name,
         payload: { id: "1" },
@@ -214,6 +221,7 @@ describe("RabbitMQ command bus", () => {
       expectsReply: true,
       timeoutMs: 1000,
       message: {
+        kind: "command",
         identifier: "cmd-1",
         name: DoThing.name,
         payload: { id: "1" },
@@ -241,6 +249,7 @@ describe("RabbitMQ command bus", () => {
 
     await expect(
       bus.dispatch({
+        kind: "command",
         identifier: "cmd-1",
         name: DoThing.name,
         payload: { id: "1" },
@@ -268,7 +277,7 @@ describe("RabbitMQ command bus failures", () => {
     handling.subscribe("test.DoThing", handler)
     const caller = rabbitMqCommandBus(localCommandBus(unitOfWork), { config: rabbitConfig({ url: "amqp://test" }), commandTransport: transport })
     return (id: string) =>
-      caller.dispatch({ identifier: id, name: DoThing.name, payload: { id }, metadata: emptyMetadata(), timestamp: Date.now() })
+      caller.dispatch({ kind: "command", identifier: id, name: DoThing.name, payload: { id }, metadata: emptyMetadata(), timestamp: Date.now() })
   }
 
   it("fails the caller with a conflict when the handler lost a race on another instance", async () => {

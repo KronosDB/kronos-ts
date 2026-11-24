@@ -78,6 +78,7 @@ function envelope(): RabbitMqCommandEnvelope {
     expectsReply: true,
     timeoutMs: 1000,
     message: {
+      kind: "command",
       identifier: "cmd-1",
       name: qn("faculty", "DoThing"),
       payload: { id: "1" },

@@ -1,7 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { emptyMetadata, qn, send, subscriptionQuery, type UnitOfWork } from "@kronos-ts/core"
-import { kronos, type CommandHandlerEntry, type QueryHandlerEntry } from "@kronos-ts/core"
+import {
+  kronos,
+  type CommandHandlerContext,
+  type CommandHandlerEntry,
+  type EventStore,
+  type QueryHandlerEntry,
+  type SubscriptionCapability,
+  type SubscriptionCapableQueryBus,
+} from "@kronos-ts/core"
 import { inMemoryEventStore } from "@kronos-ts/core"
 import {
   correlation,
@@ -73,7 +81,12 @@ describe("RabbitMQ query transport integration", () => {
   async function startNode(params: {
     serviceName: string
     prefix: string
-    commandHandlers?: Array<Omit<CommandHandlerEntry, "commandBus" | "queryBus" | "eventStore">>
+    commandHandlers?: Array<
+      Omit<
+        CommandHandlerEntry<UnitOfWork, EventStore, SubscriptionCapableQueryBus>,
+        "commandBus" | "queryBus" | "eventStore"
+      >
+    >
     queryHandlers?: Array<Omit<QueryHandlerEntry, "queryBus" | "eventStore">>
   }) {
     const buses = inMemoryBuses()
@@ -131,7 +144,7 @@ describe("RabbitMQ query transport integration", () => {
       prefix,
       queryHandlers: [queryHandler(WatchValue, async () => "initial")],
       commandHandlers: [
-        commandHandler(PublishUpdate, async ({ payload: cmd }, ctx) => {
+        commandHandler(PublishUpdate, async ({ payload: cmd }, ctx: CommandHandlerContext & SubscriptionCapability) => {
           ctx.emitUpdate(WatchValue, payloadEquals({ id: cmd.id }), cmd.value)
         }),
       ],
@@ -183,7 +196,7 @@ describe("RabbitMQ query transport integration", () => {
       prefix,
       queryHandlers: [queryHandler(WatchValue, async () => "initial")],
       commandHandlers: [
-        commandHandler(PublishUpdate, async ({ payload: cmd }, ctx) => {
+        commandHandler(PublishUpdate, async ({ payload: cmd }, ctx: CommandHandlerContext & SubscriptionCapability) => {
           // Function filter — only IDs starting with "hi-" match. This case
           // could not cross the wire under the broadcast model because JS
           // functions don't serialize. Under the gossip-mirror model the
