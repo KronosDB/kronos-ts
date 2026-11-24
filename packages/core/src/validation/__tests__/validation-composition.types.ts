@@ -147,3 +147,23 @@ export const validatedAndCorrelating = kronos({
 const wrapped = { ...openAccount, handler: validatingHandler(openAccount.handler, openAccount.descriptor) }
 export const stillACommandHandler: "command-handler" = wrapped.kind
 export const stillTheDescriptor: typeof OpenAccount = wrapped.descriptor
+
+// ---------------------------------------------------------------------------
+// A HANDLER THAT TAKES ONLY ITS MESSAGE asks nothing of its context, so the
+// wrapper around it accepts any context and wires into an entry like any other.
+// ---------------------------------------------------------------------------
+
+const messageOnly = async (message: { payload: { accountId: string } }) => ({ accountId: message.payload.accountId })
+
+export const messageOnlyValidated = commandHandler(OpenAccount, validatingHandler(messageOnly, OpenAccount))
+export const messageOnlyCorrelated = commandHandler(OpenAccount, correlatingHandler(messageOnly))
+export const messageOnlyBoth = commandHandler(
+  OpenAccount,
+  validatingHandler(correlatingHandler(messageOnly), OpenAccount),
+)
+
+// Its context is anything at all, where a two-parameter handler's is the one it named.
+export const anyContext: Parameters<ReturnType<typeof validatingHandler<typeof messageOnly>>>[1] = { anything: true }
+const named = async (_message: { payload: { accountId: string } }, _context: { tenant: string }) => undefined
+// @ts-expect-error — the wrapper keeps the context a handler asked for
+export const namedContext: Parameters<ReturnType<typeof validatingHandler<typeof named>>>[1] = { anything: true }

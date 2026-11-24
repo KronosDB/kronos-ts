@@ -249,3 +249,18 @@ describe("messageOrigin — the standard cargo", () => {
     expect(messageOrigin(message("cmd-1", { traceparent: 42 }))).not.toHaveProperty("traceparent")
   })
 })
+
+describe("correlatingHandler — a handler that takes only its message", () => {
+  it("runs with a context, and with none", async () => {
+    const seen: string[] = []
+    const handler = correlatingHandler(async (message: Message) => {
+      seen.push(message.identifier)
+    })
+    const message: Message = { kind: "command", identifier: "cmd-1", name: qn("billing", "Open"), payload: {}, metadata: {}, timestamp: 1 }
+
+    await handler(message, { unitOfWork: unitOfWork() })
+    await handler({ ...message, identifier: "cmd-2" }, undefined)
+
+    expect(seen).toEqual(["cmd-1", "cmd-2"])
+  })
+})

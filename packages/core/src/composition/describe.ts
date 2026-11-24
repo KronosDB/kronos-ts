@@ -48,6 +48,13 @@ export type Described<D extends WrapperDescription> = {
   readonly [DESCRIPTION]?: D
 }
 
+/**
+ * The context a handler asks for: the type of its second parameter. A handler
+ * that takes only its message asks nothing of its context, so a wrapper around
+ * it accepts any context.
+ */
+export type ContextOf<H extends (...args: any[]) => any> = Parameters<H> extends [any, (infer C)?, ...any[]] ? C : unknown
+
 /** The description of a described function, or `never`. */
 export type DescriptionOf<F> = F extends { readonly [DESCRIPTION]?: infer D }
   ? D extends WrapperDescription

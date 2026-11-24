@@ -519,3 +519,23 @@ describe("validatingHandler — composes with the other mechanisms", () => {
     expect(ran).toBe(false)
   })
 })
+
+describe("validatingHandler — a handler that takes only its message", () => {
+  it("validates and runs with a context, and with none", async () => {
+    const seen: unknown[] = []
+    const handler = validatingHandler(async (message: { payload: unknown }) => {
+      seen.push(message.payload)
+    }, RecordCharge)
+    const { ctx } = recordingContext()
+
+    await handler(commandMessage({ accountId: "a-1", amount: 10 }), ctx)
+    await handler(commandMessage({ accountId: "a-2", amount: 20 }), undefined)
+
+    expect(seen).toEqual([
+      { accountId: "a-1", amount: 10 },
+      { accountId: "a-2", amount: 20 },
+    ])
+    // The message is still validated on the way in.
+    await expect(handler(commandMessage({ accountId: "a-3" }), undefined)).rejects.toThrow(/billing\.RecordCharge/)
+  })
+})

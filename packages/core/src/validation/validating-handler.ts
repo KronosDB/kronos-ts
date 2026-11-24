@@ -1,6 +1,6 @@
 import type { Message, Metadata, MessageDescriptor } from "../messaging/messages.js"
 import { validate, validatedNow, validateResult } from "./validate.js"
-import { describe, type Described } from "../composition/describe.js"
+import { describe, type ContextOf, type Described } from "../composition/describe.js"
 
 /**
  * VALIDATION IS THE GATE MECHANISM: nothing crosses a handling boundary
@@ -69,9 +69,9 @@ import { describe, type Described } from "../composition/describe.js"
 export function validatingHandler<H extends (message: any, context: any) => any>(
   next: H,
   descriptor: MessageDescriptor,
-): ((message: Parameters<H>[0], context: Parameters<H>[1]) => Promise<Awaited<ReturnType<H>>>) &
+): ((message: Parameters<H>[0], context: ContextOf<H>) => Promise<Awaited<ReturnType<H>>>) &
   Described<{ readonly name: "validatingHandler"; readonly next: H }> {
-  const wrapped = async (message: Message, context: Parameters<H>[1]): Promise<Awaited<ReturnType<H>>> => {
+  const wrapped = async (message: Message, context: ContextOf<H>): Promise<Awaited<ReturnType<H>>> => {
     const payload = await validate(descriptor, message.payload)
     const answer = await next({ ...message, payload }, overlaid(context))
     return (await validateResult(descriptor, answer)) as Awaited<ReturnType<H>>
@@ -90,6 +90,10 @@ export function validatingHandler<H extends (message: any, context: any) => any>
  * schemas, and none of them is the command's.
  */
 function overlaid<C>(context: C): C {
+  // No context to overlay: a handler that takes only its message may be called
+  // with none.
+  if (context === null || typeof context !== "object") return context
+
   const source = context as unknown as Record<string, unknown>
   const wrapped: Record<string, unknown> = { ...source }
 
