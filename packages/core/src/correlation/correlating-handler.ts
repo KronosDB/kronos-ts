@@ -1,5 +1,5 @@
 import { emptyMetadata, mergeMetadata, type Metadata, type Message } from "../messaging/messages.js"
-import { describe, type DeclaresInside, type Described } from "../composition/describe.js"
+import { describe, type ContextOf, type DeclaresInside, type Described } from "../composition/describe.js"
 import { messageOrigin } from "./message-origin.js"
 
 /** Any handler function. The wrapper is generic in the WHOLE function so its type survives intact. */
@@ -66,11 +66,11 @@ type CorrelatingDescription<H> = {
 export function correlatingHandler<H extends AnyHandler>(
   next: H & StampedInside<H>,
   from: (message: Message) => Metadata = messageOrigin,
-): ((message: Parameters<H>[0], context: Parameters<H>[1]) => ReturnType<H>) & Described<CorrelatingDescription<H>> {
+): ((message: Parameters<H>[0], context: ContextOf<H>) => ReturnType<H>) & Described<CorrelatingDescription<H>> {
   // A FRESH function type on the way out — never `H` itself intersected with
   // this description, which would pile this description onto whatever `H`
   // carried and leave the next rule reading a merged, meaningless one.
-  const wrapped = (message: Parameters<H>[0], context: Parameters<H>[1]): ReturnType<H> =>
+  const wrapped = (message: Parameters<H>[0], context: ContextOf<H>): ReturnType<H> =>
     next(message, overlaid(context, stringly(from(message))))
   return describe(wrapped, { name: "correlatingHandler", reads: ["message.metadata"], next } as const)
 }
@@ -95,6 +95,10 @@ function stringly(metadata: Metadata): Record<string, string> {
  * wrapper serves all three kinds because it wraps only what it finds.
  */
 function overlaid<C>(context: C, cargo: Record<string, string>): C {
+  // No context to overlay: a handler that takes only its message may be called
+  // with none.
+  if (context === null || typeof context !== "object") return context
+
   const overlay = (provided?: Metadata): Metadata => mergeMetadata(cargo, provided ?? emptyMetadata())
 
   const source = context as unknown as Record<string, unknown>
