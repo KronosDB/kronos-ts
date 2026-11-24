@@ -59,9 +59,12 @@ export function decodeEvent(row: {
 }
 
 /**
- * Adapter-agnostic JSONB decoding: pgAdapter/postgresAdapter return parsed
- * objects, but bunSqlAdapter (Bun.SQL) returns JSONB as a raw string. Normalise
- * here so callers always see a JS object.
+ * What a JSONB column held, as the value that was stored.
+ *
+ * All three drivers return JSONB parsed. A string here is a row written
+ * through postgresAdapter or bunSqlAdapter before payload and metadata were
+ * bound as TEXT: those rows hold a JSON string containing the JSON text, and
+ * they are never rewritten, so the string is parsed here.
  */
 export function decodeJsonb(v: unknown): unknown {
   if (typeof v === "string") {

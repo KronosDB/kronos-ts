@@ -149,10 +149,13 @@ export function postgresSchedulingEventStore<E extends EventStore>(
   ): Promise<string> {
     const scheduleId = event.identifier
     const encodedTags = event.tags.map((t) => encodeTag(t.key, t.value))
+    // payload and metadata are bound as TEXT and cast to JSONB by the server:
+    // postgres.js and Bun.SQL encode a string bound to a JSONB parameter as a
+    // JSON string.
     await tx.query(
       `INSERT INTO ${tables.scheduled}
          (schedule_id, fire_at, status, type, tags, payload, metadata, version, timestamp)
-       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)`,
+       VALUES ($1, $2, 'pending', $3, $4, $5::text::jsonb, $6::text::jsonb, $7, $8)`,
       [
         scheduleId,
         at.toISOString(),

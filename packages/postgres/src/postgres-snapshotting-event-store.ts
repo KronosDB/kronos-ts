@@ -182,10 +182,12 @@ export function postgresSnapshottingEventStore<E extends EventStore>(
       // case: the repository writes fire-and-forget, outside the task.
       const shared = await sharedPostgresTransaction(uow)
       const run = shared ?? adapter
+      // metadata is bound as TEXT and cast to JSONB by the server: postgres.js
+      // and Bun.SQL encode a string bound to a JSONB parameter as a JSON string.
       await run.query(
         `INSERT INTO ${tables.snapshots}
            (key, position, payload, metadata, recorded_at)
-         VALUES ($1, $2::bigint, $3, $4::jsonb, now())
+         VALUES ($1, $2::bigint, $3, $4::text::jsonb, now())
          ON CONFLICT (key) DO UPDATE
            SET position    = EXCLUDED.position,
                payload     = EXCLUDED.payload,

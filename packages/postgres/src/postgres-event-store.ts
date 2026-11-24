@@ -179,6 +179,10 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
     // each row carries its index and the rows are inserted ORDER BY it, so
     // positions are handed out in the order the events were given. RETURNING
     // promises no order, so the last row is the one with the highest position.
+    //
+    // payload and metadata are bound as TEXT and cast to JSONB by the server.
+    // postgres.js and Bun.SQL encode a string bound to a JSONB parameter as a
+    // JSON string, which stored the JSON text inside a JSON string.
     let lastPosition = -1n
     let lastXid = ""
 
@@ -196,11 +200,11 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
           e.version,
           e.timestamp,
         )
-        return `(${index}, $${p + 1}::uuid, $${p + 2}::text, $${p + 3}::text[], $${p + 4}::jsonb, $${p + 5}::jsonb, $${p + 6}::text, $${p + 7}::bigint)`
+        return `(${index}, $${p + 1}::uuid, $${p + 2}::text, $${p + 3}::text[], $${p + 4}::text::jsonb, $${p + 5}::text::jsonb, $${p + 6}::text, $${p + 7}::bigint)`
       })
       const source =
         batch.length === 1
-          ? `VALUES ($1, $2, $3, $4, $5, $6, $7)`
+          ? `VALUES ($1, $2, $3, $4::text::jsonb, $5::text::jsonb, $6, $7)`
           : `SELECT v.event_id, v.type, v.tags, v.payload, v.metadata, v.version, v.timestamp
              FROM (VALUES ${values.join(", ")})
                AS v(ord, event_id, type, tags, payload, metadata, version, timestamp)
