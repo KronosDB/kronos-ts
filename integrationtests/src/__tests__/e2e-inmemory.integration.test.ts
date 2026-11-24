@@ -55,7 +55,7 @@ import {
   type CommandBus,
   type QueryBus,
 } from "@kronos-ts/core"
-import type { Message } from "@kronos-ts/core"
+import type { EventHandlerContext, SubscriptionCapability, Message } from "@kronos-ts/core"
 
 /**
  * The two things `kronos` needs that are not handlers. The UoW runner is
@@ -321,7 +321,7 @@ function createProjection() {
   const courseViews = new Map<string, CourseView>()
 
   const projectionHandlers = [
-    eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
+    eventHandler(CourseCreated, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
       const view: CourseView = {
         courseId: e.courseId,
         name: e.name,
@@ -331,14 +331,14 @@ function createProjection() {
       courseViews.set(e.courseId, view)
       ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
     }),
-    eventHandler(CourseCapacityChanged, async ({ payload: e }, ctx) => {
+    eventHandler(CourseCapacityChanged, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.capacity = e.capacity
         ctx.emitUpdate(GetCourseView, (q) => q.courseId === e.courseId, view)
       }
     }),
-    eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
+    eventHandler(StudentSubscribed, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
       const view = courseViews.get(e.courseId)
       if (view) {
         view.enrolledCount++
@@ -395,7 +395,6 @@ describe("E2E: In-memory full CQRS flow", () => {
     running = kronos({
       ...sitedOn(
         { eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()), ...buses, processorName: "course-projection" },
-        Course,
         createCourse, changeCourseCapacity, subscribeStudent,
         ...queryHandlers,
         ...projectionHandlers,
@@ -426,7 +425,6 @@ describe("E2E: In-memory full CQRS flow", () => {
     running = kronos({
       ...sitedOn(
         { eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()), ...buses, processorName: "course-projection" },
-        Course,
         createCourse, subscribeStudent,
         ...queryHandlers,
         ...projectionHandlers,
@@ -473,7 +471,6 @@ describe("E2E: In-memory full CQRS flow", () => {
     running = kronos({
       ...sitedOn(
         { eventStore, ...buses, processorName: "course-projection" },
-        Course,
         createCourse, changeCourseCapacity,
         ...queryHandlers,
         ...projectionHandlers,
@@ -528,7 +525,6 @@ describe("E2E: In-memory full CQRS flow", () => {
       ...mergeSited(
         sitedOn(
           { eventStore, ...buses, processorName: "course-projection" },
-          Course,
           createCourse, subscribeStudent,
           ...queryHandlers,
           ...projectionHandlers,
@@ -611,7 +607,6 @@ describe("E2E: In-memory full CQRS flow", () => {
     running = kronos({
       ...sitedOn(
         { eventStore: inMemorySnapshottingEventStore(inMemoryEventStore()), ...buses, processorName: "course-projection" },
-        Course,
         createCourse,
         ...queryHandlers,
         ...projectionHandlers,
@@ -639,7 +634,6 @@ describe("E2E: In-memory full CQRS flow", () => {
     running = kronos({
       ...sitedOn(
         { eventStore, ...buses, processorName: "enrollment-automation" },
-        Course,
         createCourse, subscribeStudent, closeEnrollment,
         closeEnrollmentWhenFull,
       ),

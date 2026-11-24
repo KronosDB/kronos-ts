@@ -22,7 +22,7 @@ import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { z } from "zod"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { qn, generateIdentifier, emptyMetadata, send, query } from "@kronos-ts/core"
-import type { EventMessage } from "@kronos-ts/core"
+import type { EventHandlerContext, SubscriptionCapability, EventMessage } from "@kronos-ts/core"
 import {
   command, event, commandHandler, eventHandler, queryHandler, jsonSerializer,
   eventProcessor, type EventProcessor,
@@ -283,13 +283,13 @@ const closeEnrollmentWhenFull = eventHandler(StudentSubscribed, async ({ payload
 type CourseView = z.output<typeof CourseViewResult>
 const courseViews = new Map<string, CourseView>()
 
-const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx) => {
+const onCourseCreated = eventHandler(CourseCreated, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
   const view: CourseView = { courseId: e.courseId, name: e.name, capacity: e.capacity, enrolledCount: 0 }
   courseViews.set(e.courseId, view)
   ctx.emitUpdate(GetCourse, (q) => q.courseId === e.courseId, view)
 })
 
-const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx) => {
+const onStudentSubscribed = eventHandler(StudentSubscribed, async ({ payload: e }, ctx: EventHandlerContext & SubscriptionCapability) => {
   const view = courseViews.get(e.courseId)
   if (!view) return
   view.enrolledCount++
@@ -567,7 +567,6 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
           ...autoBuses,
           processorName: "postgres-enrollment-automation",
         },
-        Course,
         createCourse, subscribeStudent, closeEnrollment,
         closeEnrollmentWhenFull,
       ),

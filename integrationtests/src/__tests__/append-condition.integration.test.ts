@@ -20,7 +20,7 @@ import type { PostgresAdapter } from "@kronos-ts/postgres"
 import { bunSqlAdapter } from "@kronos-ts/postgres/adapters/bun-sql"
 import { pgAdapter } from "@kronos-ts/postgres/adapters/pg"
 import { postgresAdapter } from "@kronos-ts/postgres/adapters/postgres"
-import { kronosDbConnection, kronosDbEventStore, type KronosDbConnection } from "@kronos-ts/kronosdb"
+import { kronosDbConnection, kronosDbEventStore, type KronosDbConnectionHandle } from "@kronos-ts/kronosdb"
 import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 import { appendConditionScenarios } from "./append-condition-scenarios.js"
 import { eventStoreContract } from "./event-store-contract.js"
@@ -116,9 +116,9 @@ describe("append condition — postgres", () => {
 
 describe("append condition — kronosdb", () => {
   let server: KronosDbServer
-  let connection: KronosDbConnection
+  let connection: KronosDbConnectionHandle
   let eventStore: EventStore
-  const connections: KronosDbConnection[] = []
+  const connections: KronosDbConnectionHandle[] = []
   const servers: KronosDbServer[] = []
 
   beforeAll(async () => {
