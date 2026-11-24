@@ -420,7 +420,6 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     try {
       // start() over an already-armed stream is a no-op for the stream itself.
       expect(axon.platform.connected).toBe(true)
-      expect(await axon.platform.subscriptionsAcked()).toBe(true)
       expect(control.processors.get("course-projection")).toBe(proc)
     } finally {
       await control.close()

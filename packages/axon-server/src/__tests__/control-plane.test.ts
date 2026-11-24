@@ -65,9 +65,6 @@ function fakePlatform(): FakePlatform {
     get connected() {
       return connected
     },
-    async subscriptionsAcked() {
-      return connected
-    },
     async emit(instruction) {
       for (const handler of handlers) await handler(instruction)
     },
