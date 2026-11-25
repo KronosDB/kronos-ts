@@ -1,4 +1,4 @@
-import { qualifiedNameToString, type EventMessage } from "../messaging/messages.js"
+import { qualifiedNameToString, withDescriptorTags, type EventMessage } from "../messaging/messages.js"
 import type {
   EventProcessor,
   EventProcessorStatus,
@@ -165,7 +165,21 @@ export function runEventProcessor<U extends UnitOfWork, E extends EventStore = E
   // never sends the rest. It is a request — `deliverEvent` still drops an event
   // nobody handles, so a store that ignores the query is just slower.
   const query: EventQuery | undefined = handlerMap.size > 0 ? { types: [...handlerMap.keys()] } : undefined
-  const log = sharedStream(eventStore, { ...(query !== undefined ? { query } : {}), readAhead: replayBatchSize })
+  // An event the log read back without tags gets the ones its handler's
+  // descriptor gives it, so a `Sequence` and a handler find them on every store.
+  // Of several descriptors under one name, the one of the event's version.
+  const tagged = (event: EventMessage): EventMessage => {
+    if (event.tags.length > 0) return event
+    const entries = handlerMap.get(qualifiedNameToString(event.name))
+    if (entries === undefined) return event
+    const entry = entries.find((e) => e.definition.descriptor.version === event.version) ?? entries[0]!
+    return withDescriptorTags(event, entry.definition.descriptor)
+  }
+  const log = sharedStream(eventStore, {
+    ...(query !== undefined ? { query } : {}),
+    readAhead: replayBatchSize,
+    each: tagged,
+  })
 
   const handled = (event: EventMessage) => handlerMap.has(qualifiedNameToString(event.name))
   // Only events somebody handles are sequenced — the function is written for those.

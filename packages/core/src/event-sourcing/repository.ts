@@ -1,4 +1,4 @@
-import { qualifiedNameToString, type EventMessage } from "../messaging/messages.js"
+import { qualifiedNameToString, withDescriptorTags, type EventMessage } from "../messaging/messages.js"
 import type { SourcingInfo } from "../unit-of-work/unit-of-work.js"
 import type { State } from "./state.js"
 import type { EventStore, SnapshotCapableEventStore } from "./event-store.js"
@@ -254,7 +254,7 @@ async function applyEvent<Id, S>(
   for (const [descriptor, evolve] of module.evolvers) {
     const evolverType = qualifiedNameToString(descriptor.name)
     if (evolverType === eventType) {
-      return await evolve(state, event)
+      return await evolve(state, withDescriptorTags(event, descriptor))
     }
   }
 
