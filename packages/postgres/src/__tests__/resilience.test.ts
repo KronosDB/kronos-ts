@@ -20,7 +20,7 @@ async function capturingWarn(fn: () => Promise<unknown>): Promise<string[]> {
 function failsOnce<T>(value: T): () => Promise<T> {
   let calls = 0
   return async () => {
-    if (++calls === 1) throw new Error("connection refused")
+    if (++calls === 1) throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" })
     return value
   }
 }

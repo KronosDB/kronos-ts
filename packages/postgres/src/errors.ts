@@ -84,7 +84,8 @@ const UNAVAILABLE_PG_MESSAGES = [
   /Client has encountered a connection error/i,
 ]
 
-function connectionLost(error: unknown): boolean {
+/** Whether `error` says a connection could not be made or was lost, or that the server cannot serve now. */
+export function connectionLost(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false
   const code = (error as { code?: unknown }).code
   if (typeof code === "string" && (UNAVAILABLE_CODES.has(code) || UNAVAILABLE_SQLSTATES.has(code) || /^08[0-9A-Z]{3}$/.test(code))) {

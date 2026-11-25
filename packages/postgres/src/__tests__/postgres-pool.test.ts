@@ -39,3 +39,46 @@ describe("postgresPool over a connection string", () => {
     ).not.toThrow()
   })
 })
+
+describe("postgresPool start()", () => {
+  /** An adapter whose `connect` fails with each of `failures` in turn, then succeeds. */
+  function connecting(failures: object[]) {
+    let calls = 0
+    const adapter = {
+      async connect() {
+        calls++
+        const failure = failures[calls - 1]
+        if (failure !== undefined) throw Object.assign(new Error("connect failed"), failure)
+      },
+    } as unknown as PostgresAdapter
+    const quick = { initialDelayMs: 1, maxDelayMs: 1, log: () => {} }
+    return { pool: postgresPool(adapter, { bootstrap: false, resilience: quick }), calls: () => calls }
+  }
+
+  it("connects again when the server could not be reached", async () => {
+    const { pool, calls } = connecting([{ code: "ECONNREFUSED" }, { code: "57P03" }])
+    await pool.start()
+    expect(calls()).toBe(3)
+  })
+
+  it("fails at once on an error another attempt cannot fix", async () => {
+    const { pool, calls } = connecting([{ code: "28P01" }, { code: "28P01" }])
+    await expect(pool.start()).rejects.toThrow("connect failed")
+    expect(calls()).toBe(1)
+  })
+
+  it("leaves the choice to the host's own isRetryable", async () => {
+    let calls = 0
+    const adapter = {
+      async connect() {
+        if (++calls < 3) throw Object.assign(new Error("connect failed"), { code: "28P01" })
+      },
+    } as unknown as PostgresAdapter
+    const pool = postgresPool(adapter, {
+      bootstrap: false,
+      resilience: { initialDelayMs: 1, maxDelayMs: 1, log: () => {}, isRetryable: () => true },
+    })
+    await pool.start()
+    expect(calls).toBe(3)
+  })
+})
