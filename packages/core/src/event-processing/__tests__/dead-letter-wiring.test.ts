@@ -170,3 +170,107 @@ describe("dead-letter wiring — park the pill, advance the token", () => {
     expect(await dlq.size("dlq-proc-clean")).toBe(0)
   })
 })
+
+// A log may match a query against an event's tags and hand the event back
+// without them. The handler's descriptor gives the same tags.
+describe("a processor over a log that hands events back without tags", () => {
+  const descriptor = {
+    kind: "event" as const,
+    name: EVENT_NAME,
+    version: "1.0",
+    payload: {} as any,
+    tags: { id: (p: { id: string }) => p.id },
+  }
+
+  it("sequences an event by the tags its descriptor gives it", async () => {
+    const events = [
+      makeEvent({ id: "A", v: 1, poison: true }, 0n),
+      makeEvent({ id: "A", v: 2 }, 1n),
+      makeEvent({ id: "B", v: 3 }, 2n),
+    ]
+    const dlq = inMemoryDeadLetterQueue()
+    const delivered: number[] = []
+    const handler: EventHandler<any> = {
+      kind: "event-handler",
+      descriptor,
+      handler: ({ payload }: { payload: { v: number; poison?: boolean } }) => {
+        if (payload.poison) throw new Error("poison pill")
+        delivered.push(payload.v)
+      },
+    }
+
+    const processor = runEventProcessor({
+      processor: polling(
+        deadLettering(eventProcessor("dlq-proc-untagged", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork), dlq, byId),
+        10,
+      ),
+      handlers: [{ definition: handler }],
+    })
+
+    await processor.start()
+    await waitForPosition(processor, 3n)
+    processor.stop()
+
+    // The second event waits behind the first, in sequence A.
+    expect(delivered).toEqual([3])
+    expect((await dlq.deadLetterSequence("dlq-proc-untagged", "A")).map((l) => (l.message.payload as { v: number }).v)).toEqual([1, 2])
+  })
+
+  it("hands a handler the event with the tags its descriptor gives it", async () => {
+    const events = [makeEvent({ id: "A" }, 0n), makeEvent({ id: "B" }, 1n, tag("stored"))]
+    const seen: Array<ReadonlyArray<{ key: string; value: string }>> = []
+    const handler: EventHandler<any> = {
+      kind: "event-handler",
+      descriptor,
+      handler: (event) => {
+        seen.push(event.tags)
+      },
+    }
+
+    const processor = runEventProcessor({
+      processor: polling(
+        eventProcessor("proc-untagged", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork),
+        10,
+      ),
+      handlers: [{ definition: handler }],
+    })
+
+    await processor.start()
+    await waitForPosition(processor, 2n)
+    processor.stop()
+
+    // An event read back with tags keeps the ones it was stored with.
+    expect(seen).toEqual([[{ key: "id", value: "A" }], [{ key: "id", value: "stored" }]])
+  })
+
+  it("picks the descriptor of the event's version when a name has several", async () => {
+    const events = [makeEvent({ id: "A", key: "K" }, 0n)]
+    const seen: Array<ReadonlyArray<{ key: string; value: string }>> = []
+    const older: EventHandler<any> = {
+      kind: "event-handler",
+      descriptor: { ...descriptor, version: "0.9", tags: { key: (p: { key: string }) => p.key } },
+      handler: () => {},
+    }
+    const current: EventHandler<any> = {
+      kind: "event-handler",
+      descriptor,
+      handler: (event) => {
+        seen.push(event.tags)
+      },
+    }
+
+    const processor = runEventProcessor({
+      processor: polling(
+        eventProcessor("proc-untagged-versions", createInMemoryEventSource(events) as unknown as EventStore, inMemoryTokenStore(), unitOfWork),
+        10,
+      ),
+      handlers: [{ definition: older }, { definition: current }],
+    })
+
+    await processor.start()
+    await waitForPosition(processor, 1n)
+    processor.stop()
+
+    expect(seen).toEqual([[{ key: "id", value: "A" }]])
+  })
+})
