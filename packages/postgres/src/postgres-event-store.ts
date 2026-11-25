@@ -1,7 +1,7 @@
 /**
  * postgresEventStore — the Postgres EventStore.
  *
- * Members: source, appendEvents, append, open (gap-free tailing via xid8 +
+ * Members: source, append, open (gap-free tailing via xid8 +
  *   pg_snapshot_xmin), getHeadPosition, firstToken, latestToken.
  *
  * Append path:
@@ -27,7 +27,6 @@
  */
 
 import type {
-  AppendTransaction,
   EventStore,
 } from "@kronos-ts/core"
 import { markerAt } from "@kronos-ts/core"
@@ -263,111 +262,6 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
     // slower load and never a wrong one. Serving the key is what the wrapper is
     // for, and the compiler makes sure a state that needs one gets one.
     source: sourcePlain,
-
-    async appendEvents(
-      events: ReadonlyArray<EventMessage>,
-      condition?: AppendCondition,
-    ): Promise<AppendTransaction> {
-      // Two-phase: open tx, acquire locks, run conflict check + INSERT, hold
-      // tx open until commit(). We bridge adapter.transaction() (which owns
-      // the full lifecycle) with a deferred that the AppendTransaction controls.
-      const targets = lockTargetsFor(condition, events)
-
-      let resolveOuter!: (v: { position: bigint; xid: string }) => void
-      let rejectOuter!: (e: unknown) => void
-      const outer = new Promise<{ position: bigint; xid: string }>((res, rej) => {
-        resolveOuter = res
-        rejectOuter = rej
-      })
-
-      let txReady!: () => void
-      const txStaged = new Promise<void>((res) => {
-        txReady = res
-      })
-
-      let resolveTxControl!: (cmd: "commit" | "rollback") => void
-      const txControl = new Promise<"commit" | "rollback">((res) => {
-        resolveTxControl = res
-      })
-
-      // Kick off the transaction in the background.
-      const txPromise = adapter
-        .transaction(IsolationLevel.READ_COMMITTED, async (tx) => {
-          await acquireWriteLocks(tx, targets)
-          let captured: { position: bigint; xid: string }
-          try {
-            captured = await checkAndInsert(tx, events, condition)
-          } catch (err) {
-            if (isDcbViolation(err)) {
-              // Already an AppendConditionError with KR001 code
-              throw err
-            }
-            if ((err as { code?: string }).code === "23505") {
-              throw AppendConditionError.fromConflictCount(0, condition?.marker.position ?? -1n, { cause: err })
-            }
-            throw err
-          }
-          txReady()
-          const cmd = await txControl
-          if (cmd === "rollback") {
-            throw new Error("__kronos_rollback__")
-          }
-          return captured
-        })
-        .then(
-          (v) => resolveOuter(v),
-          (e) => {
-            if (e instanceof Error && e.message === "__kronos_rollback__") {
-              rejectOuter(new Error("rolled back"))
-            } else {
-              rejectOuter(e)
-            }
-          },
-        )
-      void txPromise
-
-      // Wait until the SP has executed so that errors (DCB violation) surface
-      // BEFORE the AppendTransaction handle is returned.
-      await Promise.race([
-        txStaged,
-        outer.catch(() => {
-          return
-        }),
-      ])
-
-      // Surface any already-rejected error immediately.
-      let alreadyFailed = false
-      outer.catch(() => {
-        alreadyFailed = true
-      })
-      await Promise.resolve()
-      if (alreadyFailed) {
-        await outer
-      }
-
-      let committed = false
-      const transaction: AppendTransaction = {
-        async commit() {
-          committed = true
-          resolveTxControl("commit")
-          await outer
-          // Wake up tailing streams after commit
-          await adapter.query(`NOTIFY ${notifyChannel}`)
-        },
-        async afterCommit() {
-          const result = await outer
-          return markerAt(result.position)
-        },
-        rollback() {
-          if (committed) return
-          resolveTxControl("rollback")
-          outer.catch(() => {
-            /* swallow — rollback path is expected to reject outer */
-          })
-        },
-      }
-      return transaction
-    },
 
     async append(
       events: ReadonlyArray<EventMessage>,

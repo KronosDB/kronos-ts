@@ -11,7 +11,6 @@ import {
   FIRST_TOKEN,
 } from "../event-processing/tracking-token.js"
 import type { EventStore, SourcingResult } from "./event-store.js"
-import type { AppendTransaction } from "./event-store.js"
 import type { AppendCondition } from "./append-condition.js"
 import type { SourcingCondition } from "./sourcing-condition.js"
 import { markerAt, type ConsistencyMarker } from "./consistency-marker.js"
@@ -71,42 +70,6 @@ export function inMemoryEventStore(): EventStore {
       return {
         events: matching.map((e) => e.event),
         marker: markerAt(globalMarker),
-      }
-    },
-
-    async appendEvents(
-      newEvents: ReadonlyArray<EventMessage>,
-      condition?: AppendCondition,
-    ): Promise<AppendTransaction> {
-      if (condition) refuseConflicts(condition)
-
-      // Stage events — they're added to the store but we track the range
-      const startPosition = nextPosition
-      for (const event of newEvents) {
-        events.push({ position: nextPosition, event })
-        nextPosition++
-      }
-      const endPosition = nextPosition - 1n
-      let committed = false
-
-      return {
-        async commit() {
-          committed = true
-          // Events are already in the array — notify listeners
-          notifyListeners()
-        },
-        async afterCommit() {
-          return markerAt(endPosition)
-        },
-        rollback() {
-          if (!committed) {
-            // Remove staged events
-            while (events.length > 0 && events[events.length - 1]!.position >= startPosition) {
-              events.pop()
-            }
-            nextPosition = startPosition
-          }
-        },
       }
     },
 

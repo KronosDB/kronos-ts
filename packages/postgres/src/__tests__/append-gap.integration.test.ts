@@ -23,6 +23,7 @@ import {
   generateIdentifier,
   jsonSerializer,
   sourcingCondition,
+  unitOfWork,
   type EventMessage,
   type EventQuery,
 } from "@kronos-ts/core"
@@ -31,6 +32,7 @@ import { startPostgresContainer, type RunningPostgres } from "./testcontainers-s
 import { DEFAULT_TABLE_NAMES } from "../schema.js"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { postgresEventStore } from "../postgres-event-store.js"
+import { postgresUnitOfWork } from "../postgres-transaction.js"
 import { postgresSnapshottingEventStore } from "../postgres-snapshotting-event-store.js"
 
 let pg: RunningPostgres
@@ -57,6 +59,35 @@ const onA: EventQuery = { tags: { gap: "a" } }
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const isConflict = (err: unknown) => /append condition violated/i.test((err as Error)?.message ?? "")
 
+/**
+ * An append whose transaction stays open until `commit()`: made inside a unit
+ * of work that does not finish until then.
+ */
+async function heldAppend(events: EventMessage[]): Promise<{ commit(): Promise<void> }> {
+  let release!: () => void
+  const released = new Promise<void>((resolve) => (release = resolve))
+  let appended!: () => void
+  let failed!: (error: unknown) => void
+  const staged = new Promise<void>((resolve, reject) => {
+    appended = resolve
+    failed = reject
+  })
+  const uow = postgresUnitOfWork(unitOfWork, pool)()
+  const done = uow.execute(async () => {
+    await store.append(events, undefined, uow)
+    appended()
+    await released
+  })
+  done.catch(failed)
+  await staged
+  return {
+    async commit() {
+      release()
+      await done
+    },
+  }
+}
+
 beforeAll(async () => {
   pg = await startPostgresContainer()
   adapter = pgAdapter({ connectionString: pg.connectionString })
@@ -76,7 +107,7 @@ beforeEach(async () => {
 
 describe("commit-order gaps", () => {
   it("an append holds the tags it writes until it commits, so no read sees past an uncommitted event of that tag", async () => {
-    const held = await store.appendEvents([tagged("First", A)])
+    const held = await heldAppend([tagged("First", A)])
     const second = store.append([tagged("Second", A)])
     let read
     try {
@@ -90,7 +121,7 @@ describe("commit-order gaps", () => {
   })
 
   it("a read that matches nothing is not anchored to the log head", async () => {
-    const held = await store.appendEvents([tagged("First", A)])
+    const held = await heldAppend([tagged("First", A)])
     let read
     try {
       await store.append([tagged("Elsewhere", B)])
@@ -107,7 +138,7 @@ describe("commit-order gaps", () => {
     const seeded = await store.append([tagged("Seed", A)])
     await snapshots.storeSnapshot("gap-v1:a", { state: { seen: 1 }, position: seeded.position })
 
-    const held = await store.appendEvents([tagged("First", A)])
+    const held = await heldAppend([tagged("First", A)])
     let read
     try {
       await store.append([tagged("Elsewhere", B)])

@@ -11,8 +11,7 @@
  * the meaning of `tags @> $required`.
  *
  * Tag encoding: each `{key, value}` is serialised as `${key}${value}`.
- * Stored events use the same encoding (Plan 04 Task 3 — appendEvents flattens
- * tags via the same scheme) so `@>` works literally against text[].
+ * Stored events use the same encoding, so `@>` works literally against text[].
  */
 
 import type { EventCriteria } from "@kronos-ts/core"

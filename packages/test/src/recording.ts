@@ -3,7 +3,6 @@ import type { AdvanceableClock, Duration } from "./clock.js"
 import type {
   SubscriptionBusCapability,
   AppendCondition,
-  AppendTransaction,
   CancelResult,
   CommandBus,
   CommandMessage,
@@ -36,12 +35,8 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * An event store that remembers, in order, every event COMMITTED through it.
- *
- * Both write paths are recorded, and both at commit: the auto-committing
- * `append` (what a command handler's unit of work flushes through) and the
- * two-phase `appendEvents`, recorded when its transaction commits and never
- * when it rolls back.
+ * An event store that remembers, in order, every event appended through it:
+ * `append` is what a command handler's unit of work flushes through.
  */
 export type RecordingEventStore = EventStore & EventRecording
 
@@ -131,21 +126,6 @@ export function recordingEventStore<E extends EventStore>(
       const marker = await store.append(events, condition, uow)
       log.push(...events)
       return marker
-    },
-
-    async appendEvents(
-      events: ReadonlyArray<EventMessage>,
-      condition?: AppendCondition,
-      uow?: UnitOfWork,
-    ): Promise<AppendTransaction> {
-      const transaction = await store.appendEvents(events, condition, uow)
-      return {
-        ...transaction,
-        async commit(): Promise<void> {
-          await transaction.commit()
-          log.push(...events)
-        },
-      }
     },
   }
 

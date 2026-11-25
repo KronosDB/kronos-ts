@@ -86,11 +86,6 @@ export type PostgresAdapter = {
    * pinned-connection handle, and COMMIT on resolution or ROLLBACK on
    * rejection. If `fn` throws, the original error is re-thrown after
    * ROLLBACK; rollback failures do NOT mask the original.
-   *
-   * The framework's AppendTransaction has a synchronous `rollback(): void`
-   * (see packages/eventsourcing/src/event-storage-engine.ts) — the
-   * implementation translates that into a fire-and-forget reject inside
-   * this method's promise, NOT an awaited rollback round-trip.
    */
   transaction<T>(
     isolationLevel: IsolationLevel,

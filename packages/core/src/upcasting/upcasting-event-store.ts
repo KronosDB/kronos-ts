@@ -138,7 +138,7 @@ export type UpcastingOptions = {
  *
  * A type filter on either is translated to the stored names (see
  * {@link UpcastingOptions}), and so is the query of an append condition passed
- * to `append` or `appendEvents`, so a write is checked against the same events
+ * to `append`, so a write is checked against the same events
  * the read returned. The events being appended pass through untouched, as does
  * every other member: nothing this wrapper does can change what is in the log.
  *
@@ -207,10 +207,6 @@ export function upcastingEventStore<E extends EventStore>(
         if (kept) events.push(event)
       }
       return { ...result, events }
-    },
-
-    appendEvents(events, condition, uow) {
-      return next.appendEvents(events, storedCondition(condition), uow)
     },
 
     append(events, condition, uow) {

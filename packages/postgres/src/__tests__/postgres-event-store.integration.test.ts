@@ -6,7 +6,8 @@ import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { postgresEventStore } from "../postgres-event-store.js"
 import { postgresSnapshottingEventStore } from "../postgres-snapshotting-event-store.js"
 import { AppendConditionError } from "../errors.js"
-import { ORIGIN } from "@kronos-ts/core"
+import { ORIGIN, unitOfWork } from "@kronos-ts/core"
+import { postgresUnitOfWork } from "../postgres-transaction.js"
 import { generateIdentifier } from "@kronos-ts/core"
 import type { EventMessage, SerializedObject, Serializer } from "@kronos-ts/core"
 
@@ -60,9 +61,8 @@ beforeEach(async () => {
 })
 
 describe("postgresEventStore — shape", () => {
-  it("exposes source / appendEvents / append", () => {
+  it("exposes source / append", () => {
     expect(typeof store.source).toBe("function")
-    expect(typeof store.appendEvents).toBe("function")
     expect(typeof store.append).toBe("function")
   })
 })
@@ -120,28 +120,28 @@ describe("append + source", () => {
   })
 })
 
-describe("appendEvents — two-phase transaction", () => {
-  it("rollback() is synchronous void and discards staged events", async () => {
-    const txn = await store.appendEvents([makeEvent("OrderPlaced", [{ key: "order", value: "RB" }])])
-    const rollbackResult = txn.rollback()
-    // Verifies SYNCHRONOUS void contract — no Promise returned.
-    expect(rollbackResult).toBeUndefined()
-    // Event must NOT be visible (uncommitted + rolled back).
-    const result = await store.source({
-      query: { tags: { order: "RB" } },
-      start: 0n,
+describe("append inside a unit of work", () => {
+  const tagged = (order: string) => ({ query: { tags: { order } }, start: 0n })
+
+  it("is not visible until the unit of work commits, and is visible after", async () => {
+    const uow = postgresUnitOfWork(unitOfWork, pool)()
+    let marker: { position: bigint } | undefined
+    await uow.execute(async () => {
+      marker = await store.append([makeEvent("OrderPlaced", [{ key: "order", value: "CM" }])], undefined, uow)
+      expect((await store.source(tagged("CM"))).events.length).toBe(0)
     })
-    expect(result.events.length).toBe(0)
+    expect(marker!.position).toBeGreaterThanOrEqual(1n)
+    expect((await store.source(tagged("CM"))).events.length).toBe(1)
   })
 
-  it("commit() then afterCommit() yields the ConsistencyMarker", async () => {
-    const txn = await store.appendEvents([
-      makeEvent("OrderPlaced", [{ key: "order", value: "CM" }]),
-    ])
-    await txn.commit()
-    const marker = await txn.afterCommit()
-    expect(typeof marker.position).toBe("bigint")
-    expect(marker.position).toBeGreaterThanOrEqual(1n)
+  it("is discarded when the unit of work fails", async () => {
+    const uow = postgresUnitOfWork(unitOfWork, pool)()
+    const failed = uow.execute(async () => {
+      await store.append([makeEvent("OrderPlaced", [{ key: "order", value: "RB" }])], undefined, uow)
+      throw new Error("handler failed")
+    })
+    await expect(failed).rejects.toThrow("handler failed")
+    expect((await store.source(tagged("RB"))).events.length).toBe(0)
   })
 })
 
