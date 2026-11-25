@@ -34,6 +34,14 @@ import {
   localCommandBus,
   localQueryBus,
   upcastingEventStore,
+  deadLettering,
+  eventHandler,
+  eventProcessor,
+  eventSourcedRepository,
+  inMemoryDeadLetterQueue,
+  inMemoryTokenStore,
+  polling,
+  tagsOf,
   type CommandBus,
   type EventMessage,
   type EventStore,
@@ -333,6 +341,66 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     } finally {
       stream.close()
     }
+  }, 60_000)
+
+  it("a processor sequences by a tag, and a state folds through an upcaster, without the tags being read back", async () => {
+    const run = crypto.randomUUID()
+    const LessonGiven = event({
+      name: qn("axon-it", "LessonGiven"),
+      payload: z.object({ courseId: z.string(), n: z.number(), poison: z.boolean().optional() }),
+      tags: { courseId: (p) => p.courseId },
+    })
+    const lesson = (courseId: string, n: number, poison?: boolean): EventMessage => {
+      const payload = { courseId, n, ...(poison ? { poison } : {}) }
+      return {
+        kind: "event",
+        identifier: crypto.randomUUID(),
+        name: LessonGiven.name,
+        version: LessonGiven.version,
+        payload,
+        metadata: {},
+        timestamp: Date.now(),
+        tags: tagsOf(LessonGiven, payload, {}),
+      }
+    }
+    const a = `course-a-${run}`
+    const b = `course-b-${run}`
+    await eventStore.append([lesson(a, 1, true), lesson(a, 2), lesson(b, 3)])
+
+    // The second lesson of course A waits behind the first, which fails.
+    const byCourse = (e: EventMessage) => e.tags.find((t) => t.key === "courseId")?.value ?? e.identifier
+    const queue = inMemoryDeadLetterQueue()
+    const delivered: Array<{ n: number; tags: EventMessage["tags"] }> = []
+    const handler = eventHandler(LessonGiven, (message) => {
+      if (message.payload.poison) throw new Error("poison pill")
+      delivered.push({ n: message.payload.n, tags: message.tags })
+    })
+    const name = `lessons-${run}`
+    const processor = polling(
+      deadLettering(eventProcessor(name, eventStore, inMemoryTokenStore(), unitOfWork), queue, byCourse),
+      20,
+    )
+    const lessons = kronos({ eventHandlers: [{ ...handler, commandBus, queryBus, processor }] })
+    try {
+      const deadline = Date.now() + 30_000
+      while ((delivered.length < 1 || (await queue.size(name)) < 2) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20))
+      }
+      expect(delivered).toEqual([{ n: 3, tags: [{ key: "courseId", value: b }] }])
+      const parked = await queue.deadLetterSequence(name, a)
+      expect(parked.map((letter) => (letter.message.payload as { n: number }).n)).toEqual([1, 2])
+    } finally {
+      await lessons.stop()
+    }
+
+    // A state folds the same events through an upcaster, which narrows the read to the state's types.
+    const Lessons = state({
+      id: { courseId: z.string() },
+      tags: ({ courseId }) => ({ courseId }),
+      evolve: [() => [] as number[], [LessonGiven, (given, { payload }) => [...given, payload.n]]],
+    })
+    const upcasting = upcastingEventStore(eventStore, (e) => e)
+    expect((await eventSourcedRepository(Lessons, upcasting).load({ courseId: a })).state).toEqual([1, 2])
   }, 60_000)
 
   it("enforces capacity limits via multi-event entity load", async () => {
