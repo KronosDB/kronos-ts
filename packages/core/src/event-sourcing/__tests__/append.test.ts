@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from "bun:test"
+import { describe, it, expect } from "bun:test"
 import { z } from "zod"
 import { qn, emptyMetadata, event } from "../../messaging/messages.js"
 import { unitOfWork, NoActiveUnitOfWork, WrongUoWPhase, Phase, type UnitOfWork } from "../../unit-of-work/unit-of-work.js"
@@ -122,62 +122,15 @@ describe("append", () => {
     })
   })
 
-  it("applies a matching evolver to the cached state when the module has one", async () => {
+  it("buffers the event when nothing was loaded", async () => {
     await unitOfWork().execute(async (uow) => {
       const append = appendFunction({ uow })
-      // Set up a mock state with an evolver for CourseCreated
-      const evolverFn = mock((s: any, { payload: e }: any) => ({ ...s, name: e.name }))
-      const mockModule = {
-        name: "Course",
-        evolvers: [
-          [{ name: CourseCreated.name }, evolverFn],
-        ],
-      }
-
-      const initialState = { name: "", courseId: "c1" }
-      const cacheKey = "Course:c1"
-      uow.stateCache.entries.set(cacheKey, Promise.resolve({ state: initialState, sourcingInfo: {} }))
-      uow.stateCache.modules.set(cacheKey, { module: mockModule, id: "c1" })
-
-      append(CourseCreated, { courseId: "c1", name: "Intro to TS" })
-
-      // The cache should now hold an updated promise
-      const updated = await uow.stateCache.entries.get(cacheKey)!
-      expect((updated as any).state).toEqual({ name: "Intro to TS", courseId: "c1" })
-      expect(evolverFn).toHaveBeenCalledTimes(1)
-    })
-  })
-
-  it("does not update cache when nothing was loaded", async () => {
-    await unitOfWork().execute(async (uow) => {
-      const append = appendFunction({ uow })
-      // Nothing loaded, so the state cache is empty — should not throw
       append(CourseCreated, { courseId: "c1", name: "Intro" })
       const buffered = uow.events.buffered as any[]
       expect(buffered).toHaveLength(1)
     })
   })
 
-  it("does not apply evolver when event type does not match", async () => {
-    await unitOfWork().execute(async (uow) => {
-      const append = appendFunction({ uow })
-      const evolverFn = mock((_s: any, _e: any, _id: any) => ({}))
-      const mockModule = {
-        name: "Course",
-        evolvers: [
-          [{ name: CourseCapacityChanged.name }, evolverFn],
-        ],
-      }
-
-      const cacheKey = "Course:c1"
-      uow.stateCache.entries.set(cacheKey, Promise.resolve({ state: { name: "" }, sourcingInfo: {} }))
-      uow.stateCache.modules.set(cacheKey, { module: mockModule, id: "c1" })
-
-      // Append CourseCreated — evolver is for CourseCapacityChanged, should not fire
-      append(CourseCreated, { courseId: "c1", name: "Intro" })
-      expect(evolverFn).not.toHaveBeenCalled()
-    })
-  })
 })
 
 describe("append — batch form", () => {

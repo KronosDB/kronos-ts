@@ -244,7 +244,8 @@ function capableOrThrow(
   return eventStore as SnapshotCapableEventStore
 }
 
-async function applyEvent<Id, S>(
+/** `state` after the evolver the state has for `event`, or as it was when it has none. */
+export async function applyEvent<Id, S>(
   module: State<Id, S, any>,
   state: S,
   event: EventMessage,

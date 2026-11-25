@@ -98,15 +98,11 @@ export type UoWEventBuffer = {
 
 /**
  * Per-UnitOfWork state cache backing `ctx.load`. A repeated `load()` of the
- * same module+id returns the cached promise instead of re-sourcing, and
- * `ctx.append` evolves the cached state so a handler that appends then loads
- * sees its own writes.
+ * same state and id returns the cached promise instead of re-sourcing.
  */
 export type UoWStateCache = {
-  /** Cache key → in-flight or settled load result. */
+  /** Cache key → in-flight or settled load result: what the log held. */
   readonly entries: Map<string, Promise<unknown>>
-  /** Cache key → the module and id it was loaded for, so evolvers can be applied. */
-  readonly modules: Map<string, { module: unknown; id: unknown }>
 }
 
 /**
@@ -279,7 +275,6 @@ export function unitOfWork(clock?: () => number): UnitOfWork {
 
   const stateCache: UoWStateCache = {
     entries: new Map<string, Promise<unknown>>(),
-    modules: new Map<string, { module: unknown; id: unknown }>(),
   }
 
   const phaseActions = new Map<PhaseValue, PhaseAction[]>()

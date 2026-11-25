@@ -1,11 +1,5 @@
-import { type EventMessage, qualifiedNameToString } from "../messaging/messages.js"
-import {
-  type EventCriteria,
-  type TagCriteria,
-  type TypeRestrictedCriteria,
-  type EitherCriteria,
-  compileQuery,
-} from "./dcb-query.js"
+import type { EventMessage } from "../messaging/messages.js"
+import { compileQuery, matchesCriteria } from "./dcb-query.js"
 import {
   type MessageStream,
   type SequencedEvent,
@@ -51,38 +45,6 @@ export function inMemoryEventStore(): EventStore {
   const streamListeners = new Set<() => void>()
 
   // Push-based subscribers — notified with actual events on append
-
-  function matchesCriteria(event: EventMessage, criteria: EventCriteria): boolean {
-    switch (criteria.kind) {
-      case "tags":
-        return matchesTags(event, criteria)
-      case "any-tag":
-        return event.tags.length > 0
-      case "type-restricted":
-        return matchesTypeRestricted(event, criteria)
-      case "either":
-        return matchesEither(event, criteria)
-    }
-  }
-
-  function matchesTags(event: EventMessage, criteria: TagCriteria): boolean {
-    return criteria.tags.every((requiredTag) =>
-      event.tags.some(
-        (eventTag) =>
-          eventTag.key === requiredTag.key && eventTag.value === requiredTag.value,
-      ),
-    )
-  }
-
-  function matchesTypeRestricted(event: EventMessage, criteria: TypeRestrictedCriteria): boolean {
-    if (!matchesCriteria(event, criteria.inner)) return false
-    const eventType = qualifiedNameToString(event.name)
-    return criteria.types.includes(eventType)
-  }
-
-  function matchesEither(event: EventMessage, criteria: EitherCriteria): boolean {
-    return criteria.criteria.some((c) => matchesCriteria(event, c))
-  }
 
   function notifyListeners() {
     for (const listener of streamListeners) {

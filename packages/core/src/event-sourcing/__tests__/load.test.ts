@@ -5,6 +5,7 @@ import { unitOfWork, NoActiveUnitOfWork } from "../../unit-of-work/unit-of-work.
 import { inMemoryEventStore } from "../in-memory.js"
 import { state } from "../state.js"
 import { loadFunction } from "../load.js"
+import { appendFunction } from "../append.js"
 import type { EventStore } from "../event-store.js"
 
 // ---------------------------------------------------------------------------
@@ -140,7 +141,7 @@ describe("load", () => {
     })
   })
 
-  it("populates the state cache, module map and sourcing infos on first load", async () => {
+  it("populates the state cache and sourcing infos on first load", async () => {
     const eventStore = countingStore()
     await unitOfWork().execute(async (uow) => {
       const load = loadFunction({ uow, eventStore })
@@ -148,7 +149,6 @@ describe("load", () => {
 
       const key = `${Ticket.identity}:{"ticketId":"t1"}`
       expect(uow.stateCache.entries.has(key)).toBe(true)
-      expect(uow.stateCache.modules.has(key)).toBe(true)
       expect(uow.events.sourcingInfos).toHaveLength(1)
       // An empty log: the marker sits below the origin, which is what the
       // append condition needs to mean "nothing was there when I read".
@@ -201,5 +201,90 @@ describe("load", () => {
     // The REPOSITORY is remembered across tasks; the ANSWER is not — the
     // per-task dedupe lives on `uow.stateCache`, so each task really sourced.
     expect(eventStore.sourced).toBe(2)
+  })
+})
+
+// A load inside a unit of work sees what that unit of work has appended, for
+// the state the event belongs to and no other.
+describe("load after append", () => {
+  const TicketClosed = event({
+    name: qn("support", "TicketClosed"),
+    payload: z.object({ ticketId: z.string() }),
+    tags: { ticketId: (p) => p.ticketId },
+  })
+
+  it("folds an appended event into the state it belongs to, and not into another id's", async () => {
+    const eventStore = countingStore()
+    await unitOfWork().execute(async (uow) => {
+      const load = loadFunction({ uow, eventStore })
+      const append = appendFunction({ uow })
+      await load(Ticket, { ticketId: "t1" })
+      await load(Ticket, { ticketId: "t2" })
+
+      append(TicketOpened, { ticketId: "t1", subject: "Printer" })
+
+      expect(await load(Ticket, { ticketId: "t1" })).toEqual({ subject: "Printer" })
+      expect(await load(Ticket, { ticketId: "t2" })).toEqual({ subject: "" })
+    })
+  })
+
+  it("folds what was appended before the state was first loaded", async () => {
+    const eventStore = countingStore()
+    await seed(eventStore, "t1", "Stored")
+    await unitOfWork().execute(async (uow) => {
+      const load = loadFunction({ uow, eventStore })
+      const append = appendFunction({ uow })
+
+      append(TicketOpened, { ticketId: "t1", subject: "Appended" })
+
+      expect(await load(Ticket, { ticketId: "t1" })).toEqual({ subject: "Appended" })
+      expect(await load(TicketAudit, { ticketId: "t1" })).toEqual({ opens: 2 })
+    })
+  })
+
+  it("folds each appended event once, however many times the state is loaded", async () => {
+    const eventStore = countingStore()
+    await unitOfWork().execute(async (uow) => {
+      const load = loadFunction({ uow, eventStore })
+      const append = appendFunction({ uow })
+      await load(TicketAudit, { ticketId: "t1" })
+      append(TicketOpened, { ticketId: "t1", subject: "One" })
+      await load(TicketAudit, { ticketId: "t1" })
+      append(TicketOpened, { ticketId: "t1", subject: "Two" })
+
+      expect(await load(TicketAudit, { ticketId: "t1" })).toEqual({ opens: 2 })
+      expect(await load(TicketAudit, { ticketId: "t1" })).toEqual({ opens: 2 })
+      expect(eventStore.sourced).toBe(1)
+    })
+  })
+
+  it("leaves a state alone when it does not fold the appended type", async () => {
+    const eventStore = countingStore()
+    await unitOfWork().execute(async (uow) => {
+      const load = loadFunction({ uow, eventStore })
+      const append = appendFunction({ uow })
+
+      append(TicketClosed, { ticketId: "t1" })
+
+      expect(await load(Ticket, { ticketId: "t1" })).toEqual({ subject: "" })
+    })
+  })
+
+  it("waits for an evolver that answers with a promise", async () => {
+    const Slow = state({
+      id: { ticketId: z.string() },
+      tags: ({ ticketId }) => ({ ticketId }),
+      evolve: [() => ({ opens: 0 }), [TicketOpened, async (s) => ({ opens: s.opens + 1 })]],
+    })
+    const eventStore = countingStore()
+    await unitOfWork().execute(async (uow) => {
+      const load = loadFunction({ uow, eventStore })
+      const append = appendFunction({ uow })
+      await load(Slow, { ticketId: "t1" })
+
+      append(TicketOpened, { ticketId: "t1", subject: "One" })
+
+      expect(await load(Slow, { ticketId: "t1" })).toEqual({ opens: 1 })
+    })
   })
 })
