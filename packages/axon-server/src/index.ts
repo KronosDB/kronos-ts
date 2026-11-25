@@ -45,11 +45,6 @@ export {
 } from "./platform-service.js"
 
 export {
-  type FlowControlledSender,
-  flowControlledSender,
-} from "./flow-controlled-sender.js"
-
-export {
   type ShutdownLatch,
   type ActivityHandle,
   ShutdownInProgressError,
