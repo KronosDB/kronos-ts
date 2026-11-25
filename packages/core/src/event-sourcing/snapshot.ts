@@ -85,14 +85,16 @@ export function whenSourcingTimeExceeds(thresholdMs: number): SnapshotPolicy {
  *
  * TWO FIELDS. There is no version, no timestamp and no metadata — see the
  * doctrine at the top of this file. `position` is the CONSISTENCY MARKER's
- * position, the same `bigint` a store hands back from a `source`. A reader
- * resumes at `position + 1`, so a snapshot says "every event up to and
- * including here is already in `state`".
+ * position, the same `bigint` a store hands back from a `source`, so a
+ * snapshot says "every event the read that built `state` covered is already
+ * in it". Only the store that wrote it knows where that ends: the in-memory
+ * and Postgres stores resume at `position + 1`, while KronosDB and Axon
+ * Server, whose markers are already the next position, resume at `position`.
  */
 export type Snapshot = {
   /** The folded state. Opaque to the mechanism; the fold that wrote it owns its shape. */
   readonly state: unknown
-  /** The last position folded INTO `state`. Resume at `position + 1`. */
+  /** The marker of the read `state` was folded from. Its store decides where a load resumes. */
   readonly position: bigint
 }
 
