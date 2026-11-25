@@ -30,7 +30,7 @@
  * store, which is why they are configured once here instead of six times.
  */
 
-import { markUnavailable } from "./errors.js"
+import { connectionLost, markUnavailable } from "./errors.js"
 import { withRetry, type ResilienceConfig } from "./resilience.js"
 import type {
   ListenSubscription,
@@ -160,13 +160,11 @@ export function postgresPool(
       adapter = await loadPgAdapter(source)
     }
     const pg = handle()
-    await withRetry(() => pg.connect(), { event: "initial-connect", ...resilience })
-    if (bootstrap) {
-      await withRetry(() => bootstrapSchema(pg, { tableNames: tables }), {
-        event: "initial-connect",
-        ...resilience,
-      })
-    }
+    // Only what another attempt can fix is tried again: a server that is not
+    // up yet, not a wrong password or a missing permission.
+    const retry = { event: "initial-connect" as const, isRetryable: connectionLost, ...resilience }
+    await withRetry(() => pg.connect(), retry)
+    if (bootstrap) await withRetry(() => bootstrapSchema(pg, { tableNames: tables }), retry)
   }
 
   return {
