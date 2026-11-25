@@ -1,6 +1,5 @@
 import type {
   AppendCondition,
-  AppendTransaction,
   ConsistencyMarker,
   EventMessage,
   EventQuery,
@@ -235,25 +234,6 @@ export function kronosDbEventStore(
           reject,
         ).catch(reject)
       })
-    },
-
-    async appendEvents(newEvents: ReadonlyArray<EventMessage>, condition?: AppendCondition): Promise<AppendTransaction> {
-      // Serialized now, so a payload the serializer cannot handle fails where
-      // the events are staged, not when the transaction commits.
-      const staged = outbound(serializer, newEvents)
-      let marker: bigint | undefined
-
-      return {
-        async commit() {
-          marker = await send(staged, condition)
-        },
-        async afterCommit() {
-          return markerAt(marker ?? 0n)
-        },
-        rollback() {
-          // If commit() was never called, nothing was sent
-        },
-      }
     },
 
     async append(newEvents: ReadonlyArray<EventMessage>, condition?: AppendCondition): Promise<ConsistencyMarker> {

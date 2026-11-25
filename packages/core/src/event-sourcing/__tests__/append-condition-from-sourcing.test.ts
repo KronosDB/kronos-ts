@@ -75,7 +75,6 @@ function probeEventStore(): EventStore & { records: AppendRecord[] } {
     records,
     source: inner.source.bind(inner),
     open: inner.open.bind(inner),
-    appendEvents: inner.appendEvents.bind(inner),
     firstToken: inner.firstToken.bind(inner),
     latestToken: inner.latestToken.bind(inner),
     getHeadPosition: inner.getHeadPosition.bind(inner),

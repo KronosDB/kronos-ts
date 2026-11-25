@@ -56,19 +56,6 @@ describe("recordingEventStore", () => {
     expect(await store.getHeadPosition()).toBe(2n)
   })
 
-  it("records a two-phase append at COMMIT, and nothing at all on rollback", async () => {
-    const store = recordingEventStore(inMemoryEventStore())
-
-    const staged = await store.appendEvents([message(CourseClosed, { courseId: "staged" })])
-    expect(store.appended).toHaveLength(0)
-    await staged.commit()
-    expect(store.appended).toHaveLength(1)
-
-    const doomed = await store.appendEvents([message(CourseClosed, { courseId: "doomed" })])
-    doomed.rollback()
-    expect(store.appended).toHaveLength(1)
-  })
-
   it("`reset` forgets the recording, not the events", async () => {
     const store = recordingEventStore(inMemoryEventStore())
     await store.append([message(CourseClosed, { courseId: "cs-101" })])

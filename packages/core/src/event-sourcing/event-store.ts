@@ -37,17 +37,6 @@ export type SourcingResult = {
 }
 
 /**
- * An append in two halves: stage, then commit or roll back. `afterCommit`
- * resolves the marker the write settled at. Used by the stores' own `append`
- * and by the test recorder; a handler never sees it.
- */
-export type AppendTransaction = {
-  commit(): Promise<void>
-  afterCommit(): Promise<ConsistencyMarker>
-  rollback(): void
-}
-
-/**
  * THE LOG. A source you can read by condition, append to under a condition,
  * and open as a stream from a position.
  *
@@ -72,13 +61,10 @@ export type EventStore = StreamableEventSource & {
   readonly returnsTags?: false
   /** Read the events matching a condition, with the marker the read reached. */
   source(condition: SourcingCondition): Promise<SourcingResult>
-  /** Stage an append; the returned transaction commits or rolls it back. */
-  appendEvents(
-    events: ReadonlyArray<EventMessage>,
-    condition?: AppendCondition,
-    uow?: UnitOfWork,
-  ): Promise<AppendTransaction>
-  /** Append under a condition and settle. The common path. */
+  /**
+   * Append under a condition. Handed a unit of work, a store that has
+   * transactions writes inside that unit of work's.
+   */
   append(
     events: ReadonlyArray<EventMessage>,
     condition?: AppendCondition,

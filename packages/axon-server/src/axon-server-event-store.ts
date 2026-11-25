@@ -18,7 +18,6 @@ import type {
   SourcingCondition,
   AppendCondition,
   ConsistencyMarker,
-  AppendTransaction,
 } from "@kronos-ts/core"
 import type { TrackingToken } from "@kronos-ts/core"
 import { globalSequenceToken, FIRST_TOKEN, positiveInteger } from "@kronos-ts/core"
@@ -250,11 +249,10 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
       return boundedRead(connection.config.readTimeoutMs, (signal) => sourceOnce(condition, signal))
     },
 
-    async appendEvents(
+    async append(
       newEvents: ReadonlyArray<EventMessage>,
       condition?: AppendCondition,
-    ): Promise<AppendTransaction> {
-      const taggedEvents = newEvents.map(eventToProto)
+    ): Promise<ConsistencyMarker> {
       const request = {
         condition: condition
           ? {
@@ -262,48 +260,25 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
               criterion: criteriaToCriterions(compileQuery(condition.query)),
             }
           : undefined,
-        event: taggedEvents,
+        event: newEvents.map(eventToProto),
       }
-
-      // Axon Server's Append RPC is atomic. Nothing is sent until commit(),
-      // which sends the one request.
-      let responseMarker: bigint | undefined
-
-      return {
-        async commit() {
-          async function* requestStream() {
-            yield request
-          }
-          try {
-            const response = await connection.eventStore.append(requestStream(), {
-              metadata: createAxonMetadata(),
-            })
-            responseMarker = response.consistencyMarker
-          } catch (err) {
-            if (!isConditionRefused(err)) throw fromGrpc(err)
-            throw new ConcurrencyError(
-              `consistency condition violated: ${String((err as { details?: unknown }).details)}`,
-              AxonServerErrorCode.CONCURRENCY_EXCEPTION,
-              { cause: err },
-            )
-          }
-        },
-        async afterCommit() {
-          return markerAt(responseMarker ?? 0n)
-        },
-        rollback() {
-          // Axon Server: if commit() was never called, nothing was sent
-        },
+      // One request: Axon Server's Append call takes the whole append or none of it.
+      async function* requestStream() {
+        yield request
       }
-    },
-
-    async append(
-      newEvents: ReadonlyArray<EventMessage>,
-      condition?: AppendCondition,
-    ): Promise<ConsistencyMarker> {
-      const tx = await this.appendEvents(newEvents, condition)
-      await tx.commit()
-      return tx.afterCommit()
+      try {
+        const response = await connection.eventStore.append(requestStream(), {
+          metadata: createAxonMetadata(),
+        })
+        return markerAt(response.consistencyMarker ?? 0n)
+      } catch (err) {
+        if (!isConditionRefused(err)) throw fromGrpc(err)
+        throw new ConcurrencyError(
+          `consistency condition violated: ${String((err as { details?: unknown }).details)}`,
+          AxonServerErrorCode.CONCURRENCY_EXCEPTION,
+          { cause: err },
+        )
+      }
     },
 
     open(condition: StreamingCondition): MessageStream<SequencedEvent> {

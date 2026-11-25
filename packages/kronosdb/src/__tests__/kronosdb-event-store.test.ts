@@ -91,10 +91,7 @@ describe("kronosDbEventStore (native)", () => {
         if (server!.connections.length === 1) conn.destroy()
         else conn.reply(r.stream, FLAG_END, appended(3n))
       })
-      const tx = await kronosDbEventStore(kdb).appendEvents([sample("a")])
-      await tx.commit()
-
-      expect(await tx.afterCommit()).toEqual(markerAt(3n))
+      expect(await kronosDbEventStore(kdb).append([sample("a")])).toEqual(markerAt(3n))
       expect(server!.connections).toHaveLength(2)
       expect(appendsOn(server!.connections[1]!)).toEqual(appendsOn(server!.connections[0]!))
     })
@@ -242,31 +239,12 @@ describe("kronosDbEventStore (native)", () => {
       expect(refusal.message).toBe("consistency condition violated: conflicting event at position 12")
     })
 
-    it("stages an append and sends it only on commit", async () => {
-      const { kdb, sent } = await against((conn, r) =>
-        conn.reply(r.stream, FLAG_END, { name: "Appended", body: { firstPosition: 0n, count: 1, marker: 9n } }),
-      )
-      const store = kronosDbEventStore(kdb)
-      const tx = await store.appendEvents([sample("a")])
-      await Bun.sleep(20)
-      expect(server!.connections).toHaveLength(0)
-
-      await tx.commit()
-      expect(await tx.afterCommit()).toEqual(markerAt(9n))
-      expect(sent()).toHaveLength(1)
-
-      const rolledBack = await store.appendEvents([sample("b")])
-      rolledBack.rollback()
-      await Bun.sleep(20)
-      expect(sent()).toHaveLength(1)
-    })
-
-    it("fails at staging, before anything is sent, when a payload cannot be serialized", async () => {
+    it("fails before anything is sent when a payload cannot be serialized", async () => {
       const { kdb } = await against(() => {})
       const cyclic: Record<string, unknown> = {}
       cyclic.self = cyclic
       const refusal = await kronosDbEventStore(kdb)
-        .appendEvents([sample("a", { payload: cyclic })])
+        .append([sample("a", { payload: cyclic })])
         .then(() => undefined, (e) => e)
       expect(refusal).toBeInstanceOf(Error)
       expect(server!.connections).toHaveLength(0)

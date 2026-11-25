@@ -357,12 +357,7 @@ export {
   type SnapshotCapableEventStore,
   type SnapshotStoreCapability,
   type SourcingResult,
-  type AppendTransaction,
 } from "./event-sourcing/event-store.js"
-export {
-  type EventStoreTransaction,
-  eventStoreTransaction,
-} from "./event-sourcing/event-store-transaction.js"
 export { inMemoryEventStore } from "./event-sourcing/in-memory.js"
 
 // Decision models — the fold side of the same events.
