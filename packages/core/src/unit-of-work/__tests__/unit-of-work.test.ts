@@ -175,7 +175,6 @@ describe("unitOfWork — the () => UnitOfWork primitive", () => {
         expect(uow.events.sourcingInfos).toEqual([])
         expect(uow.events.flushRegistered).toBe(false)
         expect(uow.stateCache.entries.size).toBe(0)
-        expect(uow.stateCache.modules.size).toBe(0)
       })
     })
 

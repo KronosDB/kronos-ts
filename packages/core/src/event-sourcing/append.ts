@@ -1,6 +1,5 @@
 import type { InferOutput, StandardSchemaV1 } from "../messaging/standard-schema.js"
 import {
-  qualifiedNameToString,
   emptyMetadata,
   type Metadata,
   type EventDescriptor,
@@ -45,8 +44,8 @@ export type AppendFunction = {
  * Throws NoActiveUnitOfWork once the unit of work has closed; throws
  * WrongUoWPhase outside the INVOCATION phase.
  *
- * Buffers events onto `uow.events.buffered`; updates cached state via matching
- * evolvers so a handler that appends then loads sees its own writes.
+ * Buffers events onto `uow.events.buffered`, which a later `ctx.load` folds
+ * into the states they belong to.
  *
  * An appended event's metadata is EXACTLY what the caller passed. Nothing is
  * carried over from the command being handled — carrying is a host policy, and
@@ -61,8 +60,8 @@ export function appendFunction(deps: { uow: UnitOfWork }): AppendFunction {
     eventPayload?: unknown,
     eventMetadata?: Metadata,
   ) => {
-    // Batch form: fan out to the single form so buffering, tag derivation and
-    // cached-state evolution stay in ONE place.
+    // Batch form: fan out to the single form so buffering and tag derivation
+    // stay in one place.
     if (Array.isArray(eventDescriptorOrList)) {
       for (const [descriptor, payload, metadata] of eventDescriptorOrList) {
         append(descriptor, payload, metadata)
@@ -85,30 +84,6 @@ export function appendFunction(deps: { uow: UnitOfWork }): AppendFunction {
       tags,
     }
     uow.events.buffered.push(eventMessage)
-
-    // Update cached state by applying matching evolvers.
-    const { entries, modules } = uow.stateCache
-    const eventType = qualifiedNameToString(eventDescriptor.name)
-    for (const [cacheKey, { module }] of modules) {
-      const cachedPromise = entries.get(cacheKey)
-      if (!cachedPromise) continue
-      const evolvers = (module as any).evolvers as
-        | ReadonlyArray<readonly [{ name: any }, (...args: any[]) => any]>
-        | undefined
-      if (!evolvers) continue
-      for (const [descriptor, evolve] of evolvers) {
-        if (qualifiedNameToString(descriptor.name) === eventType) {
-          entries.set(
-            cacheKey,
-            cachedPromise.then((result: any) => ({
-              ...result,
-              state: evolve(result.state, eventMessage),
-            })),
-          )
-          break
-        }
-      }
-    }
   }) as ((
     d: EventDescriptor<any> | ReadonlyArray<readonly [EventDescriptor<any>, unknown, Metadata?]>,
     p?: unknown,

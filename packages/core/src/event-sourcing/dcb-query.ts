@@ -3,6 +3,7 @@ import {
   type QualifiedName,
   qualifiedNameToString,
   type EventDescriptor,
+  type EventMessage,
 } from "../messaging/messages.js"
 // ---------------------------------------------------------------------------
 // Two shapes, one direction.
@@ -158,6 +159,24 @@ export function resolveTypeName(t: EventDescriptor<any> | QualifiedName | string
   if ("kind" in t && t.kind === "event") return qualifiedNameToString(t.name)
   if ("namespace" in t && "name" in t) return qualifiedNameToString(t as QualifiedName)
   return String(t)
+}
+
+/**
+ * Whether a log would hand `event` back for `criteria`: the event carries every
+ * tag asked for, and is one of the types asked for when types are named. The
+ * tags are the ones the event is appended with.
+ */
+export function matchesCriteria(event: EventMessage, criteria: EventCriteria): boolean {
+  switch (criteria.kind) {
+    case "tags":
+      return criteria.tags.every((asked) => event.tags.some((tag) => tag.key === asked.key && tag.value === asked.value))
+    case "any-tag":
+      return event.tags.length > 0
+    case "type-restricted":
+      return matchesCriteria(event, criteria.inner) && criteria.types.includes(qualifiedNameToString(event.name))
+    case "either":
+      return criteria.criteria.some((one) => matchesCriteria(event, one))
+  }
 }
 
 /** A value as it should read inside a query error message. */

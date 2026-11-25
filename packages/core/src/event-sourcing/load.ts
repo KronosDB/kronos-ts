@@ -1,7 +1,7 @@
 import { requireLive, type SourcingInfo, type UnitOfWork } from "../unit-of-work/unit-of-work.js"
-import { repositoryFor } from "./repository.js"
+import { applyEvent, repositoryFor } from "./repository.js"
 import type { EventMessage } from "../messaging/messages.js"
-import type { EventQuery } from "./dcb-query.js"
+import { compileQuery, matchesCriteria, type EventQuery } from "./dcb-query.js"
 import { sourcingCondition } from "./sourcing-condition.js"
 import type { EventStore } from "./event-store.js"
 import type { State } from "./state.js"
@@ -116,10 +116,12 @@ function stableIdKey(id: unknown): string {
  * Internal — handlers reach the result as `ctx.load`.
  *
  * Read-only — NOT phase-guarded, but throws NoActiveUnitOfWork once the unit
- * of work has closed. Caches state on the unit of work (duplicate `load()`
- * calls for the same state-id pair return the cached promise without
+ * of work has closed. Caches what the log held on the unit of work (duplicate
+ * `load()` calls for the same state-id pair return the cached promise without
  * re-querying the store) and records a sourcing info per call, which the
- * PREPARE_COMMIT flush turns into the DCB append condition.
+ * PREPARE_COMMIT flush turns into the DCB append condition. The events this
+ * unit of work has appended and the state's query matches are folded on top,
+ * so a handler that appends then loads sees its own writes.
  */
 export function loadFunction(deps: {
   uow: UnitOfWork
@@ -132,18 +134,27 @@ export function loadFunction(deps: {
     // The state half of the key is the definition's `identity` — the handle
     // `state()` assigns per definition — not its `name`, which is optional and
     // means durable snapshot identity, not "which definition is this".
-    const { entries, modules } = uow.stateCache
+    const { entries } = uow.stateCache
     const cacheKey = `${state.identity}:${stableIdKey(id)}`
     if (!entries.has(cacheKey)) {
       entries.set(cacheKey, repositoryFor(state, eventStore).load(id))
-      modules.set(cacheKey, { module: state, id })
     }
     const result = (await entries.get(cacheKey)!) as {
       state: S
       sourcingInfo: SourcingInfo
     }
     recordSourcing(uow, result.sourcingInfo)
-    return result.state
+
+    // What this unit of work has appended and the log would hand back for
+    // this state's query, folded on top of what the log held.
+    let folded = result.state
+    if (uow.events.buffered.length > 0) {
+      const criteria = compileQuery(result.sourcingInfo.query)
+      for (const appended of uow.events.buffered) {
+        if (matchesCriteria(appended, criteria)) folded = await applyEvent(state, folded, appended)
+      }
+    }
+    return folded
   }
 }
 
