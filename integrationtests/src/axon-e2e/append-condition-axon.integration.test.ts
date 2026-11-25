@@ -5,7 +5,7 @@
  */
 import { afterAll, beforeAll, describe } from "bun:test"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
-import { jsonSerializer, type EventStore } from "@kronos-ts/core"
+import { emptyMetadata, jsonSerializer, qn, type EventStore } from "@kronos-ts/core"
 import { axonServerConnection, axonServerEventStore } from "@kronos-ts/axon-server"
 import { appendConditionScenarios } from "../__tests__/append-condition-scenarios.js"
 import { eventStoreContract } from "../__tests__/event-store-contract.js"
@@ -36,6 +36,36 @@ async function startAxonServer(): Promise<StartedTestContainer> {
   return container
 }
 
+/**
+ * Wait until a freshly initialised context has taken an append and answered a
+ * read. It refuses both for a moment, and its first append takes seconds where
+ * the ones after it take milliseconds, which is longer than a test may take on
+ * a slow machine.
+ */
+async function served(store: EventStore): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await store.append([
+        {
+          kind: "event",
+          identifier: crypto.randomUUID(),
+          name: qn("markers", "WarmedUp"),
+          version: "1.0",
+          payload: {},
+          metadata: emptyMetadata(),
+          timestamp: Date.now(),
+          tags: [{ key: "subject", value: "warm-up" }],
+        },
+      ])
+      await store.source({ query: { tags: { subject: "warm-up" } } })
+      return
+    } catch (error) {
+      if (attempt >= 60) throw error
+      await new Promise((r) => setTimeout(r, 500))
+    }
+  }
+}
+
 describe("append condition — axon server", () => {
   let container: StartedTestContainer
   let axon: Awaited<ReturnType<typeof axonServerConnection>>
@@ -61,6 +91,7 @@ describe("append condition — axon server", () => {
     axon = await connect(container.getHost(), container.getMappedPort(8124))
     await axon.start()
     eventStore = axonServerEventStore(axon, "default")
+    await served(eventStore)
   }, 180_000)
 
   afterAll(async () => {
@@ -77,16 +108,7 @@ describe("append condition — axon server", () => {
       const own = await startAxonServer()
       containers.push(own)
       const store = axonServerEventStore(await connect(own.getHost(), own.getMappedPort(8124)), "default")
-      // A freshly initialised context takes a moment to serve reads.
-      for (let attempt = 0; ; attempt++) {
-        try {
-          await store.source({ query: { tags: { subject: "warm-up" } } })
-          break
-        } catch (error) {
-          if (attempt >= 60) throw error
-          await new Promise((r) => setTimeout(r, 500))
-        }
-      }
+      await served(store)
       await own.stop()
       return store
     },
