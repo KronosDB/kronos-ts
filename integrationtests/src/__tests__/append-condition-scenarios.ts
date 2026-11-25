@@ -111,16 +111,22 @@ async function write<P extends z.ZodType>(
 }
 
 export function appendConditionScenarios(target: AppendConditionTarget): void {
-  let between: (store: EventStore, ids: Ids) => Promise<void> = async () => {}
   let app: App | undefined
 
   afterEach(async () => {
-    between = async () => {}
     await app?.stop()
     app = undefined
   })
 
-  function wire(): { eventStore: EventStore; decide: (ids: Ids) => Promise<unknown> } {
+  /**
+   * A handler over the store, with what another writer does `between` its two
+   * loads. The hook belongs to this one handler, so a run that outlives its
+   * test never calls the next test's.
+   */
+  function wire(between: (store: EventStore, ids: Ids) => Promise<void> = async () => {}): {
+    eventStore: EventStore
+    decide: (ids: Ids) => Promise<unknown>
+  } {
     const eventStore = target.eventStore()
     const decide = commandHandler(Decide, async ({ payload }, ctx) => {
       await ctx.load(Left, { leftId: payload.leftId })
@@ -144,14 +150,13 @@ export function appendConditionScenarios(target: AppendConditionTarget): void {
   })
 
   it("refuses a decision when the first state changed between the two loads", async () => {
-    const { eventStore, decide } = wire()
+    const { eventStore, decide } = wire(async (store, { leftId, rightId }) => {
+      await write(store, LeftBumped, { leftId })
+      await write(store, RightBumped, { rightId })
+    })
     const ids = freshIds()
     await write(eventStore, LeftBumped, { leftId: ids.leftId })
     await write(eventStore, RightBumped, { rightId: ids.rightId })
-    between = async (store, { leftId, rightId }) => {
-      await write(store, LeftBumped, { leftId })
-      await write(store, RightBumped, { rightId })
-    }
 
     await assert.rejects(decide(ids), isConflict)
   })
@@ -161,12 +166,11 @@ export function appendConditionScenarios(target: AppendConditionTarget): void {
       ? "commits when only the second state changed between the loads — its own read saw it"
       : "refuses when only the second state changed between the loads — one boundary for the whole condition",
     async () => {
-      const { eventStore, decide } = wire()
+      const { eventStore, decide } = wire(async (store, { rightId }) => {
+        await write(store, RightBumped, { rightId })
+      })
       const ids = freshIds()
       await write(eventStore, LeftBumped, { leftId: ids.leftId })
-      between = async (store, { rightId }) => {
-        await write(store, RightBumped, { rightId })
-      }
 
       if (target.exact) await decide(ids)
       else await assert.rejects(decide(ids), isConflict)
