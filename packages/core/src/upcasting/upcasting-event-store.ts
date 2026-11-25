@@ -115,6 +115,11 @@ export type UpcastingOptions = {
    *
    * An upcaster that only changes a version or a payload keeps the name, so
    * `(type) => [type]` is the whole answer.
+   *
+   * A log that hands events back without their tags (`returnsTags: false`)
+   * leaves `source()` only the type to narrow by. That is enough for a query
+   * of one item, and for items that ask for the same types or whose tags
+   * include one another's. Any other query is refused until this is given.
    */
   readonly storedTypes?: (type: string) => ReadonlyArray<string>
 }
@@ -180,11 +185,27 @@ export function upcastingEventStore<E extends EventStore>(
     ...next,
 
     async source(condition) {
-      const result = await next.source({ ...condition, query: storedQuery(condition.query) })
+      const asked = queryItems(condition.query)
       // The log was asked for the stored names, or for every type when it was
       // not told them, so what is handed back is narrowed to the query as asked.
-      const asked = queryItems(condition.query)
-      const events = result.events.map(upcast).filter((event) => asked.some((item) => matchesItem(event, item)))
+      if (next.returnsTags !== false) {
+        const result = await next.source({ ...condition, query: storedQuery(condition.query) })
+        const events = result.events.map(upcast).filter((event) => asked.some((item) => matchesItem(event, item)))
+        return { ...result, events }
+      }
+      // The events come back without tags, so they are narrowed by type alone.
+      const items = untaggedItems(asked, storedTypes)
+      refuseUntold(items, storedTypes)
+      const result = await next.source({ ...condition, query: storedQuery(condition.query) })
+      const events: EventMessage[] = []
+      for (const stored of result.events) {
+        const event = upcast(stored)
+        const storedName = qualifiedNameToString(stored.name)
+        const type = qualifiedNameToString(event.name)
+        const kept = keptUntagged(items, storedName, type)
+        if (kept === undefined) throw untold(type, storedName, storedTypes !== undefined)
+        if (kept) events.push(event)
+      }
       return { ...result, events }
     },
 
@@ -235,5 +256,76 @@ function matchesItem(event: EventMessage, item: QueryItem): boolean {
   if (item.tags === undefined) return true
   return Object.entries(item.tags).every(([key, value]) =>
     event.tags.some((tag) => tag.key === key && tag.value === value),
+  )
+}
+
+/**
+ * One item of a query as a read of a log that returns no tags sees it: the
+ * tags the log matched, the types asked for, and the names the log was asked
+ * for. No `types` is every type, no `stored` is every stored name.
+ */
+type UntaggedItem = {
+  readonly tags: Readonly<Record<string, string>>
+  readonly types: ReadonlySet<string> | undefined
+  readonly stored: ReadonlySet<string> | undefined
+}
+
+function untaggedItems(
+  asked: ReadonlyArray<QueryItem>,
+  storedTypes: UpcastingOptions["storedTypes"],
+): ReadonlyArray<UntaggedItem> {
+  return asked.map((item) => {
+    const tags = item.tags ?? {}
+    if (item.types === undefined || item.types.length === 0) return { tags, types: undefined, stored: undefined }
+    const types = new Set(item.types.map(resolveTypeName))
+    if (storedTypes === undefined) return { tags, types, stored: undefined }
+    return { tags, types, stored: new Set([...types].flatMap((type) => storedTypes(type))) }
+  })
+}
+
+/**
+ * Whether an event stored as `storedName` and upcast to `type` is in the query,
+ * for an event that carries no tags. The log returned it for one of the items
+ * it could have matched; which one is not known.
+ *
+ * It is kept when every such item keeps it: the item asks for `type`, or an
+ * item that does has tags the first one's include, so the event matched those
+ * too. It is dropped when none asks for `type`. Otherwise the answer depends on
+ * the event's tags, and `undefined` comes back.
+ */
+function keptUntagged(items: ReadonlyArray<UntaggedItem>, storedName: string, type: string): boolean | undefined {
+  const through = items.filter((item) => item.stored === undefined || item.stored.has(storedName))
+  const keeping = through.filter((item) => item.types === undefined || item.types.has(type))
+  if (keeping.length === 0) return false
+  const within = (tags: UntaggedItem["tags"], of: UntaggedItem["tags"]) =>
+    Object.entries(tags).every(([key, value]) => of[key] === value)
+  return through.every((item) => keeping.some((keeper) => within(keeper.tags, item.tags))) ? true : undefined
+}
+
+/**
+ * Refuse a read before it is made when the query alone shows that some event
+ * could not be told apart: every type the query asks for, under every name it
+ * may be stored as, and a type no item names when an item asks for every type.
+ */
+function refuseUntold(items: ReadonlyArray<UntaggedItem>, storedTypes: UpcastingOptions["storedTypes"]): void {
+  if (items.length === 1) return
+  const types = new Set(items.flatMap((item) => [...(item.types ?? [])]))
+  for (const type of types) {
+    for (const storedName of storedTypes?.(type) ?? [type]) {
+      if (keptUntagged(items, storedName, type) === undefined) throw untold(type, storedName, storedTypes !== undefined)
+    }
+  }
+  // A type and a stored name no item names.
+  if (storedTypes === undefined && keptUntagged(items, "", "") === undefined) throw untold(undefined, "", false)
+}
+
+function untold(type: string | undefined, storedName: string, toldStoredTypes: boolean): Error {
+  const what = type === undefined ? "an event" : `an event of type "${type}"`
+  return new Error(
+    `upcastingEventStore: this log hands events back without their tags, so ${what} cannot be matched to the ` +
+      "item of the query it was read for. " +
+      (toldStoredTypes
+        ? `"${storedName}" is a stored name of types that items with different tags ask for.`
+        : "Pass `storedTypes`, which is `(type) => [type]` when no upcaster renames an event."),
   )
 }

@@ -382,3 +382,179 @@ describe("upcastingEventStore and a sourced read", () => {
     ).rejects.toThrow(/Append condition violated/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// A log that matches a query against an event's tags and hands the event back
+// without them.
+// ---------------------------------------------------------------------------
+
+describe("upcastingEventStore over a log that hands events back without tags", () => {
+  const Created = qn("school", "CourseCreated")
+  const Opened = qn("school", "CourseOpened") // the name CourseCreated was stored under
+  const Subscribed = qn("school", "StudentSubscribed")
+  const renamed: Upcast = (e) => (e.name.name === Opened.name ? { ...e, name: Created } : e)
+  const storedTypes = (type: string) => (type === "school.CourseCreated" ? [type, "school.CourseOpened"] : [type])
+
+  const course = (name: typeof Created, courseId: string) =>
+    stored({ name, payload: { courseId }, tags: [{ key: "courseId", value: courseId }] })
+  const subscription = (courseId: string, studentId: string) =>
+    stored({
+      name: Subscribed,
+      payload: { courseId, studentId },
+      tags: [
+        { key: "courseId", value: courseId },
+        { key: "studentId", value: studentId },
+      ],
+    })
+
+  /** The log, and how many times it was read. */
+  async function seeded() {
+    const log = inMemoryEventStore()
+    await log.append([
+      course(Opened, "c-1"),
+      course(Created, "c-1"),
+      subscription("c-1", "s-1"),
+      subscription("c-1", "s-2"),
+      subscription("c-2", "s-1"),
+    ])
+    let reads = 0
+    const untagged: typeof log = {
+      ...log,
+      returnsTags: false,
+      async source(condition) {
+        reads++
+        const read = await log.source(condition)
+        return { ...read, events: read.events.map((e) => ({ ...e, tags: [] })) }
+      },
+    }
+    return { untagged, reads: () => reads }
+  }
+
+  const told = (e: EventMessage) => {
+    const p = e.payload as { courseId: string; studentId?: string }
+    return `${e.name.name}:${p.courseId}${p.studentId === undefined ? "" : `:${p.studentId}`}`
+  }
+
+  it("narrows a one-item read to the asked types without reading a tag", async () => {
+    const { untagged } = await seeded()
+    const store = upcastingEventStore(untagged, renamed)
+
+    const { events } = await store.source({ query: { tags: { courseId: "c-1" }, types: [Created] } })
+
+    expect(events.map(told)).toEqual(["CourseCreated:c-1", "CourseCreated:c-1"])
+  })
+
+  it("a state scoped by one tag folds the events of a renamed type", async () => {
+    const { untagged } = await seeded()
+    const CourseCreated = event({
+      name: Created,
+      payload: z.object({ courseId: z.string() }),
+      tags: { courseId: (p) => p.courseId },
+    })
+    const Course = state({
+      id: { courseId: z.string() },
+      tags: ({ courseId }) => ({ courseId }),
+      evolve: [() => ({ created: 0 }), [CourseCreated, (s) => ({ created: s.created + 1 })]],
+    })
+
+    const { state: loaded } = await eventSourcedRepository(Course, upcastingEventStore(untagged, renamed)).load({
+      courseId: "c-1",
+    })
+
+    expect(loaded).toEqual({ created: 2 })
+  })
+
+  it("told the stored names, keeps what each item of a read asked for", async () => {
+    const { untagged } = await seeded()
+    const store = upcastingEventStore(untagged, renamed, { storedTypes })
+
+    const { events } = await store.source({
+      query: [
+        { tags: { courseId: "c-1" }, types: [Created] },
+        { tags: { studentId: "s-1" }, types: [Subscribed] },
+      ],
+    })
+
+    // Not the other student's subscription to c-1: no item asked for it.
+    expect(events.map(told)).toEqual([
+      "CourseCreated:c-1",
+      "CourseCreated:c-1",
+      "StudentSubscribed:c-1:s-1",
+      "StudentSubscribed:c-2:s-1",
+    ])
+  })
+
+  it("refuses a read whose items differ in tags and types when it was not told the stored names", async () => {
+    const { untagged, reads } = await seeded()
+    const store = upcastingEventStore(untagged, renamed)
+
+    const refused = store.source({
+      query: [
+        { tags: { courseId: "c-1" }, types: [Created] },
+        { tags: { studentId: "s-1" }, types: [Subscribed] },
+      ],
+    })
+
+    await expect(refused).rejects.toThrow(/without their tags.*storedTypes/s)
+    expect(reads()).toBe(0)
+  })
+
+  it("reads items that differ in tags and ask for the same types", async () => {
+    const { untagged } = await seeded()
+    const store = upcastingEventStore(untagged, renamed)
+
+    const { events } = await store.source({
+      query: [
+        { tags: { courseId: "c-2" }, types: [Created, Subscribed] },
+        { tags: { studentId: "s-2" }, types: [Created, Subscribed] },
+      ],
+    })
+
+    expect(events.map(told)).toEqual(["StudentSubscribed:c-1:s-2", "StudentSubscribed:c-2:s-1"])
+  })
+
+  it("reads an item whose tags include another item's", async () => {
+    const { untagged } = await seeded()
+    const store = upcastingEventStore(untagged, renamed)
+
+    const { events } = await store.source({
+      query: [
+        { tags: { courseId: "c-1" }, types: [Created, Subscribed] },
+        { tags: { courseId: "c-1", studentId: "s-1" }, types: [Created] },
+      ],
+    })
+
+    expect(events.map(told)).toEqual([
+      "CourseCreated:c-1",
+      "CourseCreated:c-1",
+      "StudentSubscribed:c-1:s-1",
+      "StudentSubscribed:c-1:s-2",
+    ])
+  })
+
+  it("refuses a read when one stored name becomes types that items with different tags ask for", async () => {
+    const { untagged, reads } = await seeded()
+    const store = upcastingEventStore(untagged, renamed, {
+      storedTypes: (type) => (type === "school.StudentSubscribed" ? [type, "school.CourseOpened"] : storedTypes(type)),
+    })
+
+    const refused = store.source({
+      query: [
+        { tags: { courseId: "c-1" }, types: [Created] },
+        { tags: { studentId: "s-1" }, types: [Subscribed] },
+      ],
+    })
+
+    await expect(refused).rejects.toThrow(/without their tags.*school\.CourseOpened/s)
+    expect(reads()).toBe(0)
+  })
+
+  it("a read with no types is handed back as the log answered it", async () => {
+    const { untagged } = await seeded()
+    const store = upcastingEventStore(untagged, renamed)
+
+    const { events } = await store.source({ query: [{ tags: { courseId: "c-2" } }, { tags: { studentId: "s-2" } }] })
+
+    expect(events.map(told)).toEqual(["StudentSubscribed:c-1:s-2", "StudentSubscribed:c-2:s-1"])
+  })
+})
