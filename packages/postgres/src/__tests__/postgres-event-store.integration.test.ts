@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test"
 import { pgAdapter } from "../adapters/pg.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
@@ -140,7 +141,7 @@ describe("append inside a unit of work", () => {
       await store.append([makeEvent("OrderPlaced", [{ key: "order", value: "RB" }])], undefined, uow)
       throw new Error("handler failed")
     })
-    await expect(failed).rejects.toThrow("handler failed")
+    await assert.rejects(failed, /handler failed/)
     expect((await store.source(tagged("RB"))).events.length).toBe(0)
   })
 })
