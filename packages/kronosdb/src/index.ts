@@ -85,11 +85,6 @@ export {
 } from "./event-processor-info.js"
 
 export {
-  type FlowControlledSender,
-  flowControlledSender,
-} from "./flow-controlled-sender.js"
-
-export {
   type ShutdownLatch,
   type ActivityHandle,
   ShutdownInProgressError,

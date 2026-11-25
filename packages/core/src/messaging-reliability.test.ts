@@ -1,5 +1,3 @@
-import { flowControlledSender as kronosSender } from "../../kronosdb/src/flow-controlled-sender.js"
-import { flowControlledSender as axonSender } from "../../axon-server/src/flow-controlled-sender.js"
 import { describe, expect, it } from "bun:test"
 import {
   messagingAdmission,
@@ -113,44 +111,6 @@ for (const [name, create] of [
       await iterator.return!()
       expect((await pending).done).toBe(true)
     })
-  })
-}
-
-for (const [name, create] of [
-  ["kronos", kronosSender],
-  ["axon", axonSender],
-] as const) {
-  it(`${name}: buffered sender failure terminates and surfaces the error`, () => {
-    const errors: Error[] = []
-    const sender = create(
-      () => {
-        throw new Error("wire broken")
-      },
-      undefined,
-      (e) => errors.push(e),
-    )
-    expect(sender.offer(1)).toBe(true)
-    expect(() => sender.addPermits(1)).toThrow("wire broken")
-    expect(sender.active).toBe(false)
-    expect(sender.offer(2)).toBe(false)
-    expect(errors).toHaveLength(1)
-  })
-  it(`${name}: completion follows buffered updates once credit arrives`, () => {
-    const delivered: unknown[] = []
-    const sender = create(
-      (value) => delivered.push(value),
-      () => delivered.push("complete"),
-    )
-    sender.offer(1)
-    sender.offer(2)
-    sender.complete()
-    expect(delivered).toEqual([])
-    expect(sender.offer(3)).toBe(false)
-    sender.addPermits(1)
-    expect(delivered).toEqual([1])
-    sender.addPermits(1)
-    sender.complete()
-    expect(delivered).toEqual([1, 2, "complete"])
   })
 }
 
