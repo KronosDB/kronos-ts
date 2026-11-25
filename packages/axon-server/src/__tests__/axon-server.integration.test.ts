@@ -34,11 +34,18 @@ import {
   localCommandBus,
   localQueryBus,
   upcastingEventStore,
+  deadLettering,
+  eventHandler,
+  eventProcessor,
+  eventSourcedRepository,
+  inMemoryDeadLetterQueue,
+  inMemoryTokenStore,
+  polling,
+  tagsOf,
   type CommandBus,
   type EventMessage,
   type EventStore,
   type SequencedEvent,
-  type Tag,
   type QueryBus,
   type Snapshot,
   type SnapshotCapableEventStore,
@@ -292,7 +299,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     expect((eventsB.events[0]!.payload as any).name).toBe("Course B")
   }, 60_000)
 
-  it("events read back carry the tags they were appended with", async () => {
+  it("events are read back without tags, and a read with tags finds them", async () => {
     const courseId = `course-tags-${crypto.randomUUID()}`
     const appended: EventMessage[] = [0, 1].map((n) => ({
       kind: "event",
@@ -308,17 +315,16 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       ],
     }))
     await eventStore.append(appended)
-
-    // Axon Server returns an event's tags in its own order.
-    const byKey = (tags: ReadonlyArray<Tag>) => [...tags].sort((a, b) => a.key.localeCompare(b.key))
-    const expected = appended.map((event) => byKey(event.tags))
+    const identifiers = appended.map((event) => event.identifier)
 
     const sourced = await eventStore.source({ query: { tags: { courseId } } })
-    expect(sourced.events.map((event) => byKey(event.tags))).toEqual(expected)
+    expect(sourced.events.map((event) => event.identifier)).toEqual(identifiers)
+    expect(sourced.events.map((event) => event.tags)).toEqual([[], []])
 
-    // A wrapper that matches events against the query by their tags finds them.
+    // A wrapper that narrows a read to the query finds them without their tags.
     const upcasting = upcastingEventStore(eventStore, (event) => event)
-    expect((await upcasting.source({ query: { tags: { courseId } } })).events).toHaveLength(2)
+    const narrowed = await upcasting.source({ query: { tags: { courseId }, types: [qn("axon-it", "Tagged")] } })
+    expect(narrowed.events.map((event) => event.identifier)).toEqual(identifiers)
 
     const stream = eventStore.open({ position: 0n, query: { tags: { courseId } } })
     try {
@@ -330,10 +336,71 @@ describe("Axon Server integration — axonServerConnection() family", () => {
         else await new Promise((r) => setTimeout(r, 20))
       }
       assert.equal(stream.error(), undefined)
-      expect(delivered.map((item) => byKey(item.event.tags))).toEqual(expected)
+      expect(delivered.map((item) => item.event.identifier)).toEqual(identifiers)
+      expect(delivered.map((item) => item.event.tags)).toEqual([[], []])
     } finally {
       stream.close()
     }
+  }, 60_000)
+
+  it("a processor sequences by a tag, and a state folds through an upcaster, without the tags being read back", async () => {
+    const run = crypto.randomUUID()
+    const LessonGiven = event({
+      name: qn("axon-it", "LessonGiven"),
+      payload: z.object({ courseId: z.string(), n: z.number(), poison: z.boolean().optional() }),
+      tags: { courseId: (p) => p.courseId },
+    })
+    const lesson = (courseId: string, n: number, poison?: boolean): EventMessage => {
+      const payload = { courseId, n, ...(poison ? { poison } : {}) }
+      return {
+        kind: "event",
+        identifier: crypto.randomUUID(),
+        name: LessonGiven.name,
+        version: LessonGiven.version,
+        payload,
+        metadata: {},
+        timestamp: Date.now(),
+        tags: tagsOf(LessonGiven, payload, {}),
+      }
+    }
+    const a = `course-a-${run}`
+    const b = `course-b-${run}`
+    await eventStore.append([lesson(a, 1, true), lesson(a, 2), lesson(b, 3)])
+
+    // The second lesson of course A waits behind the first, which fails.
+    const byCourse = (e: EventMessage) => e.tags.find((t) => t.key === "courseId")?.value ?? e.identifier
+    const queue = inMemoryDeadLetterQueue()
+    const delivered: Array<{ n: number; tags: EventMessage["tags"] }> = []
+    const handler = eventHandler(LessonGiven, (message) => {
+      if (message.payload.poison) throw new Error("poison pill")
+      delivered.push({ n: message.payload.n, tags: message.tags })
+    })
+    const name = `lessons-${run}`
+    const processor = polling(
+      deadLettering(eventProcessor(name, eventStore, inMemoryTokenStore(), unitOfWork), queue, byCourse),
+      20,
+    )
+    const lessons = kronos({ eventHandlers: [{ ...handler, commandBus, queryBus, processor }] })
+    try {
+      const deadline = Date.now() + 30_000
+      while ((delivered.length < 1 || (await queue.size(name)) < 2) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20))
+      }
+      expect(delivered).toEqual([{ n: 3, tags: [{ key: "courseId", value: b }] }])
+      const parked = await queue.deadLetterSequence(name, a)
+      expect(parked.map((letter) => (letter.message.payload as { n: number }).n)).toEqual([1, 2])
+    } finally {
+      await lessons.stop()
+    }
+
+    // A state folds the same events through an upcaster, which narrows the read to the state's types.
+    const Lessons = state({
+      id: { courseId: z.string() },
+      tags: ({ courseId }) => ({ courseId }),
+      evolve: [() => [] as number[], [LessonGiven, (given, { payload }) => [...given, payload.n]]],
+    })
+    const upcasting = upcastingEventStore(eventStore, (e) => e)
+    expect((await eventSourcedRepository(Lessons, upcasting).load({ courseId: a })).state).toEqual([1, 2])
   }, 60_000)
 
   it("enforces capacity limits via multi-event entity load", async () => {

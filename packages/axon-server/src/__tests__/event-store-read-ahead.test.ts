@@ -43,7 +43,6 @@ function storeOver(count: number, after: "open" | "end" | "fail" = "open") {
             options.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true })
           })
         },
-        getTags: async () => ({ tag: [] }),
       },
     } as any,
   }

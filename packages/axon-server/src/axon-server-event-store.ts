@@ -34,8 +34,6 @@ import type {
   TaggedEvent,
   Event as ProtoEvent,
   SourceEventsResponse,
-  StreamEventsRequest,
-  StreamEventsResponse,
 } from "./generated/dcb.js"
 
 // ---------------------------------------------------------------------------
@@ -47,14 +45,6 @@ function tagToProto(tag: Tag): ProtoTag {
   return {
     key: encoder.encode(tag.key),
     value: encoder.encode(tag.value),
-  }
-}
-
-function tagFromProto(tag: ProtoTag): Tag {
-  const decoder = new TextDecoder()
-  return {
-    key: decoder.decode(tag.key),
-    value: decoder.decode(tag.value),
   }
 }
 
@@ -116,7 +106,11 @@ function createEventConverters(serializer: Serializer) {
       }
     },
 
-    eventFromProto(protoEvent: ProtoEvent, tags: ProtoTag[]): EventMessage {
+    /**
+     * A `Source` or `Stream` response holds an event and its sequence, and
+     * not the tags it was appended with, so the event has none.
+     */
+    eventFromProto(protoEvent: ProtoEvent): EventMessage {
       const payload =
         protoEvent.payload.length > 0
           ? serializer.deserialize({
@@ -139,7 +133,7 @@ function createEventConverters(serializer: Serializer) {
         payload,
         metadata,
         timestamp: Number(protoEvent.timestamp),
-        tags: tags.map(tagFromProto),
+        tags: [],
       }
     },
   }
@@ -192,105 +186,9 @@ function isConditionRefused(err: unknown): boolean {
   return code === 1 && details.includes("ConsistencyConditionException")
 }
 
-/**
- * How many `GetTags` calls a read has in flight at once. `Source` and `Stream`
- * answer with an event and its sequence only, so each event's tags are asked
- * for by sequence.
- */
-const TAG_LOOKUPS = 64
-
-/** A `Stream` response with the event's tags beside it. */
-type TaggedResponse = { event: { sequence: bigint; event: ProtoEvent; tag: ProtoTag[] } }
-
-/**
- * The events of a `Stream` call, each with its tags, in the call's order.
- *
- * Reads up to {@link TAG_LOOKUPS} events ahead of its consumer so their lookups
- * run side by side, and hands an event out once its own tags have arrived and
- * every event before it has been handed out. A call that fails is reported
- * after the events read before the failure. `stop` is called when this ends,
- * however it ends.
- */
-async function* withTags(
-  responses: AsyncIterable<StreamEventsResponse>,
-  tagsOf: (sequence: bigint) => Promise<ProtoTag[]>,
-  stop: () => void,
-): AsyncGenerator<TaggedResponse> {
-  const call = responses[Symbol.asyncIterator]()
-  const ahead: Array<Promise<TaggedResponse>> = []
-  let reading: Promise<"read"> | undefined
-  let ended = false
-  let failure: { error: unknown } | undefined
-
-  /** Take one response off the call and start its lookup. Never rejects. */
-  async function read(): Promise<"read"> {
-    try {
-      const response = await call.next()
-      if (response.done) {
-        ended = true
-      } else if (response.value.event?.event) {
-        const { sequence, event } = response.value.event
-        const lookup = tagsOf(sequence).then((tag) => ({ event: { sequence, event, tag } }))
-        // A failed lookup is reported when this event's turn comes.
-        lookup.catch(() => {})
-        ahead.push(lookup)
-      }
-    } catch (error) {
-      ended = true
-      failure = { error }
-    }
-    reading = undefined
-    return "read"
-  }
-
-  try {
-    for (;;) {
-      if (!ended && reading === undefined && ahead.length < TAG_LOOKUPS) reading = read()
-      const next = ahead[0]
-      if (next === undefined) {
-        if (reading !== undefined) await reading
-        else if (failure !== undefined) throw failure.error
-        else return
-        continue
-      }
-      const settled = () => "tags" as const
-      if (reading === undefined || (await Promise.race([next.then(settled, settled), reading])) === "tags") {
-        ahead.shift()
-        yield await next
-      }
-    }
-  } finally {
-    stop()
-  }
-}
-
 export function axonServerEventStore(conn: AxonServerStoreSource, context: string): EventStore {
   const { connection, serializer, metadata: createAxonMetadata } = contextView(conn, context)
   const { eventToProto, eventFromProto } = createEventConverters(serializer)
-
-  /** The tags stored with the event at `sequence`. */
-  async function tagsOf(sequence: bigint, signal: AbortSignal): Promise<ProtoTag[]> {
-    const response = await connection.eventStore.getTags({ sequence }, { metadata: createAxonMetadata(), signal })
-    return response.tag
-  }
-
-  /**
-   * The `Stream` call with each event's tags looked up. Cancelling `signal`
-   * ends the call and its lookups, and so does a lookup that fails.
-   */
-  function taggedStream(
-    request: StreamEventsRequest,
-    options: { metadata: ReturnType<typeof createAxonMetadata>; signal: AbortSignal },
-  ): AsyncIterable<TaggedResponse> {
-    const call = new AbortController()
-    if (options.signal.aborted) call.abort()
-    else options.signal.addEventListener("abort", () => call.abort(), { once: true })
-    return withTags(
-      connection.eventStore.stream(request, { ...options, signal: call.signal }),
-      (sequence) => tagsOf(sequence, call.signal),
-      () => call.abort(),
-    )
-  }
 
   /**
    * The marker for a read from `start` that found nothing because it started
@@ -312,15 +210,13 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
       criterion: criterions,
     }
 
-    const found: Array<{ sequence: bigint; event: ProtoEvent }> = []
+    const events: EventMessage[] = []
     let marker: ConsistencyMarker = noMarker()
 
     try {
       const stream = connection.eventStore.source(request, { metadata: createAxonMetadata(), signal })
       for await (const response of stream) {
-        if (response.event?.event) {
-          found.push({ sequence: response.event.sequence, event: response.event.event })
-        }
+        if (response.event?.event) events.push(eventFromProto(response.event.event))
         if (response.consistencyMarker !== undefined) {
           marker = markerAt(response.consistencyMarker)
         }
@@ -338,21 +234,18 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
     // because that marker is after its head. A read that starts exactly at the
     // head gets the same answer, which is valid as it is, so only the head can
     // tell the two apart.
-    if (found.length === 0 && start > 0n && marker.position === start) {
+    if (events.length === 0 && start > 0n && marker.position === start) {
       return { events: [], marker: await markerPastHead(start, signal) }
-    }
-
-    const events: EventMessage[] = []
-    for (let from = 0; from < found.length; from += TAG_LOOKUPS) {
-      const batch = found.slice(from, from + TAG_LOOKUPS)
-      const tags = await Promise.all(batch.map(({ sequence }) => tagsOf(sequence, signal)))
-      batch.forEach(({ event }, index) => events.push(eventFromProto(event, tags[index]!)))
     }
 
     return { events, marker }
   }
 
   return {
+    // Axon Server matches a query against an event's tags and returns the
+    // event without them.
+    returnsTags: false,
+
     source(condition: SourcingCondition): Promise<SourcingResult> {
       return boundedRead(connection.config.readTimeoutMs, (signal) => sourceOnce(condition, signal))
     },
@@ -433,7 +326,7 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
       // container gets there after a handful): handlers never reply, and
       // commands die at the server's own timeout.
       const cancel = new AbortController()
-      const grpcStream = taggedStream(request, {
+      const grpcStream = connection.eventStore.stream(request, {
         metadata: createAxonMetadata(),
         signal: cancel.signal,
       })
@@ -469,7 +362,7 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
             if (taggedEvent?.event) {
               buffer.push({
                 sequence: taggedEvent.sequence,
-                event: eventFromProto(taggedEvent.event, taggedEvent.tag),
+                event: eventFromProto(taggedEvent.event),
               })
               availableCallback?.()
             }
