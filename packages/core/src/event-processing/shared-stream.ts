@@ -105,8 +105,19 @@ export function sharedStream(
     //   until an event of its own arrives.
     const moved = new Set<View>()
     while (!full() && inner.hasNextAvailable()) {
-      const read = inner.next()!
-      const event = each === undefined ? read : { ...read, event: each(read.event) }
+      const taken = inner.next()!
+      let event = taken
+      if (each !== undefined) {
+        try {
+          event = { ...taken, event: each(taken.event) }
+        } catch (error) {
+          // The event is off the log's stream and no view has it. Close the
+          // stream, so the view that reopens after this reads it again.
+          inner.close()
+          inner = null
+          throw error
+        }
+      }
       at = event.sequence + 1n
       for (const view of views) {
         if (event.sequence < view.skipBelow) continue
