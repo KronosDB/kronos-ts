@@ -38,7 +38,6 @@ import {
   type EventMessage,
   type EventStore,
   type SequencedEvent,
-  type Tag,
   type QueryBus,
   type Snapshot,
   type SnapshotCapableEventStore,
@@ -292,7 +291,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     expect((eventsB.events[0]!.payload as any).name).toBe("Course B")
   }, 60_000)
 
-  it("events read back carry the tags they were appended with", async () => {
+  it("events are read back without tags, and a read with tags finds them", async () => {
     const courseId = `course-tags-${crypto.randomUUID()}`
     const appended: EventMessage[] = [0, 1].map((n) => ({
       kind: "event",
@@ -308,17 +307,16 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       ],
     }))
     await eventStore.append(appended)
-
-    // Axon Server returns an event's tags in its own order.
-    const byKey = (tags: ReadonlyArray<Tag>) => [...tags].sort((a, b) => a.key.localeCompare(b.key))
-    const expected = appended.map((event) => byKey(event.tags))
+    const identifiers = appended.map((event) => event.identifier)
 
     const sourced = await eventStore.source({ query: { tags: { courseId } } })
-    expect(sourced.events.map((event) => byKey(event.tags))).toEqual(expected)
+    expect(sourced.events.map((event) => event.identifier)).toEqual(identifiers)
+    expect(sourced.events.map((event) => event.tags)).toEqual([[], []])
 
-    // A wrapper that matches events against the query by their tags finds them.
+    // A wrapper that narrows a read to the query finds them without their tags.
     const upcasting = upcastingEventStore(eventStore, (event) => event)
-    expect((await upcasting.source({ query: { tags: { courseId } } })).events).toHaveLength(2)
+    const narrowed = await upcasting.source({ query: { tags: { courseId }, types: [qn("axon-it", "Tagged")] } })
+    expect(narrowed.events.map((event) => event.identifier)).toEqual(identifiers)
 
     const stream = eventStore.open({ position: 0n, query: { tags: { courseId } } })
     try {
@@ -330,7 +328,8 @@ describe("Axon Server integration — axonServerConnection() family", () => {
         else await new Promise((r) => setTimeout(r, 20))
       }
       assert.equal(stream.error(), undefined)
-      expect(delivered.map((item) => byKey(item.event.tags))).toEqual(expected)
+      expect(delivered.map((item) => item.event.identifier)).toEqual(identifiers)
+      expect(delivered.map((item) => item.event.tags)).toEqual([[], []])
     } finally {
       stream.close()
     }
