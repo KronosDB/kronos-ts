@@ -94,13 +94,15 @@ describe("event processor over a live event store", () => {
 
       // Append events directly to the store
       await eventStore.append([{
-        kind: "event",
-        identifier: "e1",
-        name: qn("university", "CourseCreated"),
-        version: "1.0",
-        payload: { courseId: "cs-101", name: "Intro" },
-        metadata: {},
-        timestamp: Date.now(),
+        event: {
+          kind: "event",
+          identifier: "e1",
+          name: qn("university", "CourseCreated"),
+          version: "1.0",
+          payload: { courseId: "cs-101", name: "Intro" },
+          metadata: {},
+          timestamp: Date.now(),
+        },
         tags: [tag("courseId", "cs-101")],
       }])
 
@@ -109,13 +111,15 @@ describe("event processor over a live event store", () => {
 
       // Second event — should also be pushed
       await eventStore.append([{
-        kind: "event",
-        identifier: "e2",
-        name: qn("university", "CourseCreated"),
-        version: "1.0",
-        payload: { courseId: "cs-201", name: "Advanced" },
-        metadata: {},
-        timestamp: Date.now(),
+        event: {
+          kind: "event",
+          identifier: "e2",
+          name: qn("university", "CourseCreated"),
+          version: "1.0",
+          payload: { courseId: "cs-201", name: "Advanced" },
+          metadata: {},
+          timestamp: Date.now(),
+        },
         tags: [tag("courseId", "cs-201")],
       }])
 
@@ -134,23 +138,27 @@ describe("event processor over a live event store", () => {
 
       // Store some events first
       await eventStore.append([{
-        kind: "event",
-        identifier: "e1",
-        name: qn("university", "CourseCreated"),
-        version: "1.0",
-        payload: { courseId: "cs-101", name: "Intro" },
-        metadata: {},
-        timestamp: Date.now(),
+        event: {
+          kind: "event",
+          identifier: "e1",
+          name: qn("university", "CourseCreated"),
+          version: "1.0",
+          payload: { courseId: "cs-101", name: "Intro" },
+          metadata: {},
+          timestamp: Date.now(),
+        },
         tags: [tag("courseId", "cs-101")],
       }])
       await eventStore.append([{
-        kind: "event",
-        identifier: "e2",
-        name: qn("university", "CourseCreated"),
-        version: "1.0",
-        payload: { courseId: "cs-201", name: "Advanced" },
-        metadata: {},
-        timestamp: Date.now(),
+        event: {
+          kind: "event",
+          identifier: "e2",
+          name: qn("university", "CourseCreated"),
+          version: "1.0",
+          payload: { courseId: "cs-201", name: "Advanced" },
+          metadata: {},
+          timestamp: Date.now(),
+        },
         tags: [tag("courseId", "cs-201")],
       }])
 

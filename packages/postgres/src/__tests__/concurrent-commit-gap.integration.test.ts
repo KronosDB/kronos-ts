@@ -28,7 +28,7 @@ import { DEFAULT_TABLE_NAMES } from "../schema.js"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { postgresEventStore } from "../postgres-event-store.js"
 import { generateIdentifier } from "@kronos-ts/core"
-import type { EventMessage, SequencedEvent } from "@kronos-ts/core"
+import type { SequencedEvent, TaggedEvent } from "@kronos-ts/core"
 
 let pg: RunningPostgres
 let adapter: ReturnType<typeof pgAdapter>
@@ -39,16 +39,19 @@ let store: ReturnType<typeof postgresEventStore>
 const HOLD_MS = 400
 const TRIALS = 20
 
-function makeEvent(label: string): EventMessage {
+function makeEvent(label: string): TaggedEvent {
   return {
-    identifier: generateIdentifier(),
-    name: { namespace: "test", name: label },
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: { namespace: "test", name: label },
+      payload: {},
+      metadata: {},
+      timestamp: Date.now(),
+      version: "1",
+    },
     tags: [{ key: "label", value: label }],
-    payload: {},
-    metadata: {},
-    timestamp: Date.now(),
-    version: "1",
-  } as unknown as EventMessage
+  }
 }
 
 async function collectAtLeast<T>(

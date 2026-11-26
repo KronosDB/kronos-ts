@@ -5,7 +5,7 @@ import {
   emptyMetadata,
   event,
   type EventDescriptor,
-  type EventMessage,
+  type TaggedEvent,
   tagsOf,
 } from "../../messaging/messages.js"
 import type { InferOutput, StandardSchemaV1 } from "../../messaging/standard-schema.js"
@@ -56,15 +56,17 @@ const Course = state({
   ],
 })
 
-function eventMsg<P extends StandardSchemaV1>(descriptor: EventDescriptor<P>, payload: InferOutput<P>): EventMessage {
+function eventMsg<P extends StandardSchemaV1>(descriptor: EventDescriptor<P>, payload: InferOutput<P>): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: descriptor.name,
-    version: descriptor.version,
-    payload,
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: descriptor.name,
+      version: descriptor.version,
+      payload,
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags: tagsOf(descriptor, payload, emptyMetadata()),
   }
 }
@@ -95,37 +97,6 @@ describe("EventSourcedRepository", () => {
 
     // then
     expect(state).toEqual({ created: true, name: "Intro to CS", capacity: 30 })
-  })
-
-  it("hands an evolver the tags the descriptor gives an event the log read back without any", async () => {
-    const log = inMemoryEventStore()
-    // A log that matches a query against an event's tags and hands the event back without them.
-    const store: typeof log = {
-      ...log,
-      async source(condition) {
-        const read = await log.source(condition)
-        return { ...read, events: read.events.map((event) => ({ ...event, tags: [] })) }
-      },
-    }
-    const Subscribers = state({
-      id: { courseId: z.string() },
-      tags: (id) => ({ courseId: id.courseId }),
-      evolve: [
-        () => [] as string[],
-        [StudentSubscribedToCourse, (students, event) => [
-          ...students,
-          event.tags.find((t) => t.key === "studentId")?.value ?? "no tag",
-        ]],
-      ],
-    })
-    await log.append([
-      eventMsg(StudentSubscribedToCourse, { courseId: "cs-101", studentId: "s-1" }),
-      eventMsg(StudentSubscribedToCourse, { courseId: "cs-101", studentId: "s-2" }),
-    ])
-
-    const { state: loaded } = await eventSourcedRepository(Subscribers, store).load({ courseId: "cs-101" })
-
-    expect(loaded).toEqual(["s-1", "s-2"])
   })
 
   it("applies multiple events in order", async () => {

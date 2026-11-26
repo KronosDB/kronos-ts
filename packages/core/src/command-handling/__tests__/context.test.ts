@@ -127,11 +127,11 @@ describe("handler context", () => {
     await unitOfWork().execute(async (uow) => {
       await invocation(makeCommandMessage(CreateCourse, { courseId: "c1", name: "Intro" }), uow)
 
-      const buffered = uow.events.buffered as any[]
+      const buffered = uow.events.buffered
       expect(buffered).toHaveLength(1)
-      expect(buffered[0].name).toEqual(CourseCreated.name)
-      expect(buffered[0].payload).toEqual({ courseId: "c1", name: "Intro" })
-      expect(buffered[0].tags).toEqual([{ key: "courseId", value: "c1" }])
+      expect(buffered[0]!.event.name).toEqual(CourseCreated.name)
+      expect(buffered[0]!.event.payload).toEqual({ courseId: "c1", name: "Intro" })
+      expect(buffered[0]!.tags).toEqual([{ key: "courseId", value: "c1" }])
     })
   })
 
@@ -140,13 +140,15 @@ describe("handler context", () => {
     const eventStore = inMemoryEventStore()
     await eventStore.append([
       {
-        kind: "event",
-        identifier: "seeded",
-        name: CourseCreated.name,
-        version: CourseCreated.version,
-        payload: { courseId: "c1", name: "Intro" },
-        metadata: emptyMetadata(),
-        timestamp: Date.now(),
+        event: {
+          kind: "event",
+          identifier: "seeded",
+          name: CourseCreated.name,
+          version: CourseCreated.version,
+          payload: { courseId: "c1", name: "Intro" },
+          metadata: emptyMetadata(),
+          timestamp: Date.now(),
+        },
         tags: [{ key: "courseId", value: "c1" }],
       },
     ])
@@ -251,7 +253,6 @@ describe("handler context", () => {
         payload: { courseId: "c1", name: "Intro" },
         metadata: emptyMetadata(),
         timestamp: Date.now(),
-        tags: [],
         sequence: 1n,
       } as any,
       ctx,
@@ -291,9 +292,9 @@ describe("handler context portability", () => {
     await unitOfWork().execute(async (uow) => {
       await invocation(makeCommandMessage(CreateCourse, { courseId: "c1", name: "Intro" }), uow)
 
-      const buffered = uow.events.buffered as Array<{ payload: { courseId: string } }>
+      const buffered = uow.events.buffered
       expect(buffered).toHaveLength(1)
-      expect(buffered[0]!.payload.courseId).toBe("c1")
+      expect((buffered[0]!.event.payload as { courseId: string }).courseId).toBe("c1")
     })
   })
 

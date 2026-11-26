@@ -49,7 +49,6 @@ function eventMessage(metadata: Metadata): SequencedEventMessage {
     payload: {},
     metadata,
     timestamp: Date.now(),
-    tags: [{ key: "id", value: "c-1" }],
   }
 }
 

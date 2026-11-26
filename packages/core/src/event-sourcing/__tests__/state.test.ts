@@ -174,7 +174,6 @@ describe("state()", () => {
         payload: { courseId: "cs-101", name: "Intro to CS", capacity: 30 },
         metadata: {},
         timestamp: Date.now(),
-        tags: [],
       },
     ) as CourseState
     expect(current).toEqual({ created: true, name: "Intro to CS", capacity: 30 })
@@ -191,7 +190,6 @@ describe("state()", () => {
         payload: { courseId: "cs-101", capacity: 50 },
         metadata: {},
         timestamp: Date.now(),
-        tags: [],
       },
     ) as CourseState
     expect(current).toEqual({ created: true, name: "Intro to CS", capacity: 50 })

@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { qn, emptyMetadata, command, event, type EventMessage } from "../../messaging/messages.js"
+import { qn, emptyMetadata, command, event, type TaggedEvent } from "../../messaging/messages.js"
 import { commandHandler } from "../../command-handling/handler.js"
 import { state } from "../state.js"
 import { kronos } from "../../kronos.js"
@@ -64,7 +64,7 @@ const touchThing = commandHandler(TouchThing, async ({ payload: cmd }, ctx) => {
 // ─── Probe wrapper ──────────────────────────────────────────────────────────
 
 type AppendRecord = {
-  events: ReadonlyArray<EventMessage>
+  events: ReadonlyArray<TaggedEvent>
   condition: AppendCondition | undefined
 }
 

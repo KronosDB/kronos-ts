@@ -28,7 +28,7 @@
  *
  *   schedule(event, at)
  *     → requires INVOCATION phase
- *     → captures tags via the configured TagResolver at schedule-time
+ *     → keeps the tags the event is to be appended under
  *     → INSERT row (schedule_id = event.identifier, status='pending')
  *     → joins the unit of work's transaction via sharedPostgresTransaction();
  *       if the UoW rolls back, the schedule is never persisted
@@ -53,7 +53,7 @@
  *     2. SELECT … WHERE status='pending' AND fire_at <= now()
  *        ORDER BY fire_at LIMIT $batchSize FOR UPDATE SKIP LOCKED
  *        — the SKIP LOCKED keeps multiple worker instances safe
- *     3. for each row: reconstruct EventMessage, call eventStore.append
+ *     3. for each row: reconstruct the event and its tags, call eventStore.append
  *        (which joins the same UoW tx), UPDATE status='appended'
  *     4. UoW COMMIT → all appends + status flips land atomically
  *
@@ -74,7 +74,7 @@
  */
 
 import { qualifiedNameToString, qualifiedNameFromString } from "@kronos-ts/core"
-import type { EventMessage } from "@kronos-ts/core"
+import type { EventMessage, TaggedEvent } from "@kronos-ts/core"
 import type {
   ScheduleStoreCapability,
   ScheduleToken,
@@ -144,11 +144,11 @@ export function postgresSchedulingEventStore<E extends EventStore>(
 
   async function insertSchedule(
     tx: PostgresAdapterTransaction,
-    event: EventMessage,
+    { event, tags }: TaggedEvent,
     at: Date,
   ): Promise<string> {
     const scheduleId = event.identifier
-    const encodedTags = event.tags.map((t) => encodeTag(t.key, t.value))
+    const encodedTags = tags.map((t) => encodeTag(t.key, t.value))
     // payload and metadata are bound as TEXT and cast to JSONB by the server:
     // postgres.js and Bun.SQL encode a string bound to a JSONB parameter as a
     // JSON string.
@@ -201,7 +201,7 @@ export function postgresSchedulingEventStore<E extends EventStore>(
     return v ?? {}
   }
 
-  function decodeTags(encoded: string[]): EventMessage["tags"] {
+  function decodeTags(encoded: string[]): TaggedEvent["tags"] {
     return encoded.map((t) => {
       // U+001F unit separator — matches encodeTag in criteria-sql.ts
       const sep = t.indexOf("")
@@ -211,15 +211,18 @@ export function postgresSchedulingEventStore<E extends EventStore>(
     })
   }
 
-  function reconstructEvent(row: ScheduleRow): EventMessage {
+  /** The scheduled event and the tags it is to be appended under, as they were kept. */
+  function reconstructEvent(row: ScheduleRow): TaggedEvent {
     return {
-      kind: "event",
-      identifier: row.schedule_id,
-      name: qualifiedNameFromString(row.type),
-      payload: decodeJsonbValue(row.payload),
-      metadata: decodeJsonbValue(row.metadata) as EventMessage["metadata"],
-      timestamp: Number(row.timestamp),
-      version: row.version,
+      event: {
+        kind: "event",
+        identifier: row.schedule_id,
+        name: qualifiedNameFromString(row.type),
+        payload: decodeJsonbValue(row.payload),
+        metadata: decodeJsonbValue(row.metadata) as EventMessage["metadata"],
+        timestamp: Number(row.timestamp),
+        version: row.version,
+      },
       tags: decodeTags(row.tags),
     }
   }
@@ -288,7 +291,7 @@ export function postgresSchedulingEventStore<E extends EventStore>(
   return {
     ...next,
 
-    async schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
+    async schedule(event: TaggedEvent, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
       if (uow === undefined) {
         throw new NoActiveUnitOfWork(
           "postgresSchedulingEventStore.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",

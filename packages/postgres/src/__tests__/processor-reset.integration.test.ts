@@ -20,8 +20,8 @@ import {
   unitOfWork,
   type App,
   type EventDescriptor,
-  type EventMessage,
   type RunningProcessor,
+  type TaggedEvent,
 } from "@kronos-ts/core"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { postgresEventStore } from "../postgres-event-store.js"
@@ -47,15 +47,17 @@ afterAll(async () => {
   await pg.stop()
 }, 30_000)
 
-function counted(n: number): EventMessage {
+function counted(n: number): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: Counted.name,
-    version: "1.0",
-    payload: { n },
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: Counted.name,
+      version: "1.0",
+      payload: { n },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags: [],
   }
 }

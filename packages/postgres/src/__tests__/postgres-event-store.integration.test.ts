@@ -10,7 +10,7 @@ import { AppendConditionError } from "../errors.js"
 import { ORIGIN, unitOfWork } from "@kronos-ts/core"
 import { postgresUnitOfWork } from "../postgres-transaction.js"
 import { generateIdentifier } from "@kronos-ts/core"
-import type { EventMessage, SerializedObject, Serializer } from "@kronos-ts/core"
+import type { SerializedObject, Serializer, TaggedEvent } from "@kronos-ts/core"
 
 let pg: RunningPostgres
 let adapter: ReturnType<typeof pgAdapter>
@@ -27,17 +27,19 @@ const NOOP_SERIALIZER: Serializer = {
   canConvert: () => true,
 }
 
-function makeEvent(type: string, tags: { key: string; value: string }[], payload: unknown = {}): EventMessage {
+function makeEvent(type: string, tags: { key: string; value: string }[], payload: unknown = {}): TaggedEvent {
   // Note: QualifiedName uses 'name' (not 'localName') per packages/common/src/qualified-name.ts
   return {
-    kind: "event",
-    identifier: generateIdentifier(), // UUID v7 per quick 260511-mks
-    name: { namespace: "test", name: type },
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(), // UUID v7 per quick 260511-mks
+      name: { namespace: "test", name: type },
+      payload,
+      metadata: {},
+      timestamp: Date.now(),
+      version: "1",
+    },
     tags,
-    payload,
-    metadata: {},
-    timestamp: Date.now(),
-    version: "1",
   }
 }
 
@@ -103,8 +105,8 @@ describe("append + source", () => {
   it("source() round-trips the full EventMessage — identifier, timestamp, version (engine parity)", async () => {
     // Guards the contract gap where postgres dropped identifier/timestamp/version on read
     // while the in-memory, axon-server, and kronosdb engines preserved them.
-    const original = makeEvent("OrderPlaced", [{ key: "order", value: "RT" }], { amount: 42 })
-    await store.append([original])
+    const { event: original } = makeEvent("OrderPlaced", [{ key: "order", value: "RT" }], { amount: 42 })
+    await store.append([{ event: original, tags: [{ key: "order", value: "RT" }] }])
 
     const result = await store.source({
       query: { tags: { order: "RT" } },

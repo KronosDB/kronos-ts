@@ -16,7 +16,7 @@ import {
   is,
   queryDescriptor,
   type EventDescriptor,
-  type EventMessage,
+  type TaggedEvent,
   tagsOf,
 } from "../../messaging/messages.js"
 import { generateIdentifier } from "../../messaging/identifier.js"
@@ -72,15 +72,17 @@ const CountSubscribers = queryDescriptor({
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /** A fact, written straight to the log — the "given" of these tests. */
-function fact(descriptor: EventDescriptor<any>, payload: any, version?: string): EventMessage {
+function fact(descriptor: EventDescriptor<any>, payload: any, version?: string): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: descriptor.name,
-    version: version ?? descriptor.version,
-    payload,
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: descriptor.name,
+      version: version ?? descriptor.version,
+      payload,
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags: tagsOf(descriptor, payload, emptyMetadata()),
   }
 }

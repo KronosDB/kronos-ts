@@ -11,27 +11,27 @@
 
 import type { EventMessage } from "@kronos-ts/core"
 import { qualifiedNameFromString } from "@kronos-ts/core"
-import { TAG_DELIMITER } from "./criteria-sql.js"
 
 /** One `kronos_events` row, as every read path asks for it. */
 export type EventRow = {
   sequence_position: string
   event_id: string
   type: string
-  tags: string[]
   payload: unknown
   metadata: unknown
   version: string
   timestamp: string | number
 }
 
-/** The columns every read path selects, in the one order both of them use. */
+/**
+ * The columns every read path selects, in the one order both of them use. The
+ * `tags` column is the index reads are matched on, and is not read back.
+ */
 export const EVENT_COLUMNS =
-  "sequence_position, event_id, type, tags, payload, metadata, version, timestamp"
+  "sequence_position, event_id, type, payload, metadata, version, timestamp"
 
 export function decodeEvent(row: {
   type: string
-  tags: string[]
   payload: unknown
   metadata: unknown
   sequence_position: string
@@ -40,18 +40,11 @@ export function decodeEvent(row: {
   timestamp: string | number
 }): EventMessage {
   const qn = qualifiedNameFromString(row.type)
-  const tags = row.tags.map((t) => {
-    const sep = t.indexOf(TAG_DELIMITER)
-    return sep >= 0
-      ? { key: t.slice(0, sep), value: t.slice(sep + 1) }
-      : { key: t, value: "" }
-  })
   return {
     kind: "event",
     identifier: row.event_id,
     name: qn,
     version: row.version,
-    tags,
     payload: decodeJsonb(row.payload),
     metadata: decodeJsonb(row.metadata) as EventMessage["metadata"],
     timestamp: Number(row.timestamp),

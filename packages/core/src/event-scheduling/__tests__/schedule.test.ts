@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from "bun:test"
-import { qn, emptyMetadata } from "../../messaging/messages.js"
+import { qn, emptyMetadata, type TaggedEvent } from "../../messaging/messages.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
 import { correlatingHandler } from "../../correlation/correlating-handler.js"
 import { scheduleFunctions } from "../schedule.js"
@@ -30,12 +30,12 @@ const descriptor = {
  * `eventStore` and the mock is named for what it stands in for.
  */
 function mockSchedulingLog() {
-  const scheduled: Array<{ event: any; at: Date }> = []
+  const scheduled: Array<{ event: TaggedEvent; at: Date }> = []
   const cancelled: unknown[] = []
   return {
     scheduled,
     cancelled,
-    schedule: mock(async (event: any, at: Date, _uow?: unknown) => {
+    schedule: mock(async (event: TaggedEvent, at: Date, _uow?: unknown) => {
       scheduled.push({ event, at })
       return { id: `tok-${scheduled.length}` }
     }),
@@ -61,11 +61,11 @@ describe("schedule helpers", () => {
 
     expect(token).toEqual({ id: "tok-1" })
     expect(sm.scheduled).toHaveLength(1)
-    const { event, at: usedAt } = sm.scheduled[0]!
+    const { event: { event, tags }, at: usedAt } = sm.scheduled[0]!
     expect(event.name).toEqual(EVENT_NAME)
     expect(event.version).toBe("1.0")
     expect(event.payload).toEqual({ id: "A", v: 1 })
-    expect(event.tags).toEqual([{ key: "id", value: "A" }])
+    expect(tags).toEqual([{ key: "id", value: "A" }])
     expect(event.identifier).toBeDefined()
     expect(usedAt).toBe(at)
   })
@@ -84,7 +84,7 @@ describe("schedule helpers", () => {
       await handler(causingCommand, ctx)
     })
 
-    expect(sm.scheduled[0]!.event.metadata).toMatchObject({
+    expect(sm.scheduled[0]!.event.event.metadata).toMatchObject({
       correlationId: "corr-1",
       causationId: "cmd-1",
     })
@@ -103,7 +103,7 @@ describe("schedule helpers", () => {
       await handler(causingCommand, ctx)
     })
 
-    expect(sm.scheduled[0]!.event.metadata).toEqual({
+    expect(sm.scheduled[0]!.event.event.metadata).toEqual({
       tenant: "acme",
       correlationId: "corr-1",
       causationId: "cmd-1",
@@ -120,7 +120,7 @@ describe("schedule helpers", () => {
       await schedule(descriptor, { id: "A" }, new Date(Date.now() + 60_000), { tenant: "acme" } as any)
     })
 
-    expect(sm.scheduled[0]!.event.metadata).toEqual({ tenant: "acme" })
+    expect(sm.scheduled[0]!.event.event.metadata).toEqual({ tenant: "acme" })
   })
 
   it("scheduleAfter fires delayMs from now", async () => {

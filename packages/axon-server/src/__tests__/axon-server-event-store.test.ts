@@ -91,7 +91,7 @@ describe("axonServerEventStore and an event's tags", () => {
     const over = storeOver(3)
     const { events } = await over.store.source({ query: { tags: { all: "things" } } })
     expect(events.map((event) => event.identifier)).toEqual(["event-0", "event-1", "event-2"])
-    expect(events.map((event) => event.tags)).toEqual([[], [], []])
+    for (const event of events) expect(event).not.toHaveProperty("tags")
     expect(over.tagLookups).toBe(0)
   })
 
@@ -101,7 +101,7 @@ describe("axonServerEventStore and an event's tags", () => {
     try {
       const events = await take(stream, 3)
       expect(events.map((delivered) => delivered.sequence)).toEqual([0n, 1n, 2n])
-      expect(events.map((delivered) => delivered.event.tags)).toEqual([[], [], []])
+      for (const delivered of events) expect(delivered.event).not.toHaveProperty("tags")
       expect(over.tagLookups).toBe(0)
     } finally {
       stream.close()

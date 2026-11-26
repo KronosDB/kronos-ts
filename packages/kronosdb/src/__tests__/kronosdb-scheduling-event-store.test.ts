@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { inMemoryEventStore, qn, tag } from "@kronos-ts/core"
-import type { EventMessage } from "@kronos-ts/core"
+import type { TaggedEvent } from "@kronos-ts/core"
 import { connectToKronosDb, type KronosDbConnection } from "../connection.js"
 import {
   kronosDbSchedulingEventStore,
@@ -21,15 +21,17 @@ const serializer = {
   canConvert: () => true,
 }
 
-function sampleEvent(): EventMessage {
+function sampleEvent(): TaggedEvent {
   return {
-    kind: "event",
-    identifier: "evt-1",
-    name: qn("billing", "PaymentTimedOut"),
-    version: "1.0",
-    payload: { orderId: "A-1" },
-    metadata: { source: "test" },
-    timestamp: 1_700_000_000_000,
+    event: {
+      kind: "event",
+      identifier: "evt-1",
+      name: qn("billing", "PaymentTimedOut"),
+      version: "1.0",
+      payload: { orderId: "A-1" },
+      metadata: { source: "test" },
+      timestamp: 1_700_000_000_000,
+    },
     tags: [tag("orderId", "A-1")],
   }
 }

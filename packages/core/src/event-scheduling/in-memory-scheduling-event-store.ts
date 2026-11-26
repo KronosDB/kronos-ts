@@ -14,7 +14,7 @@
 // it reads and writes.
 // ---------------------------------------------------------------------------
 
-import type { EventMessage } from "../messaging/messages.js"
+import type { TaggedEvent } from "../messaging/messages.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
 import type { CancelResult, ScheduleStoreCapability, ScheduleToken } from "./scheduler.js"
 import { NoActiveUnitOfWork, Phase, requireInvocation, type UnitOfWork } from "../unit-of-work/unit-of-work.js"
@@ -24,7 +24,7 @@ type RecordStatus = "pending" | "appended" | "cancelled"
 
 type ScheduleRecord = {
   status: RecordStatus
-  event: EventMessage
+  event: TaggedEvent
   fireAt: number
   /** Whether the task that scheduled it has committed. Only then does it have a timer. */
   committed: boolean
@@ -123,7 +123,7 @@ export function inMemorySchedulingEventStore<E extends EventStore>(
   return {
     ...next,
 
-    async schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
+    async schedule(event: TaggedEvent, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
       if (uow === undefined) {
         throw new NoActiveUnitOfWork(
           "inMemorySchedulingEventStore.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",

@@ -205,7 +205,6 @@ describe("Message Descriptors", () => {
       payload: { courseId: "cs-101", capacity: 30 },
       metadata: {},
       timestamp: 1_700_000_000_000,
-      tags: [{ key: "courseId", value: "cs-101" }],
     } as Message
 
     it("narrows a COMMAND to its descriptor's payload", () => {
@@ -231,7 +230,6 @@ describe("Message Descriptors", () => {
       if (is(courseCreated, CourseCreated)) {
         const capacity: number = courseCreated.payload.capacity
         expect(capacity).toBe(30)
-        expect(courseCreated.tags).toEqual([{ key: "courseId", value: "cs-101" }])
       } else {
         throw new Error("expected the event to match")
       }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { z } from "zod"
 import { upcast, upcastingEventStore } from "../upcasting-event-store.js"
 import { inMemoryEventStore } from "../../event-sourcing/in-memory.js"
-import { event, qn, type EventDescriptor, type EventMessage } from "../../messaging/messages.js"
+import { event, qn, type EventDescriptor, type EventMessage, type TaggedEvent } from "../../messaging/messages.js"
 import { state } from "../../event-sourcing/state.js"
 import { eventSourcedRepository } from "../../event-sourcing/repository.js"
 
@@ -36,15 +36,17 @@ function stored(
   descriptor: EventDescriptor<any>,
   payload: Record<string, unknown>,
   tags: Record<string, string> = { courseId: String(payload.courseId) },
-): EventMessage {
+): TaggedEvent {
   return {
-    kind: "event",
-    identifier: `e-${++seq}`,
-    name: descriptor.name,
-    version: descriptor.version,
-    payload,
-    metadata: {},
-    timestamp: 1_700_000_000_000,
+    event: {
+      kind: "event",
+      identifier: `e-${++seq}`,
+      name: descriptor.name,
+      version: descriptor.version,
+      payload,
+      metadata: {},
+      timestamp: 1_700_000_000_000,
+    },
     tags: Object.entries(tags).map(([key, value]) => ({ key, value })),
   }
 }
@@ -89,12 +91,13 @@ describe("upcastingEventStore", () => {
 
     const { events } = await upcastingEventStore(log, [capacityAdded, departmentAdded]).source(onCourse)
 
-    expect(events).toEqual([current, other])
+    expect(events).toEqual([current.event, other.event])
   })
 
   it("hands the map the stored event beside its payload", async () => {
     const log = inMemoryEventStore()
-    await log.append([{ ...stored(CourseCreatedV1, { courseId: "cs-101", name: "Intro" }), metadata: { by: "dean" } }])
+    const outdated = stored(CourseCreatedV1, { courseId: "cs-101", name: "Intro" })
+    await log.append([{ ...outdated, event: { ...outdated.event, metadata: { by: "dean" } } }])
     const stamped = upcast(CourseCreatedV1, CourseCreatedV2, (payload, e) => ({
       ...payload,
       capacity: e.metadata.by === "dean" ? 100 : 30,
@@ -124,7 +127,7 @@ describe("upcastingEventStore", () => {
 
     await store.append([outdated])
 
-    expect((await log.source(onCourse)).events).toEqual([outdated])
+    expect((await log.source(onCourse)).events).toEqual([outdated.event])
     expect(await store.getHeadPosition()).toBe(1n)
   })
 
@@ -133,7 +136,7 @@ describe("upcastingEventStore", () => {
     const outdated = stored(CourseCreatedV1, { courseId: "cs-101", name: "Intro" })
     await log.append([outdated])
 
-    expect((await upcastingEventStore(log, []).source(onCourse)).events).toEqual([outdated])
+    expect((await upcastingEventStore(log, []).source(onCourse)).events).toEqual([outdated.event])
   })
 
   it("refuses two upcasts from the same descriptor", () => {
@@ -309,7 +312,7 @@ describe("upcastingEventStore and a read of several items", () => {
   const subscription = (courseId: string, studentId: string) =>
     stored(Subscribed, { courseId, studentId }, { courseId, studentId })
 
-  /** A log that hands its events back without tags, and how many times it was read. */
+  /** A log that remembers how many times it was read. */
   async function seeded() {
     const inner = inMemoryEventStore()
     await inner.append([
@@ -324,8 +327,7 @@ describe("upcastingEventStore and a read of several items", () => {
       ...inner,
       async source(condition) {
         reads++
-        const read = await inner.source(condition)
-        return { ...read, events: read.events.map((e) => ({ ...e, tags: [] })) }
+        return inner.source(condition)
       },
     }
     return { log, reads: () => reads }

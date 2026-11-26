@@ -11,7 +11,6 @@ function testEvent(name: string, payload: unknown = {}): EventMessage {
     payload,
     metadata: {},
     timestamp: Date.now(),
-    tags: [],
   }
 }
 
@@ -312,7 +311,7 @@ describe("InMemorySequencedDeadLetterQueue", () => {
         uow.onPrepareCommit(() => void events.push(`prepare:${id}`))
         uow.onCommit(() => void events.push(`commit:${id}`))
         uow.onError(() => void events.push(`error:${id}`))
-        uow.events.buffered.push(l.message)
+        uow.events.buffered.push({ event: l.message, tags: [] })
         return id === "id-B"
           ? { shouldEnqueue: true, cause: new TypeError("still failing"), diagnostics: { note: "kept" } }
           : { shouldEnqueue: false }

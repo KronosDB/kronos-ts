@@ -105,7 +105,7 @@ const configured = batched(
   stageConfig.batch,
 )
 // A sequence is what a handler touches: the account, or with a row per event the event.
-const byRow = (e: EventMessage) => (uniqueKeys ? e.identifier : e.tags.find((t) => t.key === "account")?.value ?? e.identifier)
+const byRow = (e: EventMessage) => (uniqueKeys ? e.identifier : (e.payload as { account?: string }).account ?? e.identifier)
 const sideBySide = stageConfig.concurrent ? concurrent(configured, byRow) : configured
 const processor = segments > 0 ? segmented(sideBySide, segments, byRow) : sideBySide
 

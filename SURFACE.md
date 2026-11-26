@@ -598,7 +598,7 @@ ctx.source(query: EventQuery): Promise<ReadonlyArray<EventMessage>>
 
 // ── event delivery: tracked only; the processor is a value ────────────────
 type Sequence = (event: EventMessage) => string    // TOTAL — (e) => e.identifier = own sequence = no constraint
-//   by tag, written out: (e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier
+//   by a payload field, written out: (e) => (e.payload as { accountId?: string }).accountId ?? e.identifier
 eventProcessor<U extends UnitOfWork = UnitOfWork, S extends EventStore = EventStore>(
   name: string, eventStore: S, tokenStore: TokenStore<U>, unitOfWork: () => U,   // constitutive, positional
 ): EventProcessor<U, S>       // `U` is read off the factory and threads to the event handler's ctx.unitOfWork;
@@ -834,8 +834,8 @@ on it, every frame written in the tick it was issued in one socket write. With
 TLS the server expects the handshake first on the same port (no plaintext
 fallback). Beside the `EventStore` shape, as functions of all their arguments:
 `kronosDbSubscription(kdb, context, condition, { progressIntervalMs })` (a
-stream that also reports `Progress` frames), `kronosDbTail`, `kronosDbTagsAt`,
-`kronosDbPositionAt`. Events read back carry their tags.
+stream that also reports `Progress` frames), `kronosDbTail`,
+`kronosDbPositionAt`.
 
 A COMMAND OR QUERY IS A STREAM OF ITS OWN, cancelled at its deadline (the server
 then abandons it); a HANDLER IS A LONG-LIVED STREAM per bus, opened at the first

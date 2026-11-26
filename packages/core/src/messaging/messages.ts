@@ -240,7 +240,16 @@ export type EventMessage<P = unknown> = Message<P> & {
   readonly kind: "event"
   readonly version: string
   readonly timestamp: number
-  readonly tags: ReadonlyArray<{ readonly key: string; readonly value: string }>
+}
+
+/**
+ * An event with the tags it is appended under. Tags are the log's index: they
+ * say what the event can be searched by, they are given once, at append, and
+ * no read hands them back.
+ */
+export type TaggedEvent = {
+  readonly event: EventMessage
+  readonly tags: ReadonlyArray<Tag>
 }
 
 /**
@@ -439,18 +448,6 @@ export function tagsOf<P extends StandardSchemaV1>(
     }
   }
   return out
-}
-
-/**
- * `event` with the tags `descriptor` gives it, when it was read back with none.
- * A log may match a query against an event's tags and hand the event back
- * without them; the descriptor's record gives the tags the event was appended
- * with. An event that carries tags is returned as it is.
- */
-export function withDescriptorTags(event: EventMessage, descriptor: EventDescriptor<any>): EventMessage {
-  if (event.tags.length > 0 || descriptor.tags === undefined) return event
-  const tags = tagsOf(descriptor, event.payload, event.metadata)
-  return tags.length === 0 ? event : { ...event, tags }
 }
 
 /**

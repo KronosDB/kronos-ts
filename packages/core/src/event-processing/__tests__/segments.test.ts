@@ -35,7 +35,6 @@ function growingLog() {
             payload,
             metadata: emptyMetadata(),
             timestamp: 0,
-            tags: [{ key: "account", value: payload.account }],
           },
         })
       }

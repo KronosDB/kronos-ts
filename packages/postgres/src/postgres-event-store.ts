@@ -36,6 +36,7 @@ import type { SourcingResult } from "@kronos-ts/core"
 import type { AppendCondition } from "@kronos-ts/core"
 import type {
   EventMessage,
+  TaggedEvent,
   EventCriteria,
   GapAwareToken,
   MessageStream,
@@ -71,7 +72,7 @@ const INSERT_BATCH_ROWS = 100
 
 /**
  * The DCB event store — and NOTHING BUT. `pg` carries both the client and the
- * table names, and an event carries its tags, so there is nothing else to say.
+ * table names, and an event is appended with its tags, so there is nothing else to say.
  *
  * IT HAS NEVER HEARD OF SNAPSHOTS. There is no `serializer` in its config any
  * more and no snapshot branch in its `source`: the base contract is complete
@@ -108,7 +109,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
    */
   function lockTargetsFor(
     condition: AppendCondition | undefined,
-    events: ReadonlyArray<EventMessage>,
+    events: ReadonlyArray<TaggedEvent>,
   ): LockTarget[] {
     const read = condition ? extractCriteriaTags(compileQuery(condition.query)) : []
     const written = events.flatMap((e) => encodedTagsOf(e))
@@ -129,8 +130,8 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
     }
   }
 
-  function encodedTagsOf(e: EventMessage): string[] {
-    return e.tags.map((t) => encodeTag(t.key, t.value))
+  function encodedTagsOf({ tags }: TaggedEvent): string[] {
+    return tags.map((t) => encodeTag(t.key, t.value))
   }
 
   /**
@@ -142,7 +143,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
    */
   async function checkAndInsert(
     tx: PostgresAdapterTransaction,
-    events: ReadonlyArray<EventMessage>,
+    events: ReadonlyArray<TaggedEvent>,
     condition: AppendCondition | undefined,
   ): Promise<{ position: bigint; xid: string }> {
     // --- Conflict check ---
@@ -188,12 +189,13 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
     for (let offset = 0; offset < events.length; offset += INSERT_BATCH_ROWS) {
       const batch = events.slice(offset, offset + INSERT_BATCH_ROWS)
       const params: unknown[] = []
-      const values = batch.map((e, index) => {
+      const values = batch.map((tagged, index) => {
+        const e = tagged.event
         const p = params.length
         params.push(
           e.identifier,
           eventTypeOf(e),
-          encodedTagsOf(e),
+          encodedTagsOf(tagged),
           JSON.stringify(e.payload ?? {}),
           JSON.stringify(e.metadata ?? {}),
           e.version,
@@ -264,7 +266,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
     source: sourcePlain,
 
     async append(
-      events: ReadonlyArray<EventMessage>,
+      events: ReadonlyArray<TaggedEvent>,
       condition?: AppendCondition,
       uow?: UnitOfWork,
     ): Promise<ConsistencyMarker> {
@@ -417,7 +419,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
           sql = `
             SELECT sequence_position::text AS sequence_position,
                    transaction_id::text AS transaction_id,
-                   event_id, type, tags, payload, metadata, version, timestamp
+                   event_id, type, payload, metadata, version, timestamp
             FROM ${tables.events}
             WHERE sequence_position > $1::bigint
               AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
@@ -436,7 +438,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
           sql = `
             SELECT sequence_position::text AS sequence_position,
                    transaction_id::text AS transaction_id,
-                   event_id, type, tags, payload, metadata, version, timestamp
+                   event_id, type, payload, metadata, version, timestamp
             FROM ${tables.events}
             WHERE (transaction_id, sequence_position) > ($1::xid8, $2::bigint)
               AND transaction_id < pg_snapshot_xmin(pg_current_snapshot())
@@ -452,7 +454,6 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
           transaction_id: string
           event_id: string
           type: string
-          tags: string[]
           payload: unknown
           metadata: unknown
           version: string

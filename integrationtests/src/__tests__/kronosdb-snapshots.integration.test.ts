@@ -33,7 +33,7 @@ import {
   generateIdentifier,
   jsonSerializer,
   type EventDescriptor,
-  type EventMessage,
+  type TaggedEvent,
   type EventStore,
   type SnapshotStoreCapability,
   tagsOf,
@@ -75,15 +75,17 @@ const Course = snapshot(state({
 }), "course-v1", afterEvents(2))
 
 /** One event, built at the raw layer — no command bus, no unit of work. */
-function fact(descriptor: EventDescriptor<any>, payload: any): EventMessage {
+function fact(descriptor: EventDescriptor<any>, payload: any): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: descriptor.name,
-    version: descriptor.version,
-    payload,
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: descriptor.name,
+      version: descriptor.version,
+      payload,
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags: tagsOf(descriptor, payload, emptyMetadata()),
   }
 }

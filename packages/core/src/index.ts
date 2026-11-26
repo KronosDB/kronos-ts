@@ -52,6 +52,7 @@ export {
   type CommandMessage,
   type CommandResultMessage,
   type EventMessage,
+  type TaggedEvent,
   type SequencedEventMessage,
   type QueryMessage,
   type CommandDescriptor,

@@ -126,7 +126,7 @@ export function postgresSnapshottingEventStore<E extends EventStore>(
            WHERE sequence_position >= (SELECT start_at FROM bound)
              AND (${built.where})
         )
-        SELECT ev.sequence_position, ev.event_id, ev.type, ev.tags,
+        SELECT ev.sequence_position, ev.event_id, ev.type,
                ev.payload, ev.metadata, ev.version, ev.timestamp,
                bound.start_at::text                         AS start_at,
                (SELECT position::text FROM snap)            AS snap_position,

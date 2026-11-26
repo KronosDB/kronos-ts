@@ -5,7 +5,7 @@ import { DEFAULT_TABLE_NAMES } from "../schema.js"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { postgresEventStore } from "../postgres-event-store.js"
 import { generateIdentifier } from "@kronos-ts/core"
-import type { EventMessage, SequencedEvent } from "@kronos-ts/core"
+import type { SequencedEvent, TaggedEvent } from "@kronos-ts/core"
 
 let pg: RunningPostgres
 let adapter: ReturnType<typeof pgAdapter>
@@ -13,16 +13,19 @@ let pool: PostgresResource
 let store: ReturnType<typeof postgresEventStore>
 
 
-function makeEvent(type: string, tags: { key: string; value: string }[]): EventMessage {
+function makeEvent(type: string, tags: { key: string; value: string }[]): TaggedEvent {
   return {
-    identifier: generateIdentifier(),
-    name: { namespace: "test", name: type },
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: { namespace: "test", name: type },
+      payload: {},
+      metadata: {},
+      timestamp: Date.now(),
+      version: "1",
+    },
     tags,
-    payload: {},
-    metadata: {},
-    timestamp: Date.now(),
-    version: "1",
-  } as unknown as EventMessage
+  }
 }
 
 async function collectAvailable<T>(

@@ -43,7 +43,7 @@ import type {
   ScheduleToken,
   UnitOfWork,
 } from "@kronos-ts/core"
-import type { EventMessage } from "@kronos-ts/core"
+import type { TaggedEvent } from "@kronos-ts/core"
 import type { KronosDbConnectionHandle } from "./kronosdb.js"
 import { KronosDbRequestError } from "./errors.js"
 import { writeRecord } from "./native-events.js"
@@ -103,7 +103,7 @@ export type KronosDbSchedulingControl = {
    * shared capability cannot promise idempotency; this is the KronosDB tier's
    * own, for the host that needs it. Persist the token to cancel with it.
    */
-  scheduleIdempotent(event: EventMessage, at: Date, token: string): Promise<ScheduleToken>
+  scheduleIdempotent(event: TaggedEvent, at: Date, token: string): Promise<ScheduleToken>
 }
 
 /**
@@ -122,7 +122,7 @@ export function kronosDbSchedulingEventStore<E extends EventStore>(
   const { serializer } = kdb
   const link = kdb.connection.native
 
-  async function arm(event: EventMessage, at: Date, requested: string): Promise<ScheduleToken> {
+  async function arm({ event, tags }: TaggedEvent, at: Date, requested: string): Promise<ScheduleToken> {
     const name = qualifiedNameToString(event.name)
     const data = serializer.serialize(event.payload, name, event.version).data
     const dueMs = at.getTime()
@@ -141,7 +141,7 @@ export function kronosDbSchedulingEventStore<E extends EventStore>(
           writeStr16(w, requested, "schedule token")
           // The event's timestamp is advisory: the server stamps the actual
           // append time when the schedule fires.
-          writeRecord(w, event, data)
+          writeRecord(w, event, tags, data)
         },
         (kind, buf, start, end) => {
           if (kind !== FrameKind.Scheduled) throw unexpected(kind, "Scheduled")
@@ -158,11 +158,11 @@ export function kronosDbSchedulingEventStore<E extends EventStore>(
   return {
     ...next,
 
-    async schedule(event: EventMessage, at: Date, _uow?: UnitOfWork): Promise<ScheduleToken> {
+    async schedule(event: TaggedEvent, at: Date, _uow?: UnitOfWork): Promise<ScheduleToken> {
       return arm(event, at, "")
     },
 
-    scheduleIdempotent(event: EventMessage, at: Date, token: string): Promise<ScheduleToken> {
+    scheduleIdempotent(event: TaggedEvent, at: Date, token: string): Promise<ScheduleToken> {
       return arm(event, at, token)
     },
 

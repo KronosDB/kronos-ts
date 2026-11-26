@@ -14,7 +14,7 @@
  */
 import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { emptyMetadata, inMemoryEventStore, jsonSerializer, qn, qualifiedNameToString, tag } from "@kronos-ts/core"
-import type { EventMessage, ScheduleStoreCapability } from "@kronos-ts/core"
+import type { ScheduleStoreCapability, TaggedEvent } from "@kronos-ts/core"
 import {
   connectToKronosDb,
   kronosDbEventStore,
@@ -27,15 +27,17 @@ import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 
 const serializer = jsonSerializer()
 
-function reminderEvent(orderId: string): EventMessage {
+function reminderEvent(orderId: string): TaggedEvent {
   return {
-    kind: "event",
-    identifier: crypto.randomUUID(),
-    name: qn("scheduler-e2e", "ReminderDue"),
-    version: "1.0",
-    payload: { orderId },
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: crypto.randomUUID(),
+      name: qn("scheduler-e2e", "ReminderDue"),
+      version: "1.0",
+      payload: { orderId },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags: [tag("orderId", orderId)],
   }
 }

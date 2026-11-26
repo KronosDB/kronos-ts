@@ -15,7 +15,7 @@
  * waits on an fsync per append. CPU per operation is the figure that isolates
  * the client; `--ack-mode written` on the server takes fsync out of the rest.
  */
-import { jsonSerializer, qn, type EventMessage, type EventStore, type Serializer } from "@kronos-ts/core"
+import { jsonSerializer, qn, type EventStore, type Serializer, type TaggedEvent } from "@kronos-ts/core"
 
 export type BenchClient = {
   readonly store: EventStore
@@ -40,17 +40,19 @@ export type CellResult = {
 
 const runtimeName = (): string => (process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`)
 
-function eventSource(run: string): () => EventMessage {
+function eventSource(run: string): () => TaggedEvent {
   let counter = 0
   const name = qn("bench", "OrderPlaced")
   return () => ({
-    kind: "event",
-    identifier: `${run}-${counter++}`,
-    name,
-    version: "1",
-    payload: { orderId: `order-${counter}`, customer: "customer-42", lines: [{ sku: "A-1", qty: 2 }, { sku: "B-7", qty: 1 }], total: 129.5 },
-    metadata: { correlationId: "c-1", causationId: "c-0", actor: "bench" },
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: `${run}-${counter++}`,
+      name,
+      version: "1",
+      payload: { orderId: `order-${counter}`, customer: "customer-42", lines: [{ sku: "A-1", qty: 2 }, { sku: "B-7", qty: 1 }], total: 129.5 },
+      metadata: { correlationId: "c-1", causationId: "c-0", actor: "bench" },
+      timestamp: Date.now(),
+    },
     tags: [
       { key: "orderId", value: `order-${counter}` },
       { key: "customer", value: "customer-42" },
@@ -67,8 +69,8 @@ export async function runCell(
   options: { name: string; concurrency: number; batch: number; seconds: number; warmupSeconds: number },
 ): Promise<CellResult> {
   const next = eventSource(`${options.name}-${Date.now().toString(36)}`)
-  const shape = (): EventMessage[] => {
-    const events = new Array<EventMessage>(options.batch)
+  const shape = (): TaggedEvent[] => {
+    const events = new Array<TaggedEvent>(options.batch)
     for (let i = 0; i < options.batch; i++) events[i] = next()
     return events
   }

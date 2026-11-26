@@ -13,7 +13,7 @@
  * older server the client sends each append once, and there is nothing to test.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
-import { generateIdentifier, jsonSerializer, qn, type EventMessage } from "@kronos-ts/core"
+import { generateIdentifier, jsonSerializer, qn, type TaggedEvent } from "@kronos-ts/core"
 import { kronosDbConnection, kronosDbEventStore, type KronosDbConnectionHandle } from "@kronos-ts/kronosdb"
 import { startKronosDbCluster, type KronosDbServer } from "../kronosdb-server.js"
 
@@ -21,14 +21,16 @@ const run = generateIdentifier().slice(0, 8)
 const WRITERS = 4
 const PER_WRITER = 150
 
-const written = (writer: number, n: number): EventMessage => ({
-  kind: "event",
-  identifier: `${run}-${writer}-${n}`,
-  name: qn("retry-it", "Counted"),
-  version: "1",
-  payload: { writer, n },
-  metadata: {},
-  timestamp: Date.now(),
+const written = (writer: number, n: number): TaggedEvent => ({
+  event: {
+    kind: "event",
+    identifier: `${run}-${writer}-${n}`,
+    name: qn("retry-it", "Counted"),
+    version: "1",
+    payload: { writer, n },
+    metadata: {},
+    timestamp: Date.now(),
+  },
   tags: [{ key: "run", value: run }],
 })
 

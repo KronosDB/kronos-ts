@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { AppendConditionError, isConflict, isUnavailable, jsonSerializer, markerAt, noMarker, qn, type EventMessage } from "@kronos-ts/core"
+import { AppendConditionError, isConflict, isUnavailable, jsonSerializer, markerAt, noMarker, qn, type EventMessage, type TaggedEvent } from "@kronos-ts/core"
 import { connectToKronosDb, type KronosDbConnection } from "../connection.js"
 import { ConcurrencyError, KronosDbRequestError } from "../errors.js"
 import { kronosDbEventStore } from "../kronosdb-event-store.js"
-import { kronosDbPositionAt, kronosDbTagsAt, kronosDbTail } from "../kronosdb-log-reads.js"
+import { kronosDbPositionAt, kronosDbTail } from "../kronosdb-log-reads.js"
 import { kronosDbSnapshottingEventStore } from "../kronosdb-snapshotting-event-store.js"
 import { ErrorCode, FLAG_END, type EventRecord, type Frame } from "../protocol/kronosdb-protocol.js"
 import { fakeNativeServer, type FakeConnection, type FakeNativeServer, type ReceivedFrame } from "./fake-native-server.js"
@@ -42,16 +42,18 @@ const appendsOn = (conn: FakeConnection) =>
 
 const appended = (marker: bigint): Frame => ({ name: "Appended", body: { firstPosition: marker - 1n, count: 1, marker } })
 
-const sample = (id: string, extra: Partial<EventMessage> = {}): EventMessage => ({
-  kind: "event",
-  identifier: id,
-  name: qn("shop", "OrderPlaced"),
-  version: "1",
-  payload: { id },
-  metadata: { actor: "alice" },
-  timestamp: 1_700_000_000_000,
+const sample = (id: string, extra: Partial<EventMessage> = {}): TaggedEvent => ({
+  event: {
+    kind: "event",
+    identifier: id,
+    name: qn("shop", "OrderPlaced"),
+    version: "1",
+    payload: { id },
+    metadata: { actor: "alice" },
+    timestamp: 1_700_000_000_000,
+    ...extra,
+  },
   tags: [{ key: "orderId", value: id }],
-  ...extra,
 })
 
 const record = (position: bigint, id: string, payload: unknown = { id }): { flags: number; event: EventRecord } => ({
@@ -203,6 +205,7 @@ describe("kronosDbEventStore (native)", () => {
       expect(frame.body.events.map((e) => e.event.identifier)).toEqual(["a", "b"])
       expect(frame.body.events[0]!.event.position).toBe(0n)
       expect(frame.body.events[0]!.event.name).toBe("shop.OrderPlaced")
+      expect(frame.body.events[0]!.event.tags).toEqual([{ key: enc.encode("orderId"), value: enc.encode("a") }])
     })
 
     it("sends a condition as marker plus criteria", async () => {
@@ -271,7 +274,6 @@ describe("kronosDbEventStore (native)", () => {
       const result = await kronosDbEventStore(kdb).source({ query: { tags: { orderId: "a" } }, start: 3n })
 
       expect(result.events.map((e) => e.identifier)).toEqual(["a", "b", "c"])
-      expect(result.events[0]!.tags).toEqual([{ key: "orderId", value: "a" }])
       expect(result.marker).toEqual(markerAt(6n))
       const frame = sent()[0]!.frame
       if (frame.name !== "Source") throw new Error("expected Source")
@@ -365,14 +367,6 @@ describe("kronosDbEventStore (native)", () => {
       const { kdb, sent } = await against((conn, r) => conn.reply(r.stream, FLAG_END, { name: "Tail", body: { position: 1000n } }))
       expect(await kronosDbTail(kdb, "default")).toBe(1000n)
       expect(sent()[0]!.frame).toEqual({ name: "GetTail", body: { context: 0 } })
-    })
-
-    it("reads a position's tags as text", async () => {
-      const { kdb, sent } = await against((conn, r) =>
-        conn.reply(r.stream, FLAG_END, { name: "Tags", body: { tags: [{ key: enc.encode("orderId"), value: enc.encode("o-1") }] } }),
-      )
-      expect(await kronosDbTagsAt(kdb, "default", 8n)).toEqual([{ key: "orderId", value: "o-1" }])
-      expect(sent()[0]!.frame).toEqual({ name: "GetTags", body: { context: 0, position: 8n } })
     })
 
     it("finds the position at a time, or says there is none", async () => {

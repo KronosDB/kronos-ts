@@ -15,7 +15,6 @@ import { contextRequest, unexpected } from "./native-requests.js"
 import {
   FrameKind,
   decodePositionAt,
-  decodeTags,
   decodeTail,
   reader,
   writeMillis,
@@ -53,31 +52,6 @@ export function kronosDbTail(kdb: Kdb, context: string): Promise<bigint> {
     (kind, buf, start, end) => {
       if (kind !== FrameKind.Tail) throw unexpected(kind, "Tail")
       return decodeTail(reader(buf, start, end)).position
-    },
-  )
-}
-
-/** The tags of the event at `position`, as text. */
-export function kronosDbTagsAt(
-  kdb: Kdb,
-  context: string,
-  position: bigint,
-): Promise<ReadonlyArray<{ readonly key: string; readonly value: string }>> {
-  const text = new TextDecoder()
-  return contextRequest(
-    kdb.connection.native,
-    context,
-    FrameKind.GetTags,
-    (w, id) => {
-      writeU16(w, id)
-      writeU64(w, position)
-    },
-    (kind, buf, start, end) => {
-      if (kind !== FrameKind.Tags) throw unexpected(kind, "Tags")
-      return decodeTags(reader(buf, start, end)).tags.map((tag) => ({
-        key: text.decode(tag.key),
-        value: text.decode(tag.value),
-      }))
     },
   )
 }

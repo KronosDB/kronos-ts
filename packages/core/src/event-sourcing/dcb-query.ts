@@ -3,7 +3,7 @@ import {
   type QualifiedName,
   qualifiedNameToString,
   type EventDescriptor,
-  type EventMessage,
+  type TaggedEvent,
 } from "../messaging/messages.js"
 // ---------------------------------------------------------------------------
 // Two shapes, one direction.
@@ -162,20 +162,19 @@ export function resolveTypeName(t: EventDescriptor<any> | QualifiedName | string
 }
 
 /**
- * Whether a log would hand `event` back for `criteria`: the event carries every
- * tag asked for, and is one of the types asked for when types are named. The
- * tags are the ones the event is appended with.
+ * Whether a log would hand an event back for `criteria`: it was appended under
+ * every tag asked for, and is one of the types asked for when types are named.
  */
-export function matchesCriteria(event: EventMessage, criteria: EventCriteria): boolean {
+export function matchesCriteria({ event, tags }: TaggedEvent, criteria: EventCriteria): boolean {
   switch (criteria.kind) {
     case "tags":
-      return criteria.tags.every((asked) => event.tags.some((tag) => tag.key === asked.key && tag.value === asked.value))
+      return criteria.tags.every((asked) => tags.some((tag) => tag.key === asked.key && tag.value === asked.value))
     case "any-tag":
-      return event.tags.length > 0
+      return tags.length > 0
     case "type-restricted":
-      return matchesCriteria(event, criteria.inner) && criteria.types.includes(qualifiedNameToString(event.name))
+      return matchesCriteria({ event, tags }, criteria.inner) && criteria.types.includes(qualifiedNameToString(event.name))
     case "either":
-      return criteria.criteria.some((one) => matchesCriteria(event, one))
+      return criteria.criteria.some((one) => matchesCriteria({ event, tags }, one))
   }
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { emptyMetadata, qn, type EventMessage } from "../../messaging/messages.js"
+import { emptyMetadata, qn, type TaggedEvent } from "../../messaging/messages.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
 import { unitOfWork } from "../../unit-of-work/unit-of-work.js"
 import { inMemorySchedulingEventStore } from "../in-memory-scheduling-event-store.js"
@@ -8,15 +8,17 @@ import type { ScheduleToken } from "../scheduler.js"
 const DELAY_MS = 40
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-function reminder(id: string): EventMessage {
+function reminder(id: string): TaggedEvent {
   return {
-    kind: "event",
-    identifier: id,
-    name: qn("test", "ReminderDue"),
-    version: "1.0",
-    payload: { id },
-    metadata: emptyMetadata(),
-    timestamp: 0,
+    event: {
+      kind: "event",
+      identifier: id,
+      name: qn("test", "ReminderDue"),
+      version: "1.0",
+      payload: { id },
+      metadata: emptyMetadata(),
+      timestamp: 0,
+    },
     tags: [],
   }
 }
@@ -25,8 +27,8 @@ function reminder(id: string): EventMessage {
 function schedulingStore() {
   const appended: string[] = []
   const log = {
-    append: async (events: ReadonlyArray<EventMessage>) => {
-      for (const event of events) appended.push(event.identifier)
+    append: async (events: ReadonlyArray<TaggedEvent>) => {
+      for (const { event } of events) appended.push(event.identifier)
     },
   } as unknown as EventStore
   return { store: inMemorySchedulingEventStore(log), appended }

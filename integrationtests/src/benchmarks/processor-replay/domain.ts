@@ -7,7 +7,7 @@
  * once it has handled it.
  */
 import { z } from "zod"
-import { emptyMetadata, event, generateIdentifier, qn, type EventMessage, type EventStore } from "@kronos-ts/core"
+import { emptyMetadata, event, generateIdentifier, qn, type EventStore, type TaggedEvent } from "@kronos-ts/core"
 
 export const TYPES = 10
 export const HANDLED_TYPE = 3
@@ -22,16 +22,18 @@ export const descriptors = Array.from({ length: TYPES }, (_, i) =>
 /** The one descriptor the benchmark's handler is written for. */
 export const Handled = descriptors[HANDLED_TYPE]!
 
-export function fact(i: number): EventMessage {
+export function fact(i: number): TaggedEvent {
   const account = `acc-${i % ACCOUNTS}`
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: descriptors[i % TYPES]!.name,
-    version: "1.0",
-    payload: { account, amount: i % 100 },
-    metadata: emptyMetadata(),
-    timestamp: 1_700_000_000_000 + i,
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: descriptors[i % TYPES]!.name,
+      version: "1.0",
+      payload: { account, amount: i % 100 },
+      metadata: emptyMetadata(),
+      timestamp: 1_700_000_000_000 + i,
+    },
     tags: [{ key: "account", value: account }],
   }
 }
@@ -39,7 +41,7 @@ export function fact(i: number): EventMessage {
 /** Fill a log with `count` events, in order, `batch` per append. */
 export async function seed(store: EventStore, count: number, batch = 5000): Promise<void> {
   for (let from = 0; from < count; from += batch) {
-    const events: EventMessage[] = []
+    const events: TaggedEvent[] = []
     for (let i = from; i < Math.min(from + batch, count); i++) events.push(fact(i))
     await store.append(events)
   }

@@ -23,7 +23,7 @@ const Ordered = qn("shop", "Ordered")
 const Shipped = qn("shop", "Shipped")
 const Noise = qn("shop", "Noise")
 
-function event(name: QualifiedName, sequence: bigint, tags: Array<{ key: string; value: string }> = []): SequencedEvent {
+function event(name: QualifiedName, sequence: bigint, order?: string): SequencedEvent {
   return {
     sequence,
     event: {
@@ -31,10 +31,9 @@ function event(name: QualifiedName, sequence: bigint, tags: Array<{ key: string;
       identifier: `e-${sequence}`,
       name,
       version: "1.0",
-      payload: { n: Number(sequence) },
+      payload: { n: Number(sequence), ...(order === undefined ? {} : { order }) },
       metadata: emptyMetadata(),
       timestamp: 0,
-      tags,
     },
   }
 }
@@ -140,7 +139,7 @@ function run(config: {
 }) {
   let processor: EventProcessor = eventProcessor("p", config.log, config.tokens ?? inMemoryTokenStore(), unitOfWork)
   if (config.batch !== undefined) processor = batched(processor, config.batch)
-  if (config.withQueue) processor = deadLettering(processor, inMemoryDeadLetterQueue(), (e) => e.tags.find((t) => t.key === "order")?.value ?? qualifiedNameToString(e.name))
+  if (config.withQueue) processor = deadLettering(processor, inMemoryDeadLetterQueue(), (e) => (e.payload as { order?: string }).order ?? qualifiedNameToString(e.name))
   return runEventProcessor({
     processor: polling(processor, config.pollingMs ?? 5),
     handlers: config.handlers.map((definition) => ({ definition })),
@@ -315,7 +314,6 @@ describe("the token through a quiet stretch", () => {
 
 describe("parked events and a filtered stream", () => {
   it("park the same events they always did: the ones nobody handles never reach the queue", async () => {
-    const order = (n: string) => [{ key: "order", value: n }]
     const failing = new Set([1n])
     const delivered: bigint[] = []
     const handler: EventHandler<any> = {
@@ -330,11 +328,11 @@ describe("parked events and a filtered stream", () => {
     // noise in between is in lane "a" too, and must not be parked.
     const log = fakeLog(
       [
-        event(Ordered, 0n, order("b")),
-        event(Ordered, 1n, order("a")),
-        event(Noise, 2n, order("a")),
-        event(Ordered, 3n, order("a")),
-        event(Ordered, 4n, order("b")),
+        event(Ordered, 0n, "b"),
+        event(Ordered, 1n, "a"),
+        event(Noise, 2n, "a"),
+        event(Ordered, 3n, "a"),
+        event(Ordered, 4n, "b"),
       ],
       { reportsProgress: true },
     )

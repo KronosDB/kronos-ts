@@ -12,7 +12,6 @@ export {
 export {
   kronosDbSubscription,
   kronosDbTail,
-  kronosDbTagsAt,
   kronosDbPositionAt,
 } from "./kronosdb-log-reads.js"
 

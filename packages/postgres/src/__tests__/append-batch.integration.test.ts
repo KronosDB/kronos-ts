@@ -15,11 +15,14 @@ import {
   isConflict,
   sourcingCondition,
   type EventMessage,
+  type Tag,
+  type TaggedEvent,
 } from "@kronos-ts/core"
 import type { PostgresAdapter, PostgresAdapterTransaction, QueryRow } from "../adapter.js"
 import { bunSqlAdapter } from "../adapters/bun-sql.js"
 import { pgAdapter } from "../adapters/pg.js"
 import { postgresAdapter } from "../adapters/postgres.js"
+import { encodeTag } from "../criteria-sql.js"
 import { postgresEventStore } from "../postgres-event-store.js"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
@@ -34,18 +37,25 @@ afterAll(async () => {
   await pg.stop()
 }, 30_000)
 
-function event(stream: string, n: number, extra: Partial<EventMessage> = {}): EventMessage {
+function event(
+  stream: string,
+  n: number,
+  extra: Partial<EventMessage> = {},
+  tags: ReadonlyArray<Tag> = [{ key: "stream", value: stream }],
+): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: { namespace: "batch", name: "Happened" },
-    tags: [{ key: "stream", value: stream }],
-    payload: { n },
-    metadata: {},
-    timestamp: 1_700_000_000_000 + n,
-    version: "1",
-    ...extra,
-  } as EventMessage
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: { namespace: "batch", name: "Happened" },
+      payload: { n },
+      metadata: {},
+      timestamp: 1_700_000_000_000 + n,
+      version: "1",
+      ...extra,
+    } as EventMessage,
+    tags,
+  }
 }
 
 /** `inner`, recording the text of every INSERT into the events table. */
@@ -126,24 +136,28 @@ describe.each(drivers)("an append of many events over %s", (driver, make) => {
     }
 
     const read = await store.source(sourcingCondition({ tags: { stream: stream("order") } }))
-    expect(read.events.map((e) => e.identifier)).toEqual(given.map((e) => e.identifier))
+    expect(read.events.map((e) => e.identifier)).toEqual(given.map((e) => e.event.identifier))
     // The marker is the last event's position: the read ends on the same one.
     expect(read.marker.position).toBe(marker.position)
   }, 60_000)
 
   it("stores each event as a one-event append does", async () => {
     const awkward = (n: number) =>
-      event(stream("rows"), n, {
-        name: { namespace: "batch", name: `Kind${n}` },
-        tags: [
+      event(
+        stream("rows"),
+        n,
+        {
+          name: { namespace: "batch", name: `Kind${n}` },
+          payload: { n, text: `it's "quoted" \\ {braced}, with a\nnewline and ünïcödé`, nested: { list: [1, null, "NULL"] } },
+          metadata: { correlationId: `c-${n}`, empty: "" },
+          version: `${n}.0`,
+        },
+        [
           { key: "stream", value: stream("rows") },
           { key: "note", value: `quote " backslash \\ brace } comma , ${n}` },
         ],
-        payload: { n, text: `it's "quoted" \\ {braced}, with a\nnewline and ünïcödé`, nested: { list: [1, null, "NULL"] } },
-        metadata: { correlationId: `c-${n}`, empty: "" },
-        version: `${n}.0`,
-      })
-    const untagged = (n: number) => event(stream("rows"), n, { tags: [{ key: "stream", value: stream("rows") }], payload: {} })
+      )
+    const untagged = (n: number) => event(stream("rows"), n, { payload: {} })
     const alone = awkward(0)
     const together = [awkward(1), untagged(2), awkward(3)]
 
@@ -151,7 +165,18 @@ describe.each(drivers)("an append of many events over %s", (driver, make) => {
     await store.append(together)
 
     const read = await store.source(sourcingCondition({ tags: { stream: stream("rows") } }))
-    expect(read.events).toEqual([alone, ...together])
+    expect(read.events).toEqual([alone, ...together].map((e) => e.event))
+
+    const stored = await pool.query<{ event_id: string; tags: string[] }>(
+      `SELECT event_id, tags FROM kronos_events WHERE tags[1] = $1 ORDER BY sequence_position`,
+      [encodeTag("stream", stream("rows"))],
+    )
+    expect(stored).toEqual(
+      [alone, ...together].map((e) => ({
+        event_id: e.event.identifier,
+        tags: e.tags.map((t) => encodeTag(t.key, t.value)),
+      })),
+    )
   })
 
   it("inserts none of the events when the append condition is violated", async () => {
@@ -171,7 +196,7 @@ describe.each(drivers)("an append of many events over %s", (driver, make) => {
     // The 150th event repeats an id already in the log, so the second
     // statement fails after the first inserted 100 rows.
     const batch = Array.from({ length: 200 }, (_, n) => event(stream("duplicate"), n + 1))
-    batch[149] = { ...batch[149]!, identifier: existing.identifier }
+    batch[149] = { ...batch[149]!, event: { ...batch[149]!.event, identifier: existing.event.identifier } }
     await assert.rejects(store.append(batch), isConflict)
     expect(await countOf("duplicate")).toBe(1)
   })

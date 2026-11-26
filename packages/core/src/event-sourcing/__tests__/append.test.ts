@@ -56,12 +56,12 @@ describe("append", () => {
     await unitOfWork().execute(async (uow) => {
       const append = appendFunction({ uow })
       append(CourseCreated, { courseId: "c1", name: "Intro" })
-      const buffered = uow.events.buffered as any[]
+      const buffered = uow.events.buffered
       expect(buffered).toHaveLength(1)
-      expect(buffered[0].name).toEqual(CourseCreated.name)
-      expect(buffered[0].payload).toEqual({ courseId: "c1", name: "Intro" })
+      expect(buffered[0]!.event.name).toEqual(CourseCreated.name)
+      expect(buffered[0]!.event.payload).toEqual({ courseId: "c1", name: "Intro" })
       // Tags derived from descriptor
-      expect(buffered[0].tags).toEqual([{ key: "courseId", value: "c1" }])
+      expect(buffered[0]!.tags).toEqual([{ key: "courseId", value: "c1" }])
     })
   })
 
@@ -72,8 +72,8 @@ describe("append", () => {
     await unitOfWork().execute(async (uow) => {
       const append = appendFunction({ uow })
       append(CourseCreated, { courseId: "c1", name: "Intro" })
-      const buffered = uow.events.buffered as any[]
-      expect(buffered[0].metadata).toEqual({})
+      const buffered = uow.events.buffered
+      expect(buffered[0]!.event.metadata).toEqual({})
     })
   })
 
@@ -97,8 +97,8 @@ describe("append", () => {
       })
       handler(command, ctx)
 
-      const buffered = uow.events.buffered as any[]
-      expect(buffered[0].metadata).toEqual({ correlationId: "corr-1", causationId: "cmd-1" })
+      const buffered = uow.events.buffered
+      expect(buffered[0]!.event.metadata).toEqual({ correlationId: "corr-1", causationId: "cmd-1" })
     })
   })
 
@@ -106,8 +106,8 @@ describe("append", () => {
     await unitOfWork().execute(async (uow) => {
       const append = appendFunction({ uow })
       append(CourseCreated, { courseId: "c1", name: "Intro" })
-      const buffered = uow.events.buffered as any[]
-      expect(buffered[0].metadata).toEqual({})
+      const buffered = uow.events.buffered
+      expect(buffered[0]!.event.metadata).toEqual({})
     })
   })
 
@@ -117,8 +117,8 @@ describe("append", () => {
     await unitOfWork().execute(async (uow) => {
       const append = appendFunction({ uow })
       append(CourseCreated, { courseId: "c1", name: "Intro" }, eventMeta)
-      const buffered = uow.events.buffered as any[]
-      expect(buffered[0].metadata).toEqual(eventMeta)
+      const buffered = uow.events.buffered
+      expect(buffered[0]!.event.metadata).toEqual(eventMeta)
     })
   })
 
@@ -126,7 +126,7 @@ describe("append", () => {
     await unitOfWork().execute(async (uow) => {
       const append = appendFunction({ uow })
       append(CourseCreated, { courseId: "c1", name: "Intro" })
-      const buffered = uow.events.buffered as any[]
+      const buffered = uow.events.buffered
       expect(buffered).toHaveLength(1)
     })
   })
@@ -141,12 +141,12 @@ describe("append — batch form", () => {
         [CourseCreated, { courseId: "c1", name: "Intro" }],
         [CourseCapacityChanged, { courseId: "c1", capacity: 30 }],
       ])
-      const buffered = uow.events.buffered as any[]
+      const buffered = uow.events.buffered
       expect(buffered).toHaveLength(2)
-      expect(buffered[0].payload).toEqual({ courseId: "c1", name: "Intro" })
+      expect(buffered[0]!.event.payload).toEqual({ courseId: "c1", name: "Intro" })
       // tags still derive from the descriptor, i.e. the batch path is not a shortcut
-      expect(buffered[0].tags).toEqual([{ key: "courseId", value: "c1" }])
-      expect(buffered[1].payload).toEqual({ courseId: "c1", capacity: 30 })
+      expect(buffered[0]!.tags).toEqual([{ key: "courseId", value: "c1" }])
+      expect(buffered[1]!.event.payload).toEqual({ courseId: "c1", capacity: 30 })
     })
   })
 
@@ -154,8 +154,8 @@ describe("append — batch form", () => {
     await unitOfWork().execute(async (uow) => {
       const append = appendFunction({ uow })
       append([[CourseCreated, { courseId: "c2", name: "Algo" }, { tenant: "acme" } as never]])
-      const buffered = uow.events.buffered as any[]
-      expect(buffered[0].metadata).toMatchObject({ tenant: "acme" })
+      const buffered = uow.events.buffered
+      expect(buffered[0]!.event.metadata).toMatchObject({ tenant: "acme" })
     })
   })
 

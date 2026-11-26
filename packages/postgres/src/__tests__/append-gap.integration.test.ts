@@ -24,8 +24,8 @@ import {
   jsonSerializer,
   sourcingCondition,
   unitOfWork,
-  type EventMessage,
   type EventQuery,
+  type TaggedEvent,
 } from "@kronos-ts/core"
 import { pgAdapter } from "../adapters/pg.js"
 import { startPostgresContainer, type RunningPostgres } from "./testcontainers-setup.js"
@@ -40,17 +40,19 @@ let adapter: ReturnType<typeof pgAdapter>
 let pool: PostgresResource
 let store: ReturnType<typeof postgresEventStore>
 
-function tagged(label: string, tag: { key: string; value: string }): EventMessage {
+function tagged(label: string, tag: { key: string; value: string }): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: { namespace: "gap", name: label },
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: { namespace: "gap", name: label },
+      payload: {},
+      metadata: {},
+      timestamp: Date.now(),
+      version: "1",
+    },
     tags: [tag],
-    payload: {},
-    metadata: {},
-    timestamp: Date.now(),
-    version: "1",
-  } as unknown as EventMessage
+  }
 }
 
 const A = { key: "gap", value: "a" }
@@ -63,7 +65,7 @@ const isConflict = (err: unknown) => /append condition violated/i.test((err as E
  * An append whose transaction stays open until `commit()`: made inside a unit
  * of work that does not finish until then.
  */
-async function heldAppend(events: EventMessage[]): Promise<{ commit(): Promise<void> }> {
+async function heldAppend(events: TaggedEvent[]): Promise<{ commit(): Promise<void> }> {
   let release!: () => void
   const released = new Promise<void>((resolve) => (release = resolve))
   let appended!: () => void

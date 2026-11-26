@@ -104,7 +104,6 @@ describe("eventHandler()", () => {
       payload: { courseId: "cs-101", name: "Intro" },
       metadata: {},
       timestamp: Date.now(),
-      tags: [],
     }, TEST_CTX)
     expect(seen).toEqual([{ courseId: "cs-101", name: "Intro" }])
   })

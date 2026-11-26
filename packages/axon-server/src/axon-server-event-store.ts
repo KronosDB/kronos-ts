@@ -7,6 +7,7 @@ import {
 import type {
   EventCriteria,
   EventMessage,
+  TaggedEvent,
   MessageStream,
   SequencedEvent,
   StreamingCondition,
@@ -30,7 +31,7 @@ import type {
   Criterion,
   TagsAndNamesCriterion,
   Tag as ProtoTag,
-  TaggedEvent,
+  TaggedEvent as ProtoTaggedEvent,
   Event as ProtoEvent,
   SourceEventsResponse,
 } from "./generated/dcb.js"
@@ -87,7 +88,7 @@ function criteriaToCriterions(criteria: EventCriteria): Criterion[] {
 
 function createEventConverters(serializer: Serializer) {
   return {
-    eventToProto(event: EventMessage): TaggedEvent {
+    eventToProto({ event, tags }: TaggedEvent): ProtoTaggedEvent {
       const name = qualifiedNameToString(event.name)
       const serialized = serializer.serialize(event.payload, name, event.version)
       return {
@@ -101,14 +102,10 @@ function createEventConverters(serializer: Serializer) {
             Object.entries(event.metadata).map(([k, v]) => [k, String(v)]),
           ),
         },
-        tag: event.tags.map(tagToProto),
+        tag: tags.map(tagToProto),
       }
     },
 
-    /**
-     * A `Source` or `Stream` response holds an event and its sequence, and
-     * not the tags it was appended with, so the event has none.
-     */
     eventFromProto(protoEvent: ProtoEvent): EventMessage {
       const payload =
         protoEvent.payload.length > 0
@@ -132,7 +129,6 @@ function createEventConverters(serializer: Serializer) {
         payload,
         metadata,
         timestamp: Number(protoEvent.timestamp),
-        tags: [],
       }
     },
   }
@@ -246,7 +242,7 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
     },
 
     async append(
-      newEvents: ReadonlyArray<EventMessage>,
+      newEvents: ReadonlyArray<TaggedEvent>,
       condition?: AppendCondition,
     ): Promise<ConsistencyMarker> {
       const request = {

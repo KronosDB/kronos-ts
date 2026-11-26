@@ -53,7 +53,6 @@ test("eventHandler() is the event-handler factory and takes a context parameter"
       payload: { value: 42 },
       metadata: testMetadata,
       timestamp: 1234,
-      tags: [],
       sequence: 1n,
     },
     context,

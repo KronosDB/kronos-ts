@@ -71,9 +71,7 @@ export function appendFunction(deps: { uow: UnitOfWork }): AppendFunction {
     const eventDescriptor = eventDescriptorOrList as EventDescriptor<any>
     const uow = requireInvocation(deps.uow)
     const metadata = eventMetadata ?? emptyMetadata()
-    const tags = tagsOf(eventDescriptor, eventPayload, metadata)
-
-    const eventMessage: EventMessage = {
+    const event: EventMessage = {
       kind: "event",
       identifier: generateIdentifier(),
       name: eventDescriptor.name,
@@ -81,9 +79,8 @@ export function appendFunction(deps: { uow: UnitOfWork }): AppendFunction {
       payload: eventPayload,
       metadata,
       timestamp: uow.now(),
-      tags,
     }
-    uow.events.buffered.push(eventMessage)
+    uow.events.buffered.push({ event, tags: tagsOf(eventDescriptor, eventPayload, metadata) })
   }) as ((
     d: EventDescriptor<any> | ReadonlyArray<readonly [EventDescriptor<any>, unknown, Metadata?]>,
     p?: unknown,
