@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { qn, emptyMetadata, type EventMessage } from "../../messaging/messages.js"
+import { qn, emptyMetadata, type TaggedEvent } from "../../messaging/messages.js"
 import { tag } from "../../messaging/tag.js"
 import { generateIdentifier } from "../../messaging/identifier.js"
 import { inMemoryEventStore } from "../in-memory.js"
@@ -7,15 +7,17 @@ import { AppendConditionError } from "../../messaging/failures.js"
 import { sourcingCondition } from "../sourcing-condition.js"
 import { appendCondition } from "../append-condition.js"
 
-function eventMessage(name: string, payload: unknown, tags: Array<{ key: string; value: string }>): EventMessage {
+function eventMessage(name: string, payload: unknown, tags: Array<{ key: string; value: string }>): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: qn("test", name),
-    version: "1.0",
-    payload,
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: qn("test", name),
+      version: "1.0",
+      payload,
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags,
   }
 }

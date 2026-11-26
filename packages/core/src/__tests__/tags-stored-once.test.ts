@@ -7,7 +7,7 @@ import {
   localCommandBus,
   localQueryBus,
   send,
-  sourcingCondition,
+  type TaggedEvent,
   unitOfWork,
   withNamespace,
 } from "@kronos-ts/core"
@@ -24,14 +24,21 @@ describe("an appended event's tags are stored exactly once", () => {
     const borrow = commandHandler(Borrow, async ({ payload }, ctx) => {
       ctx.append(Borrowed, payload)
     })
-    const eventStore = inMemoryEventStore()
+    const appended: TaggedEvent[] = []
+    const log = inMemoryEventStore()
+    const eventStore = {
+      ...log,
+      async append(...args: Parameters<typeof log.append>) {
+        appended.push(...args[0])
+        return log.append(...args)
+      },
+    }
     const commandBus = localCommandBus(unitOfWork)
     const queryBus = localQueryBus(unitOfWork)
     const app = kronos({ commandHandlers: [{ ...borrow, eventStore, commandBus, queryBus }] })
     try {
       await send(commandBus, Borrow, { copyId: "c-1", memberId: "ada" })
-      const { events } = await eventStore.source(sourcingCondition({}))
-      expect(events[0]!.tags).toEqual([
+      expect(appended[0]!.tags).toEqual([
         { key: "copyId", value: "c-1" },
         { key: "memberId", value: "ada" },
       ])

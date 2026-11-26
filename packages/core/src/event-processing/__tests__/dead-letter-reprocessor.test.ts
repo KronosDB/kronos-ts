@@ -12,7 +12,7 @@ import { deadLetter, inMemoryDeadLetterQueue } from "../dead-letter-queue.js"
 import { deadLetterReprocessor } from "../dead-letter-reprocessor.js"
 import type { UnitOfWork } from "../../unit-of-work/unit-of-work.js"
 
-const byId = (e: EventMessage) => e.tags.find((t) => t.key === "id")?.value ?? e.identifier
+const byId = (e: EventMessage) => (e.payload as { id?: string }).id ?? e.identifier
 
 const EVENT_NAME = qn("test", "SomethingHappened")
 
@@ -24,10 +24,9 @@ function makeEvent(payload: unknown, sequence: bigint, value: string): Sequenced
       identifier: `evt-${sequence}`,
       name: EVENT_NAME,
       version: "1.0",
-      payload,
+      payload: { ...(payload as object), id: value },
       metadata: emptyMetadata(),
       timestamp: Date.now(),
-      tags: [{ key: "id", value }],
     },
   }
 }
@@ -85,9 +84,8 @@ describe("dead-letter reprocessing", () => {
     const handler: EventHandler<any> = {
       kind: "event-handler",
       descriptor: { kind: "event", name: EVENT_NAME, version: "1.0", payload: {} as any },
-      handler: ({ payload, tags }: { payload: { v: number }; tags: ReadonlyArray<{ key: string; value: string }> }) => {
-        const id = tags.find((t) => t.key === "id")!.value
-        if (id === "A" && broken) throw new Error("downstream down")
+      handler: ({ payload }: { payload: { v: number; id: string } }) => {
+        if (payload.id === "A" && broken) throw new Error("downstream down")
         delivered.push(payload.v)
       },
     }
@@ -296,7 +294,6 @@ describe("dead-letter reprocessing", () => {
                 payload: {},
                 metadata: emptyMetadata(),
                 timestamp: Date.now(),
-                tags: [],
               },
               new Error("parked"),
               "lane",

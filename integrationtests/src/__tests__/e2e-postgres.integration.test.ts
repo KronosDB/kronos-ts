@@ -22,7 +22,7 @@ import { describe, expect, it, beforeAll, afterAll } from "bun:test"
 import { z } from "zod"
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { qn, generateIdentifier, emptyMetadata, send, query } from "@kronos-ts/core"
-import type { EventHandlerContext, SubscriptionCapability, EventMessage } from "@kronos-ts/core"
+import type { EventHandlerContext, SubscriptionCapability, TaggedEvent } from "@kronos-ts/core"
 import {
   command, event, commandHandler, eventHandler, queryHandler, jsonSerializer,
   eventProcessor, type EventProcessor,
@@ -470,14 +470,16 @@ describe("E2E: @kronos-ts/postgres full stack", () => {
     // Two appends racing on the same tag with the same precondition marker.
     // Advisory locks serialise them; the loser hits the DCB conflict check
     // and the postgres adapter raises AppendConditionError (SQLSTATE KR001).
-    const ev = (studentId: string): EventMessage => ({
-      kind: "event",
-      identifier: generateIdentifier(),
-      name: qn("postgres-e2e", "StudentSubscribed"),
-      payload: { courseId, studentId },
-      metadata: emptyMetadata(),
-      timestamp: Date.now(),
-      version: "1.0",
+    const ev = (studentId: string): TaggedEvent => ({
+      event: {
+        kind: "event",
+        identifier: generateIdentifier(),
+        name: qn("postgres-e2e", "StudentSubscribed"),
+        payload: { courseId, studentId },
+        metadata: emptyMetadata(),
+        timestamp: Date.now(),
+        version: "1.0",
+      },
       tags: [{ key: "courseId", value: courseId }],
     })
 

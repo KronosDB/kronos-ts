@@ -64,13 +64,15 @@ const Right = state({
 async function write<P extends z.ZodType>(store: EventStore, descriptor: EventDescriptor<P>, payload: z.output<P>) {
   await store.append([
     {
-      kind: "event",
-      identifier: crypto.randomUUID(),
-      name: descriptor.name,
-      version: descriptor.version,
-      payload,
-      metadata: emptyMetadata(),
-      timestamp: 0,
+      event: {
+        kind: "event",
+        identifier: crypto.randomUUID(),
+        name: descriptor.name,
+        version: descriptor.version,
+        payload,
+        metadata: emptyMetadata(),
+        timestamp: 0,
+      },
       tags: tagsOf(descriptor, payload, emptyMetadata()),
     },
   ])
@@ -152,13 +154,15 @@ describe("the in-memory store's check of `reads`", () => {
     store.append(
       [
         {
-          kind: "event",
-          identifier: crypto.randomUUID(),
-          name: Decided.name,
-          version: Decided.version,
-          payload: ids,
-          metadata: emptyMetadata(),
-          timestamp: 0,
+          event: {
+            kind: "event",
+            identifier: crypto.randomUUID(),
+            name: Decided.name,
+            version: Decided.version,
+            payload: ids,
+            metadata: emptyMetadata(),
+            timestamp: 0,
+          },
           tags: tagsOf(Decided, ids, emptyMetadata()),
         },
       ],

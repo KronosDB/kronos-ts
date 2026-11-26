@@ -30,7 +30,7 @@
  */
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers"
 import { qn, tag, type Metadata } from "@kronos-ts/core"
-import type { EventMessage } from "@kronos-ts/core"
+import type { EventMessage, TaggedEvent } from "@kronos-ts/core"
 import type { EventStore } from "@kronos-ts/core"
 import { postgresEventStore, postgresPool } from "@kronos-ts/postgres"
 import type { PostgresAdapter, PostgresResource } from "@kronos-ts/postgres"
@@ -57,16 +57,18 @@ const S4_EVENTS = 20_000
 
 const EVENT_NAME = qn("bench", "Tick")
 
-function makeEvent(entityKey: string, value: number): EventMessage {
+function makeEvent(entityKey: string, value: number): TaggedEvent {
   return {
-    identifier: crypto.randomUUID(),
-    name: EVENT_NAME,
-    payload: { value },
-    metadata: {} as Metadata,
-    timestamp: Date.now(),
-    version: "1",
+    event: {
+      identifier: crypto.randomUUID(),
+      name: EVENT_NAME,
+      payload: { value },
+      metadata: {} as Metadata,
+      timestamp: Date.now(),
+      version: "1",
+    } as unknown as EventMessage,
     tags: [tag("entity", entityKey)],
-  } as unknown as EventMessage
+  }
 }
 
 function fmt(n: number): string {

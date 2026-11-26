@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { jsonSerializer, qn, type EventMessage } from "@kronos-ts/core"
+import { jsonSerializer, qn, type EventMessage, type Tag, type TaggedEvent } from "@kronos-ts/core"
 import {
   criteriaToWire,
   outbound,
@@ -39,16 +39,21 @@ function event(overrides: Partial<EventMessage> = {}): EventMessage {
     payload: { orderId: "o-1", note: "naïve ✓" },
     metadata: { actor: "alice", attempt: 3, dropped: undefined, alsoDropped: null },
     timestamp: 1_700_000_000_123,
-    tags: [
-      { key: "orderId", value: "o-1" },
-      { key: "região", value: "são paulo" },
-    ],
     ...overrides,
   }
 }
 
-/** The record the codec would write for `e` — the reference the hot path must match byte for byte. */
-function codecRecord(e: EventMessage, position = 0n): EventRecord {
+const defaultTags: ReadonlyArray<Tag> = [
+  { key: "orderId", value: "o-1" },
+  { key: "região", value: "são paulo" },
+]
+
+function tagged(overrides: Partial<EventMessage> = {}, tags: ReadonlyArray<Tag> = defaultTags): TaggedEvent {
+  return { event: event(overrides), tags }
+}
+
+/** The record the codec would write for `t` — the reference the hot path must match byte for byte. */
+function codecRecord({ event: e, tags }: TaggedEvent, position = 0n): EventRecord {
   const enc = new TextEncoder()
   return {
     position,
@@ -59,7 +64,7 @@ function codecRecord(e: EventMessage, position = 0n): EventRecord {
     metadata: Object.entries(e.metadata)
       .filter(([, v]) => v !== undefined && v !== null)
       .map(([key, value]) => ({ key, value: String(value) })),
-    tags: e.tags.map((t) => ({ key: enc.encode(t.key), value: enc.encode(t.value) })),
+    tags: tags.map((t) => ({ key: enc.encode(t.key), value: enc.encode(t.value) })),
     payload: serializer.serialize(e.payload, "", "").data,
   }
 }
@@ -72,14 +77,14 @@ function encodeWith(fn: (w: Writer) => void): Uint8Array {
 
 describe("writing events", () => {
   it("writes the bytes the generated codec writes", () => {
-    const e = event()
-    const mine = encodeWith((w) => writeRecord(w, e, outbound(serializer, [e])[0]!.data))
+    const e = tagged()
+    const mine = encodeWith((w) => writeRecord(w, e.event, e.tags, outbound(serializer, [e])[0]!.data))
     const reference = encodeWith((w) => encodeRecord(w, { flags: 0, event: codecRecord(e) }))
     expect(hex(mine)).toBe(hex(reference))
   })
 
   it("writes a whole batch as a count and the records", () => {
-    const events = [event(), event({ identifier: "evt-2", payload: {} })]
+    const events = [tagged(), tagged({ identifier: "evt-2", payload: {} })]
     const mine = encodeWith((w) => writeRecords(w, outbound(serializer, events)))
     const reference = encodeWith((w) => encodeRecords(w, events.map((e) => ({ flags: 0, event: codecRecord(e) })), "events"))
     expect(hex(mine)).toBe(hex(reference))
@@ -87,7 +92,7 @@ describe("writing events", () => {
 
   it("skips null and undefined metadata, and sends the rest as text", () => {
     // Write with the hot path, read back with the codec.
-    const e = event()
+    const e = tagged()
     const body = encodeWith((w) => {
       writeRecords(w, outbound(serializer, [e]))
       writeU8(w, 0)
@@ -103,10 +108,10 @@ describe("writing events", () => {
   it("fails, and leaves nothing behind, when a field does not fit", () => {
     const w = writer(8)
     const before = w.pos
-    expect(() => writeRecord(w, event({ identifier: "x".repeat(70_000) }), new Uint8Array(0))).toThrow(ProtocolError)
+    expect(() => writeRecord(w, event({ identifier: "x".repeat(70_000) }), defaultTags, new Uint8Array(0))).toThrow(ProtocolError)
     // The caller rewinds; the writer itself is still usable.
     w.pos = before
-    writeRecord(w, event(), new Uint8Array(0))
+    writeRecord(w, event(), defaultTags, new Uint8Array(0))
     expect(w.pos).toBeGreaterThan(0)
   })
 
@@ -149,10 +154,10 @@ function eventsBody(records: Array<{ flags: number; event: EventRecord }>, marke
 }
 
 describe("reading events", () => {
-  const first = event()
-  const second = event({ identifier: "evt-2", payload: { orderId: "o-2" }, tags: [], metadata: {} })
+  const first = tagged()
+  const second = tagged({ identifier: "evt-2", payload: { orderId: "o-2" }, metadata: {} }, [])
 
-  it("decodes what the codec wrote, with tags, and reports the marker", () => {
+  it("decodes what the codec wrote, without its tags, and reports the marker", () => {
     const body = eventsBody(
       [
         { flags: 0, event: codecRecord(first, 10n) },
@@ -173,11 +178,8 @@ describe("reading events", () => {
       payload: { orderId: "o-1", note: "naïve ✓" },
       metadata: { actor: "alice", attempt: "3" },
       timestamp: 1_700_000_000_123,
-      tags: [
-        { key: "orderId", value: "o-1" },
-        { key: "região", value: "são paulo" },
-      ],
     })
+    expect(out[0]).not.toHaveProperty("tags")
     expect(out[1]!.payload).toEqual({ orderId: "o-2" })
   })
 
@@ -217,12 +219,12 @@ describe("reading events", () => {
     expect(out[0]!.payload).toEqual({})
   })
 
-  it("reads tags that are not UTF-8 without failing", () => {
+  it("steps over tags that are not UTF-8 without failing", () => {
     const body = eventsBody([{ flags: 0, event: { ...codecRecord(first, 1n), tags: [{ key: new Uint8Array([0x6b, 0xff]), value: new Uint8Array([0xc3, 0x28]) }] } }])
     const out: EventMessage[] = []
     readEvents(body, 0, body.length, serializer, out)
-    expect(out[0]!.tags).toHaveLength(1)
-    expect(out[0]!.tags[0]!.key.startsWith("k")).toBe(true)
+    expect(out.map((e) => e.identifier)).toEqual(["evt-1"])
+    expect(out[0]).not.toHaveProperty("tags")
   })
 
   it("rejects a record that overruns its frame, or leaves bytes behind", () => {

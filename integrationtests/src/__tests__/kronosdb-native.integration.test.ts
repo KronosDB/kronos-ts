@@ -11,7 +11,7 @@
  */
 import assert from "node:assert/strict"
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
-import { emptyMetadata, generateIdentifier, jsonSerializer, qn, qualifiedNameToString, type EventMessage } from "@kronos-ts/core"
+import { emptyMetadata, generateIdentifier, jsonSerializer, qn, qualifiedNameToString, type TaggedEvent } from "@kronos-ts/core"
 import {
   ConcurrencyError,
   KronosDbRequestError,
@@ -19,7 +19,6 @@ import {
   kronosDbEventStore,
   kronosDbPositionAt,
   kronosDbSubscription,
-  kronosDbTagsAt,
   kronosDbTail,
   type KronosDbConnectionHandle,
 } from "@kronos-ts/kronosdb"
@@ -27,15 +26,17 @@ import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
 
 const run = generateIdentifier().slice(0, 8)
 
-function fact(name: string, payload: Record<string, unknown>, tags: Array<[string, string]>, metadata: Record<string, unknown> = {}): EventMessage {
+function fact(name: string, payload: Record<string, unknown>, tags: Array<[string, string]>, metadata: Record<string, unknown> = {}): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: qn("native-it", name),
-    version: "2.1",
-    payload,
-    metadata,
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: qn("native-it", name),
+      version: "2.1",
+      payload,
+      metadata,
+      timestamp: Date.now(),
+    },
     tags: tags.map(([key, value]) => ({ key, value })),
   }
 }
@@ -68,7 +69,7 @@ describe("KronosDB event store — native protocol", () => {
     await server?.stop()
   })
 
-  it("appends and reads back an event whole — fields, metadata, tags and payload", async () => {
+  it("appends and reads back an event whole — fields, metadata and payload", async () => {
     const store = kronosDbEventStore(kdb, "default")
     const orderId = `o-${run}-1`
     const written = fact("OrderPlaced", { orderId, total: 12.5, note: "naïve café ✓" }, [["orderId", orderId], ["region", "eu"]], {
@@ -81,18 +82,15 @@ describe("KronosDB event store — native protocol", () => {
 
     expect(events).toHaveLength(1)
     const read = events[0]!
-    expect(read.identifier).toBe(written.identifier)
+    expect(read.identifier).toBe(written.event.identifier)
     expect(qualifiedNameToString(read.name)).toBe("native-it.OrderPlaced")
     expect(read.version).toBe("2.1")
-    expect(read.timestamp).toBe(written.timestamp)
+    expect(read.timestamp).toBe(written.event.timestamp)
     expect(read.payload).toEqual({ orderId, total: 12.5, note: "naïve café ✓" })
     // Metadata is text on the wire, as it always was.
     expect(read.metadata).toEqual({ actor: "alice", attempt: "3" })
-    // Tags now come back on read events.
-    expect(read.tags).toEqual([
-      { key: "orderId", value: orderId },
-      { key: "region", value: "eu" },
-    ])
+    // Both tags were stored: a query on the two of them finds the event.
+    expect((await store.source({ query: { tags: { orderId, region: "eu" } } })).events).toHaveLength(1)
   })
 
   it("filters by type and by tag, and ORs the items of a query", async () => {
@@ -180,7 +178,7 @@ describe("KronosDB event store — native protocol", () => {
     expect((await store.source({ query: { tags: { many: id } } })).events).toHaveLength(200)
   })
 
-  it("reports the head, the tail, a position's tags and the position at a time", async () => {
+  it("reports the head, the tail and the position at a time", async () => {
     const store = kronosDbEventStore(kdb, "default")
     const id = `pos-${run}`
     const before = Date.now()
@@ -189,10 +187,6 @@ describe("KronosDB event store — native protocol", () => {
 
     expect(await store.getHeadPosition()).toBeGreaterThan(head)
     expect(await kronosDbTail(kdb, "default")).toBe(0n)
-    expect(await kronosDbTagsAt(kdb, "default", head)).toEqual([
-      { key: "pos", value: id },
-      { key: "kind", value: "probe" },
-    ])
     expect(await kronosDbPositionAt(kdb, "default", before - 60_000)).toBeDefined()
     expect(await kronosDbPositionAt(kdb, "default", Date.now() + 3_600_000)).toBeUndefined()
   })

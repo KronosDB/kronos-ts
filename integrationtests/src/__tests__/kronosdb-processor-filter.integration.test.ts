@@ -27,7 +27,7 @@ import {
   upcast,
   upcastingEventStore,
   type EventHandler,
-  type EventMessage,
+  type TaggedEvent,
   type EventStore,
   type RunningProcessor,
   type TokenStore,
@@ -39,15 +39,17 @@ const Ordered = qn("filter-it", "Ordered")
 const Noise = qn("filter-it", "Noise")
 const OrderPlaced = qn("filter-it", "OrderPlaced") // the name the log has for what code now calls Ordered
 
-function fact(name: { namespace: string; name: string }, n: number): EventMessage {
+function fact(name: { namespace: string; name: string }, n: number): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name,
-    version: "1",
-    payload: { n },
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name,
+      version: "1",
+      payload: { n },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags: [{ key: "run", value: "x" }],
   }
 }
@@ -118,7 +120,7 @@ describe("a processor over KronosDB, with the filter on the server", () => {
 
   it("receives only what it handles, moves its token to the head through the noise, and resumes from there", async () => {
     // 10 events of interest among 3000 others, the last of interest early.
-    const batch: EventMessage[] = []
+    const batch: TaggedEvent[] = []
     for (let i = 0; i < 3000; i++) batch.push(i % 300 === 0 ? fact(Ordered, i / 300) : fact(Noise, i))
     await store.append(batch)
 

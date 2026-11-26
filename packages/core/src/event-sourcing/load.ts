@@ -151,7 +151,7 @@ export function loadFunction(deps: {
     if (uow.events.buffered.length > 0) {
       const criteria = compileQuery(result.sourcingInfo.query)
       for (const appended of uow.events.buffered) {
-        if (matchesCriteria(appended, criteria)) folded = await applyEvent(state, folded, appended)
+        if (matchesCriteria(appended, criteria)) folded = await applyEvent(state, folded, appended.event)
       }
     }
     return folded

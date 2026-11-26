@@ -29,7 +29,6 @@ function makeEvent(payload: Payload, sequence: bigint): SequencedEvent {
       payload,
       metadata: emptyMetadata(),
       timestamp: Date.now(),
-      tags: [{ key: "sequence", value: payload.sequence }],
     },
   }
 }

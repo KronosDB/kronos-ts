@@ -47,13 +47,15 @@ async function served(store: EventStore): Promise<void> {
     try {
       await store.append([
         {
-          kind: "event",
-          identifier: crypto.randomUUID(),
-          name: qn("markers", "WarmedUp"),
-          version: "1.0",
-          payload: {},
-          metadata: emptyMetadata(),
-          timestamp: Date.now(),
+          event: {
+            kind: "event",
+            identifier: crypto.randomUUID(),
+            name: qn("markers", "WarmedUp"),
+            version: "1.0",
+            payload: {},
+            metadata: emptyMetadata(),
+            timestamp: Date.now(),
+          },
           tags: [{ key: "subject", value: "warm-up" }],
         },
       ])

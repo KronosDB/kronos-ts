@@ -19,7 +19,7 @@ import {
   unitOfWork,
   type CommandHandlerContext,
   type CommandMessage,
-  type EventMessage,
+  type TaggedEvent,
   type QueryMessage,
   type ScheduleCapableEventStore,
 } from "../index.js"
@@ -150,14 +150,16 @@ describe("the clock seam", () => {
       eventHandlers: [{ ...onOpened, commandBus, queryBus, processor }],
     })
     try {
-      const seed: EventMessage = {
-        kind: "event",
-        identifier: "e-1",
-        name: TicketOpened.name,
-        version: TicketOpened.version,
-        payload: { ticketId: "t-1" },
-        metadata: {},
-        timestamp: 0,
+      const seed: TaggedEvent = {
+        event: {
+          kind: "event",
+          identifier: "e-1",
+          name: TicketOpened.name,
+          version: TicketOpened.version,
+          payload: { ticketId: "t-1" },
+          metadata: {},
+          timestamp: 0,
+        },
         tags: tagsOf(TicketOpened, { ticketId: "t-1" }, emptyMetadata()),
       }
       await eventStore.append([seed])
@@ -173,13 +175,13 @@ describe("the clock seam", () => {
   })
 
   it("scheduleAfter measures the delay from the task's instant, not wall time", async () => {
-    const armed: Array<{ event: EventMessage; at: Date }> = []
+    const armed: Array<{ event: TaggedEvent; at: Date }> = []
     // THE SCHEDULING TIER IS ON THE LOG. What used to be an `eventScheduler`
     // field beside `eventStore` is two members ON it, so the fake is a wrapper
     // over a real in-memory log rather than a second object to keep in step.
     const eventStore = {
       ...inMemoryEventStore(),
-      async schedule(e: EventMessage, at: Date) {
+      async schedule(e: TaggedEvent, at: Date) {
         armed.push({ event: e, at })
         return { id: "s-1" }
       },
@@ -203,7 +205,7 @@ describe("the clock seam", () => {
       await send(commandBus, OpenTicket, { ticketId: "t-1" })
       expect(armed).toHaveLength(1)
       expect(armed[0]!.at.getTime()).toBe(FROZEN + 60_000)
-      expect(armed[0]!.event.timestamp).toBe(FROZEN)
+      expect(armed[0]!.event.event.timestamp).toBe(FROZEN)
     } finally {
       await app.stop()
     }

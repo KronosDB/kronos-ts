@@ -8,6 +8,7 @@ import type {
   CommandMessage,
   ConsistencyMarker,
   EventMessage,
+  TaggedEvent,
   EventStore,
   QueryBus,
   QueryMessage,
@@ -119,12 +120,12 @@ export function recordingEventStore<E extends EventStore>(
 
   const recorded = {
     async append(
-      events: ReadonlyArray<EventMessage>,
+      events: ReadonlyArray<TaggedEvent>,
       condition?: AppendCondition,
       uow?: UnitOfWork,
     ): Promise<ConsistencyMarker> {
       const marker = await store.append(events, condition, uow)
-      log.push(...events)
+      for (const { event } of events) log.push(event)
       return marker
     },
   }
@@ -179,9 +180,10 @@ function pick<T extends object>(source: T, keys: ReadonlyArray<keyof T>): Partia
  */
 function heldDeadlines(
   clock: AdvanceableClock,
-  fire: (events: ReadonlyArray<EventMessage>) => Promise<void>,
+  fire: (events: ReadonlyArray<TaggedEvent>) => Promise<void>,
 ): ScheduleStoreCapability & ScheduleRecording {
-  type Entry = { record: ScheduleRecord; armed: boolean }
+  // `tags` are what the event is appended under when it fires.
+  type Entry = { record: ScheduleRecord; tags: TaggedEvent["tags"]; armed: boolean }
   const entries: Entry[] = []
 
   return {
@@ -206,10 +208,10 @@ function heldDeadlines(
         .sort((a, b) => a.record.fireAt - b.record.fireAt)
       if (ready.length === 0) return
       for (const entry of ready) entry.record = { ...entry.record, status: "fired" }
-      await fire(ready.map((e) => ({ ...e.record.event, timestamp: now })))
+      await fire(ready.map((e) => ({ event: { ...e.record.event, timestamp: now }, tags: e.tags })))
     },
 
-    async schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
+    async schedule({ event, tags }: TaggedEvent, at: Date, uow?: UnitOfWork): Promise<ScheduleToken> {
       if (uow === undefined) {
         throw new NoActiveUnitOfWork(
           "recordingEventStore.schedule requires a UnitOfWork — call it as ctx.schedule from inside a handler",
@@ -220,6 +222,7 @@ function heldDeadlines(
       const token: ScheduleToken = { id: generateIdentifier() }
       const entry: Entry = {
         armed: false,
+        tags,
         record: { token, event, armedAt: clock(), fireAt: at.getTime(), status: "pending" },
       }
       entries.push(entry)

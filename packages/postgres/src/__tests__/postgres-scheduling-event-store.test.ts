@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from "bun:test"
 import { batched, polling, qn, type Metadata } from "@kronos-ts/core"
-import type { EventMessage } from "@kronos-ts/core"
+import type { EventMessage, TaggedEvent } from "@kronos-ts/core"
 import {
   unitOfWork,
 } from "@kronos-ts/core"
@@ -164,10 +164,10 @@ function createFakeAdapter() {
 // ── Fake EventStore ─────────────────────────────────────────────────────
 
 function createFakeEventStore() {
-  const appended: EventMessage[] = []
+  const appended: TaggedEvent[] = []
   // Only `append` is exercised by the scheduler; the rest are typed-but-unused.
   const store = {
-    async append(events: ReadonlyArray<EventMessage>) {
+    async append(events: ReadonlyArray<TaggedEvent>) {
       for (const e of events) appended.push(e)
       return { position: BigInt(appended.length), xid: "0" } as never
     },
@@ -176,17 +176,19 @@ function createFakeEventStore() {
 }
 
 
-function makeEvent(over: Partial<EventMessage> = {}): EventMessage {
+function makeEvent(over: Partial<EventMessage> = {}): TaggedEvent {
   return {
-    kind: "event",
-    identifier: over.identifier ?? crypto.randomUUID(),
-    name: qn("com.example", "TestEvent"),
-    payload: { hello: "world" },
-    metadata: {} as Metadata,
-    timestamp: 1700000000000,
-    version: "1",
+    event: {
+      kind: "event",
+      identifier: over.identifier ?? crypto.randomUUID(),
+      name: qn("com.example", "TestEvent"),
+      payload: { hello: "world" },
+      metadata: {} as Metadata,
+      timestamp: 1700000000000,
+      version: "1",
+      ...over,
+    },
     tags: [{ key: "aggregate", value: "abc" }],
-    ...over,
   }
 }
 
@@ -217,8 +219,8 @@ describe("postgresSchedulingEventStore", () => {
         return scheduler.schedule(event, new Date(Date.now() + 60_000), uow)
       })
 
-      expect(token.id).toBe(event.identifier)
-      const row = fake.rows().get(event.identifier)
+      expect(token.id).toBe(event.event.identifier)
+      const row = fake.rows().get(event.event.identifier)
       expect(row?.status).toBe("pending")
       expect(row?.type).toBe("com.example.TestEvent")
     })
@@ -236,7 +238,7 @@ describe("postgresSchedulingEventStore", () => {
         }),
       ).rejects.toThrow("rollback")
 
-      expect(fake.rows().get(event.identifier)).toBeUndefined()
+      expect(fake.rows().get(event.event.identifier)).toBeUndefined()
     })
 
     it("throws when handed no UnitOfWork (must join a transaction)", async () => {
@@ -324,8 +326,9 @@ describe("postgresSchedulingEventStore", () => {
       await new Promise((r) => setTimeout(r, 30))
       await scheduler.stopScheduling()
 
-      expect(appended.map((e) => e.identifier)).toContain(event.identifier)
-      expect(fake.rows().get(event.identifier)?.status).toBe("appended")
+      expect(appended.map((e) => e.event.identifier)).toContain(event.event.identifier)
+      expect(appended.find((e) => e.event.identifier === event.event.identifier)?.tags).toEqual(event.tags)
+      expect(fake.rows().get(event.event.identifier)?.status).toBe("appended")
     })
 
     it("does not fire schedules whose fire_at is in the future", async () => {

@@ -28,7 +28,6 @@ function makeEvent(name: QualifiedName, payload: unknown, sequence: bigint): Seq
       payload,
       metadata: emptyMetadata(),
       timestamp: Date.now(),
-      tags: [],
     },
   }
 }

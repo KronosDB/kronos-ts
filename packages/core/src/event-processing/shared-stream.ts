@@ -1,6 +1,5 @@
 import type { EventStore } from "../event-sourcing/event-store.js"
 import type { EventQuery } from "../event-sourcing/dcb-query.js"
-import type { EventMessage } from "../messaging/messages.js"
 import type { MessageStream, SequencedEvent, StreamingCondition } from "./source.js"
 import { tokenPast, type TrackingToken } from "./tracking-token.js"
 
@@ -48,16 +47,7 @@ type View = {
   callback: (() => void) | null
 }
 
-export function sharedStream(
-  store: EventStore,
-  options: {
-    query?: EventQuery
-    readAhead: number
-    /** Applied once to every event read from the log, before any segment looks at it. */
-    each?: (event: EventMessage) => EventMessage
-  },
-): SharedStream {
-  const { each } = options
+export function sharedStream(store: EventStore, options: { query?: EventQuery; readAhead: number }): SharedStream {
   const views = new Set<View>()
   let inner: MessageStream<SequencedEvent> | null = null
   /** The position of the next event the log underneath hands out. */
@@ -105,19 +95,7 @@ export function sharedStream(
     //   until an event of its own arrives.
     const moved = new Set<View>()
     while (!full() && inner.hasNextAvailable()) {
-      const taken = inner.next()!
-      let event = taken
-      if (each !== undefined) {
-        try {
-          event = { ...taken, event: each(taken.event) }
-        } catch (error) {
-          // The event is off the log's stream and no view has it. Close the
-          // stream, so the view that reopens after this reads it again.
-          inner.close()
-          inner = null
-          throw error
-        }
-      }
+      const event = inner.next()!
       at = event.sequence + 1n
       for (const view of views) {
         if (event.sequence < view.skipBelow) continue

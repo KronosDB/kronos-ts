@@ -51,7 +51,7 @@
  * - NOT cron. Each `schedule()` is one one-shot fire.
  */
 
-import type { EventMessage } from "../messaging/messages.js"
+import type { TaggedEvent } from "../messaging/messages.js"
 import type { EventStore } from "../event-sourcing/event-store.js"
 import type { UnitOfWork } from "../unit-of-work/unit-of-work.js"
 
@@ -102,7 +102,7 @@ export type CancelResult =
  */
 export type ScheduleStoreCapability = {
   /**
-   * Schedule `event` for append at `at`.
+   * Schedule `event` for append at `at`, under the tags given with it.
    *
    * `at` is the wall-clock fire time. A past instant is legal and fires as soon
    * as the family notices — that is the intended deadline semantic.
@@ -112,7 +112,7 @@ export type ScheduleStoreCapability = {
    * handling's, and a transactional family reads its adapter transaction off it
    * so the schedule commits with the rest of the task.
    */
-  schedule(event: EventMessage, at: Date, uow?: UnitOfWork): Promise<ScheduleToken>
+  schedule(event: TaggedEvent, at: Date, uow?: UnitOfWork): Promise<ScheduleToken>
 
   /**
    * Attempt to cancel a pending schedule. See {@link CancelResult} for the

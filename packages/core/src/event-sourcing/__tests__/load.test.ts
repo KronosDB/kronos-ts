@@ -53,13 +53,15 @@ const TicketAudit = state({
 async function seed(store: EventStore, ticketId: string, subject: string): Promise<void> {
   await store.append([
     {
-      kind: "event",
-      identifier: `e-${ticketId}`,
-      name: TicketOpened.name,
-      version: TicketOpened.version,
-      payload: { ticketId, subject },
-      metadata: {},
-      timestamp: 1_700_000_000_000,
+      event: {
+        kind: "event",
+        identifier: `e-${ticketId}`,
+        name: TicketOpened.name,
+        version: TicketOpened.version,
+        payload: { ticketId, subject },
+        metadata: {},
+        timestamp: 1_700_000_000_000,
+      },
       tags: [{ key: "ticketId", value: ticketId }],
     },
   ])

@@ -21,7 +21,6 @@ function testEvent(name: string): EventMessage {
     payload: {},
     metadata: {},
     timestamp: Date.now(),
-    tags: [],
   }
 }
 

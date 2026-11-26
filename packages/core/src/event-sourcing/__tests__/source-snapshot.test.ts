@@ -10,7 +10,7 @@
  * why this file comes before the sugar's.
  */
 import { describe, expect, it } from "bun:test"
-import { qn, emptyMetadata, type EventMessage } from "../../messaging/messages.js"
+import { qn, emptyMetadata, type TaggedEvent } from "../../messaging/messages.js"
 import { generateIdentifier } from "../../messaging/identifier.js"
 import { inMemoryEventStore } from "../in-memory.js"
 import { sourceFunction } from "../load.js"
@@ -19,17 +19,19 @@ import type { EventStore } from "../event-store.js"
 
 
 
-function bumped(counterId: string, by = 1): EventMessage {
+function bumped(counterId: string, by = 1): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: qn("counting", "Bumped"),
-    version: "1.0",
-    payload: { counterId, by },
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: qn("counting", "Bumped"),
+      version: "1.0",
+      payload: { counterId, by },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags: [{ key: "counterId", value: counterId }],
-  } as EventMessage
+  }
 }
 
 /** The site a handler's `ctx.source` is built from. */

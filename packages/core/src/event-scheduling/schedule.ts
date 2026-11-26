@@ -175,9 +175,8 @@ export function scheduleFunctions(deps: {
       payload,
       metadata: eventMetadata,
       timestamp: uow.now(),
-      tags: tagsOf(event, payload, eventMetadata),
     }
-    return log.schedule(eventMessage, at, uow)
+    return log.schedule({ event: eventMessage, tags: tagsOf(event, payload, eventMetadata) }, at, uow)
   }) as ScheduleFunction
 
   const scheduleAfter = (async (

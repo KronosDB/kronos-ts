@@ -3,6 +3,7 @@ import { emptyMetadata, qn, tag, type Metadata } from "@kronos-ts/core"
 import {
   type EventQuery,
   type EventMessage,
+  type TaggedEvent,
   event,
   eventHandler,
   batched,
@@ -314,17 +315,19 @@ function dcbEventName(kind: number) {
   return qn("benchmark", `Entity${kind}Changed`)
 }
 
-function makeDcbEvent(caseId: string, kind: number, ordinal: number, seed: string): EventMessage {
+function makeDcbEvent(caseId: string, kind: number, ordinal: number, seed: string): TaggedEvent {
   return {
-    kind: "event",
-    identifier: deterministicUuid(`${seed}:dcb:${caseId}:${kind}:${ordinal}`),
-    name: dcbEventName(kind),
-    payload: makePayload(caseId, ordinal, seed),
-    metadata: emptyMetadata() as Metadata,
-    timestamp: 1_750_000_000_000 + ordinal,
-    version: "1",
+    event: {
+      kind: "event",
+      identifier: deterministicUuid(`${seed}:dcb:${caseId}:${kind}:${ordinal}`),
+      name: dcbEventName(kind),
+      payload: makePayload(caseId, ordinal, seed),
+      metadata: emptyMetadata() as Metadata,
+      timestamp: 1_750_000_000_000 + ordinal,
+      version: "1",
+    },
     tags: [tag(`entity${kind}`, caseId)],
-  } as EventMessage
+  }
 }
 
 function dcbQuery(caseId: string): EventQuery {
@@ -625,9 +628,9 @@ async function runLive(harness: BackendHarness, options: BenchmarkOptions): Prom
     const latencies: number[] = []
     const started = performance.now()
     for (let ordinal = 0; ordinal < count; ordinal++) {
-      const eventMessage = makeEvent(key, ordinal, `${options.seed}:${harness.name}:${key}`)
-      const handled = track(eventMessage)
-      await harness.store.append([eventMessage])
+      const tagged = makeEvent(key, ordinal, `${options.seed}:${harness.name}:${key}`)
+      const handled = track(tagged.event)
+      await harness.store.append([tagged])
       latencies.push(await handled)
     }
     return { elapsedMs: performance.now() - started, latencies }
@@ -645,9 +648,9 @@ async function runLive(harness: BackendHarness, options: BenchmarkOptions): Prom
       while (true) {
         const ordinal = next++
         if (ordinal >= count) return
-        const eventMessage = makeEvent(key, ordinal, `${options.seed}:${harness.name}:${key}`)
-        handled.push(track(eventMessage))
-        await harness.store.append([eventMessage])
+        const tagged = makeEvent(key, ordinal, `${options.seed}:${harness.name}:${key}`)
+        handled.push(track(tagged.event))
+        await harness.store.append([tagged])
       }
     }))
     const producerMs = performance.now() - started

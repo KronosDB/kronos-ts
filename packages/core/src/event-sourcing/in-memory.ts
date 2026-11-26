@@ -1,4 +1,4 @@
-import type { EventMessage } from "../messaging/messages.js"
+import type { TaggedEvent } from "../messaging/messages.js"
 import { compileQuery, matchesCriteria } from "./dcb-query.js"
 import {
   type MessageStream,
@@ -21,7 +21,8 @@ import { AppendConditionError } from "../messaging/failures.js"
  * Supports push-based streaming via open().
  */
 export function inMemoryEventStore(): EventStore {
-  const events: Array<{ position: bigint; event: EventMessage }> = []
+  // Each event with the tags it was appended under, which reads are matched against.
+  const events: Array<TaggedEvent & { position: bigint }> = []
   let nextPosition = 0n
 
   // Each read is checked against its own marker when the condition carries
@@ -30,7 +31,7 @@ export function inMemoryEventStore(): EventStore {
     const reads = condition.reads ?? [condition]
     const checks = reads.map((read) => ({ criteria: compileQuery(read.query), after: read.marker.position }))
     const conflicting = events.filter((entry) =>
-      checks.some((check) => entry.position > check.after && matchesCriteria(entry.event, check.criteria)),
+      checks.some((check) => entry.position > check.after && matchesCriteria(entry, check.criteria)),
     )
     if (conflicting.length > 0) {
       throw new AppendConditionError(
@@ -57,7 +58,7 @@ export function inMemoryEventStore(): EventStore {
       const criteria = compileQuery(condition.query)
       const matching = events
         .filter((entry) => entry.position >= start)
-        .filter((entry) => matchesCriteria(entry.event, criteria))
+        .filter((entry) => matchesCriteria(entry, criteria))
 
       const lastPosition = matching.length > 0
         ? matching[matching.length - 1]!.position
@@ -74,13 +75,13 @@ export function inMemoryEventStore(): EventStore {
     },
 
     async append(
-      newEvents: ReadonlyArray<EventMessage>,
+      newEvents: ReadonlyArray<TaggedEvent>,
       condition?: AppendCondition,
     ): Promise<ConsistencyMarker> {
       if (condition) refuseConflicts(condition)
 
-      for (const event of newEvents) {
-        events.push({ position: nextPosition, event })
+      for (const { event, tags } of newEvents) {
+        events.push({ position: nextPosition, event, tags })
         nextPosition++
       }
 
@@ -108,7 +109,7 @@ export function inMemoryEventStore(): EventStore {
         if (closed) return undefined
         for (const entry of events) {
           if (entry.position < cursor) continue
-          if (criteria && !matchesCriteria(entry.event, criteria)) continue
+          if (criteria && !matchesCriteria(entry, criteria)) continue
           return { sequence: entry.position, event: entry.event }
         }
         return undefined

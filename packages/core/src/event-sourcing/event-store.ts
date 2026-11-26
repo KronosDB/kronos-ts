@@ -1,4 +1,4 @@
-import type { EventMessage } from "../messaging/messages.js"
+import type { EventMessage, TaggedEvent } from "../messaging/messages.js"
 import type { StreamableEventSource } from "../event-processing/source.js"
 import type { SourcingCondition } from "./sourcing-condition.js"
 import type { AppendCondition } from "./append-condition.js"
@@ -60,7 +60,7 @@ export type EventStore = StreamableEventSource & {
    * transactions writes inside that unit of work's.
    */
   append(
-    events: ReadonlyArray<EventMessage>,
+    events: ReadonlyArray<TaggedEvent>,
     condition?: AppendCondition,
     uow?: UnitOfWork,
   ): Promise<ConsistencyMarker>

@@ -1,5 +1,5 @@
 import type { EventQuery } from "../event-sourcing/dcb-query.js"
-import type { EventMessage } from "../messaging/messages.js"
+import type { TaggedEvent } from "../messaging/messages.js"
 
 /**
  * Lifecycle phases of one unit of work, in the order `execute` runs them:
@@ -86,7 +86,7 @@ export type SourcingInfo = {
  */
 export type UoWEventBuffer = {
   /** Events appended during INVOCATION, flushed as one atomic write. */
-  readonly buffered: EventMessage[]
+  readonly buffered: TaggedEvent[]
   /** One entry per `load()`, combined into the append condition. */
   readonly sourcingInfos: SourcingInfo[]
   /**

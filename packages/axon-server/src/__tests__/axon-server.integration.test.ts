@@ -44,6 +44,7 @@ import {
   tagsOf,
   type CommandBus,
   type EventMessage,
+  type TaggedEvent,
   type EventStore,
   type SequencedEvent,
   type QueryBus,
@@ -301,25 +302,27 @@ describe("Axon Server integration — axonServerConnection() family", () => {
 
   it("events are read back without tags, and a read with tags finds them", async () => {
     const courseId = `course-tags-${crypto.randomUUID()}`
-    const appended: EventMessage[] = [0, 1].map((n) => ({
-      kind: "event",
-      identifier: crypto.randomUUID(),
-      name: qn("axon-it", "Tagged"),
-      version: "",
-      payload: { n },
-      metadata: {},
-      timestamp: Date.now(),
+    const appended: TaggedEvent[] = [0, 1].map((n) => ({
+      event: {
+        kind: "event",
+        identifier: crypto.randomUUID(),
+        name: qn("axon-it", "Tagged"),
+        version: "",
+        payload: { n },
+        metadata: {},
+        timestamp: Date.now(),
+      },
       tags: [
         { key: "courseId", value: courseId },
         { key: "lesson", value: `lesson-${n}` },
       ],
     }))
     await eventStore.append(appended)
-    const identifiers = appended.map((event) => event.identifier)
+    const identifiers = appended.map(({ event }) => event.identifier)
 
     const sourced = await eventStore.source({ query: { tags: { courseId } } })
     expect(sourced.events.map((event) => event.identifier)).toEqual(identifiers)
-    expect(sourced.events.map((event) => event.tags)).toEqual([[], []])
+    for (const event of sourced.events) expect(event).not.toHaveProperty("tags")
 
     // A wrapper that narrows a read to the query finds them without their tags.
     const upcasting = upcastingEventStore(eventStore, [])
@@ -337,7 +340,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       }
       assert.equal(stream.error(), undefined)
       expect(delivered.map((item) => item.event.identifier)).toEqual(identifiers)
-      expect(delivered.map((item) => item.event.tags)).toEqual([[], []])
+      for (const item of delivered) expect(item.event).not.toHaveProperty("tags")
     } finally {
       stream.close()
     }
@@ -350,16 +353,18 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       payload: z.object({ courseId: z.string(), n: z.number(), poison: z.boolean().optional() }),
       tags: { courseId: (p) => p.courseId },
     })
-    const lesson = (courseId: string, n: number, poison?: boolean): EventMessage => {
+    const lesson = (courseId: string, n: number, poison?: boolean): TaggedEvent => {
       const payload = { courseId, n, ...(poison ? { poison } : {}) }
       return {
-        kind: "event",
-        identifier: crypto.randomUUID(),
-        name: LessonGiven.name,
-        version: LessonGiven.version,
-        payload,
-        metadata: {},
-        timestamp: Date.now(),
+        event: {
+          kind: "event",
+          identifier: crypto.randomUUID(),
+          name: LessonGiven.name,
+          version: LessonGiven.version,
+          payload,
+          metadata: {},
+          timestamp: Date.now(),
+        },
         tags: tagsOf(LessonGiven, payload, {}),
       }
     }
@@ -368,12 +373,12 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     await eventStore.append([lesson(a, 1, true), lesson(a, 2), lesson(b, 3)])
 
     // The second lesson of course A waits behind the first, which fails.
-    const byCourse = (e: EventMessage) => e.tags.find((t) => t.key === "courseId")?.value ?? e.identifier
+    const byCourse = (e: EventMessage) => (e.payload as { courseId?: string }).courseId ?? e.identifier
     const queue = inMemoryDeadLetterQueue()
-    const delivered: Array<{ n: number; tags: EventMessage["tags"] }> = []
+    const delivered: number[] = []
     const handler = eventHandler(LessonGiven, (message) => {
       if (message.payload.poison) throw new Error("poison pill")
-      delivered.push({ n: message.payload.n, tags: message.tags })
+      delivered.push(message.payload.n)
     })
     const name = `lessons-${run}`
     const processor = polling(
@@ -386,7 +391,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       while ((delivered.length < 1 || (await queue.size(name)) < 2) && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 20))
       }
-      expect(delivered).toEqual([{ n: 3, tags: [{ key: "courseId", value: b }] }])
+      expect(delivered).toEqual([3])
       const parked = await queue.deadLetterSequence(name, a)
       expect(parked.map((letter) => (letter.message.payload as { n: number }).n)).toEqual([1, 2])
     } finally {
@@ -443,13 +448,15 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     for (let from = 0; from < total; from += 200) {
       await eventStore.append(
         Array.from({ length: 200 }, (_, index) => ({
-          kind: "event" as const,
-          identifier: crypto.randomUUID(),
-          name: qn("axon-it", "Lesson"),
-          version: "",
-          payload: { n: from + index, notes: "x".repeat(2000) },
-          metadata: {},
-          timestamp: Date.now(),
+          event: {
+            kind: "event" as const,
+            identifier: crypto.randomUUID(),
+            name: qn("axon-it", "Lesson"),
+            version: "",
+            payload: { n: from + index, notes: "x".repeat(2000) },
+            metadata: {},
+            timestamp: Date.now(),
+          },
           tags: [{ key: "lessonOf", value: lessonOf }],
         })),
       )
@@ -576,14 +583,16 @@ describe("Axon Server integration — axonServerConnection() family", () => {
   }, 60_000)
 
   /** An event tagged `marker=<id>`, so a query finds only one test's events. */
-  const markerEvent = (id: string, n: number): EventMessage => ({
-    kind: "event",
-    identifier: crypto.randomUUID(),
-    name: qn("axon-it", "Marked"),
-    version: "",
-    payload: { n },
-    metadata: {},
-    timestamp: Date.now(),
+  const markerEvent = (id: string, n: number): TaggedEvent => ({
+    event: {
+      kind: "event",
+      identifier: crypto.randomUUID(),
+      name: qn("axon-it", "Marked"),
+      version: "",
+      payload: { n },
+      metadata: {},
+      timestamp: Date.now(),
+    },
     tags: [{ key: "marker", value: id }],
   })
 

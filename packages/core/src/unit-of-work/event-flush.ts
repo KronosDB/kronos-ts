@@ -1,5 +1,5 @@
 import { queryItems, type EventQuery, type QueryItem } from "../event-sourcing/dcb-query.js"
-import type { EventMessage } from "../messaging/messages.js"
+import type { TaggedEvent } from "../messaging/messages.js"
 import type { UnitOfWork } from "./unit-of-work.js"
 
 // ---------------------------------------------------------------------------
@@ -15,7 +15,7 @@ import type { UnitOfWork } from "./unit-of-work.js"
 
 export type EventFlushStore = {
   append(
-    events: ReadonlyArray<EventMessage>,
+    events: ReadonlyArray<TaggedEvent>,
     condition?: unknown,
     uow?: UnitOfWork,
   ): Promise<unknown>

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { emptyMetadata, qn, tag, type Metadata } from "@kronos-ts/core"
-import type { EventMessage } from "@kronos-ts/core"
+import type { TaggedEvent } from "@kronos-ts/core"
 
 export type BackendName = "kronosdb" | "postgres"
 export type ScenarioName = "append" | "append-c" | "workflow" | "dcb" | "rehydration" | "catchup-default" | "catchup-100" | "live"
@@ -142,19 +142,21 @@ export function makeEvent(
   ordinal: number,
   seed: string,
   extraTag?: { key: string; value: string },
-): EventMessage {
+): TaggedEvent {
   const tags = [tag("aggregateId", aggregateId)]
   if (extraTag) tags.push(tag(extraTag.key, extraTag.value))
   return {
-    kind: "event",
-    identifier: deterministicUuid(`${seed}:event:${aggregateId}:${ordinal}`),
-    name: BENCH_EVENT_NAME,
-    payload: makePayload(aggregateId, ordinal, seed),
-    metadata: emptyMetadata() as Metadata,
-    timestamp: 1_750_000_000_000 + ordinal,
-    version: "1",
+    event: {
+      kind: "event",
+      identifier: deterministicUuid(`${seed}:event:${aggregateId}:${ordinal}`),
+      name: BENCH_EVENT_NAME,
+      payload: makePayload(aggregateId, ordinal, seed),
+      metadata: emptyMetadata() as Metadata,
+      timestamp: 1_750_000_000_000 + ordinal,
+      version: "1",
+    },
     tags,
-  } as EventMessage
+  }
 }
 
 function positiveNumber(value: string | undefined, flag: string): number {

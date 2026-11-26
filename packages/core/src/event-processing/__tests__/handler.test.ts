@@ -43,7 +43,6 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
       payload: { courseId: "cs-101", name: "Intro" },
       metadata: emptyMetadata(),
       timestamp: Date.now(),
-      tags: [],
     }, TEST_CTX)
 
     expect(seen).toEqual([{ courseId: "cs-101", name: "Intro" }])
@@ -59,19 +58,18 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
       payload: { courseId: "cs-101", name: "Intro" },
       metadata,
       timestamp: 1715472000000,
-      tags: [{ key: "courseId", value: "cs-101" }],
     }
 
     let seenTimestamp: number | undefined
     let seenVersion: string | undefined
-    let seenTag: string | undefined
+    let seenIdentifier: string | undefined
 
     const def = eventHandler(
       CourseCreated,
-      async ({ timestamp, version, tags }) => {
+      async ({ timestamp, version, identifier }) => {
         seenTimestamp = timestamp
         seenVersion = version
-        seenTag = tags[0]?.value
+        seenIdentifier = identifier
       },
     )
 
@@ -79,7 +77,7 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
 
     expect(seenTimestamp).toBe(1715472000000)
     expect(seenVersion).toBe(CourseCreated.version)
-    expect(seenTag).toBe("cs-101")
+    expect(seenIdentifier).toBe("evt-1")
   })
 
   it("exposes metadata on the message", async () => {
@@ -98,7 +96,6 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
       payload: { courseId: "cs-101", name: "Intro" },
       metadata,
       timestamp: Date.now(),
-      tags: [],
     }, TEST_CTX)
 
     expect(seenMetadata).toBe(metadata)
@@ -118,7 +115,6 @@ describe("eventHandler() — singular factory (Phase 11-01)", () => {
       payload: { courseId: "cs-101", name: "Intro" },
       metadata: emptyMetadata(),
       timestamp: Date.now(),
-      tags: [],
     }, TEST_CTX)
 
     // Sync handler — return type is void (undefined)

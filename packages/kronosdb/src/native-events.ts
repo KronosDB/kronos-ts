@@ -24,7 +24,7 @@
 // ---------------------------------------------------------------------------
 
 import { qualifiedNameFromString, qualifiedNameToString, type QualifiedName, type Serializer } from "@kronos-ts/core"
-import type { EventCriteria, EventMessage, SequencedEvent } from "@kronos-ts/core"
+import type { EventCriteria, EventMessage, SequencedEvent, Tag, TaggedEvent } from "@kronos-ts/core"
 import {
   ProtocolError,
   ensure,
@@ -96,18 +96,17 @@ export function writeCriteria(w: Writer, criteria: ReadonlyArray<WireCriterion>)
 // Writing events
 // ---------------------------------------------------------------------------
 
-/** An event and its payload, serialized — everything a record needs. */
-export type OutboundEvent = {
-  readonly event: EventMessage
+/** An event, the tags it is appended under and its payload, serialized — everything a record needs. */
+export type OutboundEvent = TaggedEvent & {
   readonly data: Uint8Array
 }
 
 /** Serialize the payloads (which may throw, and should before anything is sent). */
-export function outbound(serializer: Serializer, events: ReadonlyArray<EventMessage>): OutboundEvent[] {
+export function outbound(serializer: Serializer, events: ReadonlyArray<TaggedEvent>): OutboundEvent[] {
   const out = new Array<OutboundEvent>(events.length)
   for (let i = 0; i < events.length; i++) {
-    const event = events[i]!
-    out[i] = { event, data: serializer.serialize(event.payload, qualifiedNameToString(event.name), event.version).data }
+    const { event, tags } = events[i]!
+    out[i] = { event, tags, data: serializer.serialize(event.payload, qualifiedNameToString(event.name), event.version).data }
   }
   return out
 }
@@ -117,7 +116,7 @@ export function outbound(serializer: Serializer, events: ReadonlyArray<EventMess
  * assigns it. Metadata values are text on the wire, as they were on the gRPC
  * one; a null or undefined value is not sent.
  */
-export function writeRecord(w: Writer, event: EventMessage, data: Uint8Array): void {
+export function writeRecord(w: Writer, event: EventMessage, tags: ReadonlyArray<Tag>, data: Uint8Array): void {
   const start = w.pos
   writeU32(w, 0)
   writeU8(w, 0)
@@ -142,8 +141,8 @@ export function writeRecord(w: Writer, event: EventMessage, data: Uint8Array): v
   if (entries > 0xffff) throw new ProtocolError(`metadata: ${entries} entries exceed the u16 limit`)
   w.view.setUint16(metadataCountAt, entries, true)
 
-  writeLen16(w, event.tags.length, "event tags")
-  for (const tag of event.tags) {
+  writeLen16(w, tags.length, "event tags")
+  for (const tag of tags) {
     writeStr16(w, tag.key, "tag key")
     writeStr16(w, tag.value, "tag value")
   }
@@ -159,7 +158,7 @@ export function writeRecord(w: Writer, event: EventMessage, data: Uint8Array): v
 /** Append `count u32` and the records. */
 export function writeRecords(w: Writer, events: ReadonlyArray<OutboundEvent>): void {
   writeLen32(w, events.length, "events")
-  for (const { event, data } of events) writeRecord(w, event, data)
+  for (const { event, tags, data } of events) writeRecord(w, event, tags, data)
 }
 
 /** Append an optional append condition: presence byte, marker, criteria. */
@@ -177,15 +176,11 @@ export function writeCondition(w: Writer, condition: { marker: bigint; criteria:
 // Reading events
 // ---------------------------------------------------------------------------
 
-const utf8 = new TextDecoder()
-
-/** Tag text: opaque bytes on the wire, ASCII almost always, never an error. */
-function readTagText(r: Reader): string {
+/** Step over a length-prefixed text without decoding it. */
+function skipText(r: Reader): void {
   const len = readU16(r)
   if (r.pos + len > r.end) throw new ProtocolError(`truncated: need ${len} bytes at offset ${r.pos}`)
-  const start = r.pos
   r.pos += len
-  return utf8.decode(r.buf.subarray(start, r.pos))
 }
 
 // Event type names come from a small, fixed set per application. Splitting
@@ -214,11 +209,11 @@ function readEventBody(r: Reader, serializer: Serializer): EventMessage {
     metadata[key] = readStr16(r)
   }
 
-  const tagCount = readU16(r)
-  const tags = new Array<{ key: string; value: string }>(tagCount)
-  for (let i = 0; i < tagCount; i++) {
-    const key = readTagText(r)
-    tags[i] = { key, value: readTagText(r) }
+  // The record holds the tags the event was appended under. They are the
+  // log's index and not part of the event, so they are stepped over.
+  for (let n = readU16(r); n > 0; n--) {
+    skipText(r)
+    skipText(r)
   }
 
   const data = readBytes32(r)
@@ -233,7 +228,6 @@ function readEventBody(r: Reader, serializer: Serializer): EventMessage {
     payload,
     metadata,
     timestamp,
-    tags,
   }
 }
 

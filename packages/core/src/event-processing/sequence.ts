@@ -7,13 +7,11 @@ import type { EventMessage } from "../messaging/messages.js"
  * parks behind it. "No ordering constraint" is not a missing answer, it is
  * `(e) => e.identifier` — every event in a sequence of its own.
  *
- * A plain function, not a policy object: there is one operation here, and a
- * record with one method is a function wearing a hat. There is no helper for
- * the usual one — a sequence per tag value is a line, and writing it shows where
- * an event without the tag goes:
+ * A plain function of the event. The usual one reads a field of the payload,
+ * and says where an event without that field goes:
  *
  * ```ts
- * const byAccount = (e: EventMessage) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier
+ * const byAccount = (e: EventMessage) => (e.payload as { accountId?: string }).accountId ?? e.identifier
  * ```
  */
 export type Sequence = (event: EventMessage) => string

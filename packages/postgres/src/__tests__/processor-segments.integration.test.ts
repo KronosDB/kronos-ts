@@ -23,6 +23,7 @@ import {
   type EventDescriptor,
   type EventMessage,
   type RunningProcessor,
+  type TaggedEvent,
   type TokenStore,
 } from "@kronos-ts/core"
 import { postgresPool, type PostgresResource } from "../postgres-pool.js"
@@ -54,15 +55,17 @@ beforeEach(async () => {
   await pool.query(`TRUNCATE seg_counted, ${pool.tables.tokens}, ${pool.tables.events}`)
 })
 
-function counted(account: string, n: number): EventMessage {
+function counted(account: string, n: number): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: Counted.name,
-    version: "1.0",
-    payload: { account, n },
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: Counted.name,
+      version: "1.0",
+      payload: { account, n },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags: [{ key: "account", value: account }],
   }
 }
@@ -110,7 +113,7 @@ async function until(done: () => Promise<boolean> | boolean, what: string, timeo
 }
 
 async function append(accounts: number, from: number, to: number) {
-  const events: EventMessage[] = []
+  const events: TaggedEvent[] = []
   for (let n = from; n < to; n++) for (let a = 0; a < accounts; a++) events.push(counted(`acc-${a}`, n))
   await postgresEventStore(pool).append(events)
 }

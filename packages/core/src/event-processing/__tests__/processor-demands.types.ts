@@ -25,7 +25,7 @@ import { unitOfWork, type UnitOfWork } from "../../unit-of-work/unit-of-work.js"
 const eventStore = inMemoryEventStore()
 const tokenStore = inMemoryTokenStore()
 const deadLetterQueue = inMemoryDeadLetterQueue()
-const byCourse = (e: EventMessage) => e.tags.find((t) => t.key === "courseId")?.value ?? e.identifier
+const byCourse = (e: EventMessage) => (e.payload as { courseId?: string }).courseId ?? e.identifier
 
 /** A task that carries something the bare one does not — a family's, say. */
 type FamilyUnitOfWork = UnitOfWork & { readonly family: "postgres" }

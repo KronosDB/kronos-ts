@@ -98,13 +98,15 @@ async function write<P extends z.ZodType>(
 ): Promise<void> {
   await store.append([
     {
-      kind: "event",
-      identifier: crypto.randomUUID(),
-      name: descriptor.name,
-      version: descriptor.version,
-      payload,
-      metadata: emptyMetadata(),
-      timestamp: Date.now(),
+      event: {
+        kind: "event",
+        identifier: crypto.randomUUID(),
+        name: descriptor.name,
+        version: descriptor.version,
+        payload,
+        metadata: emptyMetadata(),
+        timestamp: Date.now(),
+      },
       tags: tagsOf(descriptor, payload, emptyMetadata()),
     },
   ])

@@ -4,6 +4,7 @@ import type {
   CommandBus,
   CommandMessage,
   EventMessage,
+  TaggedEvent,
   EventStore,
   QueryBus,
   QueryMessage,
@@ -126,8 +127,13 @@ export async function openWorld(app: App): Promise<World> {
       payload: value.payload,
       metadata: value.metadata ?? emptyMetadata(),
       timestamp: clock(),
-      tags: tagsOf(value.descriptor, value.payload, value.metadata ?? emptyMetadata()),
     }
+  }
+
+  /** A stated event with the tags its descriptor gives it, as a handler's append would carry. */
+  function toTaggedEvent(value: EventValue<any>): TaggedEvent {
+    const event = toEventMessage(value)
+    return { event, tags: tagsOf(value.descriptor, event.payload, event.metadata) }
   }
 
   /**
@@ -183,7 +189,7 @@ export async function openWorld(app: App): Promise<World> {
      */
     async history(events) {
       if (events.length === 0) return
-      await log().append(events.map(toEventMessage))
+      await log().append(events.map(toTaggedEvent))
       await quiesce()
     },
 
@@ -235,7 +241,7 @@ export async function openWorld(app: App): Promise<World> {
           result = await queryBus.query(message)
         } else {
           // An event ARRIVES: appended, and the automations DO react.
-          await log().append([toEventMessage(action)])
+          await log().append([toTaggedEvent(action)])
         }
       } catch (error) {
         if (error instanceof Error && error.message.startsWith("@kronos-ts/test:")) throw error

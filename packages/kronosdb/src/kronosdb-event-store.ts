@@ -2,6 +2,7 @@ import type {
   AppendCondition,
   ConsistencyMarker,
   EventMessage,
+  TaggedEvent,
   EventQuery,
   EventStore,
   MessageStream,
@@ -112,11 +113,9 @@ function retryWait(attempt: number): number {
  * of rare events moves its token.
  *
  * A few things the wire gives that the framework's `EventStore` does not ask
- * for, kept out of this shape and available beside it: tags on read events (they
- * are on the returned events' `tags`), `Progress` frames
- * ({@link kronosDbSubscription}), the log's tail, a position's tags, and a
- * timestamp's position ({@link kronosDbTail}, {@link kronosDbTagsAt},
- * {@link kronosDbPositionAt}).
+ * for, kept out of this shape and available beside it: `Progress` frames
+ * ({@link kronosDbSubscription}), the log's tail and a timestamp's position
+ * ({@link kronosDbTail}, {@link kronosDbPositionAt}).
  *
  * An append the server answers `unavailable`, or whose connection is lost
  * before the answer, may or may not have been written. It is sent again, with
@@ -236,7 +235,7 @@ export function kronosDbEventStore(
       })
     },
 
-    async append(newEvents: ReadonlyArray<EventMessage>, condition?: AppendCondition): Promise<ConsistencyMarker> {
+    async append(newEvents: ReadonlyArray<TaggedEvent>, condition?: AppendCondition): Promise<ConsistencyMarker> {
       return markerAt(await send(outbound(serializer, newEvents), condition))
     },
 

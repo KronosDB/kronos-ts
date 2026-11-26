@@ -17,6 +17,7 @@ import {
   sourcingCondition,
   unitOfWork,
   type EventMessage,
+  type TaggedEvent,
   type SerializedObject,
   type Serializer,
 } from "@kronos-ts/core"
@@ -112,17 +113,19 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
     await pool.close()
   }, 30_000)
 
-  function event(name: string, n: number): EventMessage {
+  function event(name: string, n: number): TaggedEvent {
     return {
-      kind: "event",
-      identifier: generateIdentifier(),
-      name: { namespace: "jsonb", name: "Happened" },
+      event: {
+        kind: "event",
+        identifier: generateIdentifier(),
+        name: { namespace: "jsonb", name: "Happened" },
+        payload: { n, text: `it's "quoted" \\ {braced} ${n}`, nested: { list: [1, null, "NULL"] } },
+        metadata: { correlationId: `c-${n}` },
+        timestamp: 1_700_000_000_000 + n,
+        version: "1",
+      } as EventMessage,
       tags: [{ key: "stream", value: stream(name) }],
-      payload: { n, text: `it's "quoted" \\ {braced} ${n}`, nested: { list: [1, null, "NULL"] } },
-      metadata: { correlationId: `c-${n}` },
-      timestamp: 1_700_000_000_000 + n,
-      version: "1",
-    } as EventMessage
+    }
   }
 
   type Stored = { payload_type: string; metadata_type: string; text: string | null; correlation: string | null }
@@ -137,7 +140,7 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
     )
   }
 
-  const asObjects = (e: EventMessage): Stored => ({
+  const asObjects = ({ event: e }: TaggedEvent): Stored => ({
     payload_type: "object",
     metadata_type: "object",
     text: (e.payload as { text: string }).text,
@@ -145,14 +148,14 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
   })
 
   /** Insert `e` into the events table the way rows were stored before: JSONB strings. */
-  async function insertEventAsStrings(e: EventMessage): Promise<void> {
+  async function insertEventAsStrings({ event: e, tags }: TaggedEvent): Promise<void> {
     await pool.query(
       `INSERT INTO ${T.events} (event_id, type, tags, payload, metadata, version, timestamp)
        VALUES ($1::uuid, $2, $3::text[], to_jsonb($4::text), to_jsonb($5::text), $6, $7::bigint)`,
       [
         e.identifier,
         `${e.name.namespace}.${e.name.name}`,
-        e.tags.map((t) => encodeTag(t.key, t.value)),
+        tags.map((t) => encodeTag(t.key, t.value)),
         JSON.stringify(e.payload),
         JSON.stringify(e.metadata),
         e.version,
@@ -161,7 +164,7 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
     )
   }
 
-  async function insertScheduleAsStrings(e: EventMessage, fireAt: Date): Promise<void> {
+  async function insertScheduleAsStrings({ event: e, tags }: TaggedEvent, fireAt: Date): Promise<void> {
     await pool.query(
       `INSERT INTO ${T.scheduled} (schedule_id, fire_at, status, type, tags, payload, metadata, version, timestamp)
        VALUES ($1::uuid, $2::timestamptz, 'pending', $3, $4::text[], to_jsonb($5::text), to_jsonb($6::text), $7, $8::bigint)`,
@@ -169,7 +172,7 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
         e.identifier,
         fireAt.toISOString(),
         `${e.name.namespace}.${e.name.name}`,
-        e.tags.map((t) => encodeTag(t.key, t.value)),
+        tags.map((t) => encodeTag(t.key, t.value)),
         JSON.stringify(e.payload),
         JSON.stringify(e.metadata),
         e.version,
@@ -205,16 +208,16 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
     await store.append(together)
 
     for (const e of [alone, ...together]) {
-      expect(await stored(T.events, "event_id", e.identifier)).toEqual(asObjects(e))
+      expect(await stored(T.events, "event_id", e.event.identifier)).toEqual(asObjects(e))
     }
-    expect((await read("append")).events).toEqual([alone, ...together])
+    expect((await read("append")).events).toEqual([alone, ...together].map((e) => e.event))
   })
 
   it("stores a scheduled event's payload and metadata as objects", async () => {
     const e = event("schedule", 0)
     await uow().execute((u) => store.schedule(e, new Date(Date.now() + 3_600_000), u))
 
-    expect(await stored(T.scheduled, "schedule_id", e.identifier)).toEqual(asObjects(e))
+    expect(await stored(T.scheduled, "schedule_id", e.event.identifier)).toEqual(asObjects(e))
   })
 
   it("stores a snapshot's metadata as an object", async () => {
@@ -232,17 +235,17 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
   it("reads an event whose payload and metadata are stored as JSON strings", async () => {
     const old = event("old-event", 0)
     await insertEventAsStrings(old)
-    expect(await stored(T.events, "event_id", old.identifier)).toEqual({
+    expect(await stored(T.events, "event_id", old.event.identifier)).toEqual({
       payload_type: "string",
       metadata_type: "string",
       text: null,
       correlation: null,
     })
 
-    expect((await read("old-event")).events).toEqual([old])
+    expect((await read("old-event")).events).toEqual([old.event])
     // The read that leads with a snapshot decodes the same rows.
     const fused = await store.source({ query: { tags: { stream: stream("old-event") } }, snapshot: { key: "none" } })
-    expect(fused.events).toEqual([old])
+    expect(fused.events).toEqual([old.event])
   })
 
   it("fires a schedule whose payload and metadata are stored as JSON strings", async () => {
@@ -253,9 +256,9 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
     const fired = await eventually(async () => (await read("old-schedule")).events[0])
     await store.stopScheduling()
 
-    expect(fired).toEqual(old)
+    expect(fired).toEqual(old.event)
     // The event it became is stored as every appended event is.
-    expect(await stored(T.events, "event_id", old.identifier)).toEqual(asObjects(old))
+    expect(await stored(T.events, "event_id", old.event.identifier)).toEqual(asObjects(old))
   })
 
   it("reads a snapshot whose metadata is stored as a JSON string", async () => {
@@ -286,10 +289,10 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
     await pool.query(REWRITE_SNAPSHOTS)
 
     for (const e of [oldEvent, newEvent]) {
-      expect(await stored(T.events, "event_id", e.identifier)).toEqual(asObjects(e))
+      expect(await stored(T.events, "event_id", e.event.identifier)).toEqual(asObjects(e))
     }
     for (const e of [oldSchedule, newSchedule]) {
-      expect(await stored(T.scheduled, "schedule_id", e.identifier)).toEqual(asObjects(e))
+      expect(await stored(T.scheduled, "schedule_id", e.event.identifier)).toEqual(asObjects(e))
     }
     const snapshots = await pool.query<{ key: string; metadata_type: string; serializer_type: string }>(
       `SELECT key, jsonb_typeof(metadata) AS metadata_type, metadata->>'__kr_serializer_type' AS serializer_type
@@ -306,6 +309,6 @@ describe.each(drivers)("JSONB columns over %s", (driver, make) => {
       `SELECT count(*) AS n FROM ${T.events} WHERE jsonb_typeof(payload) = 'string' OR jsonb_typeof(metadata) = 'string'`,
     )
     expect(Number(left?.n)).toBe(0)
-    expect((await read("rewrite")).events).toEqual([oldEvent, newEvent])
+    expect((await read("rewrite")).events).toEqual([oldEvent.event, newEvent.event])
   })
 })

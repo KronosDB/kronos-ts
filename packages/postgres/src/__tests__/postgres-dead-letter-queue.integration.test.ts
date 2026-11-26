@@ -18,7 +18,6 @@ import {
 import type {
   DeadLetter,
   EnqueueDecision,
-  EventMessage,
   SequencedDeadLetterQueue,
   SequencedEvent,
   UnitOfWork,
@@ -43,7 +42,6 @@ function makeLetter(seqId: string, value: string, cause = new Error("boom")): De
       payload: { value },
       metadata: emptyMetadata(),
       timestamp: Date.now(),
-      tags: [{ key: "id", value: seqId }],
     },
     cause,
     seqId,
@@ -338,14 +336,17 @@ describe("postgresDeadLetterQueue.process() lease", () => {
       await entered.promise
       await store.append([
         {
-          identifier: generateIdentifier(),
-          name: EVENT_NAME,
-          version: "1.0",
-          payload: {},
-          metadata: emptyMetadata(),
-          timestamp: Date.now(),
+          event: {
+            kind: "event",
+            identifier: generateIdentifier(),
+            name: EVENT_NAME,
+            version: "1.0",
+            payload: {},
+            metadata: emptyMetadata(),
+            timestamp: Date.now(),
+          },
           tags: [],
-        } as unknown as EventMessage,
+        },
       ])
       const event = await nextEvent(stream)
       expect(event.sequence).toBe(1n)

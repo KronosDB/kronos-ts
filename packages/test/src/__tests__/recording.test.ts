@@ -11,7 +11,7 @@ import {
   unitOfWork,
   tagsOf,
 } from "@kronos-ts/core"
-import type { EventDescriptor, EventMessage } from "@kronos-ts/core"
+import type { EventDescriptor, EventMessage, TaggedEvent } from "@kronos-ts/core"
 import { advanceableClock } from "../clock.js"
 import { recordingCommandBus, recordingEventStore, recordingQueryBus } from "../recording.js"
 import { CloseCourse, CourseClosed, GetCourseView } from "./_university.js"
@@ -23,15 +23,17 @@ import { CloseCourse, CourseClosed, GetCourseView } from "./_university.js"
 
 const FROZEN = 1_700_000_000_000
 
-function message(descriptor: EventDescriptor<any>, payload: any): EventMessage {
+function message(descriptor: EventDescriptor<any>, payload: any): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: descriptor.name,
-    version: descriptor.version,
-    payload,
-    metadata: emptyMetadata(),
-    timestamp: FROZEN,
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: descriptor.name,
+      version: descriptor.version,
+      payload,
+      metadata: emptyMetadata(),
+      timestamp: FROZEN,
+    },
     tags: tagsOf(descriptor, payload, emptyMetadata()),
   }
 }

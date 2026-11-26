@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { qn, emptyMetadata, event, type EventMessage } from "../../messaging/messages.js"
+import { qn, emptyMetadata, event, type TaggedEvent } from "../../messaging/messages.js"
 import { generateIdentifier } from "../../messaging/identifier.js"
 import { state } from "../../event-sourcing/state.js"
 import { inMemoryEventStore } from "../../event-sourcing/in-memory.js"
@@ -57,17 +57,19 @@ const counter = (initial: () => CounterState = () => ({ count: 0 })) =>
 const Counter = counter()
 const KEY = "counter-v1"
 
-function bumped(counterId: string, by: number): EventMessage {
+function bumped(counterId: string, by: number): TaggedEvent {
   return {
-    kind: "event",
-    identifier: generateIdentifier(),
-    name: qn("counting", "Bumped"),
-    version: "1.0",
-    payload: { counterId, by },
-    metadata: emptyMetadata(),
-    timestamp: Date.now(),
+    event: {
+      kind: "event",
+      identifier: generateIdentifier(),
+      name: qn("counting", "Bumped"),
+      version: "1.0",
+      payload: { counterId, by },
+      metadata: emptyMetadata(),
+      timestamp: Date.now(),
+    },
     tags: [{ key: "counterId", value: counterId }],
-  } as EventMessage
+  }
 }
 
 async function appendBumps(store: EventStore, counterId: string, n: number): Promise<void> {
@@ -346,17 +348,19 @@ describe("composed with upcastingEventStore", () => {
 
   const byAdded = [upcast(BumpedV0, Bumped, (payload) => ({ ...payload, by: 1 }))]
 
-  function legacyBump(counterId: string): EventMessage {
+  function legacyBump(counterId: string): TaggedEvent {
     return {
-      kind: "event",
-      identifier: generateIdentifier(),
-      name: qn("counting", "Bumped"),
-      version: "0.9",
-      payload: { counterId },
-      metadata: emptyMetadata(),
-      timestamp: Date.now(),
+      event: {
+        kind: "event",
+        identifier: generateIdentifier(),
+        name: qn("counting", "Bumped"),
+        version: "0.9",
+        payload: { counterId },
+        metadata: emptyMetadata(),
+        timestamp: Date.now(),
+      },
       tags: [{ key: "counterId", value: counterId }],
-    } as EventMessage
+    }
   }
 
   it("upcasting OUTERMOST — the documented order — converts everything the fold sees", async () => {

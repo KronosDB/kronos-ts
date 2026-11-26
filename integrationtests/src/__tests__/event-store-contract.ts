@@ -10,7 +10,7 @@
 import assert from "node:assert/strict"
 import { it } from "bun:test"
 import { createServer } from "node:net"
-import { emptyMetadata, isConflict, isUnavailable, qn, type EventMessage, type EventQuery, type EventStore } from "@kronos-ts/core"
+import { emptyMetadata, isConflict, isUnavailable, qn, type EventQuery, type EventStore, type TaggedEvent } from "@kronos-ts/core"
 
 export type EventStoreContractTarget = {
   /** The store every check appends to. Called once per check. */
@@ -49,18 +49,20 @@ async function failsUnavailable(what: string, work: Promise<unknown>): Promise<v
 
 let sequence = 0
 
-function freshSubject(): { query: EventQuery; event: () => EventMessage } {
+function freshSubject(): { query: EventQuery; event: () => TaggedEvent } {
   const subject = `contract-${Date.now().toString(36)}-${++sequence}-${Math.random().toString(36).slice(2, 8)}`
   return {
     query: { tags: { subject } },
     event: () => ({
-      kind: "event",
-      identifier: crypto.randomUUID(),
-      name: qn("contract", "Bumped"),
-      version: "1",
-      payload: { subject },
-      metadata: emptyMetadata(),
-      timestamp: Date.now(),
+      event: {
+        kind: "event",
+        identifier: crypto.randomUUID(),
+        name: qn("contract", "Bumped"),
+        version: "1",
+        payload: { subject },
+        metadata: emptyMetadata(),
+        timestamp: Date.now(),
+      },
       tags: [{ key: "subject", value: subject }],
     }),
   }
