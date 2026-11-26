@@ -122,6 +122,42 @@ describe("commit-order gaps", () => {
     await assert.rejects(store.append([tagged("Decision", A)], appendCondition(onA, read.marker)), isConflict)
   })
 
+  it("an append holds the type it writes until it commits, so no read by type sees past an uncommitted event of that type", async () => {
+    const things: EventQuery = { types: ["gap.Thing"] }
+    const held = await heldAppend([tagged("Thing", A)])
+    const second = store.append([tagged("Thing", B)])
+    let read
+    try {
+      await sleep(300)
+      read = await store.source(sourcingCondition(things))
+    } finally {
+      await held.commit()
+    }
+    await second
+    assert.equal(read.events.length, 0)
+    await assert.rejects(store.append([tagged("Thing", B)], appendCondition(things, read.marker)), isConflict)
+  })
+
+  it("accepts one of several simultaneous appends conditioned on a type alone", async () => {
+    for (let round = 0; round < 20; round++) {
+      const once: EventQuery = { types: [`gap.Once${round}`] }
+      const read = await store.source(sourcingCondition(once))
+      const outcomes = await Promise.allSettled(
+        [0, 1, 2, 3].map((writer) =>
+          store.append([tagged(`Once${round}`, { key: "writer", value: `${round}-${writer}` })], appendCondition(once, read.marker)),
+        ),
+      )
+      assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1, `round ${round}`)
+      for (const outcome of outcomes) if (outcome.status === "rejected") assert.ok(isConflict(outcome.reason))
+    }
+  })
+
+  it("refuses an append condition that matches every event", async () => {
+    const read = await store.source(sourcingCondition({}))
+    await assert.rejects(store.append([tagged("First", A)], appendCondition({}, read.marker)), /matches every event/)
+    assert.equal((await store.source(sourcingCondition(onA))).events.length, 0)
+  })
+
   it("a read that matches nothing is not anchored to the log head", async () => {
     const held = await heldAppend([tagged("First", A)])
     let read
