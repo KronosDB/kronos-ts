@@ -52,7 +52,7 @@ jobs:
           --health-timeout 5s
           --health-retries 15
       kronosdb:
-        image: ghcr.io/kronosdb/kronosdb:0.16.0
+        image: ghcr.io/kronosdb/kronosdb:0.17.0
         credentials:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
