@@ -149,7 +149,8 @@ async function streamServes(store: { open(c: { position: bigint }): { error(): E
 }
 
 async function initClusterWithDcb(host: string, httpPort: number): Promise<void> {
-  await fetch(`http://${host}:${httpPort}/v2/cluster/init?dcb=true`, { method: "POST" })
+  const init = await fetch(`http://${host}:${httpPort}/v2/cluster/init?dcb=true`, { method: "POST" })
+  if (!init.ok) throw new Error(`Axon Server refused cluster init: ${init.status} ${await init.text()}`)
   const start = Date.now()
   while (Date.now() - start < 15_000) {
     try {
