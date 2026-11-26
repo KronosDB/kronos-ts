@@ -1,474 +1,345 @@
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { upcastingEventStore, type Upcast } from "../upcasting-event-store.js"
+import { upcast, upcastingEventStore } from "../upcasting-event-store.js"
 import { inMemoryEventStore } from "../../event-sourcing/in-memory.js"
-import { event, is, qn, type EventMessage } from "../../messaging/messages.js"
+import { event, qn, type EventDescriptor, type EventMessage } from "../../messaging/messages.js"
 import { state } from "../../event-sourcing/state.js"
 import { eventSourcedRepository } from "../../event-sourcing/repository.js"
 
-// The descriptor as it stands TODAY — version 2.0, capacity required. Events
-// written under 1.0 are still in the log and still have to fold.
+// The descriptor as it stands today, and the two versions before it, each
+// declared as a descriptor of its own.
 const CourseCreated = event({
+  name: qn("university", "CourseCreated"),
+  version: "3.0",
+  payload: z.object({ courseId: z.string(), name: z.string(), capacity: z.number(), department: z.string() }),
+  tags: { courseId: (p) => p.courseId },
+})
+const CourseCreatedV2 = event({
   name: qn("university", "CourseCreated"),
   version: "2.0",
   payload: z.object({ courseId: z.string(), name: z.string(), capacity: z.number() }),
   tags: { courseId: (p) => p.courseId },
 })
-
-// The OUTDATED version, declared as its own descriptor. That is the whole
-// technique: the old shape gets a name, so `is()` narrows `payload` to what it
-// looked like back then and the transform is written against real types.
 const CourseCreatedV1 = event({
   name: qn("university", "CourseCreated"),
   version: "1.0",
-  payload: z.object({ courseId: z.string(), name: z.string() }), // no capacity back then
+  payload: z.object({ courseId: z.string(), name: z.string() }),
   tags: { courseId: (p) => p.courseId },
 })
 
+const capacityAdded = upcast(CourseCreatedV1, CourseCreatedV2, (payload) => ({ ...payload, capacity: 30 }))
+const departmentAdded = upcast(CourseCreatedV2, CourseCreated, (payload) => ({ ...payload, department: "general" }))
+
 let seq = 0
-function stored(overrides: Partial<EventMessage> = {}): EventMessage {
+/** An event as the log holds it, written under `descriptor`. */
+function stored(
+  descriptor: EventDescriptor<any>,
+  payload: Record<string, unknown>,
+  tags: Record<string, string> = { courseId: String(payload.courseId) },
+): EventMessage {
   return {
     kind: "event",
     identifier: `e-${++seq}`,
-    name: CourseCreated.name,
-    version: "1.0",
-    payload: { courseId: "cs-101", name: "Intro" },
+    name: descriptor.name,
+    version: descriptor.version,
+    payload,
     metadata: {},
     timestamp: 1_700_000_000_000,
-    tags: [{ key: "courseId", value: "cs-101" }],
-    ...overrides,
+    tags: Object.entries(tags).map(([key, value]) => ({ key, value })),
   }
 }
 
-// Written BY HAND — there is no shipped constructor, because writing the match
-// is the whole lesson. `is()` makes it a typed switch, and the target version is
-// read off the CURRENT descriptor so it can never disagree with itself.
-const capacityAdded: Upcast = (e) => {
-  if (is(e, CourseCreatedV1)) {
-    return { ...e, version: CourseCreated.version, payload: { ...e.payload, capacity: 30 } }
-  }
-  return e
-}
-
-describe("an upcaster written with `is()`", () => {
-  it("transforms a matching type at a matching version", () => {
-    const result = capacityAdded(stored())
-    expect(result.payload).toEqual({ courseId: "cs-101", name: "Intro", capacity: 30 })
-  })
-
-  it("stamps the version the DESCRIPTOR carries — the target is never restated", () => {
-    expect(capacityAdded(stored()).version).toBe("2.0")
-    expect(capacityAdded(stored()).version).toBe(CourseCreated.version)
-  })
-
-  it("leaves tags alone — they are how the event was INDEXED, not what it means", () => {
-    const before = stored()
-    expect(capacityAdded(before).tags).toEqual(before.tags)
-  })
-
-  it("is identity for another version of the same type", () => {
-    const current = stored({ version: "2.0" })
-    expect(capacityAdded(current)).toBe(current)
-  })
-
-  it("is identity for another type", () => {
-    const other = stored({ name: qn("billing", "Charged") })
-    expect(capacityAdded(other)).toBe(other)
-  })
-
-  it("narrows the payload to the OUTDATED descriptor's shape", () => {
-    const e = stored()
-    if (is(e, CourseCreatedV1)) {
-      // Typed as `{ courseId: string; name: string }` — no `capacity` in sight,
-      // which is exactly what the log holds.
-      const name: string = e.payload.name
-      expect(name).toBe("Intro")
-    } else {
-      throw new Error("expected the v1 descriptor to match")
-    }
-  })
-})
-
-describe("composing upcasters", () => {
-  // Every hop is a plain arrow written the same way — that IS the mechanism.
-  const CourseCreatedV0 = event({
-    name: qn("university", "CourseCreated"),
-    version: "0.9",
-    payload: z.object({ courseId: z.string(), title: z.string() }),
-    tags: { courseId: (p) => p.courseId },
-  })
-
-  const renamed: Upcast = (e) =>
-    is(e, CourseCreatedV0)
-      ? { ...e, version: CourseCreatedV1.version, payload: { courseId: e.payload.courseId, name: e.payload.title } }
-      : e
-
-  const chain: Upcast = (e) => capacityAdded(renamed(e))
-
-  it("runs a multi-hop chain in order, with no chain object", () => {
-    const result = chain(stored({ version: "0.9", payload: { courseId: "cs-101", title: "Intro" } }))
-    expect(result.version).toBe("2.0")
-    expect(result.payload).toMatchObject({ courseId: "cs-101", name: "Intro", capacity: 30 })
-  })
-
-  it("enters the chain part-way when the stored version says so", () => {
-    const result = chain(stored())
-    expect(result.version).toBe("2.0")
-    expect(result.payload).toEqual({ courseId: "cs-101", name: "Intro", capacity: 30 })
-  })
-
-  it("passes an unrelated event through the whole chain untouched", () => {
-    const unrelated = stored({ name: qn("billing", "Charged") })
-    expect(chain(unrelated)).toBe(unrelated)
-  })
-})
+const onCourse = { query: { tags: { courseId: "cs-101" } } }
+const told = (e: EventMessage) => `${e.name.name}@${e.version}`
 
 describe("upcastingEventStore", () => {
-  it("upcasts what `source` hands a fold — over a plain in-memory store", async () => {
-    const store = upcastingEventStore(inMemoryEventStore(), capacityAdded)
-    await store.append([stored()])
+  it("hands an event stored under the outdated descriptor out as the newer one", async () => {
+    const log = inMemoryEventStore()
+    await log.append([stored(CourseCreatedV1, { courseId: "cs-101", name: "Intro" })])
 
-    const { events } = await store.source({ query: { tags: { courseId: "cs-101" } } })
-    expect(events).toHaveLength(1)
-    expect(events[0]!.version).toBe("2.0")
+    const { events } = await upcastingEventStore(log, [capacityAdded]).source(onCourse)
+
+    expect(events.map(told)).toEqual(["CourseCreated@2.0"])
     expect(events[0]!.payload).toEqual({ courseId: "cs-101", name: "Intro", capacity: 30 })
   })
 
-  it("upcasts what `open` streams to a processor", async () => {
-    const store = upcastingEventStore(inMemoryEventStore(), capacityAdded)
-    await store.append([stored()])
-
-    const stream = store.open({ position: 0n })
-    const first = stream.next()
-    stream.close()
-
-    expect(first?.event.version).toBe("2.0")
-    expect(first?.event.payload).toMatchObject({ capacity: 30 })
-  })
-
-
-  it("WRITES ARE UNTOUCHED — what was appended is what is stored", async () => {
-    const inner = inMemoryEventStore()
-    const store = upcastingEventStore(inner, capacityAdded)
-
-    await store.append([stored()])
-
-    // Read through the WRAPPED store: upcasted.
-    const outer = await store.source({ query: { tags: { courseId: "cs-101" } } })
-    expect(outer.events[0]!.version).toBe("2.0")
-
-    // Read through the store underneath: exactly what was written.
-    const raw = await inner.source({ query: { tags: { courseId: "cs-101" } } })
-    expect(raw.events[0]!.version).toBe("1.0")
-    expect(raw.events[0]!.payload).toEqual({ courseId: "cs-101", name: "Intro" })
-  })
-
-  it("passes non-event members straight through", async () => {
-    const inner = inMemoryEventStore()
-    const store = upcastingEventStore(inner, capacityAdded)
-    await store.append([stored()])
-
-    expect(await store.getHeadPosition()).toBe(await inner.getHeadPosition())
-    expect((await store.latestToken()).position()).toBe((await inner.latestToken()).position())
-  })
-})
-
-// ---------------------------------------------------------------------------
-// A FILTERED STREAM MEETS AN UPCASTER.
-//
-// A processor opens its stream asking for the types it handles. The log keeps
-// the names events were written under, so a type the upcaster renamed must be
-// asked for by its OLD name or the events are silently missed.
-// ---------------------------------------------------------------------------
-
-describe("upcastingEventStore and a filtered stream", () => {
-  const Placed = qn("shop", "OrderPlaced") // what the log has for 2019's orders
-  const Created = qn("shop", "OrderCreated") // what the code calls them today
-
-  // An upcaster that RENAMES: nothing in its type says so.
-  const renamed: Upcast = (e) =>
-    e.name.namespace === Placed.namespace && e.name.name === Placed.name ? { ...e, name: Created, version: "2.0" } : e
-
-  const asked: Array<unknown> = []
-  /** An in-memory store that remembers the query each stream was opened with. */
-  function recording() {
-    const inner = inMemoryEventStore()
-    return {
-      ...inner,
-      open(condition: Parameters<typeof inner.open>[0]) {
-        asked.push(condition.query)
-        return inner.open(condition)
-      },
-    }
-  }
-
-  async function drain(stream: ReturnType<EventStoreOpen>) {
-    const seen: string[] = []
-    for (let e = stream.next(); e; e = stream.next()) seen.push(`${e.event.name.name}@${e.event.version}`)
-    stream.close()
-    return seen
-  }
-  type EventStoreOpen = ReturnType<typeof inMemoryEventStore>["open"]
-
-  async function seeded() {
-    asked.length = 0
-    const log = recording()
+  it("takes an event through every step that applies, in whatever order they were listed", async () => {
+    const log = inMemoryEventStore()
     await log.append([
-      stored({ name: Placed, version: "1.0" }),
-      stored({ name: qn("shop", "Shipped"), version: "1.0" }),
-      stored({ name: Created, version: "2.0" }),
+      stored(CourseCreatedV1, { courseId: "cs-101", name: "Intro" }),
+      stored(CourseCreatedV2, { courseId: "cs-101", name: "Algebra", capacity: 12 }),
+      stored(CourseCreated, { courseId: "cs-101", name: "Logic", capacity: 8, department: "math" }),
     ])
-    return log
-  }
 
-  it("asks the log for the OLD name too, so a renamed event is not missed", async () => {
-    const log = await seeded()
-    const store = upcastingEventStore(log, renamed, {
-      storedTypes: (type) => (type === "shop.OrderCreated" ? [type, "shop.OrderPlaced"] : [type]),
-    })
+    const { events } = await upcastingEventStore(log, [departmentAdded, capacityAdded]).source(onCourse)
 
-    const seen = await drain(store.open({ position: 0n, query: { types: [Created] } }))
-
-    expect(asked[0]).toEqual({ types: ["shop.OrderCreated", "shop.OrderPlaced"] })
-    // Both the renamed one and the one already written under the new name,
-    // and what it receives is the upcast form.
-    expect(seen).toEqual(["OrderCreated@2.0", "OrderCreated@2.0"])
-  })
-
-  it("keeps the tags of the query and translates the types of each item separately", async () => {
-    const log = await seeded()
-    const store = upcastingEventStore(log, renamed, {
-      storedTypes: (type) => (type === "shop.OrderCreated" ? [type, "shop.OrderPlaced"] : [type]),
-    })
-
-    store.open({ position: 0n, query: [{ tags: { courseId: "cs-101" }, types: [Created] }, { types: ["shop.Shipped"] }] }).close()
-
-    expect(asked[0]).toEqual([
-      { tags: { courseId: "cs-101" }, types: ["shop.OrderCreated", "shop.OrderPlaced"] },
-      { types: ["shop.Shipped"] },
+    expect(events.map(told)).toEqual(["CourseCreated@3.0", "CourseCreated@3.0", "CourseCreated@3.0"])
+    expect(events.map((e) => e.payload)).toEqual([
+      { courseId: "cs-101", name: "Intro", capacity: 30, department: "general" },
+      { courseId: "cs-101", name: "Algebra", capacity: 12, department: "general" },
+      { courseId: "cs-101", name: "Logic", capacity: 8, department: "math" },
     ])
   })
 
-  it("WITHOUT being told, widens the filter instead of trusting it: nothing is missed", async () => {
-    const log = await seeded()
-    // The same renaming upcaster, and no `storedTypes`.
-    const store = upcastingEventStore(log, renamed)
+  it("hands an event no upcast is declared for back as it is", async () => {
+    const log = inMemoryEventStore()
+    const current = stored(CourseCreated, { courseId: "cs-101", name: "Logic", capacity: 8, department: "math" })
+    const other = stored(event({ name: qn("billing", "Charged"), payload: z.object({}) }), { courseId: "cs-101" })
+    await log.append([current, other])
 
-    const seen = await drain(store.open({ position: 0n, query: { types: [Created] } }))
+    const { events } = await upcastingEventStore(log, [capacityAdded, departmentAdded]).source(onCourse)
 
-    // The type restriction is gone from what the log was asked...
-    expect(asked[0]).toEqual({})
-    // ...so the renamed event arrives (and the reader drops the Shipped one itself).
-    expect(seen).toContain("OrderCreated@2.0")
-    expect(seen.filter((s) => s === "OrderCreated@2.0")).toHaveLength(2)
+    expect(events).toEqual([current, other])
   })
 
-  it("widening keeps a tag restriction — tags are not re-derived by an upcast", async () => {
-    const log = await seeded()
-    const store = upcastingEventStore(log, renamed)
+  it("hands the map the stored event beside its payload", async () => {
+    const log = inMemoryEventStore()
+    await log.append([{ ...stored(CourseCreatedV1, { courseId: "cs-101", name: "Intro" }), metadata: { by: "dean" } }])
+    const stamped = upcast(CourseCreatedV1, CourseCreatedV2, (payload, e) => ({
+      ...payload,
+      capacity: e.metadata.by === "dean" ? 100 : 30,
+    }))
 
-    store.open({ position: 0n, query: { tags: { courseId: "cs-101" }, types: [Created] } }).close()
+    const { events } = await upcastingEventStore(log, [stamped]).source(onCourse)
 
-    expect(asked[0]).toEqual({ tags: { courseId: "cs-101" } })
+    expect(events[0]!.payload).toMatchObject({ capacity: 100 })
   })
 
-  it("leaves a query with no types, and a stream with no query, exactly as it was", async () => {
-    const log = await seeded()
-    const store = upcastingEventStore(log, renamed)
+  it("upcasts what a stream delivers", async () => {
+    const log = inMemoryEventStore()
+    await log.append([stored(CourseCreatedV1, { courseId: "cs-101", name: "Intro" })])
 
-    store.open({ position: 0n, query: { tags: { courseId: "cs-101" } } }).close()
-    store.open({ position: 0n }).close()
+    const stream = upcastingEventStore(log, [capacityAdded, departmentAdded]).open({ position: 0n })
 
-    expect(asked).toEqual([{ tags: { courseId: "cs-101" } }, undefined])
-  })
-
-  it("passes where the stream has looked straight through", async () => {
-    const log = await seeded()
-    const store = upcastingEventStore(log, renamed, { storedTypes: (type) => [type] })
-
-    const stream = store.open({ position: 0n, query: { types: ["shop.Nothing"] } })
-    expect(stream.progressToken?.()?.position()).toBe(3n)
+    expect(told(stream.peek()!.event)).toBe("CourseCreated@3.0")
+    expect(stream.next()!.event.payload).toMatchObject({ capacity: 30, department: "general" })
+    expect(stream.progressToken).toBeUndefined()
     stream.close()
+  })
 
-    // And a stream whose log cannot say does not grow the member.
-    const plain = upcastingEventStore(log, renamed).open({ position: 0n })
-    expect(plain.progressToken).toBeUndefined()
-    plain.close()
+  it("appends an event as it was given", async () => {
+    const log = inMemoryEventStore()
+    const store = upcastingEventStore(log, [capacityAdded])
+    const outdated = stored(CourseCreatedV1, { courseId: "cs-101", name: "Intro" })
+
+    await store.append([outdated])
+
+    expect((await log.source(onCourse)).events).toEqual([outdated])
+    expect(await store.getHeadPosition()).toBe(1n)
+  })
+
+  it("with no upcasts hands back what the store does", async () => {
+    const log = inMemoryEventStore()
+    const outdated = stored(CourseCreatedV1, { courseId: "cs-101", name: "Intro" })
+    await log.append([outdated])
+
+    expect((await upcastingEventStore(log, []).source(onCourse)).events).toEqual([outdated])
+  })
+
+  it("refuses two upcasts from the same descriptor", () => {
+    expect(() => upcastingEventStore(inMemoryEventStore(), [capacityAdded, capacityAdded])).toThrow(
+      /more than one upcast is declared from university\.CourseCreated 1\.0/,
+    )
+  })
+
+  it("refuses upcasts that lead back to where they started", () => {
+    const back = upcast(CourseCreatedV2, CourseCreatedV1, ({ courseId, name }) => ({ courseId, name }))
+    expect(() => upcastingEventStore(inMemoryEventStore(), [capacityAdded, back])).toThrow(/lead back to it/)
   })
 })
 
-// ---------------------------------------------------------------------------
-// The renaming translation on the DCB read, and on the append condition built
-// from it.
-// ---------------------------------------------------------------------------
-
-describe("upcastingEventStore and a sourced read", () => {
-  const Placed = qn("shop", "OrderPlaced")
-  const Created = qn("shop", "OrderCreated")
+// An upcast between descriptors with different names: the events are in the log
+// under the old name, and a reader asks for the new one.
+describe("upcastingEventStore and an event that was renamed", () => {
+  const OrderPlaced = event({
+    name: qn("shop", "OrderPlaced"),
+    payload: z.object({ orderId: z.string() }),
+    tags: { orderId: (p) => p.orderId },
+  })
   const OrderCreated = event({
-    name: Created,
+    name: qn("shop", "OrderCreated"),
     version: "2.0",
     payload: z.object({ orderId: z.string() }),
     tags: { orderId: (p) => p.orderId },
   })
-  const renamed: Upcast = (e) =>
-    e.name.namespace === Placed.namespace && e.name.name === Placed.name ? { ...e, name: Created, version: "2.0" } : e
-  const storedTypes = (type: string) => (type === "shop.OrderCreated" ? [type, "shop.OrderPlaced"] : [type])
+  const Shipped = event({
+    name: qn("shop", "Shipped"),
+    payload: z.object({ orderId: z.string() }),
+    tags: { orderId: (p) => p.orderId },
+  })
+  const renamed = [upcast(OrderPlaced, OrderCreated, (payload) => payload)]
+  const order = (descriptor: EventDescriptor<any>, orderId = "o-1") => stored(descriptor, { orderId }, { orderId })
 
-  function order(name: typeof Placed, orderId = "o-1"): EventMessage {
-    return stored({
-      name,
-      version: name === Placed ? "1.0" : "2.0",
-      payload: { orderId },
-      tags: [{ key: "orderId", value: orderId }],
-    })
-  }
-
+  /** A seeded log that remembers the query of every read, stream and append condition. */
   async function seeded() {
-    const log = inMemoryEventStore()
-    await log.append([order(Placed), stored({ name: qn("shop", "Shipped"), tags: [{ key: "orderId", value: "o-1" }] }), order(Created)])
-    return log
+    const inner = inMemoryEventStore()
+    await inner.append([order(OrderPlaced), order(Shipped), order(OrderCreated)])
+    const asked: unknown[] = []
+    const log: typeof inner = {
+      ...inner,
+      source(condition) {
+        asked.push(condition.query)
+        return inner.source(condition)
+      },
+      open(condition) {
+        asked.push(condition.query)
+        return inner.open(condition)
+      },
+      append(events, condition, uow) {
+        if (condition !== undefined) asked.push(condition.query, ...(condition.reads ?? []).map((read) => read.query))
+        return inner.append(events, condition, uow)
+      },
+    }
+    return { log, asked }
   }
 
-  const Order = state({
-    id: { orderId: z.string() },
-    tags: ({ orderId }) => ({ orderId }),
-    evolve: [() => ({ created: 0 }), [OrderCreated, (s) => ({ created: s.created + 1 })]],
+  it("asks the log for the old name too, and hands both out under the new one", async () => {
+    const { log, asked } = await seeded()
+    const store = upcastingEventStore(log, renamed)
+
+    const { events } = await store.source({ query: { tags: { orderId: "o-1" }, types: [OrderCreated] } })
+
+    expect(asked).toEqual([{ tags: { orderId: "o-1" }, types: ["shop.OrderCreated", "shop.OrderPlaced"] }])
+    expect(events.map(told)).toEqual(["OrderCreated@2.0", "OrderCreated@2.0"])
   })
 
-  it("sources events stored under the old name of a type the query asks for", async () => {
-    const store = upcastingEventStore(await seeded(), renamed, { storedTypes })
+  it("asks a stream's log for the old name too", async () => {
+    const { log, asked } = await seeded()
+    const stream = upcastingEventStore(log, renamed).open({ position: 0n, query: { types: [OrderCreated] } })
 
-    const { events } = await store.source({ query: { tags: { orderId: "o-1" }, types: [Created] } })
+    const seen: string[] = []
+    for (let e = stream.next(); e; e = stream.next()) seen.push(told(e.event))
+    stream.close()
 
-    expect(events.map((e) => `${e.name.name}@${e.version}`)).toEqual(["OrderCreated@2.0", "OrderCreated@2.0"])
+    expect(asked).toEqual([{ types: ["shop.OrderCreated", "shop.OrderPlaced"] }])
+    expect(seen).toEqual(["OrderCreated@2.0", "OrderCreated@2.0"])
   })
 
-  it("a state folding the renamed event sees the events stored under the old name", async () => {
-    const store = upcastingEventStore(await seeded(), renamed, { storedTypes })
+  it("translates the types of each item and leaves its tags, and a type nothing was renamed to, alone", async () => {
+    const { log, asked } = await seeded()
+    const store = upcastingEventStore(log, renamed)
 
-    const { state: loaded } = await eventSourcedRepository(Order, store).load({ orderId: "o-1" })
+    store.open({ position: 0n, query: [{ tags: { orderId: "o-1" }, types: [OrderCreated] }, { types: [Shipped] }] }).close()
+    store.open({ position: 0n, query: { tags: { orderId: "o-1" } } }).close()
+    store.open({ position: 0n }).close()
+
+    expect(asked).toEqual([
+      [{ tags: { orderId: "o-1" }, types: ["shop.OrderCreated", "shop.OrderPlaced"] }, { types: ["shop.Shipped"] }],
+      { tags: { orderId: "o-1" } },
+      undefined,
+    ])
+  })
+
+  it("asks the log exactly what the reader asked when no upcast renames", async () => {
+    const { log, asked } = await seeded()
+    const query = { tags: { orderId: "o-1" }, types: [OrderCreated] }
+
+    await upcastingEventStore(log, [capacityAdded]).source({ query })
+
+    expect(asked[0]).toBe(query)
+  })
+
+  it("a state folding the new name sees the events stored under the old one", async () => {
+    const { log } = await seeded()
+    const Order = state({
+      id: { orderId: z.string() },
+      tags: ({ orderId }) => ({ orderId }),
+      evolve: [() => ({ created: 0 }), [OrderCreated, (s) => ({ created: s.created + 1 })]],
+    })
+
+    const { state: loaded } = await eventSourcedRepository(Order, upcastingEventStore(log, renamed)).load({ orderId: "o-1" })
 
     expect(loaded).toEqual({ created: 2 })
   })
 
-  it("WITHOUT being told, widens the read and hands back only the asked types", async () => {
-    const store = upcastingEventStore(await seeded(), renamed)
+  it("an append condition on the new name conflicts with an event appended under the old one", async () => {
+    const { log, asked } = await seeded()
+    const store = upcastingEventStore(log, renamed)
+    const query = { tags: { orderId: "o-1" }, types: [OrderCreated] }
+    const { marker } = await store.source({ query })
+    await store.append([order(OrderPlaced)])
+    asked.length = 0
 
-    const { events } = await store.source({ query: { tags: { orderId: "o-1" }, types: [Created] } })
+    const refused = store.append([order(OrderCreated)], { query, marker, reads: [{ query, marker }] })
 
-    expect(events.map((e) => e.name.name)).toEqual(["OrderCreated", "OrderCreated"])
+    await expect(refused).rejects.toThrow(/Append condition violated/)
+    const translated = { tags: { orderId: "o-1" }, types: ["shop.OrderCreated", "shop.OrderPlaced"] }
+    expect(asked).toEqual([translated, translated])
   })
 
-  it("an append condition on the new name conflicts with an event appended under the old name", async () => {
-    const store = upcastingEventStore(await seeded(), renamed, { storedTypes })
-    const query = { tags: { orderId: "o-1" }, types: [Created] }
-    const { marker } = await store.source({ query })
+  it("drops an event the log returned for the old name that no upcast hands out under the new one", async () => {
+    // The old name at a version nothing is declared from.
+    const OrderPlacedLater = event({
+      name: qn("shop", "OrderPlaced"),
+      version: "9.0",
+      payload: z.object({ orderId: z.string() }),
+      tags: { orderId: (p) => p.orderId },
+    })
+    const { log } = await seeded()
+    await log.append([order(OrderPlacedLater)])
 
-    await store.append([order(Placed)])
+    const { events } = await upcastingEventStore(log, renamed).source({
+      query: { tags: { orderId: "o-1" }, types: [OrderCreated] },
+    })
 
-    await expect(store.append([order(Created)], { query, marker })).rejects.toThrow(/Append condition violated/)
-  })
-
-  it("translates every read an append condition carries", async () => {
-    const store = upcastingEventStore(await seeded(), renamed, { storedTypes })
-    const query = { tags: { orderId: "o-1" }, types: [Created] }
-    const { marker } = await store.source({ query })
-
-    await store.append([order(Placed)])
-
-    await expect(
-      store.append([order(Created)], { query, marker, reads: [{ query, marker }] }),
-    ).rejects.toThrow(/Append condition violated/)
+    expect(events.map(told)).toEqual(["OrderCreated@2.0", "OrderCreated@2.0"])
   })
 })
 
-// ---------------------------------------------------------------------------
-// A log that matches a query against an event's tags and hands the event back
-// without them.
-// ---------------------------------------------------------------------------
-
-describe("upcastingEventStore over a log that hands events back without tags", () => {
-  const Created = qn("school", "CourseCreated")
-  const Opened = qn("school", "CourseOpened") // the name CourseCreated was stored under
-  const Subscribed = qn("school", "StudentSubscribed")
-  const renamed: Upcast = (e) => (e.name.name === Opened.name ? { ...e, name: Created } : e)
-  const storedTypes = (type: string) => (type === "school.CourseCreated" ? [type, "school.CourseOpened"] : [type])
-
-  const course = (name: typeof Created, courseId: string) =>
-    stored({ name, payload: { courseId }, tags: [{ key: "courseId", value: courseId }] })
+// A read whose query has several items. The log matched each event against the
+// items; what comes back does not say which item an event was read for.
+describe("upcastingEventStore and a read of several items", () => {
+  const CourseOpened = event({
+    name: qn("school", "CourseOpened"),
+    payload: z.object({ courseId: z.string() }),
+    tags: { courseId: (p) => p.courseId },
+  })
+  const Created = event({
+    name: qn("school", "CourseCreated"),
+    payload: z.object({ courseId: z.string() }),
+    tags: { courseId: (p) => p.courseId },
+  })
+  const Subscribed = event({
+    name: qn("school", "StudentSubscribed"),
+    payload: z.object({ courseId: z.string(), studentId: z.string() }),
+    tags: { courseId: (p) => p.courseId, studentId: (p) => p.studentId },
+  })
+  const renamed = [upcast(CourseOpened, Created, (payload) => payload)]
+  const course = (descriptor: EventDescriptor<any>, courseId: string) => stored(descriptor, { courseId })
   const subscription = (courseId: string, studentId: string) =>
-    stored({
-      name: Subscribed,
-      payload: { courseId, studentId },
-      tags: [
-        { key: "courseId", value: courseId },
-        { key: "studentId", value: studentId },
-      ],
-    })
+    stored(Subscribed, { courseId, studentId }, { courseId, studentId })
 
-  /** The log, and how many times it was read. */
+  /** A log that hands its events back without tags, and how many times it was read. */
   async function seeded() {
-    const log = inMemoryEventStore()
-    await log.append([
-      course(Opened, "c-1"),
+    const inner = inMemoryEventStore()
+    await inner.append([
+      course(CourseOpened, "c-1"),
       course(Created, "c-1"),
       subscription("c-1", "s-1"),
       subscription("c-1", "s-2"),
       subscription("c-2", "s-1"),
     ])
     let reads = 0
-    const untagged: typeof log = {
-      ...log,
-      returnsTags: false,
+    const log: typeof inner = {
+      ...inner,
       async source(condition) {
         reads++
-        const read = await log.source(condition)
+        const read = await inner.source(condition)
         return { ...read, events: read.events.map((e) => ({ ...e, tags: [] })) }
       },
     }
-    return { untagged, reads: () => reads }
+    return { log, reads: () => reads }
   }
 
-  const told = (e: EventMessage) => {
+  const said = (e: EventMessage) => {
     const p = e.payload as { courseId: string; studentId?: string }
     return `${e.name.name}:${p.courseId}${p.studentId === undefined ? "" : `:${p.studentId}`}`
   }
 
-  it("narrows a one-item read to the asked types without reading a tag", async () => {
-    const { untagged } = await seeded()
-    const store = upcastingEventStore(untagged, renamed)
+  it("keeps what each item asked for, with no tags on the events to go by", async () => {
+    const { log } = await seeded()
 
-    const { events } = await store.source({ query: { tags: { courseId: "c-1" }, types: [Created] } })
-
-    expect(events.map(told)).toEqual(["CourseCreated:c-1", "CourseCreated:c-1"])
-  })
-
-  it("a state scoped by one tag folds the events of a renamed type", async () => {
-    const { untagged } = await seeded()
-    const CourseCreated = event({
-      name: Created,
-      payload: z.object({ courseId: z.string() }),
-      tags: { courseId: (p) => p.courseId },
-    })
-    const Course = state({
-      id: { courseId: z.string() },
-      tags: ({ courseId }) => ({ courseId }),
-      evolve: [() => ({ created: 0 }), [CourseCreated, (s) => ({ created: s.created + 1 })]],
-    })
-
-    const { state: loaded } = await eventSourcedRepository(Course, upcastingEventStore(untagged, renamed)).load({
-      courseId: "c-1",
-    })
-
-    expect(loaded).toEqual({ created: 2 })
-  })
-
-  it("told the stored names, keeps what each item of a read asked for", async () => {
-    const { untagged } = await seeded()
-    const store = upcastingEventStore(untagged, renamed, { storedTypes })
-
-    const { events } = await store.source({
+    const { events } = await upcastingEventStore(log, renamed).source({
       query: [
         { tags: { courseId: "c-1" }, types: [Created] },
         { tags: { studentId: "s-1" }, types: [Subscribed] },
@@ -476,7 +347,7 @@ describe("upcastingEventStore over a log that hands events back without tags", (
     })
 
     // Not the other student's subscription to c-1: no item asked for it.
-    expect(events.map(told)).toEqual([
+    expect(events.map(said)).toEqual([
       "CourseCreated:c-1",
       "CourseCreated:c-1",
       "StudentSubscribed:c-1:s-1",
@@ -484,77 +355,44 @@ describe("upcastingEventStore over a log that hands events back without tags", (
     ])
   })
 
-  it("refuses a read whose items differ in tags and types when it was not told the stored names", async () => {
-    const { untagged, reads } = await seeded()
-    const store = upcastingEventStore(untagged, renamed)
+  it("reads items that ask for the same types under different tags", async () => {
+    const { log } = await seeded()
 
-    const refused = store.source({
-      query: [
-        { tags: { courseId: "c-1" }, types: [Created] },
-        { tags: { studentId: "s-1" }, types: [Subscribed] },
-      ],
-    })
-
-    await expect(refused).rejects.toThrow(/without their tags.*storedTypes/s)
-    expect(reads()).toBe(0)
-  })
-
-  it("reads items that differ in tags and ask for the same types", async () => {
-    const { untagged } = await seeded()
-    const store = upcastingEventStore(untagged, renamed)
-
-    const { events } = await store.source({
+    const { events } = await upcastingEventStore(log, renamed).source({
       query: [
         { tags: { courseId: "c-2" }, types: [Created, Subscribed] },
         { tags: { studentId: "s-2" }, types: [Created, Subscribed] },
       ],
     })
 
-    expect(events.map(told)).toEqual(["StudentSubscribed:c-1:s-2", "StudentSubscribed:c-2:s-1"])
+    expect(events.map(said)).toEqual(["StudentSubscribed:c-1:s-2", "StudentSubscribed:c-2:s-1"])
   })
 
-  it("reads an item whose tags include another item's", async () => {
-    const { untagged } = await seeded()
-    const store = upcastingEventStore(untagged, renamed)
+  it("reads an item with no types beside one with types", async () => {
+    const { log } = await seeded()
 
-    const { events } = await store.source({
-      query: [
-        { tags: { courseId: "c-1" }, types: [Created, Subscribed] },
-        { tags: { courseId: "c-1", studentId: "s-1" }, types: [Created] },
-      ],
+    const { events } = await upcastingEventStore(log, renamed).source({
+      query: [{ tags: { courseId: "c-1" }, types: [Created] }, { tags: { courseId: "c-1", studentId: "s-2" } }],
     })
 
-    expect(events.map(told)).toEqual([
-      "CourseCreated:c-1",
-      "CourseCreated:c-1",
-      "StudentSubscribed:c-1:s-1",
-      "StudentSubscribed:c-1:s-2",
-    ])
+    expect(events.map(said)).toEqual(["CourseCreated:c-1", "CourseCreated:c-1", "StudentSubscribed:c-1:s-2"])
   })
 
-  it("refuses a read when one stored name becomes types that items with different tags ask for", async () => {
-    const { untagged, reads } = await seeded()
-    const store = upcastingEventStore(untagged, renamed, {
-      storedTypes: (type) => (type === "school.StudentSubscribed" ? [type, "school.CourseOpened"] : storedTypes(type)),
-    })
+  it("refuses a read when one stored name is handed out as types that items with different tags ask for", async () => {
+    // Two versions of one stored name, renamed to two different types.
+    const Old = (version: string) =>
+      event({ name: qn("school", "Enrolment"), version, payload: z.object({}), tags: { courseId: () => "c-1" } })
+    const split = [upcast(Old("1.0"), Created, () => ({ courseId: "c-1" })), upcast(Old("2.0"), Subscribed, () => ({ courseId: "c-1", studentId: "s-1" }))]
+    const { log, reads } = await seeded()
 
-    const refused = store.source({
+    const refused = upcastingEventStore(log, split).source({
       query: [
         { tags: { courseId: "c-1" }, types: [Created] },
         { tags: { studentId: "s-1" }, types: [Subscribed] },
       ],
     })
 
-    await expect(refused).rejects.toThrow(/without their tags.*school\.CourseOpened/s)
+    await expect(refused).rejects.toThrow(/cannot tell which item.*school\.Enrolment/s)
     expect(reads()).toBe(0)
-  })
-
-  it("a read with no types is handed back as the log answered it", async () => {
-    const { untagged } = await seeded()
-    const store = upcastingEventStore(untagged, renamed)
-
-    const { events } = await store.source({ query: [{ tags: { courseId: "c-2" } }, { tags: { studentId: "s-2" } }] })
-
-    expect(events.map(told)).toEqual(["StudentSubscribed:c-1:s-2", "StudentSubscribed:c-2:s-1"])
   })
 })

@@ -322,7 +322,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
     expect(sourced.events.map((event) => event.tags)).toEqual([[], []])
 
     // A wrapper that narrows a read to the query finds them without their tags.
-    const upcasting = upcastingEventStore(eventStore, (event) => event)
+    const upcasting = upcastingEventStore(eventStore, [])
     const narrowed = await upcasting.source({ query: { tags: { courseId }, types: [qn("axon-it", "Tagged")] } })
     expect(narrowed.events.map((event) => event.identifier)).toEqual(identifiers)
 
@@ -399,7 +399,7 @@ describe("Axon Server integration — axonServerConnection() family", () => {
       tags: ({ courseId }) => ({ courseId }),
       evolve: [() => [] as number[], [LessonGiven, (given, { payload }) => [...given, payload.n]]],
     })
-    const upcasting = upcastingEventStore(eventStore, (e) => e)
+    const upcasting = upcastingEventStore(eventStore, [])
     expect((await eventSourcedRepository(Lessons, upcasting).load({ courseId: a })).state).toEqual([1, 2])
   }, 60_000)
 

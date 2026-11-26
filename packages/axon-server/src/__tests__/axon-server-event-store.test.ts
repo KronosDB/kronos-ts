@@ -87,10 +87,6 @@ function take(
 }
 
 describe("axonServerEventStore and an event's tags", () => {
-  it("says that it hands events back without their tags", () => {
-    expect(storeOver(0).store.returnsTags).toBe(false)
-  })
-
   it("source() returns each event without tags and asks the server for none", async () => {
     const over = storeOver(3)
     const { events } = await over.store.source({ query: { tags: { all: "things" } } })
@@ -113,7 +109,7 @@ describe("axonServerEventStore and an event's tags", () => {
   })
 
   it("upcastingEventStore over it hands back the events of a read with tags", async () => {
-    const store = upcastingEventStore(storeOver(3).store, (event) => event)
+    const store = upcastingEventStore(storeOver(3).store, [])
     const { events } = await store.source({ query: { tags: { all: "things" }, types: ["store.Thing"] } })
     expect(events.map((event) => event.identifier)).toEqual(["event-0", "event-1", "event-2"])
   })

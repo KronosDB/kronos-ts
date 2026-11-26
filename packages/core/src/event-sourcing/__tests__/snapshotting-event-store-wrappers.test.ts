@@ -8,14 +8,14 @@
  */
 import { describe, expect, it } from "bun:test"
 import { z } from "zod"
-import { qn, emptyMetadata, event, is, type EventMessage } from "../../messaging/messages.js"
+import { qn, emptyMetadata, event, type EventMessage } from "../../messaging/messages.js"
 import { generateIdentifier } from "../../messaging/identifier.js"
 import { state } from "../../event-sourcing/state.js"
 import { inMemoryEventStore } from "../../event-sourcing/in-memory.js"
 import { eventSourcedRepository } from "../../event-sourcing/repository.js"
 import { sourcingCondition } from "../../event-sourcing/sourcing-condition.js"
 import type { EventStore } from "../../event-sourcing/event-store.js"
-import { upcastingEventStore } from "../../upcasting/upcasting-event-store.js"
+import { upcast, upcastingEventStore } from "../../upcasting/upcasting-event-store.js"
 import type { SnapshotCapableEventStore } from "../../event-sourcing/event-store.js"
 import { afterEvents, snapshot, snapshotIdentifier } from "../snapshot.js"
 import { inMemorySnapshottingEventStore } from "../in-memory-snapshotting-event-store.js"
@@ -344,11 +344,7 @@ describe("composed with upcastingEventStore", () => {
     tags: { counterId: (p) => p.counterId },
   })
 
-  /** The documented idiom: a typed switch, target version off the CURRENT descriptor. */
-  const byAdded = (e: EventMessage): EventMessage =>
-    is(e, BumpedV0)
-      ? ({ ...e, version: Bumped.version, payload: { ...e.payload, by: 1 } } as EventMessage)
-      : e
+  const byAdded = [upcast(BumpedV0, Bumped, (payload) => ({ ...payload, by: 1 }))]
 
   function legacyBump(counterId: string): EventMessage {
     return {
@@ -400,10 +396,8 @@ describe("composed with upcastingEventStore", () => {
     // when
     const result = await repo.load({ counterId: "c-b" })
 
-    // then — identical, because the snapshot layer only ever NARROWS the range
-    // and an `Upcast` is `(event) => event`, which a folded state was never
-    // going to be. The outermost spelling is preferred for staying true if that
-    // ever stops holding, not because the two differ now.
+    // then — identical, because the snapshot layer only narrows the range of
+    // events read, and an upcast applies to events, which a folded state is not.
     expect(result.state.count).toBe(3)
   })
 

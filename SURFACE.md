@@ -103,8 +103,9 @@ event-scheduling/   events that have not happened yet, and the SECOND STORE TIER
                     in-memory-scheduling-event-store
 interception/ · correlation/ · upcasting/ · validation/ · kronos.ts · index.ts
 ```
-FOUR MECHANISMS, one shape. `Intercept` is `(message) => message` at the BUS
-boundary; `Upcast` is `(event) => event` at the LOG boundary; `correlation/` is
+FOUR MECHANISMS. `Intercept` is `(message) => message` at the BUS
+boundary; an `Upcast` is a step from one event descriptor to another, applied
+at the LOG boundary; `correlation/` is
 what a handling carries onward; `validation/` is what may CROSS a handling
 boundary, inbound and out. None of them is part of `messaging/`, because a
 mechanism is not vocabulary: `messaging/` says what a message IS, the others are
@@ -259,27 +260,21 @@ localFirstQueryBus  (next: B, local: QueryBus):   B   // likewise for `query`; s
 // outside, so both branches are intercepted. Work handed to `local` is local
 // work: a transport's shutdown, request limits and timeouts do not cover it.
 
-// ── upcasting: the SAME seam, one boundary over ────────────────────────────
-// Interception at the LOG boundary. Old events are REINTERPRETED on the way
-// out; the log is never rewritten.
-type Upcast = (event: EventMessage) => EventMessage     // TOTAL — identity when unconcerned
-upcastingEventStore(next: EventStore, upcast: Upcast, { storedTypes? }?): EventStore   // READ paths only
-// NO shipped constructor. Writing the match IS the lesson, and `is()` makes it a
-// typed switch: declare the outdated version as its own descriptor, and the
-// compiler knows what the payload looked like back then. The target version is
-// read off the CURRENT descriptor, never restated.
-// Plurality composes in function space, like everything else:
-//   upcastingEventStore(store, (e) => v3(v2(v1(e))))
-// Commands and queries need nothing new: a message crossing versions at a BUS is
-// what `Intercept` already is. Only events have a second boundary, because only
-// events are kept.
-// A stream asked for TYPES (a processor asks for the ones its handlers handle)
-// reaches a log that keeps the names events were WRITTEN under, and an upcaster
-// is total — it cannot be run backwards — so which stored names become a type is
-// told as data: `storedTypes: (type) => [type, "shop.OrderPlaced"]`. Told
-// nothing, the type restriction is WIDENED (dropped; tags stay), never trusted:
-// nothing is missed, nothing is saved. Assuming no upcaster renames would lose
-// every renamed event with no error anywhere.
+// ── upcasting ──────────────────────────────────────────────────────────────
+// Events stored under an outdated descriptor are handed out as a newer one.
+// The log is never rewritten.
+type Upcast = { from: EventDescriptor, to: EventDescriptor, map: (payload, event) => payload }
+upcast(from, to, map): Upcast
+upcastingEventStore(next: EventStore, upcasts: ReadonlyArray<Upcast>): EventStore
+// Declare the outdated version as a descriptor of its own; `map` is typed by
+// both. The two descriptors may differ in version, in name, or in both. An
+// event goes through every step that applies, so 1 → 2 and 2 → 3 take a stored
+// version 1 to version 3. One upcast per `from` descriptor.
+//   upcastingEventStore(store, [upcast(CourseCreatedV1, CourseCreated, (p) => ({ ...p, capacity: 30 }))])
+// Where a read, a stream or an append condition names a type, the log is asked
+// for it and for every name an upcast to it is declared from.
+// Commands and queries need nothing here: a message crossing versions at a BUS
+// is what `Intercept` already is. Only events are kept.
 
 // ── snapshotting: NOT A MECHANISM. A CAPABILITY TIER ON THE LOG ───────────
 // THE BASE `EventStore` MENTIONS SNAPSHOTS NOWHERE, and it is COMPLETE without
@@ -408,7 +403,7 @@ afterEvents(n) · whenSourcingTimeExceeds(ms)            // the POLICY is a pred
 // the cache: all three fall back to full sourcing, silently.
 //
 // Composed with upcasting, the documented order is UPCASTING OUTERMOST:
-//   upcastingEventStore(postgresSnapshottingEventStore(store, pg, serializer), upcast)
+//   upcastingEventStore(postgresSnapshottingEventStore(store, pg, serializer), upcasts)
 // The snapshot layer decides WHICH events are read; the upcast layer decides
 // what each of them means. Both wrappers are capability-preserving, so BOTH
 // orders keep BOTH capabilities in the type — the order is a semantic

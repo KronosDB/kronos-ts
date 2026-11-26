@@ -53,12 +53,6 @@ export type SourcingResult = {
  * snapshot surface to misuse.
  */
 export type EventStore = StreamableEventSource & {
-  /**
-   * `false` on a log that hands events back without their tags: it matches a
-   * query against the tags an event was appended with, and `source` and `open`
-   * return the event with `tags: []`. Absent on a log that returns them.
-   */
-  readonly returnsTags?: false
   /** Read the events matching a condition, with the marker the read reached. */
   source(condition: SourcingCondition): Promise<SourcingResult>
   /**

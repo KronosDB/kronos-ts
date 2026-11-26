@@ -42,7 +42,7 @@ import { withoutSnapshotKey } from "./sourcing-condition.js"
  * COMPOSED WITH UPCASTING, THE SANE ORDER IS UPCASTING OUTERMOST:
  *
  * ```ts
- * upcastingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), upcast)
+ * upcastingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), upcasts)
  * ```
  *
  * Read it from the inside out. The snapshot layer decides WHICH events are

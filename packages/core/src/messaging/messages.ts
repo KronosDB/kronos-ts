@@ -282,18 +282,8 @@ type MessageFor<D extends MessageDescriptor> =
  * }
  * ```
  *
- * Declare an outdated event version as its own descriptor and the compiler
- * knows what `payload` looked like back then — which is what makes an upcaster
- * a plain typed switch:
- *
- * ```ts
- * const upcast: Upcast = (e) => {
- *   if (is(e, CourseCreatedV1)) {
- *     return { ...e, version: CourseCreated.version, payload: { ...e.payload, capacity: 30 } }
- *   }
- *   return e
- * }
- * ```
+ * An event matches a descriptor by name and version, so an outdated version
+ * declared as a descriptor of its own is told apart from the current one.
  */
 export function is<D extends MessageDescriptor>(
   message: Message,

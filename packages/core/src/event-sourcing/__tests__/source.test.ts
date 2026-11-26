@@ -31,6 +31,7 @@ import {
   unitOfWork,
   localCommandBus,
   localQueryBus,
+  upcast,
   upcastingEventStore,
 } from "../../index.js"
 import { inMemoryEventStore } from "../in-memory.js"
@@ -171,11 +172,9 @@ describe("ctx.source — the raw read", () => {
     const inner = inMemoryEventStore()
     await inner.append([fact(CourseCreatedV1, { courseId: "cs-101" }, "0.9")])
 
-    const store = upcastingEventStore(inner, (e) =>
-      is(e, CourseCreatedV1)
-        ? { ...e, version: CourseCreated.version, payload: { ...e.payload, capacity: 30 } }
-        : e,
-    )
+    const store = upcastingEventStore(inner, [
+      upcast(CourseCreatedV1, CourseCreated, (payload) => ({ ...payload, capacity: 30 })),
+    ])
 
     const uow = unitOfWork()
     const ctx = eventHandlerContext({ uow, eventStore: store })
