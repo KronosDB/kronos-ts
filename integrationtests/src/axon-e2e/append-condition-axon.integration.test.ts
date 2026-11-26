@@ -11,7 +11,8 @@ import { appendConditionScenarios } from "../__tests__/append-condition-scenario
 import { eventStoreContract } from "../__tests__/event-store-contract.js"
 
 async function initClusterWithDcb(host: string, httpPort: number): Promise<void> {
-  await fetch(`http://${host}:${httpPort}/v2/cluster/init?dcb=true`, { method: "POST" })
+  const init = await fetch(`http://${host}:${httpPort}/v2/cluster/init?dcb=true`, { method: "POST" })
+  if (!init.ok) throw new Error(`Axon Server refused cluster init: ${init.status} ${await init.text()}`)
   const start = Date.now()
   while (Date.now() - start < 15000) {
     try {
