@@ -1,11 +1,9 @@
 import { describe, it, expect } from "bun:test"
 import {
   hashLockKey,
-  leafKey,
-  typeIntentKey,
-  globalIntentKey,
-  acquireWriteLocks,
-  acquireReadLocks,
+  tagKey,
+  typeKey,
+  acquireLocks,
 } from "../advisory-locks.js"
 import type { PostgresAdapterTransaction } from "../adapter.js"
 
@@ -55,82 +53,42 @@ describe("hashLockKey (FNV-1a 64-bit)", () => {
   })
 })
 
-describe("leafKey / typeIntentKey / globalIntentKey", () => {
-  it("leafKey discriminates by event type", () => {
-    const a = leafKey("OrderPlaced", "order:123")
-    const b = leafKey("OrderShipped", "order:123")
-    expect(a).not.toBe(b)
+describe("tagKey and typeKey", () => {
+  it("give different tags different locks", () => {
+    expect(tagKey("order:123")).not.toBe(tagKey("order:456"))
   })
 
-  it("leafKey discriminates by tag", () => {
-    const a = leafKey("OrderPlaced", "order:123")
-    const b = leafKey("OrderPlaced", "order:456")
-    expect(a).not.toBe(b)
+  it("give different types different locks", () => {
+    expect(typeKey("shop.OrderPlaced")).not.toBe(typeKey("shop.OrderShipped"))
   })
 
-  it("leafKey and typeIntentKey produce different keys for the same type (keyspace separation)", () => {
-    const leaf = leafKey("OrderPlaced", "order:123")
-    const intent = typeIntentKey("OrderPlaced")
-    expect(leaf).not.toBe(intent)
+  it("give a tag and a type with the same text different locks", () => {
+    expect(tagKey("shop.OrderPlaced")).not.toBe(typeKey("shop.OrderPlaced"))
   })
 
-  it("globalIntentKey is constant", () => {
-    expect(globalIntentKey()).toBe(globalIntentKey())
-  })
-
-  it("globalIntentKey differs from any typeIntentKey", () => {
-    const g = globalIntentKey()
-    const t = typeIntentKey("AnyType")
-    expect(g).not.toBe(t)
-  })
-
-  it("U+001F delimiter prevents tuple collision: leafKey(\"Order\", \"Placed:x\") != leafKey(\"OrderPlaced\", \"x\")", () => {
-    // Without a delimiter, the serialisations would both be "OrderPlaced:x".
-    // With U+001F, they differ → distinct keys.
-    expect(leafKey("Order", "Placed:x")).not.toBe(leafKey("OrderPlaced", "x"))
-  })
-
-  it("uses ASCII Unit Separator (U+001F) — empty separator would cause hash collisions across boundary-shifted inputs", () => {
-    // Regression: with UNIT_SEPARATOR = "" the pairs ("ab","c") and ("a","bc")
-    // both serialise to "Lab c" / "La bc" — identical key strings → identical
-    // hashes → false leaf-key collisions → real DCB races on disjoint entities.
-    expect(leafKey("ab", "c")).not.toBe(leafKey("a", "bc"))
-    expect(typeIntentKey("ab")).not.toBe(typeIntentKey("a"))
+  it("give one tag the same lock every time", () => {
+    expect(tagKey("order:123")).toBe(tagKey("order:123"))
+    // The lock an append has always taken for this tag.
+    expect(tagKey("order:123")).toBe(hashLockKey("L\u001f\u001forder:123"))
   })
 })
 
-describe("acquireWriteLocks", () => {
-  it("takes X on leaf, S on type-intent, S on global-intent (writer pattern)", async () => {
+describe("acquireLocks", () => {
+  it("takes each lock exclusively, once, in ascending order of key", async () => {
     const m = makeMockTx()
-    await acquireWriteLocks(m.tx, [{ type: "OrderPlaced", tag: "order:123" }])
-    const sqls = m.calls.map((c) => c.sql)
-    // X-lock for the leaf
-    expect(sqls.some((s) => s.includes("pg_advisory_xact_lock(") && !s.includes("shared"))).toBe(true)
-    // Shared-lock for type intent + global intent
-    expect(sqls.filter((s) => s.includes("pg_advisory_xact_lock_shared(")).length).toBeGreaterThanOrEqual(2)
+    const keys = [typeKey("shop.OrderPlaced"), tagKey("order:2"), tagKey("order:1"), tagKey("order:2")]
+    await acquireLocks(m.tx, keys)
+
+    expect(m.calls.every((c) => c.sql === "SELECT pg_advisory_xact_lock($1)")).toBe(true)
+    const taken = m.calls.map((c) => c.params![0] as bigint)
+    expect(taken).toHaveLength(3)
+    expect(new Set(taken)).toEqual(new Set(keys))
+    expect(taken.every((key, i) => i === 0 || taken[i - 1]! < key)).toBe(true)
   })
 
-  it("acquires one leaf lock per (type, tag) pair", async () => {
+  it("takes nothing when there is nothing to lock", async () => {
     const m = makeMockTx()
-    await acquireWriteLocks(m.tx, [
-      { type: "OrderPlaced", tag: "order:1" },
-      { type: "OrderPlaced", tag: "order:2" },
-      { type: "OrderShipped", tag: "order:1" },
-    ])
-    const xLocks = m.calls.filter((c) => c.sql.includes("pg_advisory_xact_lock(") && !c.sql.includes("shared"))
-    // 3 unique leaves
-    expect(xLocks.length).toBe(3)
-  })
-})
-
-describe("acquireReadLocks", () => {
-  it("takes S on leaf, X on type-intent, X on global-intent (reader pattern — Query.all)", async () => {
-    const m = makeMockTx()
-    await acquireReadLocks(m.tx, [{ type: "OrderPlaced", tag: "order:123" }])
-    const sqls = m.calls.map((c) => c.sql)
-    // S on leaf
-    expect(sqls.some((s) => s.includes("pg_advisory_xact_lock_shared("))).toBe(true)
-    // X on intents (asymmetric inverse of write)
-    expect(sqls.filter((s) => s.includes("pg_advisory_xact_lock(") && !s.includes("shared")).length).toBeGreaterThanOrEqual(2)
+    await acquireLocks(m.tx, [])
+    expect(m.calls).toHaveLength(0)
   })
 })

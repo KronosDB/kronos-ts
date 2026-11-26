@@ -6,9 +6,9 @@
  *
  * Append path:
  *   1. open transaction at READ COMMITTED
- *   2. acquireWriteLocks for the query's tags (not event types) so that
- *      two writers on the SAME tag serialize, while disjoint-tag
- *      writers run in parallel
+ *   2. lock every tag and type written and every tag or type the condition
+ *      reads by, so two appends that share one wait for each other and
+ *      appends that share none run side by side
  *   3. Conflict check: SELECT count(*) WHERE sequence_position > marker AND query
  *   4. If conflict count > 0 → throw AppendConditionError (code KR001)
  *   5. INSERT the events, one statement per 100 of them, returning
@@ -56,7 +56,7 @@ import {
 import { qualifiedNameToString, qualifiedNameFromString } from "@kronos-ts/core"
 import type { PostgresAdapter, PostgresAdapterTransaction } from "./adapter.js"
 import { IsolationLevel } from "./adapter.js"
-import { acquireWriteLocks, type LockTarget } from "./advisory-locks.js"
+import { acquireLocks, tagKey, typeKey } from "./advisory-locks.js"
 import { buildCriteriaWhere, encodeTag } from "./criteria-sql.js"
 import { AppendConditionError, isDcbViolation, KRONOS_DCB_VIOLATION_SQLSTATE } from "./errors.js"
 import type { PostgresResource } from "./postgres-pool.js"
@@ -92,42 +92,54 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
   }
 
   /**
-   * Lock targets for an append — the tags the condition READS and the tags the
-   * events WRITE. Two writers sharing a tag serialize (one blocks until the
-   * other commits), while writers on disjoint tags run in parallel.
+   * The locks of an append: every tag and every type its events are written
+   * with, and every tag or type its condition reads by. Two appends that share
+   * one wait for each other; appends that share none run side by side.
    *
-   * The written tags matter even without a condition. A position is handed out
-   * at INSERT and becomes visible at COMMIT, so two unserialized writers of one
-   * tag can commit out of position order, and a read in between sees the later
-   * event but not the earlier one — below the read's marker, where the append
-   * condition never looks. Serializing writers per tag keeps the visible events
-   * of a tag a prefix of all of them.
+   * What is written is locked even without a condition. A position is handed
+   * out at INSERT and becomes visible at COMMIT, so two writers that did not
+   * wait for each other can commit out of position order, and a read in between
+   * sees the later event and not the earlier one, which is then below the
+   * read's marker, where an append condition never looks. Because writers of a
+   * tag wait for each other, the visible events of that tag are always the
+   * first of them, and the same holds for a type.
    *
-   * For `any-tag` or empty criteria and untagged events, returns an empty array
-   * so only the global-intent S-lock is acquired (acquireWriteLocks handles the
-   * empty case).
+   * An item of a condition is locked by its tags when it has any, and by its
+   * types when it has none. An item with neither matches every event, and no
+   * lock short of one on every append covers that, so it is refused.
    */
-  function lockTargetsFor(
-    condition: AppendCondition | undefined,
-    events: ReadonlyArray<TaggedEvent>,
-  ): LockTarget[] {
-    const read = condition ? extractCriteriaTags(compileQuery(condition.query)) : []
-    const written = events.flatMap((e) => encodedTagsOf(e))
-    return [...new Set([...read, ...written])].map((tag) => ({ type: "", tag }))
+  function locksFor(condition: AppendCondition | undefined, events: ReadonlyArray<TaggedEvent>): bigint[] {
+    const keys: bigint[] = []
+    for (const written of events) {
+      keys.push(typeKey(eventTypeOf(written.event)))
+      for (const tag of encodedTagsOf(written)) keys.push(tagKey(tag))
+    }
+    if (condition) readLocks(compileQuery(condition.query), keys)
+    return keys
   }
 
-  function extractCriteriaTags(criteria: EventCriteria): string[] {
+  function readLocks(criteria: EventCriteria, keys: bigint[]): void {
     switch (criteria.kind) {
       case "tags":
-        return criteria.tags.map((t) => encodeTag(t.key, t.value))
+        if (criteria.tags.length === 0) throw matchesEveryEvent()
+        for (const t of criteria.tags) keys.push(tagKey(encodeTag(t.key, t.value)))
+        return
       case "any-tag":
-        // any-tag covers all tags — use global-intent only (empty list)
-        return []
+        throw matchesEveryEvent()
       case "type-restricted":
-        return extractCriteriaTags(criteria.inner)
+        if (criteria.inner.kind === "tags" && criteria.inner.tags.length > 0) return readLocks(criteria.inner, keys)
+        for (const type of criteria.types) keys.push(typeKey(type))
+        return
       case "either":
-        return criteria.criteria.flatMap((c) => extractCriteriaTags(c))
+        for (const one of criteria.criteria) readLocks(one, keys)
     }
+  }
+
+  function matchesEveryEvent(): Error {
+    return new Error(
+      "postgresEventStore: an append condition has an item that matches every event, which this store cannot " +
+        "check against concurrent appends. Give every item of the condition's query a tag or a type.",
+    )
   }
 
   function encodedTagsOf({ tags }: TaggedEvent): string[] {
@@ -276,7 +288,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       // short-lived tx when no unit of work was handed in. The shared path
       // defers NOTIFY to AFTER_COMMIT because the tx
       // hasn't actually committed yet when checkAndInsert returns.
-      const targets = lockTargetsFor(condition, events)
+      const locks = locksFor(condition, events)
       const shared = await sharedPostgresTransaction(uow)
 
       const notify = async () => {
@@ -284,7 +296,7 @@ export function postgresEventStore(pg: PostgresResource): EventStore {
       }
 
       const runAppend = async (tx: PostgresAdapterTransaction): Promise<ConsistencyMarker> => {
-        await acquireWriteLocks(tx, targets)
+        await acquireLocks(tx, locks)
         const captured = await checkAndInsert(tx, events, condition)
         return markerAt(captured.position)
       }

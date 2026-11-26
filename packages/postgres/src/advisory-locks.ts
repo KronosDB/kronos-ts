@@ -1,33 +1,19 @@
 /**
- * Advisory-lock taxonomy for the DCB conflict check (D-12.09/10/11).
+ * Advisory locks for an append.
  *
- * Three keyspaces, S/X-asymmetric:
+ * An append takes an exclusive lock on every tag and every event type it
+ * writes, and on every tag or type its condition reads by. Two appends that
+ * share a tag or a type wait for each other; appends that share neither run
+ * side by side.
  *
- *   Leaf          K(T, t)    writer = X-lock,        reader = S-lock
- *   Type-intent   K(T, ε)    writer = S-lock,        reader = X-lock
- *   Global-intent K(ε, ε)    writer = S-lock,        reader = X-lock
- *
- * The asymmetry lets writers on DISJOINT (T,t) tuples run in parallel
- * (their leaf X-locks don't conflict, and they only take S on the intent
- * keys — multiple S-holders coexist). A Query.all() reader (rare) takes
- * X on the intent keys, briefly blocking ALL writers — but that's the
- * point: Query.all() needs to see a consistent snapshot.
- *
- * Locks are pg_advisory_xact_lock variants: held until tx commit/rollback,
- * automatically released. NEVER use session-scoped locks here — PgBouncer
- * in transaction-pooling mode would leak them.
- *
- * Reimplemented from principles per D-12.11. The kraken-tech version is
- * a reference for the taxonomy and FNV-1a hash; the SQL and serialisation
- * format below are original.
+ * The locks are `pg_advisory_xact_lock`: held until the transaction commits or
+ * rolls back, and released by the server. Session-scoped locks are never used,
+ * because a pooler in transaction mode would leak them.
  */
 
 import type { PostgresAdapterTransaction } from "./adapter.js"
 
-const UNIT_SEPARATOR = "" // ASCII Unit Separator (U+001F) — prevents tuple-collision hashing
-const KEYSPACE_LEAF = "L"
-const KEYSPACE_TYPE_INTENT = "T"
-const KEYSPACE_GLOBAL_INTENT = "G"
+const UNIT_SEPARATOR = "\u001f"
 
 // FNV-1a 64-bit constants
 const FNV_OFFSET_BASIS = 0xcbf29ce484222325n
@@ -36,12 +22,8 @@ const MASK_64 = (1n << 64n) - 1n
 const SIGN_THRESHOLD = 1n << 63n
 
 /**
- * FNV-1a 64-bit hash. Returns a BIGINT in the signed 64-bit range so it can
- * be passed directly to `pg_advisory_xact_lock(BIGINT)`. Values with the
- * high bit set are returned as negative numbers (two's complement).
- *
- * Per FNV-1a: h = offset_basis; for each byte b: h = (h XOR b) * prime mod 2^64.
- * UTF-8 byte iteration via TextEncoder for predictable cross-runtime behaviour.
+ * FNV-1a 64-bit hash of the UTF-8 bytes of `input`, as a signed 64-bit value,
+ * which is what `pg_advisory_xact_lock(BIGINT)` takes.
  */
 export function hashLockKey(input: string): bigint {
   const bytes = new TextEncoder().encode(input)
@@ -50,90 +32,24 @@ export function hashLockKey(input: string): bigint {
     h = (h ^ BigInt(bytes[i]!)) & MASK_64
     h = (h * FNV_PRIME) & MASK_64
   }
-  // Reinterpret as signed 64-bit
   return h >= SIGN_THRESHOLD ? h - (1n << 64n) : h
 }
 
-export type LockKeyspace = "leaf" | "type-intent" | "global-intent"
-
-export function leafKey(type: string, tag: string): bigint {
-  return hashLockKey(`${KEYSPACE_LEAF}${UNIT_SEPARATOR}${type}${UNIT_SEPARATOR}${tag}`)
+/** The lock of one encoded tag. */
+export function tagKey(tag: string): bigint {
+  return hashLockKey(`L${UNIT_SEPARATOR}${UNIT_SEPARATOR}${tag}`)
 }
 
-export function typeIntentKey(type: string): bigint {
-  return hashLockKey(`${KEYSPACE_TYPE_INTENT}${UNIT_SEPARATOR}${type}`)
-}
-
-export function globalIntentKey(): bigint {
-  return hashLockKey(KEYSPACE_GLOBAL_INTENT)
-}
-
-export type LockTarget = {
-  readonly type: string
-  readonly tag: string
+/** The lock of one event type. A type and a tag with the same text have different locks. */
+export function typeKey(type: string): bigint {
+  return hashLockKey(`T${UNIT_SEPARATOR}${type}`)
 }
 
 /**
- * Writer pattern: X-lock on each unique leaf, S-lock on each unique
- * type-intent + the global-intent. Writers on disjoint leaves run in
- * parallel; writers sharing a leaf serialise.
- *
- * Locks are issued in a stable order (sorted by key value) to avoid
- * deadlocks between concurrent writers that share multiple leaves.
+ * Take each lock once, in ascending order of key. Every append takes its locks
+ * in that order, so two appends that share several cannot deadlock.
  */
-export async function acquireWriteLocks(
-  tx: PostgresAdapterTransaction,
-  targets: ReadonlyArray<LockTarget>,
-): Promise<void> {
-  if (targets.length === 0) {
-    // Even with no leaf targets, acquire the global-intent S-lock so that
-    // a Query.all() X on the global-intent can block us if needed.
-    await tx.query(`SELECT pg_advisory_xact_lock_shared($1)`, [globalIntentKey()])
-    return
-  }
-
-  const leafKeys = uniqueSorted(targets.map((t) => leafKey(t.type, t.tag)))
-  const typeIntentKeys = uniqueSorted([...new Set(targets.map((t) => t.type))].map(typeIntentKey))
-
-  // X on leaves (sorted for deadlock-free acquisition order)
-  for (const k of leafKeys) {
-    await tx.query(`SELECT pg_advisory_xact_lock($1)`, [k])
-  }
-  // S on type-intent
-  for (const k of typeIntentKeys) {
-    await tx.query(`SELECT pg_advisory_xact_lock_shared($1)`, [k])
-  }
-  // S on global-intent
-  await tx.query(`SELECT pg_advisory_xact_lock_shared($1)`, [globalIntentKey()])
-}
-
-/**
- * Reader pattern (Query.all): S on leaves, X on type-intent + global-intent.
- * Inverse of writer; briefly excludes all writers while held.
- */
-export async function acquireReadLocks(
-  tx: PostgresAdapterTransaction,
-  targets: ReadonlyArray<LockTarget>,
-): Promise<void> {
-  if (targets.length === 0) {
-    // A truly empty Query.all() still needs the global-intent X to see a
-    // consistent snapshot across all types.
-    await tx.query(`SELECT pg_advisory_xact_lock($1)`, [globalIntentKey()])
-    return
-  }
-
-  const leafKeys = uniqueSorted(targets.map((t) => leafKey(t.type, t.tag)))
-  const typeIntentKeys = uniqueSorted([...new Set(targets.map((t) => t.type))].map(typeIntentKey))
-
-  for (const k of leafKeys) {
-    await tx.query(`SELECT pg_advisory_xact_lock_shared($1)`, [k])
-  }
-  for (const k of typeIntentKeys) {
-    await tx.query(`SELECT pg_advisory_xact_lock($1)`, [k])
-  }
-  await tx.query(`SELECT pg_advisory_xact_lock($1)`, [globalIntentKey()])
-}
-
-function uniqueSorted(xs: ReadonlyArray<bigint>): bigint[] {
-  return [...new Set(xs)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+export async function acquireLocks(tx: PostgresAdapterTransaction, keys: ReadonlyArray<bigint>): Promise<void> {
+  const sorted = [...new Set(keys)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  for (const key of sorted) await tx.query(`SELECT pg_advisory_xact_lock($1)`, [key])
 }
