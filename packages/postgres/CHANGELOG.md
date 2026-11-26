@@ -1,5 +1,64 @@
 # @kronos-ts/postgres
 
+## 0.22.0
+
+### Minor Changes
+
+- 94d5997: **Breaking:** `bootstrapSchema` takes an adapter with `transaction` (a `PostgresAdapter` or a `postgresPool`), and `SchemaBootstrapAdapter` is now `Pick<PostgresAdapter, "transaction">`; an object with only `query` is no longer accepted. `bootstrapSchema`, and so `postgresPool().start()`, runs each DDL statement in its own transaction that first takes a transaction-scoped advisory lock. It took a session-level lock through the pool, so the lock, the DDL and the unlock ran on different connections: the lock could stay held after start, concurrent starts could fail with a duplicate-key error or wait forever, and the lock did not serialise them. No session-level lock is taken any more.
+- 3a412c8: **Breaking:** the peer dependency ranges are `pg` `^8.20.0` and `postgres` `^3.4.9 || ^4.1.1`. They were `>=8.0.0` and `>=3.0.0`, while the README named 8.20+ and 3.4+. The test suites run on `pg` 8.20.0 and on `postgres` 3.4.9 and 4.1.1, so the ranges start at those versions. A plain `bun add postgres`, which installs 4, is inside the range. The README states the ranges and the tested versions.
+- 46ee252: **Breaking:** with `postgresAdapter` and `bunSqlAdapter`, an event's and a scheduled event's `payload` and `metadata`, and a snapshot's `metadata`, are stored as JSON objects. They were stored as a JSON string containing the JSON text, so `payload->>'field'` returned NULL. With `pgAdapter` they were already objects and nothing changes. Everything read through the stores is unchanged. What changes is what your own SQL sees under those two drivers: `SELECT payload` returns an object for a row written from now on, where it returned a string that had to be parsed.
+
+  Rows already stored as strings are not rewritten, and the stores keep reading them. If you query these columns in SQL, rewrite the rows with one statement per table:
+
+  ```sql
+  UPDATE kronos_events
+     SET payload  = CASE WHEN jsonb_typeof(payload)  = 'string' THEN (payload  #>> '{}')::jsonb ELSE payload  END,
+         metadata = CASE WHEN jsonb_typeof(metadata) = 'string' THEN (metadata #>> '{}')::jsonb ELSE metadata END
+   WHERE jsonb_typeof(payload) = 'string' OR jsonb_typeof(metadata) = 'string';
+  ```
+
+  The same statement with `kronos_scheduled_events` rewrites schedules, and `UPDATE kronos_snapshots SET metadata = (metadata #>> '{}')::jsonb WHERE jsonb_typeof(metadata) = 'string'` rewrites snapshots. The statements parse every string, so they are for tables whose event payloads are objects or arrays, not strings.
+
+- 4c4680f: **Breaking:** `postgresPool(adapter, options)` refuses `idleInTransactionTimeoutMs` and `statementTimeoutMs`: they are a compile error and `postgresPool` throws. Beside an adapter they were accepted and ignored, so the adapter's own timeouts (30s idle in transaction by default) applied instead. Set them on the adapter: `postgresPool(pgAdapter({ connectionString, statementTimeoutMs }))`. `postgresPool(connectionString, options)` takes them as before. The options a pool over an adapter takes are exported as `PostgresAdapterPoolOptions`.
+- c0188ea: An append condition by event type alone is enforced. `postgresEventStore` locks every event type an append writes, as it locks every tag, and locks the types a condition reads by when the item has no tag. Before, an item with no tag was not locked on at all: several simultaneous appends with the same type-only condition were all accepted, and a read by type could miss an uncommitted event of that type and still condition an append.
+
+  Appends of the same event type now wait for each other, as appends of the same tag do. Eight writers appending one type went from about 2,000 to about 500 to 800 appends a second on a development machine; one writer, and writers of different types, are unchanged.
+
+  **Breaking:** an append condition with an item that has neither a tag nor a type, which matches every event, is refused with an error. It was accepted and not enforced.
+
+  `acquireWriteLocks`, `acquireReadLocks` and the intent lock keys in `advisory-locks.ts` are replaced by `acquireLocks`, `tagKey` and `typeKey`; none were exported from the package.
+
+- 985b765: **Breaking:** `EventStore.appendEvents` and the `AppendTransaction` type are removed, from the contract and from every store. Nothing in the packages called them: a unit of work writes through `append`, and an append that must commit with other work is `append(events, condition, uow)`. `eventStoreTransaction` and `EventStoreTransaction`, which nothing used, are removed from `@kronos-ts/core`.
+- 8cf5f8f: **Breaking:** tags are the event store's index and are no longer a field of an event.
+
+  - `EventMessage` has no `tags`. An event read from a store, handed to a handler or an evolver, kept in a dead letter or listed by `recordingEventStore(...).appended` does not carry them.
+  - `EventStore.append` and `ScheduleStoreCapability.schedule` take a `TaggedEvent`, `{ event, tags }`: the event and the tags it is appended under. `ctx.append` and `ctx.schedule` are unchanged and work the tags out from the descriptor as before.
+  - Code that read `event.tags` reads the payload. A processor `Sequence` written `(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier` becomes `(e) => (e.payload as { accountId?: string }).accountId ?? e.identifier`. `tagsOf(descriptor, payload, metadata)` still gives the tags a descriptor gives an event.
+  - `@kronos-ts/kronosdb`: `kronosDbTagsAt` is removed.
+  - `@kronos-ts/postgres`: reads no longer select the `tags` column.
+
+  Nothing stored changes: events are written with the same tags and found by the same queries.
+
+### Patch Changes
+
+- 4a0398e: `postgresEventStore` inserts the events of one append with one statement per 100 events. It ran one `INSERT` per event. The events keep the order they were given, and an append of one event sends the statement it sent before.
+- 7a689c9: README corrected, no code change. `kronos_snapshots` has one `key` primary key, not `(state_name, state_id)`. Writers of one tag serialise and both commit unless a condition refuses the second. A violated append condition is found by the store and thrown with `code` `KR001`; Postgres raises no `KR001`. A query handler's unit of work carries no transaction. The PgBouncer answer names what depends on a session, and the Postgres 14 requirement no longer gives `xid8` as its reason.
+- 19a0581: `postgresPool.start()` connects and bootstraps again only after an error that says the server could not be reached or cannot serve yet. An error another attempt cannot fix, such as a wrong password or a missing permission, fails `start()` at once; it was retried ten times with backoff first. A host's own `resilience.isRetryable` still decides when given.
+- 5288c47: `resilience.log` defaults to `console.warn`, as its documentation says. `postgresPool().start()` and `axonServerConnection()` now write one line per retried attempt when no `log` is given; pass `log: () => {}` to silence it.
+- 4dae039: Comments corrected, no code change. `ctx.query` runs the query in a unit of work of its own and does not share the caller's transaction: the comments on `subscribeQueryHandlers`, `ContextQueryFunction` and the `query` member of the query and event handler contexts said it ran in the caller's. The `EventStore` comment and the header of `postgres-event-store.ts` no longer mention `publish` and `subscribe`, which the event store does not have. The Postgres stream's 250 ms poll is described as running beside LISTEN/NOTIFY, as it does.
+- Updated dependencies [75cc1bd]
+- Updated dependencies [2fe5e79]
+- Updated dependencies [a4fc328]
+- Updated dependencies [fb59e8c]
+- Updated dependencies [ba44d08]
+- Updated dependencies [3ca13ee]
+- Updated dependencies [985b765]
+- Updated dependencies [4dae039]
+- Updated dependencies [8cf5f8f]
+- Updated dependencies [1113651]
+- Updated dependencies [ae31d93]
+  - @kronos-ts/core@0.13.0
+
 ## 0.21.5
 
 ### Patch Changes

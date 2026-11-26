@@ -1,5 +1,22 @@
 # @kronos-ts/otlp
 
+## 0.7.8
+
+### Patch Changes
+
+- Updated dependencies [75cc1bd]
+- Updated dependencies [2fe5e79]
+- Updated dependencies [a4fc328]
+- Updated dependencies [fb59e8c]
+- Updated dependencies [ba44d08]
+- Updated dependencies [3ca13ee]
+- Updated dependencies [985b765]
+- Updated dependencies [4dae039]
+- Updated dependencies [8cf5f8f]
+- Updated dependencies [1113651]
+- Updated dependencies [ae31d93]
+  - @kronos-ts/core@0.13.0
+
 ## 0.7.7
 
 ### Patch Changes

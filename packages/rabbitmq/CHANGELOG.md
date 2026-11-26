@@ -1,5 +1,31 @@
 # @kronos-ts/rabbitmq
 
+## 0.11.0
+
+### Minor Changes
+
+- 52e3ca1: **Breaking:** the `durableQueues` topology option is removed. Nothing read it: handler queues were declared durable whatever it was set to, and they still are. A `topology` that sets `durableQueues` no longer compiles; delete the property.
+
+### Patch Changes
+
+- 32bed2b: The comments on `rabbitMqCommandBus` and `rabbitMqQueryBus` say what the buses do: every dispatch goes over the broker, including one for a handler in the same process, and `localFirstCommandBus` / `localFirstQueryBus` handle a co-located message without it. They described a bus that sent a subscribed name to the local bus instead. No behaviour changes.
+- 96b4da4: A command or query that times out says what is known about why: `Command X timed out after Nms. A queue is bound for the name, and RabbitMQ does not report whether a handler is consuming it`. It is still an `UnavailableError`, at the bus timeout.
+
+  A name whose handler has stopped keeps its queue on the broker, and RabbitMQ accepts a request for it like any other, so the caller cannot be told `no-handler` for it. The transports' code comments say so, and tests against a broker cover both cases: a name no queue is bound for fails at once with `NoHandlerError`, and a stopped handler's queue fails at the timeout with `UnavailableError`. The request expires in the queue, so a handler that starts later does not run it.
+
+- Updated dependencies [75cc1bd]
+- Updated dependencies [2fe5e79]
+- Updated dependencies [a4fc328]
+- Updated dependencies [fb59e8c]
+- Updated dependencies [ba44d08]
+- Updated dependencies [3ca13ee]
+- Updated dependencies [985b765]
+- Updated dependencies [4dae039]
+- Updated dependencies [8cf5f8f]
+- Updated dependencies [1113651]
+- Updated dependencies [ae31d93]
+  - @kronos-ts/core@0.13.0
+
 ## 0.10.5
 
 ### Patch Changes
