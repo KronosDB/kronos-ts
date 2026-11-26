@@ -24,13 +24,13 @@ import {
   localQueryBus,
   qn,
   unitOfWork,
+  upcast,
   upcastingEventStore,
   type EventHandler,
   type EventMessage,
   type EventStore,
   type RunningProcessor,
   type TokenStore,
-  type Upcast,
 } from "@kronos-ts/core"
 import { kronosDbConnection, kronosDbEventStore, type KronosDbConnectionHandle } from "@kronos-ts/kronosdb"
 import { startKronosDb, type KronosDbServer } from "../kronosdb-server.js"
@@ -180,37 +180,23 @@ describe("a processor over KronosDB, with the filter on the server", () => {
     expect(seen).toEqual([500])
   }, 60_000)
 
-  it("finds an event stored under a name the upcaster has since renamed", async () => {
+  it("finds an event stored under a name an upcast has since renamed", async () => {
     await store.append([fact(OrderPlaced, 700), fact(Noise, 1), fact(Ordered, 701)])
     const head = await store.getHeadPosition()
-    const rename: Upcast = (e) => (e.name.name === OrderPlaced.name ? { ...e, name: Ordered, version: "2" } : e)
+    const described = (name: { namespace: string; name: string }) =>
+      ({ kind: "event", name, version: "1", payload: {} as any }) as const
 
-    // Told which stored names become Ordered: the server is asked for both.
-    const told: number[] = []
-    const aware = run({
-      name: "renamed-told",
-      eventStore: upcastingEventStore(store, rename, {
-        storedTypes: (type) => (type === "filter-it.Ordered" ? [type, "filter-it.OrderPlaced"] : [type]),
-      }),
-      tokenStore: await readTo("renamed-told", head),
-      handlers: [handling(Ordered, told)],
+    // The server is asked for both names.
+    const seen: number[] = []
+    const processor = run({
+      name: "renamed",
+      eventStore: upcastingEventStore(store, [upcast(described(OrderPlaced), described(Ordered), (payload) => payload)]),
+      tokenStore: await readTo("renamed", head),
+      handlers: [handling(Ordered, seen)],
     })
-    await replayFrom(aware, head - 3n)
-    await until(() => told.length === 2, "both events")
-    aware.stop()
-    expect(told.sort()).toEqual([700, 701])
-
-    // Not told: the type restriction is widened, so nothing is lost either.
-    const widened: number[] = []
-    const unaware = run({
-      name: "renamed-widened",
-      eventStore: upcastingEventStore(store, rename),
-      tokenStore: await readTo("renamed-widened", head),
-      handlers: [handling(Ordered, widened)],
-    })
-    await replayFrom(unaware, head - 3n)
-    await until(() => widened.length === 2, "both events")
-    unaware.stop()
-    expect(widened.sort()).toEqual([700, 701])
+    await replayFrom(processor, head - 3n)
+    await until(() => seen.length === 2, "both events")
+    processor.stop()
+    expect(seen.sort()).toEqual([700, 701])
   }, 60_000)
 })

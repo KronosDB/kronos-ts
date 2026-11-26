@@ -113,7 +113,7 @@ export { jsonSerializer } from "./messaging/serialization/serializer.js"
 // over. It wraps the store's READ paths; the log itself is never rewritten.
 export {
   type Upcast,
-  type UpcastingOptions,
+  upcast,
   upcastingEventStore,
 } from "./upcasting/upcasting-event-store.js"
 

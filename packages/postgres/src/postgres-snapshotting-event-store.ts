@@ -62,7 +62,7 @@ import { decodeSnapshot, encodeSnapshot } from "./snapshot-codec.js"
  * statement joins `kronos_snapshots` against `kronos_events` in one plan; two
  * different databases cannot be joined and would not be a fusion.
  *
- * COMPOSE UPCASTING OUTERMOST — `upcastingEventStore(postgresSnapshottingEventStore(…), upcast)`.
+ * COMPOSE UPCASTING OUTERMOST — `upcastingEventStore(postgresSnapshottingEventStore(…), upcasts)`.
  * The snapshot layer decides WHICH events are read; the upcast layer decides
  * what each of them MEANS, and the fused read below bypasses the store it wraps
  * for the snapshot path, so an upcaster placed INSIDE this wrapper would not see

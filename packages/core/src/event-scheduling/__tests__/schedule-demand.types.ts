@@ -166,7 +166,7 @@ export const schedulingAdds: ScheduleCapableEventStore = inMemorySchedulingEvent
 export const snapshottingAdds: SnapshotCapableEventStore = inMemorySnapshottingEventStore(bare)
 
 /** Upcasting is identity: it hands back exactly what it was given. */
-export const upcastingPreservesTheBase: EventStore = upcastingEventStore(bare, (e) => e)
+export const upcastingPreservesTheBase: EventStore = upcastingEventStore(bare, [])
 
 /** BOTH TIERS, SCHEDULING OUTERMOST — both capabilities survive. */
 const schedulingOverSnapshotting = inMemorySchedulingEventStore(
@@ -185,14 +185,14 @@ export const stack2Snapshots: SnapshotCapableEventStore = snapshottingOverSchedu
 /** THREE DEEP, the documented arrangement: upcasting outermost over both tiers. */
 const threeDeep = upcastingEventStore(
   inMemorySchedulingEventStore(inMemorySnapshottingEventStore(bare)),
-  (e) => e,
+  [],
 )
 export const threeDeepSchedules: ScheduleCapableEventStore = threeDeep
 export const threeDeepSnapshots: SnapshotCapableEventStore = threeDeep
 
 /** THREE DEEP, upcasting in the MIDDLE — a same-seam wrapper is transparent. */
 const upcastSandwiched = inMemorySchedulingEventStore(
-  upcastingEventStore(inMemorySnapshottingEventStore(bare), (e) => e),
+  upcastingEventStore(inMemorySnapshottingEventStore(bare), []),
 )
 export const sandwichedSchedules: ScheduleCapableEventStore = upcastSandwiched
 export const sandwichedSnapshots: SnapshotCapableEventStore = upcastSandwiched

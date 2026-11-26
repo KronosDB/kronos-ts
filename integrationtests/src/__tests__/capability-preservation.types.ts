@@ -115,19 +115,19 @@ export const axonBaseIsNotCapable: SnapshotCapableEventStore = axonServerEventSt
 
 export const upcastOutsideSnapshots: SnapshotCapableEventStore = upcastingEventStore(
   postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer),
-  (e) => e,
+  [],
 )
 
 export const snapshotsOutsideUpcast: SnapshotCapableEventStore = postgresSnapshottingEventStore(
-  upcastingEventStore(postgresEventStore(pg), (e) => e),
+  upcastingEventStore(postgresEventStore(pg), []),
   pg,
   serializer,
 )
 
 /** Three deep, in the order a real host writes it. */
 export const threeDeep: SnapshotCapableEventStore = upcastingEventStore(
-  upcastingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), (e) => e),
-  (e) => e,
+  upcastingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), []),
+  [],
 )
 
 // ---------------------------------------------------------------------------
@@ -174,7 +174,7 @@ export const kronosDbBothSnapshots: SnapshotCapableEventStore = kronosDbBoth
  * wrapper that is not generic.
  */
 const everything = inMemorySchedulingEventStore(
-  upcastingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), (e) => e),
+  upcastingEventStore(inMemorySnapshottingEventStore(inMemoryEventStore()), []),
 )
 export const everythingSchedules: ScheduleCapableEventStore = everything
 export const everythingSnapshots: SnapshotCapableEventStore = everything
@@ -282,7 +282,7 @@ export const proof = deeplyWrappedStillSatisfiesTheDemand(
   recordingEventStore(
     upcastingEventStore(
       postgresSnapshottingEventStore(postgresEventStore(pg), pg, serializer),
-      (e) => e,
+      [],
     ),
   ),
 )
@@ -298,7 +298,7 @@ export const scheduleProof = deeplyWrappedStillSchedules(
         pg,
         postgresUnitOfWork(unitOfWork, pg),
       ),
-      (e) => e,
+      [],
     ),
   ),
 )

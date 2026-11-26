@@ -241,10 +241,6 @@ export function axonServerEventStore(conn: AxonServerStoreSource, context: strin
   }
 
   return {
-    // Axon Server matches a query against an event's tags and returns the
-    // event without them.
-    returnsTags: false,
-
     source(condition: SourcingCondition): Promise<SourcingResult> {
       return boundedRead(connection.config.readTimeoutMs, (signal) => sourceOnce(condition, signal))
     },

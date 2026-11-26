@@ -164,15 +164,15 @@ export const writeHalfAbsentOnBareLog = async (store: EventStore) => {
   await store.storeSnapshot("counter:c-1", { state: { count: 1 }, position: 3n })
 }
 
-export const upcastingPreservesTheBase: EventStore = upcastingEventStore(bare, (e) => e)
+export const upcastingPreservesTheBase: EventStore = upcastingEventStore(bare, [])
 
 export const upcastOutermost: SnapshotCapableEventStore = upcastingEventStore(
   inMemorySnapshottingEventStore(bare),
-  (e) => e,
+  [],
 )
 
 export const upcastInnermost: SnapshotCapableEventStore = inMemorySnapshottingEventStore(
-  upcastingEventStore(bare, (e) => e),
+  upcastingEventStore(bare, []),
 )
 
 // @ts-expect-error — nothing added the capability
