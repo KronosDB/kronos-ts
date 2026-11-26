@@ -1,5 +1,49 @@
 # @kronos-ts/core
 
+## 0.13.0
+
+### Minor Changes
+
+- ba44d08: **Breaking:** `CommandDescriptor.routingKey` is removed, with the `routingKey` field of `command({ … })` and `ns.command(name, { … })`. Nothing read it: no bus or transport took a routing key from the descriptor. A command's routing key is `metadata.processingInstructions.routingKey`, given where the command is sent, which the KronosDB and Axon Server command buses already send to the server. Delete `routingKey` from command declarations, and pass the key in the metadata of `send` or `ctx.send` for commands that need one.
+- 3ca13ee: **Breaking:** `LATEST_TOKEN` is removed. Nothing in Kronos read it, and it could not seed a processor: its position was `Number.MAX_SAFE_INTEGER`, so a processor given it never read an event. `eventStore.latestToken()`, which returns the token at the end of the log, is unchanged.
+- 985b765: **Breaking:** `EventStore.appendEvents` and the `AppendTransaction` type are removed, from the contract and from every store. Nothing in the packages called them: a unit of work writes through `append`, and an append that must commit with other work is `append(events, condition, uow)`. `eventStoreTransaction` and `EventStoreTransaction`, which nothing used, are removed from `@kronos-ts/core`.
+- 8cf5f8f: **Breaking:** tags are the event store's index and are no longer a field of an event.
+
+  - `EventMessage` has no `tags`. An event read from a store, handed to a handler or an evolver, kept in a dead letter or listed by `recordingEventStore(...).appended` does not carry them.
+  - `EventStore.append` and `ScheduleStoreCapability.schedule` take a `TaggedEvent`, `{ event, tags }`: the event and the tags it is appended under. `ctx.append` and `ctx.schedule` are unchanged and work the tags out from the descriptor as before.
+  - Code that read `event.tags` reads the payload. A processor `Sequence` written `(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier` becomes `(e) => (e.payload as { accountId?: string }).accountId ?? e.identifier`. `tagsOf(descriptor, payload, metadata)` still gives the tags a descriptor gives an event.
+  - `@kronos-ts/kronosdb`: `kronosDbTagsAt` is removed.
+  - `@kronos-ts/postgres`: reads no longer select the `tags` column.
+
+  Nothing stored changes: events are written with the same tags and found by the same queries.
+
+- 1113651: **Breaking:** an upcast is declared from one event descriptor to another, and `upcastingEventStore` takes a list of them:
+
+  ```ts
+  upcastingEventStore(store, [
+    upcast(CourseCreatedV1, CourseCreated, (payload) => ({
+      ...payload,
+      capacity: 30,
+    })),
+    upcast(RentalOverdue, RentalLapsed, (payload) => payload),
+  ]);
+  ```
+
+  The `Upcast` function type `(event) => event`, the `storedTypes` option and `UpcastingOptions` are removed. To move an upcaster over, name the descriptor it matched with `is()` as `from`, the descriptor it produced as `to`, and keep its payload change as `map`.
+
+  The store reads the names events are stored under off the `from` descriptors. An event stored under an old name is found without `storedTypes`, and a type filter is always passed on to the log; it was dropped when `storedTypes` was absent. An event goes through every step that applies to it, so upcasts from version 1 to 2 and from 2 to 3 take a stored version 1 to version 3. Two upcasts from one descriptor, and upcasts that lead back to where they started, are refused when the store is built.
+
+  `upcastingEventStore` no longer reads an event's tags, so it works over `axonServerEventStore`, whose events come back without them.
+
+### Patch Changes
+
+- 75cc1bd: A dead letter records which handler failed, and a replay calls that handler and the ones after it. Before, `reprocessDeadLetters` called every handler of the event again, including the ones that had succeeded when the event was first delivered. The handler is recorded as `diagnostics.handlerIndex`: its position among the processor's handlers for the event, in the order `kronos()` was given them. `diagnostics.handlerName`, which held the event's name, is no longer written. A letter parked behind another, a letter without `handlerIndex`, and a letter whose `handlerIndex` is past the end of the handlers are replayed through every handler, as before.
+- 2fe5e79: `inMemorySchedulingEventStore`: a `cancelSchedule` in a unit of work that then fails is undone completely. The schedule was set back to pending without its timer, so it never fired. The timer is now armed again for the schedule's fire time, or for now when that time has passed. A schedule and its cancel in one failed unit of work leave no record behind, so a later cancel of that token answers `not-found`. A cancel stands when the unit of work fails after its commit, in an `onAfterCommit` action.
+- a4fc328: `kronos()` refuses, before it subscribes anything, an entry for a command or query that an earlier `kronos()` call already subscribed on the same bus object. The error names the command or query and both entries. Before, the bus refused the second handler at subscribe time, after the entries ahead of it in the lists were already subscribed, so the failed boot left handlers on the buses. A name stays taken after the app that subscribed it has stopped, because a bus keeps its subscriptions. A handler put on a bus with `bus.subscribe` directly, or through a different wrapper object over the same inner bus, is not seen by this check.
+- fb59e8c: `ctx.load` after `ctx.append` folds an appended event only into the states whose query matches it. An append was folded into every loaded state that has an evolver for the event's type, so appending for one id changed the state loaded for another. A state first loaded after the append now sees the appended event too. `UoWStateCache.modules` is removed.
+- 4dae039: Comments corrected, no code change. `ctx.query` runs the query in a unit of work of its own and does not share the caller's transaction: the comments on `subscribeQueryHandlers`, `ContextQueryFunction` and the `query` member of the query and event handler contexts said it ran in the caller's. The `EventStore` comment and the header of `postgres-event-store.ts` no longer mention `publish` and `subscribe`, which the event store does not have. The Postgres stream's 250 ms poll is described as running beside LISTEN/NOTIFY, as it does.
+- ae31d93: `validatingHandler` and `correlatingHandler` accept a handler that takes only its message. The wrapped handler's context was typed `undefined`, so it could not be given to `commandHandler`, `eventHandler` or `queryHandler` without a cast, and calling it without a context threw `TypeError: Cannot destructure property 'send'`. Its context is now `unknown`, and a missing context is passed through. A handler with a context parameter keeps the context type it named.
+
 ## 0.12.0
 
 ### Minor Changes

@@ -1,5 +1,92 @@
 # @kronos-ts/axon-server
 
+## 0.11.0
+
+### Minor Changes
+
+- e75f6bc: **Breaking:** `messageSizeValidator`, `MessageSizeExceededError` and `MessageSizeConfig` are removed. Nothing in the package called the validator, so no message was ever checked by it. A message over Axon Server's size limit is refused by the server and still surfaces as an `AxonServerError` with `transient: false`.
+
+  Code that imported the validator and called it itself needs its own size check.
+
+- 2e9a51c: **Breaking:** `PlatformConnection.subscriptionsAcked()` is removed from `@kronos-ts/axon-server`, so `axon.platform.subscriptionsAcked()` no longer exists. Nothing in the package called it. It resolved with `true` as soon as the platform stream had sent its registration, and said nothing about handler subscriptions. `axon.start()` waits for Axon Server to acknowledge those, and `axon.platform.connected` reports whether the platform stream is open.
+
+  `@kronos-ts/kronosdb`: comment corrected, no code change. `PlatformConnection.subscriptionsAcked()` reports that KronosDB has accepted the client's registration on the platform stream. Its comment said it reported handler subscriptions and named a file that does not exist.
+
+- 21d830a: **Breaking:** the `busSubscriptionAckDelayMs` connection option is removed. `axon.start()` no longer sleeps for a fixed 1000 ms; it waits for Axon Server to acknowledge each handler subscription the command and query buses have sent, and resolves when the last acknowledgement arrives (at once when no handler is subscribed).
+
+  `start()` now rejects with an `UnavailableError` when the acknowledgements have not arrived within the new `startTimeoutMs` option (default 30000), and with the server's error when it refuses a subscription. An acknowledgement comes from the node the client is connected to; in a cluster, another node can take a moment longer to route to the handler.
+
+  Remove `busSubscriptionAckDelayMs` from the options passed to `axonServerConnection()`.
+
+- 985b765: **Breaking:** `EventStore.appendEvents` and the `AppendTransaction` type are removed, from the contract and from every store. Nothing in the packages called them: a unit of work writes through `append`, and an append that must commit with other work is `append(events, condition, uow)`. `eventStoreTransaction` and `EventStoreTransaction`, which nothing used, are removed from `@kronos-ts/core`.
+- 5915b72: **Breaking:** `flowControlledSender` and the `FlowControlledSender` type are removed from both packages. Neither package used them. The unused `connectionManager` file is removed from `@kronos-ts/axon-server`; it was not exported.
+- 8cf5f8f: **Breaking:** tags are the event store's index and are no longer a field of an event.
+
+  - `EventMessage` has no `tags`. An event read from a store, handed to a handler or an evolver, kept in a dead letter or listed by `recordingEventStore(...).appended` does not carry them.
+  - `EventStore.append` and `ScheduleStoreCapability.schedule` take a `TaggedEvent`, `{ event, tags }`: the event and the tags it is appended under. `ctx.append` and `ctx.schedule` are unchanged and work the tags out from the descriptor as before.
+  - Code that read `event.tags` reads the payload. A processor `Sequence` written `(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier` becomes `(e) => (e.payload as { accountId?: string }).accountId ?? e.identifier`. `tagsOf(descriptor, payload, metadata)` still gives the tags a descriptor gives an event.
+  - `@kronos-ts/kronosdb`: `kronosDbTagsAt` is removed.
+  - `@kronos-ts/postgres`: reads no longer select the `tags` column.
+
+  Nothing stored changes: events are written with the same tags and found by the same queries.
+
+### Patch Changes
+
+- b9d7230: `axonServerConnection()` waits for the gRPC channel to Axon Server to be ready before it returns. If the channel is not ready within `resilience.healthCheckThresholdMs` (default 5000), it logs one warning through `resilience.log` (default `console.warn`) and returns the handle anyway. Before, the health check ran an empty probe: the handle was returned at once, and an unreachable server was first noticed by the first call.
+
+  Opening a connection while Axon Server is down now takes up to `healthCheckThresholdMs` longer.
+
+- d6af338: `axonServerControlPlane` reads its processors on every instruction and every status report. It copied them once when it was created, so a processor added afterwards was never reported and could not be paused, started, split, merged or released from Axon Server.
+
+  It now takes the map itself, `axonServerControlPlane(axon, app.processors)`, as well as an array. A processor added to the map or array later is reported and addressable, and one removed is no longer reported. Values that are not processor-shaped are ignored. The parameter's type is exported as `ManagedProcessorSource`.
+
+  An iterator such as `app.processors.values()` is still accepted and still copied once, because it can be read only once: pass the map to see later processors. `control.processors` returns the processors addressed at the time it is read.
+
+- 929a0a9: `axonServerEventStore`'s `open()` holds at most `readAhead` events ready for its reader (1000 when the reader names none) and stops reading from Axon Server while it has that many. It used to read everything the server sent into memory, so a reader slower than the server grew the buffer without bound. `open()` throws a `RangeError` for a `readAhead` that is not a positive integer.
+- 4b92d8c: Doc comments corrected: the default query timeout is 30000 ms (a comment said one hour), `flowControl.refillThreshold` defaults to half of `permits`, and `ProcessingInstructions` are read from a command's metadata only.
+- 5c99878: A load from a snapshot in `axonServerSnapshottingEventStore` sees every event appended after the snapshot. A snapshot is stored at the consistency marker of the read it was folded from, which is already the next sequence, and the load started one past it. It skipped the first matching event when that event was the next one appended to the context, so a command handler could decide on state that was missing it, and its append was not refused.
+
+  A read from `axonServerEventStore` that starts at or past the head returns a marker that an append is accepted on. On Axon Server 2026.1, an append after such a read was refused as a conflict on every retry.
+
+  Snapshots already stored on the server keep working. A snapshot written after a load that skipped an event holds state without that event; delete the context's snapshots to have them rebuilt from the log.
+
+- c97ef3a: A control plane fails an instruction that names a processor the application does not have, with `No event processor named "<name>" in this application`. It was treated as done.
+
+  - `kronosDbControlPlane`: the server is told the instruction failed, with that message. It was told the instruction succeeded.
+  - `axonServerControlPlane`: the failure is logged by the platform stream, which sends Axon Server no result for any instruction.
+
+- 5288c47: `resilience.log` defaults to `console.warn`, as its documentation says. `postgresPool().start()` and `axonServerConnection()` now write one line per retried attempt when no `log` is given; pass `log: () => {}` to silence it.
+- 1113651: **Breaking:** an upcast is declared from one event descriptor to another, and `upcastingEventStore` takes a list of them:
+
+  ```ts
+  upcastingEventStore(store, [
+    upcast(CourseCreatedV1, CourseCreated, (payload) => ({
+      ...payload,
+      capacity: 30,
+    })),
+    upcast(RentalOverdue, RentalLapsed, (payload) => payload),
+  ]);
+  ```
+
+  The `Upcast` function type `(event) => event`, the `storedTypes` option and `UpcastingOptions` are removed. To move an upcaster over, name the descriptor it matched with `is()` as `from`, the descriptor it produced as `to`, and keep its payload change as `map`.
+
+  The store reads the names events are stored under off the `from` descriptors. An event stored under an old name is found without `storedTypes`, and a type filter is always passed on to the log; it was dropped when `storedTypes` was absent. An event goes through every step that applies to it, so upcasts from version 1 to 2 and from 2 to 3 take a stored version 1 to version 3. Two upcasts from one descriptor, and upcasts that lead back to where they started, are refused when the store is built.
+
+  `upcastingEventStore` no longer reads an event's tags, so it works over `axonServerEventStore`, whose events come back without them.
+
+- Updated dependencies [75cc1bd]
+- Updated dependencies [2fe5e79]
+- Updated dependencies [a4fc328]
+- Updated dependencies [fb59e8c]
+- Updated dependencies [ba44d08]
+- Updated dependencies [3ca13ee]
+- Updated dependencies [985b765]
+- Updated dependencies [4dae039]
+- Updated dependencies [8cf5f8f]
+- Updated dependencies [1113651]
+- Updated dependencies [ae31d93]
+  - @kronos-ts/core@0.13.0
+
 ## 0.10.5
 
 ### Patch Changes

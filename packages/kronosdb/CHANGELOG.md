@@ -1,5 +1,49 @@
 # @kronos-ts/kronosdb
 
+## 0.14.0
+
+### Minor Changes
+
+- 13d8432: An append that KronosDB answers `unavailable`, or whose connection is lost before the answer, is sent again with the same events for up to `appendRetryMs` (a new connection option, default 30000; 0 sends every append once). A server that already wrote the events answers with the positions they have, so nothing is written twice and an append rides through a failover or a restart. Needs KronosDB 0.17 or later: the client asks for the retry-safe appends feature in its handshake and sends an append once to a server that does not grant it. A conflict is never sent again, nor is an append with an event that has no identifier.
+
+  **Breaking:** an append to an unreachable server now fails after `appendRetryMs` instead of at once. The vendored protocol codec is regenerated; its schema hash is `5dcacfb3`.
+
+- 985b765: **Breaking:** `EventStore.appendEvents` and the `AppendTransaction` type are removed, from the contract and from every store. Nothing in the packages called them: a unit of work writes through `append`, and an append that must commit with other work is `append(events, condition, uow)`. `eventStoreTransaction` and `EventStoreTransaction`, which nothing used, are removed from `@kronos-ts/core`.
+- 5915b72: **Breaking:** `flowControlledSender` and the `FlowControlledSender` type are removed from both packages. Neither package used them. The unused `connectionManager` file is removed from `@kronos-ts/axon-server`; it was not exported.
+- 8cf5f8f: **Breaking:** tags are the event store's index and are no longer a field of an event.
+
+  - `EventMessage` has no `tags`. An event read from a store, handed to a handler or an evolver, kept in a dead letter or listed by `recordingEventStore(...).appended` does not carry them.
+  - `EventStore.append` and `ScheduleStoreCapability.schedule` take a `TaggedEvent`, `{ event, tags }`: the event and the tags it is appended under. `ctx.append` and `ctx.schedule` are unchanged and work the tags out from the descriptor as before.
+  - Code that read `event.tags` reads the payload. A processor `Sequence` written `(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier` becomes `(e) => (e.payload as { accountId?: string }).accountId ?? e.identifier`. `tagsOf(descriptor, payload, metadata)` still gives the tags a descriptor gives an event.
+  - `@kronos-ts/kronosdb`: `kronosDbTagsAt` is removed.
+  - `@kronos-ts/postgres`: reads no longer select the `tags` column.
+
+  Nothing stored changes: events are written with the same tags and found by the same queries.
+
+### Patch Changes
+
+- 2e9a51c: **Breaking:** `PlatformConnection.subscriptionsAcked()` is removed from `@kronos-ts/axon-server`, so `axon.platform.subscriptionsAcked()` no longer exists. Nothing in the package called it. It resolved with `true` as soon as the platform stream had sent its registration, and said nothing about handler subscriptions. `axon.start()` waits for Axon Server to acknowledge those, and `axon.platform.connected` reports whether the platform stream is open.
+
+  `@kronos-ts/kronosdb`: comment corrected, no code change. `PlatformConnection.subscriptionsAcked()` reports that KronosDB has accepted the client's registration on the platform stream. Its comment said it reported handler subscriptions and named a file that does not exist.
+
+- c97ef3a: A control plane fails an instruction that names a processor the application does not have, with `No event processor named "<name>" in this application`. It was treated as done.
+
+  - `kronosDbControlPlane`: the server is told the instruction failed, with that message. It was told the instruction succeeded.
+  - `axonServerControlPlane`: the failure is logged by the platform stream, which sends Axon Server no result for any instruction.
+
+- Updated dependencies [75cc1bd]
+- Updated dependencies [2fe5e79]
+- Updated dependencies [a4fc328]
+- Updated dependencies [fb59e8c]
+- Updated dependencies [ba44d08]
+- Updated dependencies [3ca13ee]
+- Updated dependencies [985b765]
+- Updated dependencies [4dae039]
+- Updated dependencies [8cf5f8f]
+- Updated dependencies [1113651]
+- Updated dependencies [ae31d93]
+  - @kronos-ts/core@0.13.0
+
 ## 0.13.5
 
 ### Patch Changes

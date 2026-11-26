@@ -1,5 +1,36 @@
 # @kronos-ts/test
 
+## 0.10.0
+
+### Minor Changes
+
+- 985b765: **Breaking:** `EventStore.appendEvents` and the `AppendTransaction` type are removed, from the contract and from every store. Nothing in the packages called them: a unit of work writes through `append`, and an append that must commit with other work is `append(events, condition, uow)`. `eventStoreTransaction` and `EventStoreTransaction`, which nothing used, are removed from `@kronos-ts/core`.
+- 8cf5f8f: **Breaking:** tags are the event store's index and are no longer a field of an event.
+
+  - `EventMessage` has no `tags`. An event read from a store, handed to a handler or an evolver, kept in a dead letter or listed by `recordingEventStore(...).appended` does not carry them.
+  - `EventStore.append` and `ScheduleStoreCapability.schedule` take a `TaggedEvent`, `{ event, tags }`: the event and the tags it is appended under. `ctx.append` and `ctx.schedule` are unchanged and work the tags out from the descriptor as before.
+  - Code that read `event.tags` reads the payload. A processor `Sequence` written `(e) => e.tags.find((t) => t.key === "accountId")?.value ?? e.identifier` becomes `(e) => (e.payload as { accountId?: string }).accountId ?? e.identifier`. `tagsOf(descriptor, payload, metadata)` still gives the tags a descriptor gives an event.
+  - `@kronos-ts/kronosdb`: `kronosDbTagsAt` is removed.
+  - `@kronos-ts/postgres`: reads no longer select the `tags` column.
+
+  Nothing stored changes: events are written with the same tags and found by the same queries.
+
+### Patch Changes
+
+- 6191900: `QueryRecording` is exported. It is what `recordingQueryBus` adds to a bus and what `RecordingQueryBus` is built from, and it could not be named from the package. A storyline has `catch` and `finally` as well as `then`, and its type is `Promise<void> & { shows; after }` where it was `PromiseLike<void>`. A storyline is told once, when it is first awaited or `then`, `catch` or `finally` is first called; awaiting the same storyline value again no longer tells it again. It is still not a `Promise` instance: pass `Promise.resolve(storyline)` to something that requires one, such as `expect(…).rejects`.
+- Updated dependencies [75cc1bd]
+- Updated dependencies [2fe5e79]
+- Updated dependencies [a4fc328]
+- Updated dependencies [fb59e8c]
+- Updated dependencies [ba44d08]
+- Updated dependencies [3ca13ee]
+- Updated dependencies [985b765]
+- Updated dependencies [4dae039]
+- Updated dependencies [8cf5f8f]
+- Updated dependencies [1113651]
+- Updated dependencies [ae31d93]
+  - @kronos-ts/core@0.13.0
+
 ## 0.9.3
 
 ### Patch Changes
